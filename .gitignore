@@ -228,3 +228,4 @@ settings.local.json
 
 # Project
 project.json
+/data/

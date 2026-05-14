@@ -10,9 +10,11 @@ import { useEdit } from "@/composables/useEdit"
 import ProgressBar from "@/components/common/ProgressBar.vue"
 import TranscriptRow from "@/components/workspace/TranscriptRow.vue"
 import SilenceRow from "@/components/workspace/SilenceRow.vue"
+import TimelineRuler from "@/components/workspace/TimelineRuler.vue"
 import SuggestionPanel from "@/components/workspace/SuggestionPanel.vue"
 import SearchReplaceBar from "@/components/workspace/SearchReplaceBar.vue"
 import EditSummaryModal from "@/components/workspace/EditSummaryModal.vue"
+import VideoControls from "@/components/workspace/VideoControls.vue"
 
 interface Props {
   project: Project
@@ -63,10 +65,19 @@ const statusMessage = ref("")
 const errorMessage = ref("")
 const showAnalysisDropdown = ref(false)
 const showExportSummary = ref(false)
+const showSilenceSettings = ref(false)
 const exportSummaryData = ref<EditSummary | null>(null)
 const selectedSegmentId = ref<string | null>(null)
+const selectedRange = ref<{ start: number; end: number } | null>(null)
 const videoUrl = ref("")
 const videoRef = ref<HTMLVideoElement | null>(null)
+const currentTime = ref(0)
+const videoPaused = ref(true)
+const videoVolume = ref(0.75)
+const videoPlaybackRate = ref(1)
+
+const silenceThreshold = ref(-30)
+const silenceMinDuration = ref(0.5)
 
 const segments = computed<Segment[]>(() => props.project.transcript?.segments ?? [])
 const edits = computed<EditDecision[]>(() => props.project.edits ?? [])
@@ -83,15 +94,34 @@ const subtitleCount = computed(() => segments.value.filter(s => s.type === "subt
 async function loadVideoUrl() {
   const mediaPath = props.project.media?.path
   if (!mediaPath) return
-  const res = await call<string>("get_video_url", mediaPath)
+  const res = await call<{ url: string; port: number }>("get_video_url", mediaPath)
   if (res.success && res.data) {
-    videoUrl.value = res.data
+    videoUrl.value = res.data.url
   }
 }
 
-onMounted(loadVideoUrl)
+onMounted(async () => {
+  await loadVideoUrl()
+  await loadSilenceSettings()
+})
 
 watch(() => props.project.media?.path, loadVideoUrl)
+
+async function loadSilenceSettings() {
+  const res = await call<Record<string, unknown>>("get_settings")
+  if (res.success && res.data) {
+    silenceThreshold.value = Number(res.data.silence_threshold_db ?? -30)
+    silenceMinDuration.value = Number(res.data.silence_min_duration ?? 0.5)
+  }
+}
+
+async function saveSilenceSettings() {
+  await call("update_settings", {
+    silence_threshold_db: silenceThreshold.value,
+    silence_min_duration: silenceMinDuration.value,
+  })
+  showSilenceSettings.value = false
+}
 
 function getEditForSegment(seg: Segment): EditDecision | undefined {
   return edits.value.find(e =>
@@ -116,14 +146,69 @@ function handleVideoLoaded() {
   }
 }
 
-async function handleToggleEditStatus(segment: Segment) {
+function handleTimeUpdate() {
+  if (videoRef.value) {
+    currentTime.value = videoRef.value.currentTime
+  }
+}
+
+function handleTogglePlay() {
+  if (!videoRef.value) return
+  if (videoRef.value.paused) {
+    videoRef.value.play()
+  } else {
+    videoRef.value.pause()
+  }
+}
+
+function handleSeekTo(time: number) {
+  if (!videoRef.value) return
+  videoRef.value.currentTime = time
+}
+
+function handleVolumeChange(vol: number) {
+  if (!videoRef.value) return
+  videoRef.value.volume = vol
+  videoVolume.value = vol
+}
+
+function handleRateChange(rate: number) {
+  if (!videoRef.value) return
+  videoRef.value.playbackRate = rate
+  videoPlaybackRate.value = rate
+}
+
+function handleFullscreen() {
+  const container = videoRef.value?.parentElement
+  if (!container) return
+  if (document.fullscreenElement) {
+    document.exitFullscreen()
+  } else {
+    container.requestFullscreen()
+  }
+}
+
+async function handleToggleEditStatus(segment: Segment, nextStatus?: string) {
   const edit = edits.value.find(e =>
     Math.abs(e.start - segment.start) < 0.01 && Math.abs(e.end - segment.end) < 0.01,
   )
-  if (!edit) return
-  const nextStatus = edit.status === "confirmed" ? "pending" : edit.status === "rejected" ? "pending" : null
-  if (!nextStatus) return
-  await call<Project>("update_edit_decision", edit.id, nextStatus)
+  if (!edit) {
+    // No EditDecision yet -> create one as "confirmed" (mark for deletion)
+    await call("mark_segments", [segment.id], "delete", "confirmed")
+    const projRes = await call<Project>("get_project")
+    if (projRes.success && projRes.data) {
+      emit("project-updated", projRes.data)
+    }
+    return
+  }
+  // Cycle: confirmed <-> rejected (skip pending)
+  // Only OK/Keep buttons set from pending
+  const status = nextStatus ?? (
+    edit.status === "confirmed" ? "rejected"
+    : edit.status === "rejected" ? "confirmed"
+    : "confirmed"
+  )
+  await call<Project>("update_edit_decision", edit.id, status)
   const projRes = await call<Project>("get_project")
   if (projRes.success && projRes.data) {
     emit("project-updated", projRes.data)
@@ -178,10 +263,27 @@ async function handleUpdateText(segmentId: string, text: string) {
   await updateSegmentText(segmentId, text)
 }
 
+
+
 async function handleSearchReplace(query: string, replacement: string, scope: string) {
   const result = await searchReplace(query, replacement, scope)
   if (result) {
     statusMessage.value = `Replaced ${result.count} occurrences`
+  }
+}
+
+function handleSelectRange(start: number, end: number) {
+  // Store selection for potential use (e.g., add segment, export range)
+  selectedRange.value = { start, end }
+}
+
+async function handleAddSegment(start: number, end: number) {
+  const res = await call<Project>("add_segment", start, end, "", "subtitle")
+  if (res.success && res.data) {
+    emit("project-updated", res.data)
+    statusMessage.value = "Clip region added"
+  } else {
+    errorMessage.value = res.error ?? "Failed to add segment"
   }
 }
 
@@ -271,14 +373,58 @@ function handleKeydown(e: KeyboardEvent) {
         <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
         Import SRT
       </button>
-      <button
-        class="inline-flex items-center gap-1.5 rounded-md bg-blue-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600 disabled:opacity-50 transition-colors"
-        :disabled="isDetecting || isExporting"
-        @click="handleDetectSilence"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15z" /><path stroke-linecap="round" stroke-linejoin="round" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" /></svg>
-        {{ isDetecting ? 'Detecting...' : 'Detect Silence' }}
-      </button>
+      <div class="relative inline-flex items-center">
+        <button
+          class="inline-flex items-center gap-1.5 rounded-md rounded-r-none bg-blue-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600 disabled:opacity-50 transition-colors"
+          :disabled="isDetecting || isExporting"
+          @click="handleDetectSilence"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15z" /><path stroke-linecap="round" stroke-linejoin="round" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" /></svg>
+          {{ isDetecting ? 'Detecting...' : 'Detect Silence' }}
+        </button>
+        <button
+          class="inline-flex items-center rounded-md rounded-l-none bg-blue-600 px-1.5 py-1.5 text-xs text-white hover:bg-blue-700 disabled:opacity-50 transition-colors border-l border-blue-400"
+          :disabled="isDetecting || isExporting"
+          title="Silence detection settings"
+          @click="showSilenceSettings = !showSilenceSettings"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+        </button>
+        <div
+          v-if="showSilenceSettings"
+          class="absolute top-full left-0 mt-1 w-64 rounded-md border border-gray-200 bg-white shadow-lg z-20 p-3"
+        >
+          <div class="text-xs font-medium text-gray-700 mb-2">Silence Detection Settings</div>
+          <label class="block mb-2">
+            <span class="text-xs text-gray-500">Threshold (dB): {{ silenceThreshold }}</span>
+            <input
+              type="range"
+              v-model.number="silenceThreshold"
+              min="-60"
+              max="-10"
+              step="1"
+              class="w-full mt-1"
+            />
+          </label>
+          <label class="block mb-3">
+            <span class="text-xs text-gray-500">Min Duration (s): {{ silenceMinDuration.toFixed(1) }}</span>
+            <input
+              type="range"
+              v-model.number="silenceMinDuration"
+              min="0.1"
+              max="3.0"
+              step="0.1"
+              class="w-full mt-1"
+            />
+          </label>
+          <button
+            class="w-full rounded bg-blue-500 px-2 py-1 text-xs text-white hover:bg-blue-600"
+            @click="saveSilenceSettings"
+          >
+            Save Settings
+          </button>
+        </div>
+      </div>
 
       <!-- Analysis dropdown -->
       <div class="relative">
@@ -361,15 +507,31 @@ function handleKeydown(e: KeyboardEvent) {
       <!-- Left: Video player area -->
       <div class="flex w-2/5 min-w-[400px] flex-col border-r border-gray-200 bg-gray-900">
         <div class="flex flex-1 items-center justify-center p-2">
-          <video
-            v-if="videoUrl"
-            ref="videoRef"
-            :src="videoUrl"
-            controls
-            class="max-h-full max-w-full rounded"
-            preload="metadata"
-            @loadedmetadata="handleVideoLoaded"
-          />
+          <div v-if="videoUrl" class="flex flex-col w-full">
+            <video
+              ref="videoRef"
+              :src="videoUrl"
+              class="max-h-full max-w-full rounded"
+              preload="metadata"
+              @loadedmetadata="handleVideoLoaded"
+              @timeupdate="handleTimeUpdate"
+              @play="videoPaused = false"
+              @pause="videoPaused = true"
+              @click="handleTogglePlay"
+            />
+            <VideoControls
+              :current-time="currentTime"
+              :duration="duration"
+              :paused="videoPaused"
+              :volume="videoVolume"
+              :playback-rate="videoPlaybackRate"
+              @update:current-time="handleSeekTo"
+              @update:volume="handleVolumeChange"
+              @update:playback-rate="handleRateChange"
+              @toggle-play="handleTogglePlay"
+              @toggle-fullscreen="handleFullscreen"
+            />
+          </div>
           <div v-else class="text-center text-gray-400">
             <svg xmlns="http://www.w3.org/2000/svg" class="mx-auto h-16 w-16 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1">
               <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 002.25-2.25v-9a2.25 2.25 0 00-2.25-2.25h-9A2.25 2.25 0 002.25 7.5v9a2.25 2.25 0 002.25 2.25z" />
@@ -406,13 +568,16 @@ function handleKeydown(e: KeyboardEvent) {
                   @seek="handleSeek"
                   @update-text="handleUpdateText"
                   @toggle-status="handleToggleEditStatus(seg)"
-                  @mark-delete="() => { const e = edits.find(ed => Math.abs(ed.start - seg.start) < 0.01); if (e) confirmEdit(e.id) }"
+                  @confirm-edit="handleToggleEditStatus(seg, 'confirmed')"
+                  @reject-edit="handleToggleEditStatus(seg, 'rejected')"
+
                 />
                 <SilenceRow
                   v-else
                   :segment="seg"
                   :edit-status="getEditStatus(seg)"
                   @seek="handleSeek"
+                  @toggle-status="handleToggleEditStatus(seg)"
                 />
               </template>
             </div>
@@ -434,6 +599,17 @@ function handleKeydown(e: KeyboardEvent) {
         </div>
       </div>
     </div>
+
+    <!-- Bottom: Timeline ruler -->
+    <TimelineRuler
+      :segments="mergedSegments"
+      :edits="edits"
+      :duration="duration"
+      :current-time="currentTime"
+      @seek="handleSeek"
+      @select-range="handleSelectRange"
+      @add-segment="handleAddSegment"
+    />
 
     <!-- Export summary modal -->
     <EditSummaryModal

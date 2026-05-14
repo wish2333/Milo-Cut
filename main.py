@@ -16,6 +16,7 @@ from core.config import load_settings
 from core.events import EDIT_SUMMARY_UPDATED, LOG_LINE
 from core.ffmpeg_service import detect_silence, probe_media
 from core.logging import get_logger, setup_frontend_sink, setup_logging
+from core.media_server import MediaServer
 from core.models import TaskType
 from core.paths import migrate_if_needed
 from core.project_service import ProjectService
@@ -31,6 +32,7 @@ class MiloCutApi(Bridge):
         super().__init__(debug=True)
         self._project = ProjectService()
         self._task_manager = TaskManager(self._emit)
+        self._media_server = MediaServer()
         self._register_task_handlers()
 
     def _register_task_handlers(self) -> None:
@@ -227,6 +229,7 @@ class MiloCutApi(Bridge):
 
     @expose
     def close_project(self) -> dict:
+        self._media_server.stop()
         return self._project.close_project()
 
     # ================================================================
@@ -250,19 +253,14 @@ class MiloCutApi(Bridge):
 
     @expose
     def get_video_url(self, file_path: str) -> dict:
-        """Return a data URL for a local media file."""
-        import base64
-        import mimetypes
-        try:
-            mime, _ = mimetypes.guess_type(file_path)
-            if not mime:
-                mime = "video/mp4"
-            data = pathlib.Path(file_path).read_bytes()
-            b64 = base64.b64encode(data).decode("ascii")
-            url = f"data:{mime};base64,{b64}"
-            return {"success": True, "data": url}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        """Start a local HTTP server and return the streaming URL."""
+        return self._media_server.start(file_path)
+
+    @expose
+    def stop_media_server(self) -> dict:
+        """Stop the local media server."""
+        self._media_server.stop()
+        return {"success": True}
 
     @expose
     def detect_silence(self) -> dict:
@@ -333,12 +331,16 @@ class MiloCutApi(Bridge):
         return self._project.split_segment(segment_id, position)
 
     @expose
+    def add_segment(self, start: float, end: float, text: str = "", seg_type: str = "subtitle") -> dict:
+        return self._project.add_segment(start, end, text, seg_type)
+
+    @expose
     def search_replace(self, query: str, replacement: str, scope: str = "all") -> dict:
         return self._project.search_replace(query, replacement, scope)
 
     @expose
-    def mark_segments(self, segment_ids: list[str], action: str) -> dict:
-        return self._project.mark_segments(segment_ids, action)
+    def mark_segments(self, segment_ids: list[str], action: str, status: str = "pending") -> dict:
+        return self._project.mark_segments(segment_ids, action, status)
 
     @expose
     def confirm_all_suggestions(self) -> dict:

@@ -37,11 +37,12 @@ describe("TranscriptRow", () => {
     expect(wrapper.emitted("seek")![0]).toEqual([1.0])
   })
 
-  it("shows pending status badge", () => {
+  it("shows pending status buttons", () => {
     const wrapper = mount(TranscriptRow, {
       props: { segment: baseSegment, editStatus: "pending" },
     })
-    expect(wrapper.text()).toContain("待定")
+    expect(wrapper.text()).toContain("建议删除")
+    expect(wrapper.text()).toContain("保留")
   })
 
   it("shows confirmed status with strikethrough class", () => {

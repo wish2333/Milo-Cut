@@ -648,3 +648,232 @@ fix(ux): 修复拖拽/播放器/按钮/编码等多项问题
 - 新增 TEST_GUIDE.md 自动化+手动测试文档
 - 修复前端测试断言 placeholder 文本
 ```
+
+### 性能优化与 UX 改进 (2026-05-15 Session 2)
+
+**视频播放器性能优化:**
+- 移除 data: URL 方案（将整个文件 base64 编码到内存），改用本地 HTTP 服务器流式传输
+- 新增 `core/media_server.py`：基于 HTTPServer 的线程化媒体服务器，支持 HTTP Range 请求
+- 视频支持边下边播和 seek 操作，内存占用从 O(文件大小) 降至 O(缓冲区)
+- 服务器绑定随机可用端口，仅监听 127.0.0.1
+- 关闭项目时自动停止媒体服务器
+
+**Timeline UI 改进:**
+- 新增 `TimelineRuler.vue` 组件：可视化时间轴标尺
+- 标尺显示时间段色块：蓝色=字幕、黄色=待删除、红色=已确认删除、绿色=已保留、灰色=静音
+- 红色播放头实时跟踪当前播放位置
+- 点击标尺任意位置跳转播放
+- 时间刻度自动根据视频时长调整密度
+- SilenceRow 新增时间戳显示（与 TranscriptRow 对齐）
+
+**静音检测参数设置:**
+- Detect Silence 按钮旁新增设置齿轮图标
+- 点击展开设置面板，可调整：
+  - Threshold (dB): -60 到 -10，滑块控制
+  - Min Duration (s): 0.1 到 3.0，滑块控制
+- 设置保存到全局配置文件，下次启动自动加载
+
+**编辑撤销机制改进:**
+- 状态循环：pending -> confirmed -> rejected -> pending
+- pending 状态显示 OK/Keep 按钮（替代原来的 "待定" 文字）
+- confirmed/rejected 状态显示可点击徽章，点击回到 pending
+- SilenceRow 也支持点击状态徽章撤销
+
+**文件变更:**
+- `core/media_server.py` - 新增本地 HTTP 媒体服务器
+- `main.py` - 集成 MediaServer，替换 data URL 方案
+- `frontend/src/components/workspace/TimelineRuler.vue` - 新增时间轴标尺组件
+- `frontend/src/components/workspace/TranscriptRow.vue` - 添加 confirm/reject 按钮
+- `frontend/src/components/workspace/SilenceRow.vue` - 添加时间戳和撤销支持
+- `frontend/src/pages/WorkspacePage.vue` - 集成 TimelineRuler、设置面板、currentTime 跟踪
+- `frontend/src/types/api.ts` - 添加 stop_media_server 方法
+- `frontend/src/components/workspace/TranscriptRow.test.ts` - 更新断言
+- `frontend/src/components/workspace/SilenceRow.test.ts` - 更新断言
+
+### Timeline 重构与 UX 修复 (2026-05-15 Session 3)
+
+**时间轴重新设计:**
+- TimelineRuler 从右侧面板移至屏幕底部，全宽显示
+- 支持缩放：默认显示 30 秒窗口，鼠标滚轮或 +/- 按钮缩放
+- 支持拖拽平移：按住鼠标左键拖动时间轴
+- 播放头自动跟随：播放位置超出可见窗口时自动滚动
+- 时间刻度自动适配：根据缩放级别选择合适的刻度间隔
+- 段落色块可点击跳转：蓝色=字幕、黄色=待删、红色=已确认、绿色=已保留、灰色=静音
+- 播放头带红色圆点指示器
+
+**时间范围显示:**
+- TranscriptRow 时间戳从 `00:01.000` 改为 `00:01.000 → 00:05.000` 显示完整时间范围
+- SilenceRow 同样显示完整时间范围
+
+**状态切换逻辑修复:**
+- confirmed/rejected 之间直接切换（跳过 pending）
+- 只有 OK/Keep 按钮从 pending 设置状态
+- 状态徽章点击 = confirmed ↔ rejected 切换
+
+**SRT 导入保留静音检测:**
+- `update_transcript` 不再替换全部段落，只替换 subtitle 类型
+- 保留已有的 silence 类型段落及其 EditDecision
+- 先检测静音再导入 SRT 不会丢失检测结果
+
+**媒体服务器修复:**
+- 捕获 `ConnectionResetError` / `BrokenPipeError`，避免客户端断开时的 traceback 日志
+
+**文件变更:**
+- `frontend/src/components/workspace/TimelineRuler.vue` - 完全重写为底部可缩放时间轴
+- `frontend/src/pages/WorkspacePage.vue` - TimelineRuler 移至底部，状态切换逻辑修复
+- `frontend/src/components/workspace/TranscriptRow.vue` - 时间范围显示，状态切换标题更新
+- `frontend/src/components/workspace/SilenceRow.vue` - 时间范围显示，状态切换标题更新
+- `core/project_service.py` - `update_transcript` 保留 silence 段落
+- `core/media_server.py` - 捕获连接重置异常
+
+## Timeline 重构、播放器控件与 Bug 修复 (2026-05-15 Session 4)
+
+### Bug 修复
+
+1. **导出视频 UnicodeDecodeError** - `export_service.py` 中 `subprocess.run` 使用 `text=True` 在中文 Windows 上默认使用 gbk 编码，FFmpeg 输出包含非 gbk 字节导致崩溃。修复：添加 `encoding="utf-8", errors="replace"` 参数。
+
+2. **ConnectionAbortedError (WinError 10053)** - 浏览器断开连接时 `media_server.py` 的 socketserver 打印完整 traceback。修复：
+   - 添加 `ConnectionAbortedError` 到连接异常捕获列表
+   - 创建 `_QuietHTTPServer` 子类，覆盖 `handle_error` 方法抑制已知连接错误的 traceback
+
+3. **字幕段落无法删除** - 之前只有静音检测创建的段落才能标记删除。修复：
+   - 前端 `handleMarkDelete` 函数：如果没有 EditDecision 则调用 `mark_segments` 创建新的
+   - 后端 `add_silence_results` 检测重复：跳过已有确认/待定 EditDecision 的时间范围
+
+### TimelineRuler 重设计
+
+完全重写的底部时间线组件，主要改进：
+
+- **滚动条** - 底部独立滚动条用于导航，替代拖拽平移（避免与点击跳转冲突）
+- **时间码区域** - 顶部时间码区域点击跳转到对应时间
+- **选区功能** - 中间区域拖拽选择时间范围，选区高亮显示
+- **选区手柄** - 选区左右边缘可拖拽调整范围
+- **吸附开关** - Snap 按钮切换是否吸附到段落边界
+- **Ctrl+滚轮缩放** - 普通滚轮保留给滚动条，Ctrl+滚轮实现缩放
+- **更大高度** - 从 h-16 增加到 h-28，更易操作
+- **性能优化** - 更高效的时间标记计算
+
+### 新增功能
+
+1. **添加剪辑区域** - TimelineRuler 选区后点击 "+ Clip" 按钮添加新的字幕段落
+   - 后端新增 `add_segment` 方法（project_service.py + main.py）
+   - 前端 Bridge 类型新增 `add_segment`
+
+2. **自定义视频播放控件** - `VideoControls.vue` 组件替换浏览器原生控件
+   - 播放/暂停、前进/后退 5 秒
+   - 进度条拖拽跳转
+   - 音量控制（悬浮滑块）
+   - 播放速度选择（0.5x-2x）
+   - 全屏切换
+   - 键盘快捷键：Space/K 播放暂停、方向键跳转/音量、F 全屏、M 静音
+
+3. **时间范围编辑** - TimelineRuler 选区后显示精确的时间范围数值
+
+### 修改文件
+
+- `core/export_service.py` - 修复 subprocess 编码问题
+- `core/media_server.py` - 添加 ConnectionAbortedError 处理、_QuietHTTPServer
+- `core/project_service.py` - 更新 add_silence_results 冲突检测、新增 add_segment
+- `main.py` - 暴露 add_segment API
+- `frontend/src/components/workspace/TimelineRuler.vue` - 完全重写
+- `frontend/src/components/workspace/VideoControls.vue` - 新建
+- `frontend/src/pages/WorkspacePage.vue` - 集成新组件
+- `frontend/src/types/api.ts` - 添加 add_segment
+
+### 验证结果
+
+- TypeScript 类型检查通过 (vue-tsc --noEmit)
+- Vite 生产构建通过
+- 前端测试 23/23 通过
+- 后端测试 64/64 通过
+## 字幕删除交互与 TimelineRuler 改进 (2026-05-15 Session 5)
+
+### 字幕删除 UX 改进
+
+**问题:** 字幕段落无法直观地标记删除，Delete 快捷键与文本编辑冲突。
+
+**解决方案:**
+- TranscriptRow 始终显示状态徽章：无 EditDecision 时显示 "已保留"（绿色）
+- 点击 "已保留" -> 创建 EditDecision(status=confirmed) -> 显示 "已删除"（红色）
+- 点击 "已删除" -> 切换为 rejected -> 显示 "已保留"
+- Analysis 检测到的字幕显示 "建议删除"（黄色）+ "保留" 按钮
+- 移除 Delete/Backspace 键盘快捷键，避免与行内文本编辑冲突
+- 后端 `mark_segments` 新增 `status` 参数，支持直接创建 confirmed 状态的 EditDecision
+
+**状态流转:**
+```
+默认（无EditDecision）-> 点击 -> confirmed（已删除）
+confirmed -> 点击 -> rejected（已保留）
+rejected -> 点击 -> confirmed（已删除）
+pending（建议删除）-> 点击 "建议删除" -> confirmed
+pending -> 点击 "保留" -> rejected
+```
+
+### TimelineRuler 改进
+
+**滚轮滚动:**
+- 普通滚轮上下滚动 = 水平滚动时间轴（deltaY 用于垂直滚轮，deltaX 用于水平触控板）
+- Ctrl+滚轮 = 缩放（保持光标位置不变）
+- `e.preventDefault()` 阻止浏览器默认滚动行为
+
+**选区整体拖动:**
+- 点击选区内部（非边缘）并拖拽 = 移动整个选区
+- 选区保持不变的持续时间，仅改变起止位置
+- 拖拽时自动钳制到有效时间范围（0 到 duration）
+- 选区边缘仍可单独拖拽调整范围
+
+### 修改文件
+
+- `frontend/src/components/workspace/TranscriptRow.vue` - 始终显示状态徽章，移除键盘快捷键
+- `frontend/src/components/workspace/TimelineRuler.vue` - 添加滚轮滚动、选区整体拖动
+- `frontend/src/pages/WorkspacePage.vue` - handleToggleEditStatus 支持无 EditDecision 场景，传递 confirmed 状态
+- `core/project_service.py` - mark_segments 新增 status 参数
+- `main.py` - 暴露 status 参数
+- `frontend/src/components/workspace/TranscriptRow.test.ts` - 更新断言为 "建议删除"/"保留"
+
+### 验证结果
+
+- TypeScript 类型检查通过 (vue-tsc --noEmit)
+- Vite 生产构建通过
+- 前端测试 23/23 通过
+- 后端测试 64/64 通过
+
+### 📝 Commit Message
+
+```
+feat(workspace): 重构时间轴 TimelineRuler 并优化视频播放性能与交互
+
+- 引入本地 HTTP 媒体服务器支持流式传输与 Range 请求，降低内存占用
+- 重写 TimelineRuler 为底部全宽可缩放/滚动组件，支持选区编辑与片段添加
+- 实现自定义 VideoControls 组件，支持播放速度、快捷键及进度控制
+- 优化字幕与静音段落的状态流转逻辑（Pending -> Confirmed -> Rejected）
+- 修复 Windows 环境下导出视频的编码崩溃及媒体服务器连接异常问题
+- 支持 SRT 导入时保留原有的静音检测结果
+```
+
+---
+
+### 🚀 Release Notes
+
+```
+## 2026-05-15 - 视频编辑体验深度升级
+
+### ✨ 新增
+- **全新时间轴标尺**：在屏幕底部提供可视化时间轴，支持通过滚轮缩放、拖拽滚动，可直观查看字幕、静音及删除区域。
+- **精确剪辑工具**：支持在时间轴上拖拽选择时间范围，并一键添加新的剪辑片段（+ Clip）。
+- **专业播放控件**：替换原生播放器，新增播放速度调节（0.5x-2x）、前进/后退 5 秒及全套键盘快捷键（Space, K, F, M 等）。
+- **静音检测自定义**：新增设置面板，可灵活调整静音检测的阈值（dB）和最小持续时间。
+
+### ⚡ 优化
+- **播放性能大幅提升**：由内存加载改为流式传输，支持边下边播和快速跳转（Seek），极大地降低了处理大文件时的内存占用。
+- **交互逻辑改进**：
+  - 优化了段落状态切换（保留 $\leftrightarrow$ 删除），通过状态徽章实现快速切换。
+  - 改进时间戳显示，现在完整展示段落的起止时间范围。
+  - 增强选区操作，支持选区整体拖动及边界吸附。
+
+### 🐛 修复
+- **导出崩溃修复**：解决了 Windows 系统下导出视频时因字符编码导致的任务崩溃问题。
+- **数据丢失修复**：修复了导入 SRT 文件时会覆盖已检测静音段落的问题。
+- **稳定性增强**：解决了浏览器断开连接时后台产生冗余错误日志的问题。
+- **编辑权限修复**：现在可以自由标记删除任何字幕段落，不再局限于静音检测结果。
+```

@@ -25,7 +25,7 @@ describe("SilenceRow", () => {
     const wrapper = mount(SilenceRow, {
       props: { segment: silenceSegment },
     })
-    expect(wrapper.classes()).toContain("bg-gray-100")
+    expect(wrapper.classes()).toContain("bg-gray-50")
   })
 
   it("renders pending status with suggestion label", () => {

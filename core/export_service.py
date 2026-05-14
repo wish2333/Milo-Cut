@@ -242,7 +242,10 @@ def _extract_segment(
         "-avoid_negative_ts", "make_zero",
         output_path,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=600,
+    )
     if result.returncode != 0:
         raise RuntimeError(f"FFmpeg segment extraction failed: {result.stderr[-500:]}")
 
@@ -260,7 +263,10 @@ def _concat_segments(
         "-c", "copy",
         output_path,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=600,
+    )
     if result.returncode != 0:
         raise RuntimeError(f"FFmpeg concat failed: {result.stderr[-500:]}")
 

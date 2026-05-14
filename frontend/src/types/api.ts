@@ -23,6 +23,7 @@ export type BridgeMethod =
   | "probe_media"
   | "detect_silence"
   | "get_video_url"
+  | "stop_media_server"
   // Tasks
   | "create_task"
   | "start_task"
@@ -37,7 +38,7 @@ export type BridgeMethod =
   // Phase 1: Edit Operations
   | "update_segment_text"
   | "merge_segments"
-  | "split_segment"
+  | "split_segment" | "add_segment"
   | "search_replace"
   | "mark_segments"
   | "confirm_all_suggestions"

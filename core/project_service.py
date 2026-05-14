@@ -118,14 +118,21 @@ class ProjectService:
         return {"success": True}
 
     def update_transcript(self, segments: list[dict]) -> dict:
-        """Replace the transcript segments in the current project."""
+        """Replace subtitle segments while preserving silence segments.
+
+        If the project already has silence segments (from silence detection),
+        those are kept. Only subtitle-type segments are replaced.
+        """
         if self._current is None:
             return {"success": False, "error": "No project is open"}
 
-        from core.models import Segment
-        seg_models = [Segment.model_validate(s) for s in segments]
+        new_subtitles = [Segment.model_validate(s) for s in segments]
+        existing = self._current.transcript.segments
+        existing_silence = [s for s in existing if s.type == SegmentType.SILENCE]
+
+        all_segments = new_subtitles + existing_silence
         updated = self._current.model_copy(update={
-            "transcript": TranscriptData(segments=seg_models),
+            "transcript": TranscriptData(segments=all_segments),
         })
         self._current = updated
         return {"success": True, "data": updated.model_dump()}
@@ -143,7 +150,11 @@ class ProjectService:
         return {"success": True, "data": updated.model_dump()}
 
     def add_silence_results(self, silences: list[dict]) -> dict:
-        """Convert raw silence intervals to Segments + EditDecisions."""
+        """Convert raw silence intervals to Segments + EditDecisions.
+
+        Skips creating EditDecisions for silence ranges that already have
+        a confirmed edit (e.g. from subtitle deletion).
+        """
         if self._current is None:
             return {"success": False, "error": "No project is open"}
 
@@ -166,14 +177,24 @@ class ProjectService:
                 end=sil["end"],
                 text="",
             ))
-            new_edits.append(EditDecision(
-                id=edit_id,
-                start=sil["start"],
-                end=sil["end"],
-                action="delete",
-                source="silence_detection",
-                status=EditStatus.PENDING,
-            ))
+
+            # Skip edit if range already covered by an existing edit
+            already_covered = any(
+                e.action == "delete"
+                and e.status in (EditStatus.CONFIRMED, EditStatus.PENDING)
+                and abs(e.start - sil["start"]) < 0.05
+                and abs(e.end - sil["end"]) < 0.05
+                for e in existing_edits
+            )
+            if not already_covered:
+                new_edits.append(EditDecision(
+                    id=edit_id,
+                    start=sil["start"],
+                    end=sil["end"],
+                    action="delete",
+                    source="silence_detection",
+                    status=EditStatus.PENDING,
+                ))
 
         all_segments = list(existing) + new_segments
         all_edits = existing_edits + new_edits
@@ -285,6 +306,39 @@ class ProjectService:
             "transcript": self._current.transcript.model_copy(update={"segments": updated_segments}),
         })
         self._current = updated
+        return {"success": True, "data": updated.model_dump()}
+
+    def add_segment(self, start: float, end: float, text: str = "", seg_type: str = "subtitle") -> dict:
+        """Add a new segment to the transcript."""
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        segment_type = SegmentType(seg_type)
+        existing = self._current.transcript.segments
+        # Generate unique ID
+        type_prefix = "sub" if segment_type == SegmentType.SUBTITLE else "sil"
+        existing_ids = {s.id for s in existing}
+        idx = 1
+        while f"{type_prefix}-user-{idx:04d}" in existing_ids:
+            idx += 1
+        seg_id = f"{type_prefix}-user-{idx:04d}"
+
+        new_seg = Segment(
+            id=seg_id,
+            type=segment_type,
+            start=start,
+            end=end,
+            text=text,
+        )
+
+        all_segments = list(existing) + [new_seg]
+        all_segments.sort(key=lambda s: s.start)
+
+        updated = self._current.model_copy(update={
+            "transcript": TranscriptData(segments=all_segments),
+        })
+        self._current = updated
+        logger.info("Added segment {} ({:.3f}s - {:.3f}s)", seg_id, start, end)
         return {"success": True, "data": updated.model_dump()}
 
     def merge_segments(self, segment_ids: list[str]) -> dict:
@@ -429,12 +483,13 @@ class ProjectService:
             "data": {"count": len(modified_ids), "modified_ids": modified_ids},
         }
 
-    def mark_segments(self, segment_ids: list[str], action: str) -> dict:
+    def mark_segments(self, segment_ids: list[str], action: str, status: str = "pending") -> dict:
         """Create or update EditDecisions for the given segments.
 
         Args:
             segment_ids: List of segment IDs to mark.
             action: "delete" or "keep".
+            status: "pending" (default) or "confirmed" or "rejected".
         """
         if self._current is None:
             return {"success": False, "error": "No project is open"}
@@ -444,41 +499,34 @@ class ProjectService:
         if not target_segs:
             return {"success": False, "error": "No matching segments found"}
 
+        try:
+            edit_status = EditStatus(status)
+        except ValueError:
+            edit_status = EditStatus.PENDING
+
         existing_edits = list(self._current.edits)
-        existing_ids = {e.id for e in existing_edits}
+        new_edit_ids_set: set[str] = set()
         new_edits: list[EditDecision] = []
 
         for seg in target_segs:
             edit_id = f"edit-user-{seg.id}"
-            if edit_id in existing_ids:
-                # Update existing
-                new_edits.append(EditDecision(
-                    id=edit_id,
-                    start=seg.start,
-                    end=seg.end,
-                    action=action,
-                    source="user",
-                    status=EditStatus.PENDING,
-                    priority=200,
-                ))
-            else:
-                new_edits.append(EditDecision(
-                    id=edit_id,
-                    start=seg.start,
-                    end=seg.end,
-                    action=action,
-                    source="user",
-                    status=EditStatus.PENDING,
-                    priority=200,
-                ))
+            new_edit_ids_set.add(edit_id)
+            new_edits.append(EditDecision(
+                id=edit_id,
+                start=seg.start,
+                end=seg.end,
+                action=action,
+                source="user",
+                status=edit_status,
+                priority=200,
+            ))
 
         # Merge: keep non-target edits, replace/add new ones
-        new_edit_ids = {e.id for e in new_edits}
-        merged_edits = [e for e in existing_edits if e.id not in new_edit_ids] + new_edits
+        merged_edits = [e for e in existing_edits if e.id not in new_edit_ids_set] + new_edits
 
         updated = self._current.model_copy(update={"edits": merged_edits})
         self._current = updated
-        logger.info("Marked {} segments as {}", len(target_segs), action)
+        logger.info("Marked {} segments as {} ({})", len(target_segs), action, status)
         return {"success": True, "data": updated.model_dump()}
 
     def confirm_all_suggestions(self) -> dict:
