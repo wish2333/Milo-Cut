@@ -45,7 +45,10 @@ def probe_media(file_path: str) -> dict:
             "-show_streams",
             file_path,
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(
+            cmd, capture_output=True, timeout=30,
+            encoding="utf-8", errors="replace",
+        )
         if result.returncode != 0:
             return {"success": False, "error": f"ffprobe exited with code {result.returncode}"}
 
@@ -107,7 +110,10 @@ def detect_silence(
             "-f", "null",
             "-",
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        result = subprocess.run(
+            cmd, capture_output=True, timeout=300,
+            encoding="utf-8", errors="replace",
+        )
         output = result.stderr
 
         silences: list[dict[str, float]] = []

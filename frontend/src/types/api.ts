@@ -22,6 +22,7 @@ export type BridgeMethod =
   // FFmpeg
   | "probe_media"
   | "detect_silence"
+  | "get_video_url"
   // Tasks
   | "create_task"
   | "start_task"

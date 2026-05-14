@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import sys
 import os
+import pathlib
 
 from pywebvue import App, Bridge, expose
 
@@ -176,8 +177,13 @@ class MiloCutApi(Bridge):
     def select_files(self) -> dict:
         import webview
         result = webview.windows[0].create_file_dialog(
-            webview.OPEN_DIALOG,
-            file_types=("Video files (*.mp4;*.mkv;*.avi;*.mov;*.webm)", "All files (*.*)"),
+            webview.FileDialog.OPEN,
+            file_types=(
+                "Media files (*.mp4;*.mkv;*.avi;*.mov;*.webm;*.mp3;*.wav;*.aac;*.flac;*.ogg;*.m4a)",
+                "Video files (*.mp4;*.mkv;*.avi;*.mov;*.webm)",
+                "Audio files (*.mp3;*.wav;*.aac;*.flac;*.ogg;*.m4a)",
+                "All files (*.*)",
+            ),
         )
         if result:
             return {"success": True, "data": [str(p) for p in result]}
@@ -187,7 +193,7 @@ class MiloCutApi(Bridge):
     def select_file(self) -> dict:
         import webview
         result = webview.windows[0].create_file_dialog(
-            webview.OPEN_DIALOG,
+            webview.FileDialog.OPEN,
             file_types=("SRT files (*.srt)", "All files (*.*)"),
         )
         if result:
@@ -197,7 +203,7 @@ class MiloCutApi(Bridge):
     @expose
     def open_folder(self, path: str) -> dict:
         import webview
-        webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG, directory=path)
+        webview.windows[0].create_file_dialog(webview.FileDialog.FOLDER, directory=path)
         return {"success": True}
 
     # ================================================================
@@ -241,6 +247,22 @@ class MiloCutApi(Bridge):
     @expose
     def probe_media(self, file_path: str) -> dict:
         return probe_media(file_path)
+
+    @expose
+    def get_video_url(self, file_path: str) -> dict:
+        """Return a data URL for a local media file."""
+        import base64
+        import mimetypes
+        try:
+            mime, _ = mimetypes.guess_type(file_path)
+            if not mime:
+                mime = "video/mp4"
+            data = pathlib.Path(file_path).read_bytes()
+            b64 = base64.b64encode(data).decode("ascii")
+            url = f"data:{mime};base64,{b64}"
+            return {"success": True, "data": url}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     @expose
     def detect_silence(self) -> dict:
@@ -359,7 +381,7 @@ class MiloCutApi(Bridge):
     def select_export_path(self, default_name: str) -> dict:
         import webview
         result = webview.windows[0].create_file_dialog(
-            webview.SAVE_DIALOG,
+            webview.FileDialog.SAVE,
             save_filename=default_name,
             file_types=("Video files (*.mp4)", "All files (*.*)"),
         )

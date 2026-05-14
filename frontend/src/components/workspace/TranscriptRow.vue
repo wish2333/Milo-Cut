@@ -13,6 +13,7 @@ const emit = defineEmits<{
   seek: [time: number]
   "update-text": [segmentId: string, text: string]
   "mark-delete": [segmentId: string]
+  "toggle-status": []
 }>()
 
 const isEditing = ref(false)
@@ -83,12 +84,14 @@ const statusClass = computed(() => {
     </div>
     <span
       v-if="editStatus"
-      class="text-xs px-1.5 py-0.5 rounded shrink-0"
+      class="text-xs px-1.5 py-0.5 rounded shrink-0 select-none cursor-pointer"
       :class="{
-        'bg-yellow-100 text-yellow-700': editStatus === 'pending',
-        'bg-red-100 text-red-700': editStatus === 'confirmed',
-        'bg-green-100 text-green-700': editStatus === 'rejected',
+        'bg-yellow-100 text-yellow-700 hover:bg-yellow-200': editStatus === 'pending',
+        'bg-red-100 text-red-700 hover:bg-red-200': editStatus === 'confirmed',
+        'bg-green-100 text-green-700 hover:bg-green-200': editStatus === 'rejected',
       }"
+      title="Click to undo"
+      @click.stop="emit('toggle-status')"
     >
       {{ editStatus === "pending" ? "待定" : editStatus === "confirmed" ? "已确认" : "已保留" }}
     </span>

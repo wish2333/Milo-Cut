@@ -225,3 +225,6 @@ frontend_dist/
 
 # Claude
 settings.local.json
+
+# Project
+project.json

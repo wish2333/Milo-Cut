@@ -8,21 +8,7 @@ interface Emits {
 
 const emit = defineEmits<Emits>()
 
-const isDragging = ref(false)
 const isProcessing = ref(false)
-
-async function handleDrop() {
-  isDragging.value = false
-  isProcessing.value = true
-  try {
-    const res = await call<string[]>("get_dropped_files")
-    if (res.success && res.data && res.data.length > 0) {
-      emit("files-selected", res.data)
-    }
-  } finally {
-    isProcessing.value = false
-  }
-}
 
 async function openFileDialog() {
   isProcessing.value = true
@@ -35,25 +21,11 @@ async function openFileDialog() {
     isProcessing.value = false
   }
 }
-
-function onDragOver() {
-  isDragging.value = true
-}
-
-function onDragLeave() {
-  isDragging.value = false
-}
 </script>
 
 <template>
   <div
-    class="flex flex-col items-center justify-center gap-4 rounded-[var(--radius-apple-lg)] border-2 border-dashed p-12 transition-colors duration-200"
-    :class="isDragging
-      ? 'border-primary bg-primary/5'
-      : 'border-hairline bg-parchment hover:border-primary/40'"
-    @dragover.prevent="onDragOver"
-    @dragleave="onDragLeave"
-    @drop.prevent="handleDrop"
+    class="flex flex-col items-center justify-center gap-4 rounded-[var(--radius-apple-lg)] border-2 border-dashed border-hairline bg-parchment p-12 transition-colors duration-200 hover:border-primary/40"
   >
     <div class="text-4xl text-ink-muted">
       <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
@@ -61,7 +33,7 @@ function onDragLeave() {
       </svg>
     </div>
     <p class="text-base text-ink-muted">
-      {{ isDragging ? "松开以导入视频" : "拖拽视频文件到此处" }}
+      拖拽媒体文件到窗口任意位置
     </p>
     <button
       class="rounded-[var(--radius-apple-pill)] bg-primary px-6 py-2.5 text-sm font-semibold text-white transition-transform active:scale-95"
@@ -71,7 +43,7 @@ function onDragLeave() {
       {{ isProcessing ? "处理中..." : "选择文件" }}
     </button>
     <p class="text-xs text-ink-muted-48">
-      支持 MP4, MKV, AVI, MOV, WebM
+      支持 MP4, MKV, AVI, MOV, WebM, MP3, WAV, AAC, FLAC 等
     </p>
   </div>
 </template>

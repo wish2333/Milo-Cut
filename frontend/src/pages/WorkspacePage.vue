@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue"
+import { computed, onMounted, ref, watch } from "vue"
 import type { Project, Segment, EditDecision } from "@/types/project"
 import type { EditSummary } from "@/types/edit"
 import { formatTimeShort } from "@/utils/format"
@@ -20,6 +20,7 @@ interface Props {
 
 interface Emits {
   (e: "project-updated", project: Project): void
+  (e: "project-closed"): void
 }
 
 const props = defineProps<Props>()
@@ -64,6 +65,8 @@ const showAnalysisDropdown = ref(false)
 const showExportSummary = ref(false)
 const exportSummaryData = ref<EditSummary | null>(null)
 const selectedSegmentId = ref<string | null>(null)
+const videoUrl = ref("")
+const videoRef = ref<HTMLVideoElement | null>(null)
 
 const segments = computed<Segment[]>(() => props.project.transcript?.segments ?? [])
 const edits = computed<EditDecision[]>(() => props.project.edits ?? [])
@@ -77,6 +80,19 @@ const mergedSegments = computed<Segment[]>(() => {
 const silenceCount = computed(() => segments.value.filter(s => s.type === "silence").length)
 const subtitleCount = computed(() => segments.value.filter(s => s.type === "subtitle").length)
 
+async function loadVideoUrl() {
+  const mediaPath = props.project.media?.path
+  if (!mediaPath) return
+  const res = await call<string>("get_video_url", mediaPath)
+  if (res.success && res.data) {
+    videoUrl.value = res.data
+  }
+}
+
+onMounted(loadVideoUrl)
+
+watch(() => props.project.media?.path, loadVideoUrl)
+
 function getEditForSegment(seg: Segment): EditDecision | undefined {
   return edits.value.find(e =>
     Math.abs(e.start - seg.start) < 0.01 && Math.abs(e.end - seg.end) < 0.01,
@@ -87,25 +103,48 @@ function getEditStatus(seg: Segment): EditDecision["status"] | null {
   return getEditForSegment(seg)?.status ?? null
 }
 
-function handleSeek(_time: number) {
-  // TODO: Wire up video player seek
+function handleSeek(time: number) {
+  if (videoRef.value) {
+    videoRef.value.currentTime = time
+    videoRef.value.play()
+  }
+}
+
+function handleVideoLoaded() {
+  if (videoRef.value) {
+    videoRef.value.volume = 0.25
+  }
+}
+
+async function handleToggleEditStatus(segment: Segment) {
+  const edit = edits.value.find(e =>
+    Math.abs(e.start - segment.start) < 0.01 && Math.abs(e.end - segment.end) < 0.01,
+  )
+  if (!edit) return
+  const nextStatus = edit.status === "confirmed" ? "pending" : edit.status === "rejected" ? "pending" : null
+  if (!nextStatus) return
+  await call<Project>("update_edit_decision", edit.id, nextStatus)
+  const projRes = await call<Project>("get_project")
+  if (projRes.success && projRes.data) {
+    emit("project-updated", projRes.data)
+  }
 }
 
 async function handleImportSrt() {
   errorMessage.value = ""
-  statusMessage.value = "..."
+  statusMessage.value = "Selecting file..."
   const fileRes = await call<string>("select_file")
   if (!fileRes.success || !fileRes.data) {
     statusMessage.value = ""
     return
   }
-  statusMessage.value = "..."
+  statusMessage.value = "Importing SRT..."
   const importRes = await call<Project>("import_srt", fileRes.data)
   if (importRes.success && importRes.data) {
     emit("project-updated", importRes.data)
     statusMessage.value = ""
   } else {
-    errorMessage.value = importRes.error ?? "SRT"
+    errorMessage.value = importRes.error ?? "Failed to import SRT"
     statusMessage.value = ""
   }
 }
@@ -153,26 +192,32 @@ async function handleExportVideo() {
     exportSummaryData.value = summary
     showExportSummary.value = true
   } else {
-    statusMessage.value = "..."
+    statusMessage.value = "Exporting video..."
     const ok = await exportVideo()
-    if (!ok) errorMessage.value = ""
+    if (!ok) errorMessage.value = "Export failed"
   }
 }
 
 async function handleConfirmExport() {
   showExportSummary.value = false
-  statusMessage.value = "..."
+  statusMessage.value = "Exporting video..."
   const ok = await exportVideo()
   statusMessage.value = ""
-  if (!ok) errorMessage.value = ""
+  if (!ok) errorMessage.value = "Export failed"
 }
 
 async function handleExportSrt() {
   errorMessage.value = ""
-  statusMessage.value = " SRT..."
+  statusMessage.value = "Exporting SRT..."
   const ok = await exportSrt()
   statusMessage.value = ""
-  if (!ok) errorMessage.value = " SRT"
+  if (!ok) errorMessage.value = "Failed to export SRT"
+}
+
+async function handleCloseProject() {
+  await call("close_project")
+  videoUrl.value = ""
+  emit("project-closed")
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -188,90 +233,114 @@ function handleKeydown(e: KeyboardEvent) {
     <!-- Top nav -->
     <nav class="flex h-11 items-center justify-between border-b border-gray-200 bg-gray-900 px-4">
       <div class="flex items-center gap-3">
+        <button
+          class="rounded p-1 text-gray-400 hover:text-white transition-colors"
+          title="Back to home"
+          @click="handleCloseProject"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" />
+          </svg>
+        </button>
         <span class="text-sm font-semibold text-white">{{ project.project.name }}</span>
         <span class="text-xs text-gray-400">
-          {{ subtitleCount }} | {{ silenceCount }} | {{ formatTimeShort(duration) }}
+          {{ subtitleCount }} subtitles | {{ silenceCount }} silence | {{ formatTimeShort(duration) }}
         </span>
       </div>
       <div class="flex items-center gap-2">
         <span v-if="confirmedEdits.length > 0" class="text-xs text-yellow-300">
-          {{ confirmedEdits.length }} | {{ formatTimeShort(estimatedSaving) }}
+          {{ confirmedEdits.length }} edits | -{{ formatTimeShort(estimatedSaving) }}
         </span>
+        <button
+          class="rounded px-2 py-1 text-xs text-gray-400 hover:text-white transition-colors"
+          title="Save project (Ctrl+S)"
+          @click="call('save_project')"
+        >
+          Save
+        </button>
       </div>
     </nav>
 
     <!-- Toolbar -->
     <div class="flex items-center gap-2 border-b border-gray-200 bg-gray-50 px-4 py-2">
       <button
-        class="rounded-md bg-blue-500 px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+        class="inline-flex items-center gap-1.5 rounded-md bg-blue-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600 disabled:opacity-50 transition-colors"
         :disabled="isDetecting || isExporting"
         @click="handleImportSrt"
       >
-        SRT
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+        Import SRT
       </button>
       <button
-        class="rounded-md bg-blue-500 px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+        class="inline-flex items-center gap-1.5 rounded-md bg-blue-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600 disabled:opacity-50 transition-colors"
         :disabled="isDetecting || isExporting"
         @click="handleDetectSilence"
       >
-        {{ isDetecting ? '...' : '' }}
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15z" /><path stroke-linecap="round" stroke-linejoin="round" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" /></svg>
+        {{ isDetecting ? 'Detecting...' : 'Detect Silence' }}
       </button>
 
       <!-- Analysis dropdown -->
       <div class="relative">
         <button
-          class="rounded-md bg-purple-500 px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+          class="inline-flex items-center gap-1.5 rounded-md bg-purple-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-purple-600 disabled:opacity-50 transition-colors"
           :disabled="isDetecting || isExporting"
           @click="showAnalysisDropdown = !showAnalysisDropdown"
         >
-          {{ isDetecting ? '...' : '' }}
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
+          {{ isDetecting ? 'Analyzing...' : 'Analysis' }}
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" /></svg>
         </button>
         <div
           v-if="showAnalysisDropdown"
-          class="absolute top-full left-0 mt-1 w-40 rounded-md border border-gray-200 bg-white shadow-lg z-10"
+          class="absolute top-full left-0 mt-1 w-48 rounded-md border border-gray-200 bg-white shadow-lg z-10"
         >
           <button
-            class="block w-full px-3 py-2 text-left text-sm hover:bg-gray-50"
+            class="block w-full px-3 py-2 text-left text-sm hover:bg-gray-50 transition-colors"
             @click="handleRunAnalysis('filler')"
           >
-            Filler
+            Detect Filler Words
           </button>
           <button
-            class="block w-full px-3 py-2 text-left text-sm hover:bg-gray-50"
+            class="block w-full px-3 py-2 text-left text-sm hover:bg-gray-50 transition-colors"
             @click="handleRunAnalysis('error')"
           >
-            Error
+            Detect Error Triggers
           </button>
           <button
-            class="block w-full px-3 py-2 text-left text-sm hover:bg-gray-50"
+            class="block w-full px-3 py-2 text-left text-sm hover:bg-gray-50 transition-colors"
             @click="handleRunAnalysis('full')"
           >
-            Full
+            Full Analysis
           </button>
         </div>
       </div>
 
-      <div class="mx-2 h-4 w-px bg-gray-300" />
+      <div class="mx-1 h-4 w-px bg-gray-300" />
 
       <button
-        class="rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+        class="inline-flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50 transition-colors"
         :disabled="isExporting || confirmedEdits.length === 0"
         @click="handleExportVideo"
       >
-        {{ isExporting ? '...' : '' }}
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+        {{ isExporting ? 'Exporting...' : 'Export Video' }}
       </button>
       <button
-        class="rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+        class="inline-flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50 transition-colors"
         :disabled="isExporting || confirmedEdits.length === 0"
         @click="handleExportSrt"
       >
-        SRT
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+        Export SRT
       </button>
 
-      <div v-if="isDetecting && detectionProgress" class="ml-4 flex-1">
+      <div class="flex-1" />
+
+      <div v-if="isDetecting && detectionProgress" class="flex-1 max-w-xs">
         <ProgressBar :percent="detectionProgress.percent" :message="detectionProgress.message" />
       </div>
-      <div v-else-if="isExporting && exportProgress" class="ml-4 flex-1">
+      <div v-else-if="isExporting && exportProgress" class="flex-1 max-w-xs">
         <ProgressBar :percent="exportProgress.percent" :message="exportProgress.message" />
       </div>
     </div>
@@ -290,14 +359,22 @@ function handleKeydown(e: KeyboardEvent) {
     <!-- Main content: two-column layout -->
     <div class="flex flex-1 overflow-hidden">
       <!-- Left: Video player area -->
-      <div class="flex w-2/5 min-w-[400px] flex-col border-r border-gray-200">
-        <div class="flex flex-1 items-center justify-center bg-gray-900">
-          <div class="text-center text-gray-400">
+      <div class="flex w-2/5 min-w-[400px] flex-col border-r border-gray-200 bg-gray-900">
+        <div class="flex flex-1 items-center justify-center p-2">
+          <video
+            v-if="videoUrl"
+            ref="videoRef"
+            :src="videoUrl"
+            controls
+            class="max-h-full max-w-full rounded"
+            preload="metadata"
+            @loadedmetadata="handleVideoLoaded"
+          />
+          <div v-else class="text-center text-gray-400">
             <svg xmlns="http://www.w3.org/2000/svg" class="mx-auto h-16 w-16 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1">
               <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 002.25-2.25v-9a2.25 2.25 0 00-2.25-2.25h-9A2.25 2.25 0 002.25 7.5v9a2.25 2.25 0 002.25 2.25z" />
             </svg>
-            <p class="mt-2 text-sm"></p>
-            <p class="text-xs text-gray-500"></p>
+            <p class="mt-2 text-sm">Loading video...</p>
           </div>
         </div>
       </div>
@@ -305,8 +382,8 @@ function handleKeydown(e: KeyboardEvent) {
       <!-- Right: Transcript editor + suggestion panel -->
       <div class="flex w-3/5 min-w-[500px] flex-col">
         <div class="flex items-center justify-between border-b border-gray-200 px-4 py-2">
-          <span class="text-sm font-medium"></span>
-          <span class="text-xs text-gray-500">{{ subtitleCount }} + {{ silenceCount }}</span>
+          <span class="text-sm font-medium">Timeline</span>
+          <span class="text-xs text-gray-500">{{ subtitleCount }} subtitles + {{ silenceCount }} silence</span>
         </div>
 
         <div class="flex flex-1 overflow-hidden">
@@ -314,8 +391,8 @@ function handleKeydown(e: KeyboardEvent) {
           <div class="flex-1 overflow-y-auto">
             <div v-if="mergedSegments.length === 0" class="flex h-full items-center justify-center">
               <div class="text-center">
-                <p class="text-sm text-gray-500"></p>
-                <p class="mt-1 text-xs text-gray-400"> SRT</p>
+                <p class="text-sm text-gray-500">No segments loaded</p>
+                <p class="mt-1 text-xs text-gray-400">Click "Import SRT" to load subtitles</p>
               </div>
             </div>
 
@@ -328,6 +405,7 @@ function handleKeydown(e: KeyboardEvent) {
                   :is-selected="selectedSegmentId === seg.id"
                   @seek="handleSeek"
                   @update-text="handleUpdateText"
+                  @toggle-status="handleToggleEditStatus(seg)"
                   @mark-delete="() => { const e = edits.find(ed => Math.abs(ed.start - seg.start) < 0.01); if (e) confirmEdit(e.id) }"
                 />
                 <SilenceRow

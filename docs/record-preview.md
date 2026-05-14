@@ -557,3 +557,94 @@ feat(frontend): 实现 Phase 1 分析 UI、字幕编辑与导出摘要
 - 字幕行状态样式（待定/已确认/已保留）与后端编辑决策实时同步。
 - 搜索替换操作后自动刷新项目数据，保持前后端一致。
 ```
+
+---
+
+## Bug Fixes & UX Improvements (2026-05-15)
+
+### 概述
+
+修复多个运行时问题，提升用户体验：pywebview API 弃用警告、全窗口拖拽、视频播放器、工具栏按钮、关闭项目、中文文件名编码、撤销确认删除等。
+
+### 后端修改文件 (2 个)
+
+| 文件 | 变更 |
+|------|------|
+| `main.py` | `webview.OPEN_DIALOG` -> `webview.FileDialog.OPEN`；`webview.FOLDER_DIALOG` -> `webview.FileDialog.FOLDER`；`webview.SAVE_DIALOG` -> `webview.FileDialog.SAVE`；新增 `get_video_url` 方法（data URL 读取本地媒体文件）；`select_files` 文件对话框新增音频格式支持（MP3/WAV/AAC/FLAC/OGG/M4A）；新增 `import pathlib` |
+| `core/ffmpeg_service.py` | `subprocess.run` 替换 `text=True` 为 `encoding="utf-8", errors="replace"`，修复中文路径文件名 GBK 解码崩溃 |
+
+### 前端修改文件 (4 个)
+
+| 文件 | 变更 |
+|------|------|
+| `src/App.vue` | 新增全窗口拖拽支持：`@dragenter/@dragover/@dragleave/@drop` 事件处理、拖拽遮罩层、文件类型路由（视频创建项目/SRT 导入字幕）；拖拽延迟 100ms 等待 pywebview DOM 处理器先执行；音频文件类型识别；新增 `onProjectClosed` 处理 |
+| `src/pages/WorkspacePage.vue` | 新增 HTML5 `<video>` 播放器（`@loadedmetadata` 设置默认 25% 音量）；`handleSeek` 实现点击字幕跳转视频时间点；工具栏按钮全部添加图标+文字标签（Import SRT / Detect Silence / Analysis / Export Video / Export SRT / Save）；新增关闭项目按钮（返回箭头）；新增 `handleToggleEditStatus` 撤销确认/拒绝操作；新增 `handleVideoLoaded` 设置默认音量 |
+| `src/components/workspace/TranscriptRow.vue` | 新增 `toggle-status` 事件；状态徽章可点击撤销（cursor-pointer + hover 效果 + title 提示）；修复 CSS 重复类定义 |
+| `src/components/common/FileDropInput.vue` | 移除组件内拖拽处理（由 App.vue 全局处理）；更新提示文字为"拖拽媒体文件到窗口任意位置"；支持格式列表新增音频格式 |
+| `src/types/api.ts` | BridgeMethod 新增 `get_video_url` |
+
+### 测试文件修改 (3 个)
+
+| 文件 | 变更 |
+|------|------|
+| `tests/TEST_GUIDE.md` | 新建自动化+手动测试文档，含后端 64 测试 + 前端 23 测试说明 |
+| `frontend/src/components/workspace/TranscriptRow.test.ts` | 修复断言：`"..."` -> `"待定"` |
+| `frontend/src/components/workspace/SilenceRow.test.ts` | 修复断言：`"..."` -> `"建议删除"` / `"已确认"` / `"已保留"` |
+| `frontend/src/components/workspace/EditSummaryModal.test.ts` | 修复断言：`"..."` -> `"导出汇总摘要"` |
+
+### 问题修复详情
+
+**1. pywebview 弃用警告**
+- `OPEN_DIALOG` / `FOLDER_DIALOG` / `SAVE_DIALOG` 已替换为 `FileDialog.OPEN` / `FileDialog.FOLDER` / `FileDialog.SAVE`
+- 消除 4 条 deprecation 警告
+
+**2. 全窗口文件拖拽**
+- 拖拽文件到窗口任意位置均可触发（不限于 FileDropInput 组件区域）
+- 拖拽遮罩层显示上下文提示（欢迎页：导入视频；工作区：导入 SRT）
+- 100ms 延迟解决 pywebview DOM 处理器与 Vue 事件处理器的竞态条件
+
+**3. 视频播放器**
+- 使用 `data:` URL 方案（base64 编码）替代 Vite `@fs` 前缀，兼容任意路径
+- 默认音量 25%（`@loadedmetadata` 事件设置）
+- 点击字幕行跳转到对应时间点（`videoRef.currentTime = time`）
+
+**4. 工具栏按钮优化**
+- 所有按钮添加 SVG 图标 + 文字标签，消除空白按钮问题
+- 按钮分色：蓝色（导入/检测）、紫色（分析）、绿色（导出）
+
+**5. 关闭项目**
+- 顶部导航栏新增返回箭头按钮
+- 调用 `close_project` 清理后端状态，返回欢迎页
+
+**6. 中文文件名编码崩溃**
+- `subprocess.run` 使用 `text=True` 时默认 GBK 编码，ffmpeg 输出含非 GBK 字节导致 `UnicodeDecodeError`
+- 替换为 `encoding="utf-8", errors="replace"` 安全处理
+
+**7. 撤销确认删除**
+- 状态徽章（已确认/已保留）可点击撤销回"待定"
+- 调用 `update_edit_decision(edit_id, "pending")` 重置状态
+- hover 效果 + title 提示标识可交互
+
+### 验证结果
+
+- `vue-tsc --noEmit` TypeScript 类型检查通过
+- `vite build` 构建成功：CSS 39.95 KB, JS 98.87 KB (gzip 36.08 KB)
+- `uv run pytest tests/` 后端 64 测试全部通过 (0.38s)
+- `bun run test` 前端 23 测试全部通过 (1.93s)
+- `uv run python -c "from main import MiloCutApi"` 后端模块加载验证通过
+
+### 📝 Commit Message
+
+```
+fix(ux): 修复拖拽/播放器/按钮/编码等多项问题
+
+- 修复 pywebview OPEN_DIALOG/FOLDER_DIALOG/SAVE_DIALOG 弃用警告
+- 实现全窗口文件拖拽，支持视频/音频/SRT 文件类型路由
+- 新增 HTML5 视频播放器，默认 25% 音量，支持点击字幕跳转
+- 工具栏按钮全部添加图标+文字标签，修复空白按钮问题
+- 新增关闭项目按钮，支持返回欢迎页
+- 修复 subprocess 中文路径 GBK 解码崩溃（utf-8 + errors=replace）
+- 新增状态徽章点击撤销功能（confirmed/rejected -> pending）
+- 新增 TEST_GUIDE.md 自动化+手动测试文档
+- 修复前端测试断言 placeholder 文本
+```
