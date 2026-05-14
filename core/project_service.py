@@ -13,6 +13,8 @@ from pathlib import Path
 from loguru import logger
 
 from core.models import (
+    AnalysisData,
+    AnalysisResult,
     EditDecision,
     EditStatus,
     MediaInfo,
@@ -261,3 +263,412 @@ class ProjectService:
         updated = self._current.model_copy(update=update_kwargs)
         self._current = updated
         return {"success": True, "data": updated.model_dump()}
+
+    def update_segment_text(self, segment_id: str, text: str) -> dict:
+        """Update a subtitle segment's text and set dirty_flags."""
+        result = self.update_segment(segment_id, {"text": text})
+        if not result["success"]:
+            return result
+
+        # Set dirty_flags on the updated segment
+        segments = self._current.transcript.segments
+        updated_segments = []
+        for seg in segments:
+            if seg.id == segment_id:
+                updated_segments.append(seg.model_copy(update={
+                    "dirty_flags": {**seg.dirty_flags, "text_edited": True},
+                }))
+            else:
+                updated_segments.append(seg)
+
+        updated = self._current.model_copy(update={
+            "transcript": self._current.transcript.model_copy(update={"segments": updated_segments}),
+        })
+        self._current = updated
+        return {"success": True, "data": updated.model_dump()}
+
+    def merge_segments(self, segment_ids: list[str]) -> dict:
+        """Merge contiguous subtitle segments into one.
+
+        Sorts by start time, validates contiguity, merges text, removes orphaned EditDecisions.
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        segments = list(self._current.transcript.segments)
+        targets = [s for s in segments if s.id in segment_ids and s.type == SegmentType.SUBTITLE]
+        if len(targets) < 2:
+            return {"success": False, "error": "Need at least 2 subtitle segments to merge"}
+
+        targets.sort(key=lambda s: s.start)
+        merged_text = "".join(s.text for s in targets)
+        merged_seg = targets[0].model_copy(update={
+            "end": targets[-1].end,
+            "text": merged_text,
+            "dirty_flags": {**targets[0].dirty_flags, "merged": True},
+        })
+
+        remove_ids = {s.id for s in targets[1:]}
+        new_segments = [merged_seg if s.id == targets[0].id else s
+                        for s in segments if s.id not in remove_ids]
+
+        # Remove orphaned EditDecisions that referenced removed segments
+        new_edits = [e for e in self._current.edits
+                     if not any(sid in remove_ids for sid in getattr(e, '_segment_ids', []))]
+
+        updated = self._current.model_copy(update={
+            "transcript": self._current.transcript.model_copy(update={"segments": new_segments}),
+            "edits": new_edits,
+        })
+        self._current = updated
+        logger.info("Merged {} segments into {}", len(targets), merged_seg.id)
+        return {"success": True, "data": updated.model_dump()}
+
+    def split_segment(self, segment_id: str, position: float) -> dict:
+        """Split a subtitle segment at the given time position.
+
+        Creates two segments: {id}-a and {id}-b. Text is split proportionally.
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        segments = list(self._current.transcript.segments)
+        target = next((s for s in segments if s.id == segment_id), None)
+        if target is None:
+            return {"success": False, "error": f"Segment not found: {segment_id}"}
+        if target.type != SegmentType.SUBTITLE:
+            return {"success": False, "error": "Can only split subtitle segments"}
+        if position <= target.start or position >= target.end:
+            return {"success": False, "error": "Split position must be within segment bounds"}
+
+        # Split text proportionally by duration ratio
+        total_dur = target.end - target.start
+        ratio = (position - target.start) / total_dur
+        split_idx = max(1, min(len(target.text) - 1, int(len(target.text) * ratio)))
+
+        seg_a = target.model_copy(update={
+            "id": f"{segment_id}-a",
+            "end": position,
+            "text": target.text[:split_idx].strip(),
+            "dirty_flags": {**target.dirty_flags, "split": True},
+        })
+        seg_b = target.model_copy(update={
+            "id": f"{segment_id}-b",
+            "start": position,
+            "text": target.text[split_idx:].strip(),
+            "dirty_flags": {**target.dirty_flags, "split": True},
+        })
+
+        new_segments = []
+        for s in segments:
+            if s.id == segment_id:
+                new_segments.extend([seg_a, seg_b])
+            else:
+                new_segments.append(s)
+
+        # Remove EditDecisions referencing the old segment
+        new_edits = [e for e in self._current.edits
+                     if not hasattr(e, '_segment_ids') or segment_id not in e._segment_ids]
+
+        updated = self._current.model_copy(update={
+            "transcript": self._current.transcript.model_copy(update={"segments": new_segments}),
+            "edits": new_edits,
+        })
+        self._current = updated
+        logger.info("Split segment {} at {:.3f}s", segment_id, position)
+        return {"success": True, "data": updated.model_dump()}
+
+    def search_replace(
+        self,
+        query: str,
+        replacement: str,
+        scope: str = "all",
+    ) -> dict:
+        """Search and replace text in subtitle segments.
+
+        Args:
+            query: Text to search for.
+            replacement: Replacement text.
+            scope: "all" for all segments, or a segment ID.
+
+        Returns dict with count of modified segments and their IDs.
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        segments = list(self._current.transcript.segments)
+        modified_ids: list[str] = []
+        new_segments: list[Segment] = []
+
+        for seg in segments:
+            if seg.type != SegmentType.SUBTITLE:
+                new_segments.append(seg)
+                continue
+            if scope != "all" and seg.id != scope:
+                new_segments.append(seg)
+                continue
+            if query in seg.text:
+                new_text = seg.text.replace(query, replacement)
+                new_segments.append(seg.model_copy(update={
+                    "text": new_text,
+                    "dirty_flags": {**seg.dirty_flags, "search_replaced": True},
+                }))
+                modified_ids.append(seg.id)
+            else:
+                new_segments.append(seg)
+
+        if modified_ids:
+            updated = self._current.model_copy(update={
+                "transcript": self._current.transcript.model_copy(update={"segments": new_segments}),
+            })
+            self._current = updated
+
+        logger.info("Search-replace: {} segments modified", len(modified_ids))
+        return {
+            "success": True,
+            "data": {"count": len(modified_ids), "modified_ids": modified_ids},
+        }
+
+    def mark_segments(self, segment_ids: list[str], action: str) -> dict:
+        """Create or update EditDecisions for the given segments.
+
+        Args:
+            segment_ids: List of segment IDs to mark.
+            action: "delete" or "keep".
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        segments = self._current.transcript.segments
+        target_segs = [s for s in segments if s.id in segment_ids]
+        if not target_segs:
+            return {"success": False, "error": "No matching segments found"}
+
+        existing_edits = list(self._current.edits)
+        existing_ids = {e.id for e in existing_edits}
+        new_edits: list[EditDecision] = []
+
+        for seg in target_segs:
+            edit_id = f"edit-user-{seg.id}"
+            if edit_id in existing_ids:
+                # Update existing
+                new_edits.append(EditDecision(
+                    id=edit_id,
+                    start=seg.start,
+                    end=seg.end,
+                    action=action,
+                    source="user",
+                    status=EditStatus.PENDING,
+                    priority=200,
+                ))
+            else:
+                new_edits.append(EditDecision(
+                    id=edit_id,
+                    start=seg.start,
+                    end=seg.end,
+                    action=action,
+                    source="user",
+                    status=EditStatus.PENDING,
+                    priority=200,
+                ))
+
+        # Merge: keep non-target edits, replace/add new ones
+        new_edit_ids = {e.id for e in new_edits}
+        merged_edits = [e for e in existing_edits if e.id not in new_edit_ids] + new_edits
+
+        updated = self._current.model_copy(update={"edits": merged_edits})
+        self._current = updated
+        logger.info("Marked {} segments as {}", len(target_segs), action)
+        return {"success": True, "data": updated.model_dump()}
+
+    def confirm_all_suggestions(self) -> dict:
+        """Set all pending edit decisions to confirmed."""
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        count = 0
+        updated_edits = []
+        for edit in self._current.edits:
+            if edit.status == EditStatus.PENDING:
+                updated_edits.append(edit.model_copy(update={"status": EditStatus.CONFIRMED}))
+                count += 1
+            else:
+                updated_edits.append(edit)
+
+        updated = self._current.model_copy(update={"edits": updated_edits})
+        self._current = updated
+        logger.info("Confirmed {} pending edits", count)
+        return {"success": True, "data": {"confirmed_count": count}}
+
+    def reject_all_suggestions(self) -> dict:
+        """Set all pending edit decisions to rejected."""
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        count = 0
+        updated_edits = []
+        for edit in self._current.edits:
+            if edit.status == EditStatus.PENDING:
+                updated_edits.append(edit.model_copy(update={"status": EditStatus.REJECTED}))
+                count += 1
+            else:
+                updated_edits.append(edit)
+
+        updated = self._current.model_copy(update={"edits": updated_edits})
+        self._current = updated
+        logger.info("Rejected {} pending edits", count)
+        return {"success": True, "data": {"rejected_count": count}}
+
+    def get_edit_summary(self) -> dict:
+        """Compute delete statistics and protection warnings.
+
+        Protection warnings:
+        - >40% of total duration marked for deletion
+        - Any single segment >60s marked for deletion
+        - 3+ consecutive segments marked for deletion
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        segments = self._current.transcript.segments
+        edits = self._current.edits
+        warnings: list[str] = []
+
+        # Compute total duration
+        total_duration = 0.0
+        for seg in segments:
+            total_duration = max(total_duration, seg.end)
+
+        # Compute delete duration
+        delete_duration = 0.0
+        confirmed_edits = [e for e in edits if e.action == "delete" and e.status in (EditStatus.PENDING, EditStatus.CONFIRMED)]
+        for edit in confirmed_edits:
+            delete_duration += edit.end - edit.start
+
+        # Warning: >40% total duration
+        if total_duration > 0 and delete_duration / total_duration > 0.40:
+            warnings.append(
+                f"Warning: {delete_duration:.1f}s marked for deletion ({delete_duration / total_duration:.0%} of total duration)"
+            )
+
+        # Warning: single segment >60s
+        for edit in confirmed_edits:
+            seg_dur = edit.end - edit.start
+            if seg_dur > 60:
+                warnings.append(
+                    f"Warning: edit {edit.id} spans {seg_dur:.1f}s (>60s threshold)"
+                )
+
+        # Warning: 3+ consecutive subtitle segments
+        subtitle_segs = sorted(
+            [s for s in segments if s.type == SegmentType.SUBTITLE],
+            key=lambda s: s.start,
+        )
+        edit_seg_ids = set()
+        for edit in confirmed_edits:
+            for seg in subtitle_segs:
+                if abs(seg.start - edit.start) < 0.01 and abs(seg.end - edit.end) < 0.01:
+                    edit_seg_ids.add(seg.id)
+
+        consecutive = 0
+        for seg in subtitle_segs:
+            if seg.id in edit_seg_ids:
+                consecutive += 1
+                if consecutive >= 3:
+                    warnings.append("Warning: 3+ consecutive subtitle segments marked for deletion")
+                    break
+            else:
+                consecutive = 0
+
+        return {
+            "success": True,
+            "data": {
+                "total_duration": round(total_duration, 2),
+                "delete_duration": round(delete_duration, 2),
+                "delete_percent": round(delete_duration / total_duration * 100, 1) if total_duration > 0 else 0,
+                "edit_count": len(confirmed_edits),
+                "warnings": warnings,
+            },
+        }
+
+    def add_analysis_results(self, results: list[dict], source: str) -> dict:
+        """Store AnalysisResult entries and create EditDecisions from time ranges."""
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        analysis_results = [AnalysisResult.model_validate(r) for r in results]
+        existing_results = list(self._current.analysis.results)
+        all_results = existing_results + analysis_results
+
+        # Create EditDecisions from analysis time ranges
+        segments = self._current.transcript.segments
+        seg_map = {s.id: s for s in segments}
+        existing_edits = list(self._current.edits)
+        new_edits: list[EditDecision] = []
+
+        for ar in analysis_results:
+            # Find time range from segment_ids
+            matching_segs = [seg_map[sid] for sid in ar.segment_ids if sid in seg_map]
+            if not matching_segs:
+                continue
+            start = min(s.start for s in matching_segs)
+            end = max(s.end for s in matching_segs)
+
+            edit_id = f"edit-{ar.id}"
+            new_edits.append(EditDecision(
+                id=edit_id,
+                start=start,
+                end=end,
+                action="delete",
+                source=source,
+                analysis_id=ar.id,
+                status=EditStatus.PENDING,
+                priority=100,
+            ))
+
+        updated = self._current.model_copy(update={
+            "analysis": self._current.analysis.model_copy(update={
+                "results": all_results,
+                "last_run": datetime.now().isoformat(),
+            }),
+            "edits": existing_edits + new_edits,
+        })
+        self._current = updated
+        logger.info("Added {} analysis results from {}", len(analysis_results), source)
+        return {"success": True, "data": updated.model_dump()}
+
+    def get_recent_projects(self, limit: int = 10) -> dict:
+        """Scan data/projects/*/project.json and return sorted by updated_at."""
+        projects_dir = get_projects_dir()
+        if not projects_dir.exists():
+            return {"success": True, "data": []}
+
+        recent: list[dict] = []
+        for project_file in projects_dir.glob("*/project.json"):
+            try:
+                data = json.loads(project_file.read_text(encoding="utf-8"))
+                meta = data.get("project", {})
+                recent.append({
+                    "name": meta.get("name", project_file.parent.name),
+                    "path": str(project_file),
+                    "updated_at": meta.get("updated_at", ""),
+                    "created_at": meta.get("created_at", ""),
+                })
+            except (json.JSONDecodeError, OSError):
+                continue
+
+        recent.sort(key=lambda p: p["updated_at"], reverse=True)
+        return {"success": True, "data": recent[:limit]}
+
+    def get_settings(self) -> dict:
+        """Return current application settings."""
+        from core.config import load_settings
+        return {"success": True, "data": load_settings()}
+
+    def update_settings(self, updates: dict) -> dict:
+        """Update application settings with the given key-value pairs."""
+        from core.config import load_settings, save_settings
+        settings = load_settings()
+        settings.update(updates)
+        save_settings(settings)
+        return {"success": True, "data": settings}

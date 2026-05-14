@@ -30,6 +30,9 @@ class TaskType(StrEnum):
     EXPORT_VIDEO = "export_video"
     EXPORT_SUBTITLE = "export_subtitle"
     # P1
+    FILLER_DETECTION = "filler_detection"
+    ERROR_DETECTION = "error_detection"
+    FULL_ANALYSIS = "full_analysis"
     TRANSCRIPTION = "transcription"
     VAD_ANALYSIS = "vad_analysis"
     WAVEFORM_GENERATION = "waveform_generation"
@@ -125,8 +128,17 @@ class TranscriptData(BaseModel, frozen=True):
     segments: list[Segment] = Field(default_factory=list)
 
 
+class AnalysisResult(BaseModel, frozen=True):
+    id: str
+    type: Literal["filler", "error"]
+    segment_ids: list[str] = Field(default_factory=list)
+    confidence: float = 1.0
+    detail: str = ""
+
+
 class AnalysisData(BaseModel, frozen=True):
     last_run: str | None = None
+    results: list[AnalysisResult] = Field(default_factory=list)
 
 
 class Project(BaseModel, frozen=True):

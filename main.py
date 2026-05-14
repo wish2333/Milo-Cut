@@ -10,8 +10,9 @@ import os
 
 from pywebvue import App, Bridge, expose
 
+from core.analysis_service import detect_errors, detect_fillers, run_full_analysis
 from core.config import load_settings
-from core.events import LOG_LINE
+from core.events import EDIT_SUMMARY_UPDATED, LOG_LINE
 from core.ffmpeg_service import detect_silence, probe_media
 from core.logging import get_logger, setup_frontend_sink, setup_logging
 from core.models import TaskType
@@ -41,6 +42,15 @@ class MiloCutApi(Bridge):
         )
         self._task_manager.register_handler(
             TaskType.EXPORT_SUBTITLE, self._handle_export_subtitle
+        )
+        self._task_manager.register_handler(
+            TaskType.FILLER_DETECTION, self._handle_filler_detection
+        )
+        self._task_manager.register_handler(
+            TaskType.ERROR_DETECTION, self._handle_error_detection
+        )
+        self._task_manager.register_handler(
+            TaskType.FULL_ANALYSIS, self._handle_full_analysis
         )
 
     def _handle_silence_detection(self, task, cancel_event):
@@ -106,6 +116,45 @@ class MiloCutApi(Bridge):
             edits=edits_data,
             output_path=output_path,
         )
+
+    def _handle_filler_detection(self, task, cancel_event):
+        """Run filler word detection and store results."""
+        if self._project.current is None:
+            raise ValueError("No project open")
+        settings = load_settings()
+        segments = list(self._project.current.transcript.segments)
+        results = detect_fillers(segments, settings.get("filler_words", []))
+        results_dicts = [r.model_dump() for r in results]
+        store = self._project.add_analysis_results(results_dicts, source="filler_detection")
+        if not store["success"]:
+            raise RuntimeError(store.get("error", "Failed to store analysis results"))
+        return {"project": store["data"], "results": results_dicts}
+
+    def _handle_error_detection(self, task, cancel_event):
+        """Run error trigger detection and store results."""
+        if self._project.current is None:
+            raise ValueError("No project open")
+        settings = load_settings()
+        segments = list(self._project.current.transcript.segments)
+        results = detect_errors(segments, settings.get("error_trigger_words", []))
+        results_dicts = [r.model_dump() for r in results]
+        store = self._project.add_analysis_results(results_dicts, source="error_detection")
+        if not store["success"]:
+            raise RuntimeError(store.get("error", "Failed to store analysis results"))
+        return {"project": store["data"], "results": results_dicts}
+
+    def _handle_full_analysis(self, task, cancel_event):
+        """Run full analysis (filler + error) and store results."""
+        if self._project.current is None:
+            raise ValueError("No project open")
+        settings = load_settings()
+        segments = list(self._project.current.transcript.segments)
+        results = run_full_analysis(segments, settings)
+        results_dicts = [r.model_dump() for r in results]
+        store = self._project.add_analysis_results(results_dicts, source="full_analysis")
+        if not store["success"]:
+            raise RuntimeError(store.get("error", "Failed to store analysis results"))
+        return {"project": store["data"], "results": results_dicts}
 
     # ================================================================
     # System
@@ -248,6 +297,63 @@ class MiloCutApi(Bridge):
     @expose
     def update_segment(self, segment_id: str, updates: dict) -> dict:
         return self._project.update_segment(segment_id, updates)
+
+    @expose
+    def update_segment_text(self, segment_id: str, text: str) -> dict:
+        return self._project.update_segment_text(segment_id, text)
+
+    @expose
+    def merge_segments(self, segment_ids: list[str]) -> dict:
+        return self._project.merge_segments(segment_ids)
+
+    @expose
+    def split_segment(self, segment_id: str, position: float) -> dict:
+        return self._project.split_segment(segment_id, position)
+
+    @expose
+    def search_replace(self, query: str, replacement: str, scope: str = "all") -> dict:
+        return self._project.search_replace(query, replacement, scope)
+
+    @expose
+    def mark_segments(self, segment_ids: list[str], action: str) -> dict:
+        return self._project.mark_segments(segment_ids, action)
+
+    @expose
+    def confirm_all_suggestions(self) -> dict:
+        result = self._project.confirm_all_suggestions()
+        if result["success"]:
+            self._emit(EDIT_SUMMARY_UPDATED, self._project.get_edit_summary().get("data", {}))
+        return result
+
+    @expose
+    def reject_all_suggestions(self) -> dict:
+        result = self._project.reject_all_suggestions()
+        if result["success"]:
+            self._emit(EDIT_SUMMARY_UPDATED, self._project.get_edit_summary().get("data", {}))
+        return result
+
+    @expose
+    def get_edit_summary(self) -> dict:
+        return self._project.get_edit_summary()
+
+    @expose
+    def validate_srt(self, file_path: str) -> dict:
+        from core.subtitle_service import validate_srt
+        media = self._project.current.media if self._project.current else None
+        duration = media.duration if media else 0.0
+        return validate_srt(file_path, video_duration=duration)
+
+    @expose
+    def get_recent_projects(self) -> dict:
+        return self._project.get_recent_projects()
+
+    @expose
+    def get_settings(self) -> dict:
+        return self._project.get_settings()
+
+    @expose
+    def update_settings(self, updates: dict) -> dict:
+        return self._project.update_settings(updates)
 
     @expose
     def select_export_path(self, default_name: str) -> dict:
