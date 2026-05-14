@@ -1,0 +1,121 @@
+# PyWebVue
+
+> Minimal Python + Vue bridge framework based on pywebview. Clone and develop with zero boilerplate.
+
+## Overview
+
+PyWebVue wraps pywebview with a clean bridge API for exposing Python methods to a Vue 3 frontend and pushing events back. The frontend is a Vite + Vue + TypeScript app. Designed as a "clone and develop" project.
+
+## Architecture
+
+```
+Python (pywebview)                    Vue + TypeScript
+  Bridge._window --js_api-->  window.pywebview.api
+  Bridge._emit()    ----->    CustomEvent("pywebvue:{name}")
+  @expose methods   <------   api.{method}(...args)
+```
+
+Three core components:
+
+- **Bridge** -- base class with `_emit(event, data)` for Python->JS and `_on_drop()` for native file drag-and-drop
+- **App** -- creates pywebview window, manages dev/prod URL resolution, starts event loop
+- **@expose** -- decorator wrapping Bridge methods with try/except, returns `{success, error}` on failure
+
+## Project Structure
+
+```
+main.py              App entry point (user edits this)
+pywebvue/
+  app.py             App class (window, dev/prod lifecycle, path resolution)
+  bridge.py          Bridge base class + @expose decorator
+  __init__.py        Exports: App, Bridge, expose
+frontend/
+  index.html         Vite entry point
+  src/App.vue        Root Vue component (edit this)
+  src/main.ts        Vue bootstrap
+  src/bridge.ts      Bridge: call(), onEvent(), waitForPyWebView()
+  src/env.d.ts       pywebview type declarations
+dev.py               Dev startup (uv sync + npm install + Vite + Python app)
+build.py             Packaging (PyInstaller desktop + Buildozer Android)
+app.spec             PyInstaller spec with [MODIFY] sections
+dev.bat / dev.sh     One-click launchers (cross-platform)
+```
+
+## Key Commands
+
+```bash
+# Development
+uv run dev.py                          Start Vite + app (default)
+uv run dev.py --no-vite                Load from disk (production preview)
+uv run dev.py --frontend-dir ./my-app  Custom Vue project
+uv run dev.py --setup                  Install deps only
+
+# Building
+cd frontend && npm run build           Build Vue app -> frontend_dist/
+uv run build.py                        Desktop onedir
+uv run build.py --onefile              Desktop single exe
+uv run build.py --android              Android APK (macOS/Linux)
+uv run build.py --clean                Remove build artifacts
+```
+
+## Response Convention
+
+All Python<->JS communication uses a consistent envelope:
+```json
+{"success": true, "data": <any>}
+{"success": false, "error": "description"}
+```
+
+## Python API
+
+```python
+from pywebvue import App, Bridge, expose
+
+class MyApi(Bridge):
+    @expose
+    def my_method(self, arg: str) -> dict:
+        return {"success": True, "data": f"got {arg}"}
+
+api = MyApi()
+app = App(api, title="My App", frontend_dir="frontend_dist", width=1024, height=768)
+app.run()           # auto-detect: dev when not frozen
+app.run(dev=False)  # force load from disk
+app.emit("event", {"key": "val"})  # push to frontend
+```
+
+App.__init__ params: bridge, title, width, height, min_size, frontend_dir, dev_url
+App.run params: dev (True/False/None), debug (True/False/None)
+Bridge: _emit(event, data), get_dropped_files(), _on_drop(event)
+
+## TypeScript API
+
+Bridge functions in frontend/src/bridge.ts, imported directly in Vue components:
+```ts
+import { call, onEvent, waitForPyWebView, ApiResponse } from "./bridge"
+
+await waitForPyWebView()
+const res = await call<T>(method, ...args)
+const off = onEvent<T>(name, (detail) => {})
+```
+
+## Dev vs Prod Path Resolution
+
+- `dev=True`: loads URL from `dev_url` (default: `http://localhost:5173`)
+- `dev=False`: loads `{frontend_dir}/index.html` from disk
+- Auto-detect: `app.run()` -- dev=True when `sys.frozen` is False, False when frozen
+- PyInstaller --onefile: `sys._MEIPASS / frontend_dir`
+- PyInstaller --onedir: `sys.executable.parent / frontend_dir`
+
+## Packaging Notes
+
+- Desktop: PyInstaller via app.spec. Edit [MODIFY] sections for entry script, app name, icon, frontend assets.
+- Android: Buildozer via build.py --android. Generates buildozer.spec on first run.
+- GUI engines: Windows=EdgeWebView2/CEF, macOS=Cocoa WebKit, Linux=GTK WebKit
+- Exclude unused frameworks (PyQt/PySide/tkinter) in app.spec to reduce size
+- Android: single window only, no file dialogs, requires macOS or Linux
+
+## Detailed Documentation
+
+> - docs/development.md -- Dev modes, writing your app, frontend structure
+> - docs/api.md -- Complete API reference for Python and TypeScript
+> - docs/building.md -- PyInstaller config, Android/Buildozer setup, platform notes
