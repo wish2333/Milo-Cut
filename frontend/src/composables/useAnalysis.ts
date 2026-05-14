@@ -4,6 +4,14 @@ import { useBridge } from "./useBridge"
 import { useTask } from "./useTask"
 import { EVENT_TASK_COMPLETED } from "@/utils/events"
 import type { Project } from "@/types/project"
+import type { TaskType } from "@/types/task"
+
+const ANALYSIS_TASKS: TaskType[] = [
+  "silence_detection",
+  "filler_detection",
+  "error_detection",
+  "full_analysis",
+]
 
 export function useAnalysis(project: Ref<Project | null>) {
   const { on } = useBridge()
@@ -11,12 +19,12 @@ export function useAnalysis(project: Ref<Project | null>) {
 
   const isDetecting = computed(() => {
     const t = activeTask.value
-    return t !== null && t.type === "silence_detection" && isRunning.value
+    return t !== null && ANALYSIS_TASKS.includes(t.type) && isRunning.value
   })
 
   const detectionProgress = computed(() => {
     const t = activeTask.value
-    if (t && t.type === "silence_detection") {
+    if (t && ANALYSIS_TASKS.includes(t.type)) {
       return t.progress
     }
     return null
@@ -24,7 +32,7 @@ export function useAnalysis(project: Ref<Project | null>) {
 
   on(EVENT_TASK_COMPLETED, (data: { task_id: string; result?: { project?: Project } }) => {
     const task = tasks.value.find(t => t.id === data.task_id)
-    if (task?.type === "silence_detection" && data.result?.project) {
+    if (task && ANALYSIS_TASKS.includes(task.type) && data.result?.project) {
       project.value = data.result.project
     }
   })
@@ -32,9 +40,25 @@ export function useAnalysis(project: Ref<Project | null>) {
   async function runSilenceDetection(): Promise<boolean> {
     const task = await createTask("silence_detection")
     if (!task) return false
+    return await startTask(task.id)
+  }
 
-    const startRes = await startTask(task.id)
-    return startRes
+  async function runFillerDetection(): Promise<boolean> {
+    const task = await createTask("filler_detection")
+    if (!task) return false
+    return await startTask(task.id)
+  }
+
+  async function runErrorDetection(): Promise<boolean> {
+    const task = await createTask("error_detection")
+    if (!task) return false
+    return await startTask(task.id)
+  }
+
+  async function runFullAnalysis(): Promise<boolean> {
+    const task = await createTask("full_analysis")
+    if (!task) return false
+    return await startTask(task.id)
   }
 
   async function confirmEdit(editId: string): Promise<boolean> {
@@ -71,6 +95,9 @@ export function useAnalysis(project: Ref<Project | null>) {
     isDetecting,
     detectionProgress,
     runSilenceDetection,
+    runFillerDetection,
+    runErrorDetection,
+    runFullAnalysis,
     confirmEdit,
     rejectEdit,
     confirmAllEdits,

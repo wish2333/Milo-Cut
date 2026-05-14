@@ -1,11 +1,18 @@
 <script setup lang="ts">
 import { computed, ref } from "vue"
 import type { Project, Segment, EditDecision } from "@/types/project"
+import type { EditSummary } from "@/types/edit"
 import { formatTimeShort } from "@/utils/format"
 import { call } from "@/bridge"
 import { useAnalysis } from "@/composables/useAnalysis"
 import { useExport } from "@/composables/useExport"
+import { useEdit } from "@/composables/useEdit"
 import ProgressBar from "@/components/common/ProgressBar.vue"
+import TranscriptRow from "@/components/workspace/TranscriptRow.vue"
+import SilenceRow from "@/components/workspace/SilenceRow.vue"
+import SuggestionPanel from "@/components/workspace/SuggestionPanel.vue"
+import SearchReplaceBar from "@/components/workspace/SearchReplaceBar.vue"
+import EditSummaryModal from "@/components/workspace/EditSummaryModal.vue"
 
 interface Props {
   project: Project
@@ -18,15 +25,20 @@ interface Emits {
 const props = defineProps<Props>()
 const emit = defineEmits<Emits>()
 
-const projectRef = computed(() => props.project)
+const projectRef = computed({
+  get: () => props.project,
+  set: (val) => emit("project-updated", val),
+})
 
 const {
   isDetecting,
   detectionProgress,
   runSilenceDetection,
+  runFillerDetection,
+  runErrorDetection,
+  runFullAnalysis,
   confirmEdit,
   rejectEdit,
-  confirmAllEdits,
 } = useAnalysis(projectRef)
 
 const {
@@ -34,16 +46,29 @@ const {
   exportProgress,
   confirmedEdits,
   estimatedSaving,
+  getExportSummary,
   exportVideo,
   exportSrt,
 } = useExport(projectRef)
 
+const {
+  updateSegmentText,
+  searchReplace,
+  confirmAllSuggestions,
+  rejectAllSuggestions,
+} = useEdit(projectRef)
+
 const statusMessage = ref("")
 const errorMessage = ref("")
+const showAnalysisDropdown = ref(false)
+const showExportSummary = ref(false)
+const exportSummaryData = ref<EditSummary | null>(null)
+const selectedSegmentId = ref<string | null>(null)
 
 const segments = computed<Segment[]>(() => props.project.transcript?.segments ?? [])
 const edits = computed<EditDecision[]>(() => props.project.edits ?? [])
 const duration = computed(() => props.project.media?.duration ?? 0)
+const analysisResults = computed(() => props.project.analysis?.results ?? [])
 
 const mergedSegments = computed<Segment[]>(() => {
   return [...segments.value].sort((a, b) => a.start - b.start)
@@ -58,39 +83,29 @@ function getEditForSegment(seg: Segment): EditDecision | undefined {
   )
 }
 
-function getEditStatusColor(status: string): string {
-  switch (status) {
-    case "confirmed": return "bg-red-100 text-red-700"
-    case "rejected": return "bg-green-100 text-green-700"
-    default: return "bg-yellow-100 text-yellow-700"
-  }
+function getEditStatus(seg: Segment): EditDecision["status"] | null {
+  return getEditForSegment(seg)?.status ?? null
 }
 
-function getEditStatusLabel(status: string): string {
-  switch (status) {
-    case "confirmed": return "删除"
-    case "rejected": return "保留"
-    default: return "待定"
-  }
+function handleSeek(_time: number) {
+  // TODO: Wire up video player seek
 }
 
 async function handleImportSrt() {
   errorMessage.value = ""
-  statusMessage.value = "选择 SRT 文件..."
-
+  statusMessage.value = "..."
   const fileRes = await call<string>("select_file")
   if (!fileRes.success || !fileRes.data) {
     statusMessage.value = ""
     return
   }
-
-  statusMessage.value = "导入 SRT..."
+  statusMessage.value = "..."
   const importRes = await call<Project>("import_srt", fileRes.data)
   if (importRes.success && importRes.data) {
     emit("project-updated", importRes.data)
     statusMessage.value = ""
   } else {
-    errorMessage.value = importRes.error ?? "导入 SRT 失败"
+    errorMessage.value = importRes.error ?? "SRT"
     statusMessage.value = ""
   }
 }
@@ -100,89 +115,157 @@ async function handleDetectSilence() {
   await runSilenceDetection()
 }
 
-async function handleConfirmAll() {
+async function handleRunAnalysis(type: string) {
+  showAnalysisDropdown.value = false
   errorMessage.value = ""
-  await confirmAllEdits()
+  switch (type) {
+    case "filler": await runFillerDetection(); break
+    case "error": await runErrorDetection(); break
+    case "full": await runFullAnalysis(); break
+  }
+}
+
+async function handleConfirmAllSuggestions() {
+  errorMessage.value = ""
+  await confirmAllSuggestions()
+}
+
+async function handleRejectAllSuggestions() {
+  errorMessage.value = ""
+  await rejectAllSuggestions()
+}
+
+async function handleUpdateText(segmentId: string, text: string) {
+  await updateSegmentText(segmentId, text)
+}
+
+async function handleSearchReplace(query: string, replacement: string, scope: string) {
+  const result = await searchReplace(query, replacement, scope)
+  if (result) {
+    statusMessage.value = `Replaced ${result.count} occurrences`
+  }
 }
 
 async function handleExportVideo() {
   errorMessage.value = ""
-  statusMessage.value = "导出视频..."
-  const ok = await exportVideo()
-  statusMessage.value = ok ? "" : ""
-  if (!ok) {
-    errorMessage.value = "导出视频失败"
+  const summary = await getExportSummary()
+  if (summary) {
+    exportSummaryData.value = summary
+    showExportSummary.value = true
+  } else {
+    statusMessage.value = "..."
+    const ok = await exportVideo()
+    if (!ok) errorMessage.value = ""
   }
+}
+
+async function handleConfirmExport() {
+  showExportSummary.value = false
+  statusMessage.value = "..."
+  const ok = await exportVideo()
+  statusMessage.value = ""
+  if (!ok) errorMessage.value = ""
 }
 
 async function handleExportSrt() {
   errorMessage.value = ""
-  statusMessage.value = "导出 SRT..."
+  statusMessage.value = " SRT..."
   const ok = await exportSrt()
-  statusMessage.value = ok ? "" : ""
-  if (!ok) {
-    errorMessage.value = "导出 SRT 失败"
+  statusMessage.value = ""
+  if (!ok) errorMessage.value = " SRT"
+}
+
+function handleKeydown(e: KeyboardEvent) {
+  if (e.ctrlKey && e.key === "s") {
+    e.preventDefault()
+    call("save_project")
   }
 }
 </script>
 
 <template>
-  <div class="flex h-screen flex-col bg-canvas">
+  <div class="flex h-screen flex-col bg-white" @keydown="handleKeydown">
     <!-- Top nav -->
-    <nav class="flex h-11 items-center justify-between border-b border-hairline bg-surface-tile-1 px-4">
+    <nav class="flex h-11 items-center justify-between border-b border-gray-200 bg-gray-900 px-4">
       <div class="flex items-center gap-3">
         <span class="text-sm font-semibold text-white">{{ project.project.name }}</span>
-        <span class="text-xs text-ink-muted">
-          {{ subtitleCount }} 字幕 | {{ silenceCount }} 静音 | {{ formatTimeShort(duration) }}
+        <span class="text-xs text-gray-400">
+          {{ subtitleCount }} | {{ silenceCount }} | {{ formatTimeShort(duration) }}
         </span>
       </div>
       <div class="flex items-center gap-2">
         <span v-if="confirmedEdits.length > 0" class="text-xs text-yellow-300">
-          {{ confirmedEdits.length }} 段待删 | {{ formatTimeShort(estimatedSaving) }}
+          {{ confirmedEdits.length }} | {{ formatTimeShort(estimatedSaving) }}
         </span>
       </div>
     </nav>
 
     <!-- Toolbar -->
-    <div class="flex items-center gap-2 border-b border-hairline bg-parchment px-4 py-2">
+    <div class="flex items-center gap-2 border-b border-gray-200 bg-gray-50 px-4 py-2">
       <button
-        class="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+        class="rounded-md bg-blue-500 px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
         :disabled="isDetecting || isExporting"
         @click="handleImportSrt"
       >
-        导入 SRT
+        SRT
       </button>
       <button
-        class="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+        class="rounded-md bg-blue-500 px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
         :disabled="isDetecting || isExporting"
         @click="handleDetectSilence"
       >
-        {{ isDetecting ? '检测中...' : '检测静音' }}
-      </button>
-      <button
-        v-if="silenceCount > 0"
-        class="rounded-md bg-yellow-500 px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
-        :disabled="isDetecting || isExporting"
-        @click="handleConfirmAll"
-      >
-        全部确认删除
+        {{ isDetecting ? '...' : '' }}
       </button>
 
-      <div class="mx-2 h-4 w-px bg-hairline" />
+      <!-- Analysis dropdown -->
+      <div class="relative">
+        <button
+          class="rounded-md bg-purple-500 px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+          :disabled="isDetecting || isExporting"
+          @click="showAnalysisDropdown = !showAnalysisDropdown"
+        >
+          {{ isDetecting ? '...' : '' }}
+        </button>
+        <div
+          v-if="showAnalysisDropdown"
+          class="absolute top-full left-0 mt-1 w-40 rounded-md border border-gray-200 bg-white shadow-lg z-10"
+        >
+          <button
+            class="block w-full px-3 py-2 text-left text-sm hover:bg-gray-50"
+            @click="handleRunAnalysis('filler')"
+          >
+            Filler
+          </button>
+          <button
+            class="block w-full px-3 py-2 text-left text-sm hover:bg-gray-50"
+            @click="handleRunAnalysis('error')"
+          >
+            Error
+          </button>
+          <button
+            class="block w-full px-3 py-2 text-left text-sm hover:bg-gray-50"
+            @click="handleRunAnalysis('full')"
+          >
+            Full
+          </button>
+        </div>
+      </div>
+
+      <div class="mx-2 h-4 w-px bg-gray-300" />
 
       <button
         class="rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
         :disabled="isExporting || confirmedEdits.length === 0"
         @click="handleExportVideo"
       >
-        {{ isExporting ? '导出中...' : '导出视频' }}
+        {{ isExporting ? '...' : '' }}
       </button>
       <button
         class="rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
         :disabled="isExporting || confirmedEdits.length === 0"
         @click="handleExportSrt"
       >
-        导出 SRT
+        SRT
       </button>
 
       <div v-if="isDetecting && detectionProgress" class="ml-4 flex-1">
@@ -193,102 +276,94 @@ async function handleExportSrt() {
       </div>
     </div>
 
+    <!-- Search replace bar -->
+    <SearchReplaceBar @search-replace="handleSearchReplace" />
+
     <!-- Status messages -->
-    <div v-if="statusMessage" class="border-b border-hairline bg-blue-50 px-4 py-1 text-xs text-primary">
+    <div v-if="statusMessage" class="border-b border-gray-200 bg-blue-50 px-4 py-1 text-xs text-blue-600">
       {{ statusMessage }}
     </div>
-    <div v-if="errorMessage" class="border-b border-hairline bg-red-50 px-4 py-1 text-xs text-red-600">
+    <div v-if="errorMessage" class="border-b border-gray-200 bg-red-50 px-4 py-1 text-xs text-red-600">
       {{ errorMessage }}
     </div>
 
     <!-- Main content: two-column layout -->
     <div class="flex flex-1 overflow-hidden">
       <!-- Left: Video player area -->
-      <div class="flex w-2/5 min-w-[400px] flex-col border-r border-hairline">
-        <div class="flex flex-1 items-center justify-center bg-surface-tile-1">
-          <div class="text-center text-ink-muted">
+      <div class="flex w-2/5 min-w-[400px] flex-col border-r border-gray-200">
+        <div class="flex flex-1 items-center justify-center bg-gray-900">
+          <div class="text-center text-gray-400">
             <svg xmlns="http://www.w3.org/2000/svg" class="mx-auto h-16 w-16 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1">
               <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 002.25-2.25v-9a2.25 2.25 0 00-2.25-2.25h-9A2.25 2.25 0 002.25 7.5v9a2.25 2.25 0 002.25 2.25z" />
             </svg>
-            <p class="mt-2 text-sm">视频预览区</p>
-            <p class="text-xs text-ink-muted-48">Phase 0 - 视频预览 P1 实现</p>
+            <p class="mt-2 text-sm"></p>
+            <p class="text-xs text-gray-500"></p>
           </div>
         </div>
       </div>
 
-      <!-- Right: Transcript editor with merged timeline -->
+      <!-- Right: Transcript editor + suggestion panel -->
       <div class="flex w-3/5 min-w-[500px] flex-col">
-        <div class="flex items-center justify-between border-b border-hairline px-4 py-2">
-          <span class="text-sm font-medium text-ink">时间轴</span>
-          <span class="text-xs text-ink-muted">{{ subtitleCount }} 字幕 + {{ silenceCount }} 静音</span>
+        <div class="flex items-center justify-between border-b border-gray-200 px-4 py-2">
+          <span class="text-sm font-medium"></span>
+          <span class="text-xs text-gray-500">{{ subtitleCount }} + {{ silenceCount }}</span>
         </div>
 
-        <div class="flex-1 overflow-y-auto">
-          <div v-if="mergedSegments.length === 0" class="flex h-full items-center justify-center">
-            <div class="text-center">
-              <p class="text-sm text-ink-muted">暂无数据</p>
-              <p class="mt-1 text-xs text-ink-muted-48">请导入 SRT 字幕或检测静音</p>
+        <div class="flex flex-1 overflow-hidden">
+          <!-- Transcript list -->
+          <div class="flex-1 overflow-y-auto">
+            <div v-if="mergedSegments.length === 0" class="flex h-full items-center justify-center">
+              <div class="text-center">
+                <p class="text-sm text-gray-500"></p>
+                <p class="mt-1 text-xs text-gray-400"> SRT</p>
+              </div>
+            </div>
+
+            <div v-else>
+              <template v-for="seg in mergedSegments" :key="seg.id">
+                <TranscriptRow
+                  v-if="seg.type === 'subtitle'"
+                  :segment="seg"
+                  :edit-status="getEditStatus(seg)"
+                  :is-selected="selectedSegmentId === seg.id"
+                  @seek="handleSeek"
+                  @update-text="handleUpdateText"
+                  @mark-delete="() => { const e = edits.find(ed => Math.abs(ed.start - seg.start) < 0.01); if (e) confirmEdit(e.id) }"
+                />
+                <SilenceRow
+                  v-else
+                  :segment="seg"
+                  :edit-status="getEditStatus(seg)"
+                  @seek="handleSeek"
+                />
+              </template>
             </div>
           </div>
 
-          <div v-else class="divide-y divide-hairline">
-            <div
-              v-for="seg in mergedSegments"
-              :key="seg.id"
-              :class="[
-                'flex items-start gap-3 px-4 py-2.5 transition-colors',
-                seg.type === 'silence' ? 'bg-status-pending hover:bg-yellow-100' : 'hover:bg-parchment',
-              ]"
-            >
-              <!-- Timestamp -->
-              <span class="mt-0.5 shrink-0 text-xs text-ink-muted font-mono">
-                {{ formatTimeShort(seg.start) }}
-              </span>
-
-              <!-- Content -->
-              <div class="flex-1 min-w-0">
-                <!-- Subtitle row -->
-                <template v-if="seg.type === 'subtitle'">
-                  <p class="text-sm leading-relaxed text-ink">{{ seg.text }}</p>
-                </template>
-
-                <!-- Silence row -->
-                <template v-else>
-                  <div class="flex items-center gap-2">
-                    <span class="text-sm text-ink-muted">
-                      静音 {{ (seg.end - seg.start).toFixed(1) }}s
-                    </span>
-                    <span
-                      :class="['rounded px-1.5 py-0.5 text-xs font-medium', getEditStatusColor(getEditForSegment(seg)?.status ?? 'pending')]"
-                    >
-                      {{ getEditStatusLabel(getEditForSegment(seg)?.status ?? 'pending') }}
-                    </span>
-                  </div>
-                  <div v-if="getEditForSegment(seg)?.status === 'pending'" class="mt-1 flex gap-1.5">
-                    <button
-                      class="rounded bg-red-500 px-2 py-0.5 text-xs text-white hover:bg-red-600"
-                      @click="getEditForSegment(seg) && confirmEdit(getEditForSegment(seg)!.id)"
-                    >
-                      确认删除
-                    </button>
-                    <button
-                      class="rounded bg-green-500 px-2 py-0.5 text-xs text-white hover:bg-green-600"
-                      @click="getEditForSegment(seg) && rejectEdit(getEditForSegment(seg)!.id)"
-                    >
-                      保留
-                    </button>
-                  </div>
-                </template>
-              </div>
-
-              <!-- End timestamp -->
-              <span class="mt-0.5 shrink-0 text-xs text-ink-muted-48 font-mono">
-                {{ formatTimeShort(seg.end) }}
-              </span>
-            </div>
+          <!-- Suggestion panel (right sidebar) -->
+          <div v-if="analysisResults.length > 0 || edits.some(e => e.status === 'pending')" class="w-72 border-l border-gray-200 overflow-y-auto">
+            <SuggestionPanel
+              :analysis-results="analysisResults"
+              :edits="edits"
+              :segments="segments"
+              @confirm-edit="confirmEdit"
+              @reject-edit="rejectEdit"
+              @confirm-all="handleConfirmAllSuggestions"
+              @reject-all="handleRejectAllSuggestions"
+              @seek="handleSeek"
+            />
           </div>
         </div>
       </div>
     </div>
+
+    <!-- Export summary modal -->
+    <EditSummaryModal
+      v-if="exportSummaryData"
+      :summary="exportSummaryData"
+      :visible="showExportSummary"
+      @confirm="handleConfirmExport"
+      @cancel="showExportSummary = false"
+    />
   </div>
 </template>

@@ -1,6 +1,8 @@
 import { computed, type Ref } from "vue"
+import { call } from "@/bridge"
 import { useTask } from "./useTask"
 import type { Project } from "@/types/project"
+import type { EditSummary } from "@/types/edit"
 
 export function useExport(project: Ref<Project | null>) {
   const { createTask, startTask, activeTask, isRunning } = useTask()
@@ -28,6 +30,14 @@ export function useExport(project: Ref<Project | null>) {
     return confirmedEdits.value.reduce((sum, e) => sum + (e.end - e.start), 0)
   })
 
+  async function getExportSummary(): Promise<EditSummary | null> {
+    const res = await call<EditSummary>("get_edit_summary")
+    if (res.success && res.data) {
+      return res.data
+    }
+    return null
+  }
+
   async function exportVideo(outputPath?: string): Promise<boolean> {
     const payload: Record<string, string> = {}
     if (outputPath) {
@@ -35,7 +45,6 @@ export function useExport(project: Ref<Project | null>) {
     }
     const task = await createTask("export_video", payload)
     if (!task) return false
-
     return await startTask(task.id)
   }
 
@@ -46,7 +55,6 @@ export function useExport(project: Ref<Project | null>) {
     }
     const task = await createTask("export_subtitle", payload)
     if (!task) return false
-
     return await startTask(task.id)
   }
 
@@ -55,6 +63,7 @@ export function useExport(project: Ref<Project | null>) {
     exportProgress,
     confirmedEdits,
     estimatedSaving,
+    getExportSummary,
     exportVideo,
     exportSrt,
   }

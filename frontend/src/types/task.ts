@@ -6,6 +6,9 @@ export type TaskType =
   | "export_video"
   | "export_subtitle"
   // P1
+  | "filler_detection"
+  | "error_detection"
+  | "full_analysis"
   | "transcription"
   | "vad_analysis"
   | "waveform_generation"

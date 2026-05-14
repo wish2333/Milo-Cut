@@ -7,4 +7,6 @@ export const EVENT_PROJECT_DIRTY = "project:dirty"
 
 export const EVENT_ANALYSIS_UPDATED = "analysis:updated"
 
+export const EVENT_EDIT_SUMMARY_UPDATED = "edit:summary_updated"
+
 export const EVENT_LOG_LINE = "log_line"

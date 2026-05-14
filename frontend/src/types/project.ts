@@ -61,6 +61,7 @@ export interface TranscriptData {
 
 export interface AnalysisData {
   last_run: string | null
+  results: AnalysisResult[]
 }
 
 export interface Project {
@@ -74,7 +75,7 @@ export interface Project {
 
 export interface AnalysisResult {
   id: string
-  type: "silence" | "filler" | "error" | "repetition"
+  type: "filler" | "error"
   segment_ids: string[]
   confidence: number
   detail: string
