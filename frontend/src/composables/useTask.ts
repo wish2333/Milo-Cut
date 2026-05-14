@@ -4,14 +4,15 @@ import { useBridge } from "./useBridge"
 import { EVENT_TASK_PROGRESS, EVENT_TASK_COMPLETED, EVENT_TASK_FAILED } from "@/utils/events"
 import type { MiloTask, TaskType } from "@/types/task"
 
-export function useTask() {
-  const { on } = useBridge()
+const tasks = ref<MiloTask[]>([])
 
-  const tasks = ref<MiloTask[]>([])
-  const activeTask = computed<MiloTask | null>(
-    () => tasks.value.find((t) => t.status === "running") ?? null,
-  )
-  const isRunning = computed<boolean>(() => tasks.value.some((t) => t.status === "running"))
+let listenersRegistered = false
+
+function ensureListeners() {
+  if (listenersRegistered) return
+  listenersRegistered = true
+
+  const { on } = useBridge()
 
   on<{ task_id: string; percent: number; message: string }>(
     EVENT_TASK_PROGRESS,
@@ -51,6 +52,15 @@ export function useTask() {
       }
     }
   })
+}
+
+export function useTask() {
+  ensureListeners()
+
+  const activeTask = computed<MiloTask | null>(
+    () => tasks.value.find((t) => t.status === "running") ?? null,
+  )
+  const isRunning = computed<boolean>(() => tasks.value.some((t) => t.status === "running"))
 
   async function createTask(
     type: TaskType,

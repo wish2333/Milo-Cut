@@ -221,3 +221,7 @@ __marimo__/
 node_modules/
 dist/
 build/
+frontend_dist/
+
+# Claude
+settings.local.json

@@ -14,9 +14,12 @@ from loguru import logger
 
 from core.models import (
     EditDecision,
+    EditStatus,
     MediaInfo,
     Project,
     ProjectMeta,
+    Segment,
+    SegmentType,
     TranscriptData,
 )
 from core.paths import get_projects_dir
@@ -47,7 +50,7 @@ class ProjectService:
             ),
             media=MediaInfo(
                 path=media_path,
-                **{k: v for k, v in media_info.items() if k in MediaInfo.model_fields},
+                **{k: v for k, v in media_info.items() if k in MediaInfo.model_fields and k != "path"},
             ),
         )
 
@@ -134,5 +137,127 @@ class ProjectService:
             **{k: v for k, v in media_info.items() if k in MediaInfo.model_fields},
         )
         updated = self._current.model_copy(update={"media": info})
+        self._current = updated
+        return {"success": True, "data": updated.model_dump()}
+
+    def add_silence_results(self, silences: list[dict]) -> dict:
+        """Convert raw silence intervals to Segments + EditDecisions."""
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        existing = self._current.transcript.segments
+        existing_edits = list(self._current.edits)
+
+        new_segments: list[Segment] = []
+        new_edits: list[EditDecision] = []
+        sil_idx = len([s for s in existing if s.type == SegmentType.SILENCE])
+
+        for sil in silences:
+            sil_idx += 1
+            seg_id = f"sil-{sil_idx:04d}"
+            edit_id = f"edit-{sil_idx:04d}"
+
+            new_segments.append(Segment(
+                id=seg_id,
+                type=SegmentType.SILENCE,
+                start=sil["start"],
+                end=sil["end"],
+                text="",
+            ))
+            new_edits.append(EditDecision(
+                id=edit_id,
+                start=sil["start"],
+                end=sil["end"],
+                action="delete",
+                source="silence_detection",
+                status=EditStatus.PENDING,
+            ))
+
+        all_segments = list(existing) + new_segments
+        all_edits = existing_edits + new_edits
+
+        from core.models import AnalysisData
+        updated = self._current.model_copy(update={
+            "transcript": TranscriptData(segments=all_segments),
+            "edits": all_edits,
+            "analysis": AnalysisData(last_run=datetime.now().isoformat()),
+        })
+        self._current = updated
+        logger.info("Added {} silence segments to project", len(new_segments))
+        return {"success": True, "data": updated.model_dump()}
+
+    def update_edit_decision(self, edit_id: str, status: str) -> dict:
+        """Update the status of an edit decision."""
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        try:
+            new_status = EditStatus(status)
+        except ValueError:
+            return {"success": False, "error": f"Invalid status: {status}"}
+
+        updated_edits = []
+        found = False
+        for edit in self._current.edits:
+            if edit.id == edit_id:
+                updated_edits.append(edit.model_copy(update={"status": new_status}))
+                found = True
+            else:
+                updated_edits.append(edit)
+
+        if not found:
+            return {"success": False, "error": f"Edit decision not found: {edit_id}"}
+
+        updated = self._current.model_copy(update={"edits": updated_edits})
+        self._current = updated
+        return {"success": True, "data": updated.model_dump()}
+
+    def update_segment(self, segment_id: str, updates: dict) -> dict:
+        """Update a segment's fields (start, end, text)."""
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        allowed_fields = {"start", "end", "text"}
+        filtered = {k: v for k, v in updates.items() if k in allowed_fields}
+        if not filtered:
+            return {"success": False, "error": "No valid fields to update"}
+
+        old_seg = next(
+            (s for s in self._current.transcript.segments if s.id == segment_id),
+            None,
+        )
+        if old_seg is None:
+            return {"success": False, "error": f"Segment not found: {segment_id}"}
+
+        updated_segments = []
+        updated_seg = None
+        for seg in self._current.transcript.segments:
+            if seg.id == segment_id:
+                updated_seg = seg.model_copy(update=filtered)
+                updated_segments.append(updated_seg)
+            else:
+                updated_segments.append(seg)
+
+        updated_transcript = self._current.transcript.model_copy(
+            update={"segments": updated_segments}
+        )
+
+        update_kwargs: dict = {"transcript": updated_transcript}
+
+        if updated_seg and ("start" in filtered or "end" in filtered) and old_seg.type == SegmentType.SILENCE:
+            updated_edits = []
+            for edit in self._current.edits:
+                if (abs(edit.start - old_seg.start) < 0.01
+                        and abs(edit.end - old_seg.end) < 0.01
+                        and edit.source == "silence_detection"):
+                    updated_edits.append(edit.model_copy(update={
+                        "start": updated_seg.start,
+                        "end": updated_seg.end,
+                    }))
+                else:
+                    updated_edits.append(edit)
+            update_kwargs["edits"] = updated_edits
+
+        updated = self._current.model_copy(update=update_kwargs)
         self._current = updated
         return {"success": True, "data": updated.model_dump()}

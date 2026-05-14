@@ -50,6 +50,13 @@ def get_projects_dir() -> Path:
     return d
 
 
+def get_temp_dir() -> Path:
+    """Return temp directory for export intermediate files."""
+    d = get_data_dir() / "temp"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def _old_appdata_dir() -> Path | None:
     """Check for legacy data in APPDATA / XDG_CONFIG_HOME."""
     if sys.platform == "win32":

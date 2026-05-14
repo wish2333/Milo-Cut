@@ -1,29 +1,32 @@
 import { onUnmounted } from "vue"
 import { onEvent } from "@/bridge"
 
+interface Registration {
+  event: string
+  cleanup: () => void
+}
+
 export function useBridge() {
-  const cleanups: (() => void)[] = []
+  const registrations: Registration[] = []
 
   function on<T = unknown>(event: string, callback: (detail: T) => void) {
-    const off = onEvent<T>(event, callback)
-    cleanups.push(off)
-    return off
+    const cleanup = onEvent<T>(event, callback)
+    registrations.push({ event, cleanup })
+    return cleanup
   }
 
-  function off(_event: string) {
-    // Remove all listeners for a specific event
-    const idx = cleanups.findIndex((fn) => {
-      fn()
-      return true
-    })
-    if (idx >= 0) {
-      cleanups.splice(idx, 1)
+  function off(event: string) {
+    for (let i = registrations.length - 1; i >= 0; i--) {
+      if (registrations[i].event === event) {
+        registrations[i].cleanup()
+        registrations.splice(i, 1)
+      }
     }
   }
 
   function cleanup() {
-    cleanups.forEach((fn) => fn())
-    cleanups.length = 0
+    registrations.forEach((r) => r.cleanup())
+    registrations.length = 0
   }
 
   onUnmounted(cleanup)

@@ -56,17 +56,16 @@ class TaskManager:
         """Start a queued task on a background thread."""
         with self._lock:
             task = self._tasks.get(task_id)
-        if task is None:
-            return {"success": False, "error": f"Task not found: {task_id}"}
-        if task.status != TaskStatus.QUEUED:
-            return {"success": False, "error": f"Task {task_id} is {task.status}, not queued"}
+            if task is None:
+                return {"success": False, "error": f"Task not found: {task_id}"}
+            if task.status != TaskStatus.QUEUED:
+                return {"success": False, "error": f"Task {task_id} is {task.status}, not queued"}
 
-        handler = self._handlers.get(task.type)
-        if handler is None:
-            return {"success": False, "error": f"No handler for task type: {task.type}"}
+            handler = self._handlers.get(task.type)
+            if handler is None:
+                return {"success": False, "error": f"No handler for task type: {task.type}"}
 
-        cancel_event = threading.Event()
-        with self._lock:
+            cancel_event = threading.Event()
             self._cancel_events[task_id] = cancel_event
             self._tasks[task_id] = task.model_copy(update={
                 "status": TaskStatus.RUNNING,
@@ -79,7 +78,8 @@ class TaskManager:
             daemon=True,
         )
         thread.start()
-        return {"success": True, "data": self._tasks[task_id].model_dump()}
+        with self._lock:
+            return {"success": True, "data": self._tasks[task_id].model_dump()}
 
     def cancel_task(self, task_id: str) -> dict:
         """Request cancellation of a running task."""

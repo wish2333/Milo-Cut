@@ -20,6 +20,10 @@ waitForPyWebView(10_000)
 function onProjectCreated(data: Project) {
   project.value = data
 }
+
+function onProjectUpdated(data: Project) {
+  project.value = data
+}
 </script>
 
 <template>
@@ -39,5 +43,5 @@ function onProjectCreated(data: Project) {
 
   <WelcomePage v-else-if="!project" @project-created="onProjectCreated" />
 
-  <WorkspacePage v-else :project="project" />
+  <WorkspacePage v-else :project="project" @project-updated="onProjectUpdated" />
 </template>

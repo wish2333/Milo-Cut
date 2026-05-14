@@ -6,6 +6,7 @@ AI-powered video preprocessing tool for oral presentation videos.
 from __future__ import annotations
 
 import sys
+import os
 
 from pywebvue import App, Bridge, expose
 
@@ -18,6 +19,7 @@ from core.paths import migrate_if_needed
 from core.project_service import ProjectService
 from core.subtitle_service import parse_srt
 from core.task_manager import TaskManager
+from core.export_service import export_srt, export_video
 
 
 class MiloCutApi(Bridge):
@@ -34,9 +36,15 @@ class MiloCutApi(Bridge):
         self._task_manager.register_handler(
             TaskType.SILENCE_DETECTION, self._handle_silence_detection
         )
+        self._task_manager.register_handler(
+            TaskType.EXPORT_VIDEO, self._handle_export_video
+        )
+        self._task_manager.register_handler(
+            TaskType.EXPORT_SUBTITLE, self._handle_export_subtitle
+        )
 
     def _handle_silence_detection(self, task, cancel_event):
-        """Run silence detection on the project media."""
+        """Run silence detection on the project media and store results."""
         if self._project.current is None or self._project.current.media is None:
             raise ValueError("No media loaded")
         media_path = self._project.current.media.path
@@ -48,7 +56,56 @@ class MiloCutApi(Bridge):
         )
         if not result["success"]:
             raise RuntimeError(result["error"])
-        return {"silences": result["data"]}
+        store_result = self._project.add_silence_results(result["data"])
+        if not store_result["success"]:
+            raise RuntimeError(store_result.get("error", "Failed to store silence results"))
+        return {"project": store_result["data"]}
+
+    def _handle_export_video(self, task, cancel_event):
+        """Export cut video as a background task."""
+        if self._project.current is None:
+            raise ValueError("No project open")
+        if self._project.current.media is None:
+            raise ValueError("No media in project")
+        project = self._project.current
+        segments_data = [s.model_dump() for s in project.transcript.segments]
+        edits_data = [e.model_dump() for e in project.edits]
+        media_path = project.media.path
+        output_path = task.payload.get("output_path", "")
+        if not output_path:
+            base, ext = os.path.splitext(media_path)
+            output_path = f"{base}_cut{ext}"
+
+        def progress_cb(percent: float, message: str = "") -> None:
+            self._task_manager._update_progress(task.id, percent, message)
+
+        return export_video(
+            media_path=media_path,
+            segments=segments_data,
+            edits=edits_data,
+            output_path=output_path,
+            progress_callback=progress_cb,
+            cancel_event=cancel_event,
+        )
+
+    def _handle_export_subtitle(self, task, cancel_event):
+        """Export synchronized SRT as a background task."""
+        if self._project.current is None:
+            raise ValueError("No project open")
+        if self._project.current.media is None:
+            raise ValueError("No media in project")
+        project = self._project.current
+        segments_data = [s.model_dump() for s in project.transcript.segments]
+        edits_data = [e.model_dump() for e in project.edits]
+        output_path = task.payload.get("output_path", "")
+        if not output_path:
+            output_path = os.path.splitext(project.media.path)[0] + "_cut.srt"
+
+        return export_srt(
+            segments=segments_data,
+            edits=edits_data,
+            output_path=output_path,
+        )
 
     # ================================================================
     # System
@@ -173,6 +230,36 @@ class MiloCutApi(Bridge):
     @expose
     def list_tasks(self) -> dict:
         return self._task_manager.list_tasks()
+
+    # ================================================================
+    # Project State
+    # ================================================================
+
+    @expose
+    def get_project(self) -> dict:
+        if self._project.current is None:
+            return {"success": False, "error": "No project open"}
+        return {"success": True, "data": self._project.current.model_dump()}
+
+    @expose
+    def update_edit_decision(self, edit_id: str, status: str) -> dict:
+        return self._project.update_edit_decision(edit_id, status)
+
+    @expose
+    def update_segment(self, segment_id: str, updates: dict) -> dict:
+        return self._project.update_segment(segment_id, updates)
+
+    @expose
+    def select_export_path(self, default_name: str) -> dict:
+        import webview
+        result = webview.windows[0].create_file_dialog(
+            webview.SAVE_DIALOG,
+            save_filename=default_name,
+            file_types=("Video files (*.mp4)", "All files (*.*)"),
+        )
+        if result:
+            return {"success": True, "data": str(result)}
+        return {"success": True, "data": None}
 
 
 if __name__ == "__main__":

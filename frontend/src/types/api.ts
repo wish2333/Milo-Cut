@@ -28,3 +28,8 @@ export type BridgeMethod =
   | "cancel_task"
   | "get_task"
   | "list_tasks"
+  // Project State
+  | "get_project"
+  | "update_edit_decision"
+  | "update_segment"
+  | "select_export_path"
