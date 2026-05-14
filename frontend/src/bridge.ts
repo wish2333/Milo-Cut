@@ -1,17 +1,18 @@
 /** Core bridge functions for communicating with the Python backend. */
 
 export interface ApiResponse<T = unknown> {
-  success: boolean;
-  data?: T;
-  error?: string;
+  success: boolean
+  data?: T
+  error?: string
+  code?: string
 }
 
 function getRawApi(): PyWebViewApi {
-  const pw = window.pywebview;
+  const pw = window.pywebview
   if (!pw || !pw.api) {
-    throw new Error("pywebview API not available. Wait for pywebview to initialize.");
+    throw new Error("pywebview API not available. Wait for pywebview to initialize.")
   }
-  return pw.api;
+  return pw.api
 }
 
 /**
@@ -20,20 +21,29 @@ function getRawApi(): PyWebViewApi {
  */
 export function waitForPyWebView(timeout = 10_000): Promise<void> {
   return new Promise((resolve, reject) => {
-    const start = Date.now();
+    const start = Date.now()
     const check = () => {
       if (window.pywebview?.api) {
-        resolve();
-        return;
+        resolve()
+        return
       }
       if (Date.now() - start > timeout) {
-        reject(new Error("pywebview bridge did not initialize within timeout"));
-        return;
+        reject(new Error("pywebview bridge did not initialize within timeout"))
+        return
       }
-      setTimeout(check, 50);
-    };
-    check();
-  });
+      setTimeout(check, 100)
+    }
+    check()
+  })
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`Bridge call timed out after ${ms}ms`)), ms),
+    ),
+  ])
 }
 
 /**
@@ -48,11 +58,14 @@ export async function call<T = unknown>(
   method: string,
   ...args: unknown[]
 ): Promise<ApiResponse<T>> {
-  const api = getRawApi();
+  const api = getRawApi()
   if (!(method in api)) {
-    return { success: false, error: `Method '${method}' not found on bridge` };
+    return { success: false, error: `Method '${method}' not found on bridge` }
   }
-  return (await api[method](...args)) as ApiResponse<T>;
+  return withTimeout(
+    api[method](...args) as Promise<ApiResponse<T>>,
+    30_000,
+  )
 }
 
 /**
@@ -73,10 +86,10 @@ export function onEvent<T = unknown>(
   name: string,
   handler: (detail: T) => void,
 ): () => void {
-  const event = `pywebvue:${name}`;
+  const event = `pywebvue:${name}`
   const listener = (e: Event) => {
-    handler((e as CustomEvent).detail);
-  };
-  window.addEventListener(event, listener);
-  return () => window.removeEventListener(event, listener);
+    handler((e as CustomEvent).detail)
+  }
+  window.addEventListener(event, listener)
+  return () => window.removeEventListener(event, listener)
 }

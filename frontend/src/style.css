@@ -1,0 +1,35 @@
+@import "tailwindcss";
+
+@plugin "daisyui" {
+  themes: appleLight --default;
+  prefix: false;
+}
+
+@theme {
+  --color-primary: #0066cc;
+  --color-canvas: #ffffff;
+  --color-parchment: #f5f5f7;
+  --color-ink: #1d1d1f;
+  --color-ink-muted: #86868b;
+  --color-ink-muted-48: #6e6e73;
+  --color-hairline: #d2d2d7;
+  --color-surface-tile-1: #272729;
+  --color-status-pending: #fff9e6;
+  --color-status-confirmed: #fef2f2;
+  --color-status-rejected: #f0fdf4;
+  --color-status-warning: #dc2626;
+
+  --font-apple: "OPPO Sans 4.0", "Source Sans Pro", system-ui, sans-serif;
+
+  --radius-apple-lg: 18px;
+  --radius-apple-pill: 9999px;
+  --radius-apple-sm: 8px;
+}
+
+html,
+body {
+  font-family: var(--font-apple);
+  color: var(--color-ink);
+  background: var(--color-canvas);
+  -webkit-font-smoothing: antialiased;
+}
