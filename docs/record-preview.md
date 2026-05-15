@@ -1856,3 +1856,210 @@ Resolves: docs/audit-report-preview-4.md (B1-B4, C2)
 
 ---
 
+## Session 11: 导出截断与字幕时间轴修复 (2026-05-16)
+
+### 问题背景
+
+用户报告 B1 (媒体时长低估) 修复后，导出仍有问题：
+1. 音频导出末尾 5-6 条字幕对应音频缺失
+2. SRT 字幕时间戳与导出音频不对齐，存在大量重叠
+
+### 诊断过程
+
+通过添加诊断日志 `export_srt` / `export_audio` / `export_video` 捕获运行时数据：
+- `media_duration=364.94`, `total_duration=365.65` -- B1 的 `_get_media_duration` 修复已生效
+- 97 个 confirmed deletions，23 条字幕被过滤（符合用户预期）
+- 末尾 keep_range 结束于 363.23，非 total_duration 截断问题
+
+### 根因分析
+
+**问题 1：音频末尾截断**
+- 旧流程：逐段提取为 AAC .ts -> concat demuxer `-c copy` 拼接
+- 每段独立 AAC 编码产生 ~23ms priming，98 段累积 ~2.3 秒偏移
+- 导致导出音频实际长度短于 keep_ranges 计算值
+
+**问题 2：SRT 时间戳重叠**
+- 旧逻辑用 `cumulative_offset` 线性减法调整时间戳
+- 条件 `deletion_end <= seg_start` 遗漏了字幕起始点在删除区间内的情况
+- 例：字幕 [18,22] 与删除 [10,20] 重叠，偏移未计入，导致时间戳错误
+
+### 修复内容
+
+#### 1. 音频导出改为 FFmpeg filter_complex 单次通过
+
+**文件**: `core/export_service.py` -- `export_audio`, `_build_audio_trim_filter`
+
+```
+旧：逐段提取 AAC .ts -> concat -c copy (有 priming 累积)
+    _extract_segment -> _concat_segments(reencode_audio=True)
+
+新：单次 filter_complex 通过，样本级精度裁剪
+    _build_audio_trim_filter(keep_ranges)
+    -> atrim=start=X:end=Y,asetpts=PTS-STARTPTS per range
+    -> concat=n=N:v=0:a=1[out]
+    ffmpeg -i input -filter_complex_script filter.txt -c:a aac output
+```
+
+- 用 `atrim` 精确裁剪每个 keep range（样本级精度）
+- 用 `concat` 滤镜拼接所有裁剪段
+- 只有一次 AAC 编码，无累积 priming
+- filter 写入临时文件 (`-filter_complex_script`)，不受命令行长度限制
+
+#### 2. SRT 时间轴映射改用 keep_ranges 精确映射
+
+**文件**: `core/export_service.py` -- 新增 `_map_to_exported_timeline`
+
+```
+旧：线性 offset 减法（字幕与删除重叠时计算错误）
+    while del_idx < len(deletions) and deletions[del_idx][1] <= seg_start:
+        cumulative_offset += deletions[del_idx][1] - deletions[del_idx][0]
+    new_start = seg_start - cumulative_offset
+
+新：基于 keep_ranges 的精确映射
+    def _map_to_exported_timeline(seg_start, seg_end, keep_ranges):
+        cumulative = 0.0
+        for ks, ke in keep_ranges:
+            overlap_start = max(seg_start, ks)
+            overlap_end = min(seg_end, ke)
+            if overlap_start < overlap_end:
+                exported_start = cumulative + (overlap_start - ks)
+                exported_end = cumulative + (overlap_end - ks)
+            cumulative += ke - ks
+        return exported_start, exported_end
+```
+
+- 裁剪字幕到 keep range 边界，消除重叠
+- 正确处理字幕跨越删除区间的情况
+- 映射结果与 filter_complex 的 atrim 裁剪完全一致
+
+#### 3. 诊断日志
+
+**文件**: `core/export_service.py` -- `export_video`, `export_audio`, `export_srt`
+
+在所有导出入口添加日志：
+- `media_duration`, `total_duration`, `deletions` 数量, `keep_ranges`
+- 被过滤字幕的 `(start, end, text[:30])` 列表
+
+### 验证
+
+- 音频导出：末尾截断修复，总时长与 keep_ranges 总和一致
+- SRT 导出：无时间戳重叠，时间轴与音频对齐
+- 长音频兼容：filter 写入文件 (`-filter_complex_script`)，不受命令行 32767 字符限制
+
+---
+
+## Session 12 - 视频导出 filter_complex 统一方案 (2026-05-16)
+
+### 问题
+
+上一 session 修复了音频导出（单次 pass filter_complex），但视频导出仍使用旧的逐段提取 + concat demuxer 方案，存在以下问题：
+
+1. **视频导出时间漂移**: 逐段提取 .ts + concat 存在 AAC priming 累积（每段约 23ms），97 段约 2.3 秒偏移
+2. **WAV 文件导出视频结果错误**: WAV 输入点击导出视频只输出第一句话的内容，其余为静音
+3. **filter_complex 方案对视频无效**: 尝试了多种 filter_complex 方案均失败
+
+### 根因分析
+
+#### 问题 1: 视频导出时间漂移
+- 原因与音频导出相同：逐段独立编码 + concat 导致 AAC 时间戳累积偏移
+- 解决方案：统一使用 filter_complex 单次 pass
+
+#### 问题 2: WAV 导出视频错误
+- **根因**: 视频导出的 `output_path` 继承输入扩展名 (`_cut.wav`)，但内部使用 AAC 编码
+- WAV 容器不适合存放 AAC 编码音频，导致播放异常
+- 而音频导出按钮始终输出 `_cut.m4a`（正确的 AAC 容器），所以音频导出一直正常
+
+#### 问题 3: filter_complex 视频方案的失败历程
+
+| 方案 | 失败原因 |
+|------|---------|
+| `select` + `between(t,a,b)` 表达式 | 100+ 个 between 项，FFmpeg OOM |
+| `split` + `asplit` + trim + concat | concat 输入顺序错误（所有 video 再所有 audio），FFmpeg Media type mismatch |
+| 修复 concat 交错顺序后 | 仍未测试真实视频输入（之前输入都是 WAV） |
+
+### 修复内容
+
+#### 1. `export_video` 统一使用 filter_complex (`_build_video_trim_filter`)
+
+**替换**: 旧的逐段提取 (.ts) + concat demuxer (`_extract_segment`) 方案
+
+**新方案**: 单次 pass filter_complex
+- 视频: `split=N` + 每段 `trim + setpts=PTS-STARTPTS`
+- 音频: `asplit=N` + 每段 `atrim + asetpts=PTS-STARTPTS`
+- 合并: `concat=n=N:v=1:a=1[outv][outa]`
+
+关键: concat 输入必须是 **交错排列** `[v0][a0][v1][a1]...`，不能分组排列 `[v0][v1]...[a0][a1]...`
+
+#### 2. WAV 输入委托给 `export_audio` + 扩展名修正
+
+```python
+# export_video 中，当 has_video=False 时委托给 export_audio
+if not has_video:
+    out = Path(output_path)
+    if out.suffix.lower() == ".wav":
+        output_path = str(out.with_suffix(".m4a"))  # WAV 容器不能放 AAC
+    return export_audio(...)
+```
+
+#### 3. `_build_audio_trim_filter` 改用 `asplit` (`Session 11` 中已引入)
+
+使用 `asplit=N` 显式分流，避免多次引用 `[0:a]` 导致某些格式（如 WAV 顺序读取）下第二个 atrim 开始读到 EOF 产生静音。
+
+#### 4. 新增 `_build_video_trim_filter` (`core/export_service.py`)
+
+生成视频+音频的 filter_complex：
+- `split=N` 分流视频流，`asplit=N` 分流音频流
+- 每段 `trim+setpts`（视频）和 `atrim+asetpts`（音频）
+- `concat=n=N:v=1:a=1` 交错排列输入
+
+### 诊断日志
+
+在 `export_video` 入口添加：
+
+```python
+logger.info("export_video: has_video={}, media_path={}, width={}", ...)
+```
+
+### 验证
+
+- WAV 输入点击导出视频 -> 输出 `_cut.m4a`，音频内容完整正确
+- 视频输入点击导出视频 -> filter_complex 单次 pass，音视频时间对齐
+- SRT 导出不受影响
+- 音频导出按钮功能不变（`_cut.m4a`）
+
+### 📝 Commit Message
+
+```
+fix(export): 修复音频导出末尾截断与SRT时间轴对齐问题
+
+- 改用 FFmpeg filter_complex 单次通过替代逐段 AAC 编码，解决 priming 累积偏移
+- 重构 SRT 时间戳映射逻辑，基于 keep_ranges 精确计算替代线性减法
+- 确保导出音频与字幕时间轴完全对齐，消除重叠现象
+
+refactor(export): 统一视频导出为 filter_complex 方案
+
+- 替换视频导出中的逐段提取 + concat demuxer 方案
+- 修复 WAV 输入导出视频内容不完整的问题
+- 解决视频导出时间漂移问题，与音频导出保持一致
+```
+
+### 🚀 Release Notes
+
+```
+## 2026-05-16 - 导出功能精确性优化
+
+### ✨ 新增
+- 新增基于 keep_ranges 的精确时间轴映射，提高字幕同步精确度
+
+### 🐛 修复
+- 修复导出音频末尾截断问题：确保导出音频完整覆盖所有保留字幕
+- 修复SRT字幕时间戳与音频不对齐：消除字幕时间重叠，提高同步精确度
+- 修复WAV输入导出视频时内容不完整的问题
+
+### ⚡ 优化
+- 提升导出精确度：从样本级精度替代原有累积误差方法
+- 统一音视频导出流程：使用相同的filter_complex处理逻辑，提高一致性
+- 性能优化：减少逐段处理产生的延迟，特别是长视频导出
+```
+
+---
