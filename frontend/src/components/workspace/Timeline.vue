@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { Segment, EditDecision, AnalysisResult } from "@/types/project"
+import { getEditStatus as queryEditStatus, getEffectiveStatus as queryEffectiveStatus } from "@/utils/segmentHelpers"
 import TranscriptRow from "@/components/workspace/TranscriptRow.vue"
 import SilenceRow from "@/components/workspace/SilenceRow.vue"
 import SuggestionPanel from "@/components/workspace/SuggestionPanel.vue"
@@ -29,37 +30,12 @@ const emit = defineEmits<{
   "toggle-edit-mode": []
 }>()
 
-function isOverlapping(edit: EditDecision, seg: Segment): boolean {
-  return edit.start < seg.end && edit.end > seg.start
-}
-
-function getEditForSegment(seg: Segment): EditDecision | undefined {
-  // 优先 ID 匹配
-  const byId = props.edits.find(e => e.target_id === seg.id)
-  if (byId) return byId
-
-  // 回退到时间匹配（兼容旧数据和 range 类型）
-  return props.edits.find(e =>
-    Math.abs(e.start - seg.start) < 0.01 && Math.abs(e.end - seg.end) < 0.01,
-  )
+function getEditStatus(seg: Segment): EditDecision["status"] | null {
+  return queryEditStatus(props.edits, seg)
 }
 
 function getEffectiveStatus(seg: Segment): "normal" | "masked" | "kept" {
-  const related = props.edits.filter(e =>
-    e.target_id === seg.id || isOverlapping(e, seg),
-  )
-
-  if (related.length === 0) return "normal"
-
-  // 按优先级降序，取最高
-  const top = related.sort((a, b) => b.priority - a.priority)[0]
-
-  if (top.action === "delete") return "masked"
-  return "kept"
-}
-
-function getEditStatus(seg: Segment): EditDecision["status"] | null {
-  return getEditForSegment(seg)?.status ?? null
+  return queryEffectiveStatus(props.edits, seg)
 }
 </script>
 

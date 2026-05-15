@@ -7,9 +7,10 @@ import { call } from "@/bridge"
 import { useAnalysis } from "@/composables/useAnalysis"
 import { useExport } from "@/composables/useExport"
 import { useEdit } from "@/composables/useEdit"
+import { useSegmentEdit } from "@/composables/useSegmentEdit"
 import ProgressBar from "@/components/common/ProgressBar.vue"
 import Timeline from "@/components/workspace/Timeline.vue"
-import TimelineRuler from "@/components/workspace/TimelineRuler.vue"
+import WaveformEditor from "@/components/waveform/WaveformEditor.vue"
 import SearchReplaceBar from "@/components/workspace/SearchReplaceBar.vue"
 import EditSummaryModal from "@/components/workspace/EditSummaryModal.vue"
 import VideoControls from "@/components/workspace/VideoControls.vue"
@@ -53,12 +54,18 @@ const {
 } = useExport(projectRef)
 
 const {
-  updateSegmentText,
-  updateSegmentTime,
   searchReplace,
   confirmAllSuggestions,
   rejectAllSuggestions,
 } = useEdit(projectRef)
+
+const {
+  selectedSegmentId: editSelectedSegmentId,
+  selectRange: selectEditRange,
+  updateSegmentTime,
+  updateSegmentText,
+  toggleEditStatus,
+} = useSegmentEdit(projectRef as any, (val: Project) => emit("project-updated", val))
 
 const statusMessage = ref("")
 const errorMessage = ref("")
@@ -66,8 +73,6 @@ const showAnalysisDropdown = ref(false)
 const showExportSummary = ref(false)
 const showSilenceSettings = ref(false)
 const exportSummaryData = ref<EditSummary | null>(null)
-const selectedSegmentId = ref<string | null>(null)
-const selectedRange = ref<{ start: number; end: number } | null>(null)
 const videoUrl = ref("")
 const videoRef = ref<HTMLVideoElement | null>(null)
 const currentTime = ref(0)
@@ -179,30 +184,7 @@ function handleFullscreen() {
 }
 
 async function handleToggleEditStatus(segment: Segment, nextStatus?: string) {
-  const edit = edits.value.find(e =>
-    Math.abs(e.start - segment.start) < 0.01 && Math.abs(e.end - segment.end) < 0.01,
-  )
-  if (!edit) {
-    // No EditDecision yet -> create one as "confirmed" (mark for deletion)
-    await call("mark_segments", [segment.id], "delete", "confirmed")
-    const projRes = await call<Project>("get_project")
-    if (projRes.success && projRes.data) {
-      emit("project-updated", projRes.data)
-    }
-    return
-  }
-  // Cycle: confirmed <-> rejected (skip pending)
-  // Only OK/Keep buttons set from pending
-  const status = nextStatus ?? (
-    edit.status === "confirmed" ? "rejected"
-    : edit.status === "rejected" ? "confirmed"
-    : "confirmed"
-  )
-  await call<Project>("update_edit_decision", edit.id, status)
-  const projRes = await call<Project>("get_project")
-  if (projRes.success && projRes.data) {
-    emit("project-updated", projRes.data)
-  }
+  await toggleEditStatus(segment, nextStatus)
 }
 
 async function handleImportSrt() {
@@ -267,15 +249,13 @@ async function handleSearchReplace(query: string, replacement: string, scope: st
 }
 
 function handleSelectRange(start: number, end: number) {
-  // Store selection for potential use (e.g., add segment, export range)
-  selectedRange.value = { start, end }
+  selectEditRange(start, end)
 }
 
 async function handleAddSegment(start: number, end: number) {
   const res = await call<Project>("add_segment", start, end, "", "subtitle")
   if (res.success && res.data) {
     emit("project-updated", res.data)
-    statusMessage.value = "Clip region added"
   } else {
     errorMessage.value = res.error ?? "Failed to add segment"
   }
@@ -523,8 +503,8 @@ onUnmounted(() => {
     <div class="flex flex-1 overflow-hidden">
       <!-- Left: Video player area -->
       <div class="flex w-2/5 min-w-[400px] flex-col border-r border-gray-200 bg-gray-900">
-        <div class="flex flex-1 items-center justify-center p-2">
-          <div v-if="videoUrl" class="flex flex-col w-full">
+        <div class="flex flex-1 items-center justify-center p-2 overflow-hidden">
+          <div v-if="videoUrl" class="flex flex-col w-full h-full items-center justify-center">
             <video
               ref="videoRef"
               :src="videoUrl"
@@ -536,18 +516,6 @@ onUnmounted(() => {
               @pause="videoPaused = true"
               @click="handleTogglePlay"
             />
-            <VideoControls
-              :current-time="currentTime"
-              :duration="duration"
-              :paused="videoPaused"
-              :volume="videoVolume"
-              :playback-rate="videoPlaybackRate"
-              @update:current-time="handleSeekTo"
-              @update:volume="handleVolumeChange"
-              @update:playback-rate="handleRateChange"
-              @toggle-play="handleTogglePlay"
-              @toggle-fullscreen="handleFullscreen"
-            />
           </div>
           <div v-else class="text-center text-gray-400">
             <svg xmlns="http://www.w3.org/2000/svg" class="mx-auto h-16 w-16 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1">
@@ -556,6 +524,18 @@ onUnmounted(() => {
             <p class="mt-2 text-sm">Loading video...</p>
           </div>
         </div>
+        <VideoControls
+          :current-time="currentTime"
+          :duration="duration"
+          :paused="videoPaused"
+          :volume="videoVolume"
+          :playback-rate="videoPlaybackRate"
+          @update:current-time="handleSeekTo"
+          @update:volume="handleVolumeChange"
+          @update:playback-rate="handleRateChange"
+          @toggle-play="handleTogglePlay"
+          @toggle-fullscreen="handleFullscreen"
+        />
       </div>
 
       <!-- Right: Timeline (transcript editor + suggestion panel) -->
@@ -565,7 +545,7 @@ onUnmounted(() => {
         :analysis-results="analysisResults"
         :subtitle-count="subtitleCount"
         :silence-count="silenceCount"
-        :selected-segment-id="selectedSegmentId"
+        :selected-segment-id="editSelectedSegmentId"
         :global-edit-mode="globalEditMode"
         @seek="handleSeek"
         @update-text="handleUpdateText"
@@ -582,12 +562,14 @@ onUnmounted(() => {
       />
     </div>
 
-    <!-- Bottom: Timeline ruler -->
-    <TimelineRuler
+    <!-- Bottom: Waveform editor -->
+    <WaveformEditor
       :segments="mergedSegments"
       :edits="edits"
       :duration="duration"
       :current-time="currentTime"
+      :waveform-path="project.media?.waveform_path"
+      :update-time="updateSegmentTime"
       @seek="handleSeek"
       @select-range="handleSelectRange"
       @add-segment="handleAddSegment"

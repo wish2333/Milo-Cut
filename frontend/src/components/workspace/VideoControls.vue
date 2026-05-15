@@ -57,6 +57,23 @@ const progressPercent = computed(() => {
 const showVolume = ref(false)
 const volumeRef = ref<HTMLDivElement | null>(null)
 const isAdjustingVolume = ref(false)
+let volumeHideTimer: ReturnType<typeof setTimeout> | null = null
+
+function showVolumePopup() {
+  if (volumeHideTimer) {
+    clearTimeout(volumeHideTimer)
+    volumeHideTimer = null
+  }
+  showVolume.value = true
+}
+
+function hideVolumePopup() {
+  if (volumeHideTimer) clearTimeout(volumeHideTimer)
+  volumeHideTimer = setTimeout(() => {
+    showVolume.value = false
+    volumeHideTimer = null
+  }, 300)
+}
 
 function handleVolumeMouseDown(e: MouseEvent) {
   if (e.button !== 0) return
@@ -131,6 +148,7 @@ const volumeIcon = computed(() => {
 })
 
 onUnmounted(() => {
+  if (volumeHideTimer) clearTimeout(volumeHideTimer)
   document.removeEventListener("mousemove", handleProgressMouseMove)
   document.removeEventListener("mouseup", handleProgressMouseUp)
   document.removeEventListener("mousemove", handleVolumeMouseMove)
@@ -209,8 +227,8 @@ onUnmounted(() => {
         class="flex items-center justify-center w-7 h-7 rounded hover:bg-white/10 transition-colors"
         :title="volume > 0 ? 'Mute (M)' : 'Unmute (M)'"
         @click="emit('update:volume', volume > 0 ? 0 : 0.75)"
-        @mouseenter="showVolume = true"
-        @mouseleave="showVolume = false"
+        @mouseenter="showVolumePopup"
+        @mouseleave="hideVolumePopup"
       >
         <!-- Muted -->
         <svg v-if="volumeIcon === 'muted'" xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -231,8 +249,8 @@ onUnmounted(() => {
       <div
         v-show="showVolume"
         class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 p-2 bg-gray-800 rounded shadow-lg"
-        @mouseenter="showVolume = true"
-        @mouseleave="showVolume = false"
+        @mouseenter="showVolumePopup"
+        @mouseleave="hideVolumePopup"
       >
         <div
           ref="volumeRef"
