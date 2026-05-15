@@ -19,22 +19,73 @@ const emit = defineEmits<{
 
 const expandedGroups = ref<Set<string>>(new Set(["filler", "error"]))
 
+interface SuggestionItem {
+  id: string
+  start: number
+  end: number
+  label: string
+  type: "filler" | "error" | "silence"
+}
+
 interface GroupedResult {
   type: string
   label: string
-  results: AnalysisResult[]
+  items: SuggestionItem[]
 }
 
 const groups = computed<GroupedResult[]>(() => {
-  const fillerResults = props.analysisResults.filter(r => r.type === "filler")
-  const errorResults = props.analysisResults.filter(r => r.type === "error")
   const result: GroupedResult[] = []
+
+  // Filler results
+  const fillerResults = props.analysisResults.filter(r => r.type === "filler")
   if (fillerResults.length > 0) {
-    result.push({ type: "filler", label: "口头禅", results: fillerResults })
+    result.push({
+      type: "filler",
+      label: "口头禅",
+      items: fillerResults.map(r => ({
+        id: r.id,
+        start: props.segments.find(s => r.segment_ids.includes(s.id))?.start ?? 0,
+        end: props.segments.find(s => r.segment_ids.includes(s.id))?.end ?? 0,
+        label: r.detail,
+        type: "filler" as const,
+      })),
+    })
   }
+
+  // Error results
+  const errorResults = props.analysisResults.filter(r => r.type === "error")
   if (errorResults.length > 0) {
-    result.push({ type: "error", label: "口误触发", results: errorResults })
+    result.push({
+      type: "error",
+      label: "口误触发",
+      items: errorResults.map(r => ({
+        id: r.id,
+        start: props.segments.find(s => r.segment_ids.includes(s.id))?.start ?? 0,
+        end: props.segments.find(s => r.segment_ids.includes(s.id))?.end ?? 0,
+        label: r.detail,
+        type: "error" as const,
+      })),
+    })
   }
+
+  // Silence results
+  const silenceEdits = props.edits.filter(
+    e => e.source === "silence_detection" && e.status === "pending"
+  )
+  if (silenceEdits.length > 0) {
+    result.push({
+      type: "silence",
+      label: "静音检测",
+      items: silenceEdits.map(e => ({
+        id: e.id,
+        start: e.start,
+        end: e.end,
+        label: `静音 ${(e.end - e.start).toFixed(1)}s`,
+        type: "silence" as const,
+      })),
+    })
+  }
+
   return result
 })
 
@@ -54,15 +105,15 @@ function isExpanded(type: string): boolean {
   return expandedGroups.value.has(type)
 }
 
-function getEditForResult(result: AnalysisResult): EditDecision | undefined {
-  return props.edits.find(e => e.analysis_id === result.id)
+function getEditForItem(item: SuggestionItem): EditDecision | undefined {
+  if (item.type === "silence") {
+    return props.edits.find(e => e.id === item.id)
+  }
+  return props.edits.find(e => e.analysis_id === item.id)
 }
 
-function handleSeek(result: AnalysisResult) {
-  const seg = props.segments.find(s => result.segment_ids.includes(s.id))
-  if (seg) {
-    emit("seek", seg.start)
-  }
+function handleSeek(item: SuggestionItem) {
+  emit("seek", item.start)
 }
 </script>
 
@@ -87,33 +138,33 @@ function handleSeek(result: AnalysisResult) {
         @click="toggleGroup(group.type)"
       >
         <span class="text-sm font-medium">
-          {{ isExpanded(group.type) ? "v" : ">" }} {{ group.label }} ({{ group.results.length }})
+          {{ isExpanded(group.type) ? "v" : ">" }} {{ group.label }} ({{ group.items.length }})
         </span>
       </button>
 
       <div v-if="isExpanded(group.type)" class="divide-y divide-gray-50">
         <div
-          v-for="result in group.results"
-          :key="result.id"
+          v-for="item in group.items"
+          :key="item.id"
           class="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 cursor-pointer"
-          @click="handleSeek(result)"
+          @click="handleSeek(item)"
         >
           <span class="text-xs text-gray-400 w-14 shrink-0 font-mono">
-            {{ result.segment_ids.length > 0 ? formatTime(segments.find(s => s.id === result.segment_ids[0])?.start ?? 0) : "" }}
+            {{ formatTime(item.start) }}
           </span>
           <span class="flex-1 text-sm truncate">
-            {{ result.detail }}
+            {{ item.label }}
           </span>
-          <template v-if="getEditForResult(result)">
+          <template v-if="getEditForItem(item)">
             <button
               class="text-xs px-2 py-0.5 rounded bg-blue-500 text-white hover:bg-blue-600"
-              @click.stop="emit('confirm-edit', getEditForResult(result)!.id)"
+              @click.stop="emit('confirm-edit', getEditForItem(item)!.id)"
             >
               确认
             </button>
             <button
               class="text-xs px-2 py-0.5 rounded bg-gray-200 text-gray-600 hover:bg-gray-300"
-              @click.stop="emit('reject-edit', getEditForResult(result)!.id)"
+              @click.stop="emit('reject-edit', getEditForItem(item)!.id)"
             >
               忽略
             </button>

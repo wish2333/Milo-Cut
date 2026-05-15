@@ -81,11 +81,57 @@ class ProjectService:
             self._current = project
             self._current_path = project_path
             logger.info("Opened project: {}", path)
-            return {"success": True, "data": project.model_dump()}
+
+            # Migrate old format silence edits
+            self._migrate_silence_edits()
+
+            # Check media path reachability
+            warnings = []
+            if self._current.media and self._current.media.path:
+                if not Path(self._current.media.path).exists():
+                    warnings.append(f"Media file not found: {self._current.media.path}")
+
+            result = {"success": True, "data": self._current.model_dump()}
+            if warnings:
+                result["warnings"] = warnings
+            return result
 
         except Exception as e:
             logger.exception("Failed to open project: {}", path)
             return {"success": False, "error": str(e)}
+
+    def _migrate_silence_edits(self) -> None:
+        """Migrate old format silence EditDecisions to bind target_id."""
+        if not self._current:
+            return
+
+        silence_map = {
+            s.id: s for s in self._current.transcript.segments
+            if s.type == SegmentType.SILENCE
+        }
+
+        migrated = []
+        for edit in self._current.edits:
+            if (edit.source == "silence_detection"
+                    and edit.target_type == "range"
+                    and edit.target_id is None):
+                # Try to match by time range
+                matched = next(
+                    (s for s in silence_map.values()
+                     if abs(s.start - edit.start) < 0.05 and abs(s.end - edit.end) < 0.05),
+                    None,
+                )
+                if matched:
+                    migrated.append(edit.model_copy(update={
+                        "target_type": "segment",
+                        "target_id": matched.id,
+                    }))
+                else:
+                    migrated.append(edit)
+            else:
+                migrated.append(edit)
+
+        self._current = self._current.model_copy(update={"edits": migrated})
 
     def save_project(self) -> dict:
         """Save the current project to disk."""
@@ -278,7 +324,8 @@ class ProjectService:
                     action="delete",
                     source="silence_detection",
                     status=EditStatus.PENDING,
-                    target_type="range",
+                    target_type="segment",
+                    target_id=seg_id,
                 ))
 
         all_segments = list(existing) + new_segments

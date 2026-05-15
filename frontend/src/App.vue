@@ -63,10 +63,23 @@ async function handleWindowDrop(e: DragEvent) {
   if (!res.success || !res.data || res.data.length === 0) return
 
   const filePath = res.data[0]
+  const filename = filePath.split(/[/\\]/).pop() ?? ""
+  const ext = filename.split(".").pop()?.toLowerCase() ?? ""
   const isMedia = /\.(mp4|mkv|avi|mov|webm|mp3|wav|aac|flac|ogg|m4a)$/i.test(filePath)
   const isSrt = /\.srt$/i.test(filePath)
+  const isProjectJson = filename === "project.json"
 
-  if (!project.value && isMedia) {
+  if (!project.value && isProjectJson) {
+    // Open existing project from project.json
+    const openRes = await call<Project>("open_project", filePath)
+    if (openRes.success && openRes.data) {
+      project.value = openRes.data
+      // Show warnings if media file is not reachable
+      if (openRes.warnings && openRes.warnings.length > 0) {
+        console.warn("Project opened with warnings:", openRes.warnings)
+      }
+    }
+  } else if (!project.value && isMedia) {
     const probeRes = await call<MediaInfo>("probe_media", filePath)
     if (!probeRes.success || !probeRes.data) return
     const name = filePath.split(/[/\\]/).pop()?.replace(/\.[^.]+$/, "") ?? "Untitled"
@@ -100,10 +113,10 @@ async function handleWindowDrop(e: DragEvent) {
     >
       <div class="rounded-2xl border-2 border-dashed border-blue-400 bg-white/90 px-16 py-12 text-center shadow-2xl">
         <p class="text-xl font-semibold text-blue-600">
-          {{ project ? "松开以导入 SRT 文件" : "松开以导入媒体文件" }}
+          {{ project ? "松开以导入 SRT 文件" : "松开以导入媒体文件或打开项目" }}
         </p>
         <p class="mt-2 text-sm text-gray-500">
-          {{ project ? "支持 .srt 字幕文件" : "支持 MP4, MKV, AVI, MOV, WebM, MP3, WAV 等" }}
+          {{ project ? "支持 .srt 字幕文件" : "支持视频、音频、project.json" }}
         </p>
       </div>
     </div>

@@ -2,6 +2,7 @@
 import { computed, ref, nextTick } from "vue"
 import type { Segment } from "@/types/project"
 import { formatTime, parseTime } from "@/utils/format"
+import { TrashIcon } from "@heroicons/vue/24/outline"
 
 const props = defineProps<{
   segment: Segment
@@ -13,6 +14,9 @@ const emit = defineEmits<{
   seek: [time: number]
   "update-time": [segmentId: string, field: "start" | "end", value: number]
   "toggle-status": []
+  "confirm-edit": []
+  "reject-edit": []
+  "delete": []
 }>()
 
 // Time editing
@@ -98,18 +102,58 @@ const duration = computed(() => {
     <span class="text-xs text-gray-500 flex-1 text-center">
       --- 静音 {{ duration }}s ---
     </span>
-    <span
-      v-if="displayStatus && displayStatus !== 'none'"
-      class="text-xs px-1.5 py-0.5 rounded shrink-0 cursor-pointer transition-colors"
-      :class="{
-        'bg-yellow-100 text-yellow-700 hover:bg-yellow-200': displayStatus === 'pending',
-        'bg-red-100 text-red-700 hover:bg-red-200': displayStatus === 'confirmed',
-        'bg-green-100 text-green-700 hover:bg-green-200': displayStatus === 'rejected',
-      }"
-      title="Click to toggle confirmed/rejected"
-      @click.stop="emit('toggle-status')"
-    >
-      {{ displayStatus === "pending" ? "建议删除" : displayStatus === "confirmed" ? "已确认" : "已保留" }}
-    </span>
+    <div class="flex items-center gap-1 shrink-0">
+      <template v-if="displayStatus === 'pending'">
+        <span
+          class="text-xs px-1.5 py-0.5 rounded bg-yellow-100 text-yellow-700 cursor-pointer hover:bg-yellow-200 transition-colors"
+          title="Click to confirm delete"
+          @click.stop="emit('confirm-edit')"
+        >
+          建议删除
+        </span>
+        <button
+          class="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 hover:bg-gray-200 transition-colors"
+          title="Keep this segment"
+          @click.stop="emit('reject-edit')"
+        >
+          保留
+        </button>
+      </template>
+      <template v-else-if="displayStatus === 'confirmed'">
+        <span
+          class="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-700 cursor-pointer hover:bg-red-200 transition-colors"
+          title="Click to toggle status"
+          @click.stop="emit('toggle-status')"
+        >
+          已删除
+        </span>
+      </template>
+      <template v-else-if="displayStatus === 'rejected'">
+        <span
+          class="text-xs px-1.5 py-0.5 rounded bg-green-100 text-green-700 cursor-pointer hover:bg-green-200 transition-colors"
+          title="Click to toggle status"
+          @click.stop="emit('toggle-status')"
+        >
+          已保留
+        </span>
+      </template>
+      <template v-else>
+        <span
+          class="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 cursor-pointer hover:bg-gray-200 transition-colors"
+          title="Click to mark for deletion"
+          @click.stop="emit('toggle-status')"
+        >
+          无标注
+        </span>
+      </template>
+      <!-- Delete button: always visible -->
+      <button
+        class="text-xs px-1 py-0.5 rounded text-red-400 hover:bg-red-50 hover:text-red-600 transition-colors"
+        title="Delete this silence segment"
+        @click.stop="emit('delete')"
+      >
+        <TrashIcon class="w-3 h-3" />
+      </button>
+    </div>
   </div>
 </template>

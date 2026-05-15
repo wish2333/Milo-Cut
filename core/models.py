@@ -9,7 +9,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ================================================================
@@ -99,6 +99,12 @@ class EditDecision(BaseModel, frozen=True):
     priority: int = 100
     target_type: Literal["segment", "range"] = "range"
     target_id: str | None = None
+
+    @model_validator(mode='after')
+    def validate_target(self) -> 'EditDecision':
+        if self.target_type == 'segment' and self.target_id is None:
+            raise ValueError('target_id is required when target_type is "segment"')
+        return self
 
 
 class TaskProgress(BaseModel, frozen=True):
