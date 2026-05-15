@@ -8,6 +8,7 @@ from __future__ import annotations
 import sys
 import os
 import pathlib
+import subprocess
 
 from pywebvue import App, Bridge, expose
 
@@ -482,12 +483,14 @@ class MiloCutApi(Bridge):
         return self._project.update_settings(updates)
 
     @expose
-    def select_export_path(self, default_name: str) -> dict:
+    def select_export_path(self, default_name: str, file_types: list[str] | None = None) -> dict:
         import webview
+        if file_types is None:
+            file_types = ["All files (*.*)"]
         result = webview.windows[0].create_file_dialog(
             webview.FileDialog.SAVE,
             save_filename=default_name,
-            file_types=("Video files (*.mp4)", "All files (*.*)"),
+            file_types=tuple(file_types),
         )
         if result:
             return {"success": True, "data": str(result)}
@@ -495,15 +498,32 @@ class MiloCutApi(Bridge):
 
     @expose
     def detect_gpu(self) -> dict:
-        """Detect NVIDIA GPU availability."""
+        """Detect GPU availability and return supported hardware encoders."""
+        encoders: list[str] = []
+        gpu_name = ""
         try:
             result = subprocess.run(
                 ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
                 capture_output=True, text=True, timeout=5,
             )
-            return {"success": True, "data": {"nvidia": result.returncode == 0}}
+            if result.returncode == 0 and result.stdout.strip():
+                gpu_name = result.stdout.strip().split("\n")[0]
+                encoders.extend(["h264_nvenc", "hevc_nvenc", "av1_nvenc"])
         except FileNotFoundError:
-            return {"success": True, "data": {"nvidia": False}}
+            pass
+
+        # libsvtav1 is available on all platforms except some macOS builds
+        if sys.platform != "darwin":
+            encoders.append("libsvtav1")
+
+        return {
+            "success": True,
+            "data": {
+                "nvidia": bool(gpu_name),
+                "gpu_name": gpu_name,
+                "encoders": encoders,
+            },
+        }
 
     @expose
     def export_edl(self, output_path: str) -> dict:

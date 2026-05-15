@@ -31,14 +31,27 @@ const preset = ref("medium")
 
 // GPU detection
 const hasNvidiaGpu = ref(false)
+const gpuName = ref("")
+const hardwareEncoders = ref<string[]>([])
 
 const videoCodecs = computed(() => {
   const base = [
     { value: "libx264", label: "H.264 (CPU)" },
     { value: "libx265", label: "H.265 (CPU)" },
   ]
+  if (hardwareEncoders.value.includes("libsvtav1")) {
+    base.push({ value: "libsvtav1", label: "AV1 (CPU, SVT-AV1)" })
+  }
   if (hasNvidiaGpu.value) {
-    base.push({ value: "av1_nvenc", label: "AV1 (NVIDIA GPU)" })
+    if (hardwareEncoders.value.includes("h264_nvenc")) {
+      base.push({ value: "h264_nvenc", label: "H.264 (NVIDIA GPU)" })
+    }
+    if (hardwareEncoders.value.includes("hevc_nvenc")) {
+      base.push({ value: "hevc_nvenc", label: "H.265 (NVIDIA GPU)" })
+    }
+    if (hardwareEncoders.value.includes("av1_nvenc")) {
+      base.push({ value: "av1_nvenc", label: "AV1 (NVIDIA GPU)" })
+    }
   }
   return base
 })
@@ -77,14 +90,15 @@ const qualityLabel = computed(() => {
 })
 
 onMounted(async () => {
-  // Detect GPU
   try {
-    const res = await call<{ nvidia: boolean }>("detect_gpu")
+    const res = await call<{ nvidia: boolean; gpu_name: string; encoders: string[] }>("detect_gpu")
     if (res.success && res.data) {
       hasNvidiaGpu.value = res.data.nvidia
+      gpuName.value = res.data.gpu_name ?? ""
+      hardwareEncoders.value = res.data.encoders ?? []
     }
   } catch {
-    // GPU detection failed, assume no NVIDIA GPU
+    // GPU detection failed, assume no hardware encoders
   }
 })
 
@@ -180,7 +194,10 @@ function updateSettings() {
             {{ codec.label }}
           </option>
         </select>
-        <p v-if="!hasNvidiaGpu" class="text-xs text-gray-500 mt-1">
+        <p v-if="hasNvidiaGpu" class="text-xs text-green-600 mt-1">
+          已检测到: {{ gpuName }}
+        </p>
+        <p v-else class="text-xs text-gray-500 mt-1">
           未检测到 NVIDIA GPU，硬件编码不可用
         </p>
       </div>

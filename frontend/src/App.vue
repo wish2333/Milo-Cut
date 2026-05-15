@@ -75,7 +75,6 @@ async function handleWindowDrop(e: DragEvent) {
 
   const filePath = res.data[0]
   const filename = filePath.split(/[/\\]/).pop() ?? ""
-  const ext = filename.split(".").pop()?.toLowerCase() ?? ""
   const isMedia = /\.(mp4|mkv|avi|mov|webm|mp3|wav|aac|flac|ogg|m4a)$/i.test(filePath)
   const isSrt = /\.srt$/i.test(filePath)
   const isProjectJson = filename === "project.json"
@@ -85,10 +84,6 @@ async function handleWindowDrop(e: DragEvent) {
     const openRes = await call<Project>("open_project", filePath)
     if (openRes.success && openRes.data) {
       project.value = openRes.data
-      // Show warnings if media file is not reachable
-      if (openRes.warnings && openRes.warnings.length > 0) {
-        console.warn("Project opened with warnings:", openRes.warnings)
-      }
     }
   } else if (!project.value && isMedia) {
     const probeRes = await call<MediaInfo>("probe_media", filePath)

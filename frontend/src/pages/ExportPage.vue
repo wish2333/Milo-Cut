@@ -4,6 +4,7 @@ import type { Project } from "@/types/project"
 import EncodingSettings from "@/components/export/EncodingSettings.vue"
 import PreviewPlayer from "@/components/export/PreviewPlayer.vue"
 import { call } from "@/bridge"
+import { useExport } from "@/composables/useExport"
 
 const props = defineProps<{
   project: Project
@@ -13,6 +14,16 @@ const emit = defineEmits<{
   "go-back": []
   "project-updated": [project: Project]
 }>()
+
+const {
+  isExporting,
+  exportProgress,
+  confirmedEdits,
+  estimatedSaving,
+  exportVideo,
+  exportSrt,
+  exportAudio,
+} = useExport(computed(() => props.project))
 
 const encodingSettings = ref({
   outputFormat: "mp4",
@@ -24,125 +35,102 @@ const encodingSettings = ref({
   preset: "medium",
 })
 
-const isExporting = ref(false)
-const exportMessage = ref("")
+const statusMessage = ref("")
+const errorMessage = ref("")
 
 const subtitleCount = computed(() =>
   props.project.transcript?.segments?.filter(s => s.type === "subtitle").length ?? 0
 )
-
-const confirmedEdits = computed(() =>
-  props.project.edits?.filter(e => e.status === "confirmed" && e.action === "delete") ?? []
-)
-
-const estimatedSaving = computed(() => {
-  return confirmedEdits.value.reduce((sum, e) => sum + (e.end - e.start), 0)
-})
 
 function handleEncodingSettingsUpdate(settings: typeof encodingSettings.value) {
   encodingSettings.value = settings
 }
 
 async function handleExportVideo() {
-  isExporting.value = true
-  exportMessage.value = "正在导出视频..."
-  try {
-    const res = await call<string>("export_video", encodingSettings.value)
-    if (res.success) {
-      exportMessage.value = "视频导出完成"
-    } else {
-      exportMessage.value = `导出失败: ${res.error}`
-    }
-  } catch (e) {
-    exportMessage.value = `导出失败: ${e}`
-  } finally {
-    isExporting.value = false
+  errorMessage.value = ""
+  statusMessage.value = "正在导出视频..."
+  // Save encoding settings to project before export
+  await call("update_settings", {
+    export_video_codec: encodingSettings.value.videoCodec,
+    export_audio_codec: encodingSettings.value.audioCodec,
+    export_audio_bitrate: encodingSettings.value.audioBitrate,
+    export_preset: encodingSettings.value.preset,
+    export_crf: encodingSettings.value.quality,
+    export_resolution: encodingSettings.value.resolution,
+  })
+  const ok = await exportVideo()
+  statusMessage.value = ""
+  if (!ok) {
+    errorMessage.value = "视频导出失败"
+  } else {
+    statusMessage.value = "视频导出完成"
   }
 }
 
 async function handleExportAudio() {
-  isExporting.value = true
-  exportMessage.value = "正在导出音频..."
-  try {
-    const res = await call<string>("export_audio")
-    if (res.success) {
-      exportMessage.value = "音频导出完成"
-    } else {
-      exportMessage.value = `导出失败: ${res.error}`
-    }
-  } catch (e) {
-    exportMessage.value = `导出失败: ${e}`
-  } finally {
-    isExporting.value = false
+  errorMessage.value = ""
+  statusMessage.value = "正在导出音频..."
+  const ok = await exportAudio()
+  statusMessage.value = ""
+  if (!ok) {
+    errorMessage.value = "音频导出失败"
+  } else {
+    statusMessage.value = "音频导出完成"
   }
 }
 
 async function handleExportSrt() {
-  isExporting.value = true
-  exportMessage.value = "正在导出字幕..."
-  try {
-    const res = await call<string>("export_subtitle")
-    if (res.success) {
-      exportMessage.value = "字幕导出完成"
-    } else {
-      exportMessage.value = `导出失败: ${res.error}`
-    }
-  } catch (e) {
-    exportMessage.value = `导出失败: ${e}`
-  } finally {
-    isExporting.value = false
+  errorMessage.value = ""
+  statusMessage.value = "正在导出字幕..."
+  const ok = await exportSrt()
+  statusMessage.value = ""
+  if (!ok) {
+    errorMessage.value = "字幕导出失败"
+  } else {
+    statusMessage.value = "字幕导出完成"
   }
 }
 
 async function handleExportEdl() {
-  isExporting.value = true
-  exportMessage.value = "正在导出 EDL..."
+  errorMessage.value = ""
+  statusMessage.value = "正在导出 EDL..."
   try {
-    const res = await call<string>("select_export_path", `${props.project.project?.name ?? "export"}.edl`)
+    const name = props.project.project?.name ?? "export"
+    const res = await call<string>("select_export_path", `${name}.edl`, ["EDL files (*.edl)", "All files (*.*)"])
     if (res.success && res.data) {
       const exportRes = await call<string>("export_edl", res.data)
       if (exportRes.success) {
-        exportMessage.value = "EDL 导出完成"
+        statusMessage.value = "EDL 导出完成"
       } else {
-        exportMessage.value = `导出失败: ${exportRes.error}`
+        errorMessage.value = `EDL 导出失败: ${exportRes.error}`
       }
     }
   } catch (e) {
-    exportMessage.value = `导出失败: ${e}`
+    errorMessage.value = `EDL 导出失败: ${e}`
   } finally {
-    isExporting.value = false
+    statusMessage.value = ""
   }
 }
 
 async function handleExportFcpxml() {
-  isExporting.value = true
-  exportMessage.value = "正在导出 FCPXML..."
+  errorMessage.value = ""
+  statusMessage.value = "正在导出 FCPXML..."
   try {
-    const res = await call<string>("select_export_path", `${props.project.project?.name ?? "export"}.fcpxml`)
+    const name = props.project.project?.name ?? "export"
+    const res = await call<string>("select_export_path", `${name}.fcpxml`, ["FCPXML files (*.fcpxml)", "All files (*.*)"])
     if (res.success && res.data) {
       const exportRes = await call<string>("export_fcpxml", res.data)
       if (exportRes.success) {
-        exportMessage.value = "FCPXML 导出完成"
+        statusMessage.value = "FCPXML 导出完成"
       } else {
-        exportMessage.value = `导出失败: ${exportRes.error}`
+        errorMessage.value = `FCPXML 导出失败: ${exportRes.error}`
       }
     }
   } catch (e) {
-    exportMessage.value = `导出失败: ${e}`
+    errorMessage.value = `FCPXML 导出失败: ${e}`
   } finally {
-    isExporting.value = false
+    statusMessage.value = ""
   }
-}
-
-function formatTime(seconds: number): string {
-  const h = Math.floor(seconds / 3600)
-  const m = Math.floor((seconds % 3600) / 60)
-  const s = Math.floor(seconds % 60)
-  const ms = Math.floor((seconds % 1) * 1000)
-  if (h > 0) {
-    return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(ms).padStart(3, "0")}`
-  }
-  return `${m}:${String(s).padStart(2, "0")}.${String(ms).padStart(3, "0")}`
 }
 
 function formatTimeShort(seconds: number): string {
@@ -165,10 +153,24 @@ function formatTimeShort(seconds: number): string {
       </button>
       <h1 class="text-lg font-semibold">导出</h1>
       <div class="flex-1" />
-      <span v-if="exportMessage" class="text-sm text-blue-600">{{ exportMessage }}</span>
+      <span v-if="statusMessage" class="text-sm text-blue-600">{{ statusMessage }}</span>
+      <span v-if="errorMessage" class="text-sm text-red-600">{{ errorMessage }}</span>
       <span v-if="confirmedEdits.length > 0" class="text-sm text-gray-500">
         {{ confirmedEdits.length }} edits | -{{ formatTimeShort(estimatedSaving) }}
       </span>
+    </div>
+
+    <!-- Progress bar -->
+    <div v-if="isExporting && exportProgress" class="border-b bg-white px-4 py-2">
+      <div class="flex items-center gap-3">
+        <div class="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
+          <div
+            class="h-full bg-blue-500 rounded-full transition-all duration-300"
+            :style="{ width: `${exportProgress.percent ?? 0}%` }"
+          />
+        </div>
+        <span class="text-xs text-gray-500 shrink-0">{{ exportProgress.message ?? '' }}</span>
+      </div>
     </div>
 
     <div class="flex flex-1 overflow-hidden">

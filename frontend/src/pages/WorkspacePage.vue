@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue"
 import type { Project, Segment, EditDecision } from "@/types/project"
-import type { EditSummary } from "@/types/edit"
 import { formatTimeShort } from "@/utils/format"
 import { call } from "@/bridge"
 import { useAnalysis } from "@/composables/useAnalysis"
@@ -13,7 +12,6 @@ import ProgressBar from "@/components/common/ProgressBar.vue"
 import Timeline from "@/components/workspace/Timeline.vue"
 import WaveformEditor from "@/components/waveform/WaveformEditor.vue"
 import SearchReplaceBar from "@/components/workspace/SearchReplaceBar.vue"
-import EditSummaryModal from "@/components/workspace/EditSummaryModal.vue"
 import VideoControls from "@/components/workspace/VideoControls.vue"
 
 interface Props {
@@ -50,10 +48,6 @@ const {
   exportProgress,
   confirmedEdits,
   estimatedSaving,
-  getExportSummary,
-  exportVideo,
-  exportSrt,
-  exportAudio,
 } = useExport(projectRef)
 
 const {
@@ -80,9 +74,7 @@ const statusMessage = ref("")
 const errorMessage = ref("")
 let statusTimer: ReturnType<typeof setTimeout> | null = null
 const showAnalysisDropdown = ref(false)
-const showExportSummary = ref(false)
 const showSilenceSettings = ref(false)
-const exportSummaryData = ref<EditSummary | null>(null)
 const videoUrl = ref("")
 const videoRef = ref<HTMLVideoElement | null>(null)
 const currentTime = ref(0)
@@ -345,42 +337,6 @@ function handleSeekSegment(seg: Segment) {
   }
 }
 
-async function handleExportVideo() {
-  errorMessage.value = ""
-  const summary = await getExportSummary()
-  if (summary) {
-    exportSummaryData.value = summary
-    showExportSummary.value = true
-  } else {
-    statusMessage.value = "Exporting video..."
-    const ok = await exportVideo()
-    if (!ok) errorMessage.value = "Export failed"
-  }
-}
-
-async function handleConfirmExport() {
-  showExportSummary.value = false
-  statusMessage.value = "Exporting video..."
-  const ok = await exportVideo()
-  statusMessage.value = ""
-  if (!ok) errorMessage.value = "Export failed"
-}
-
-async function handleExportSrt() {
-  errorMessage.value = ""
-  statusMessage.value = "Exporting SRT..."
-  const ok = await exportSrt()
-  statusMessage.value = ""
-  if (!ok) errorMessage.value = "Failed to export SRT"
-}
-
-async function handleExportAudio() {
-  errorMessage.value = ""
-  statusMessage.value = "Exporting audio..."
-  const ok = await exportAudio()
-  statusMessage.value = ""
-  if (!ok) errorMessage.value = "Failed to export audio"
-}
 
 async function handleCloseProject() {
   await call("close_project")
@@ -619,7 +575,7 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div class="mx-1 h-4 w-px bg-gray-300" />
+      <div class="flex-1" />
 
       <button
         class="inline-flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50 transition-colors"
@@ -629,8 +585,6 @@ onUnmounted(() => {
         <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" /></svg>
         导出...
       </button>
-
-      <div class="flex-1" />
 
       <div v-if="isDetecting && detectionProgress" class="flex-1 max-w-xs">
         <ProgressBar :percent="detectionProgress.percent" :message="detectionProgress.message" />
@@ -736,15 +690,6 @@ onUnmounted(() => {
       @add-segment="handleAddSegment"
       @delete-segment="handleDeleteSegment"
       @seek-segment="handleSeekSegment"
-    />
-
-    <!-- Export summary modal -->
-    <EditSummaryModal
-      v-if="exportSummaryData"
-      :summary="exportSummaryData"
-      :visible="showExportSummary"
-      @confirm="handleConfirmExport"
-      @cancel="showExportSummary = false"
     />
 
     <!-- Delete silence confirmation dialog -->

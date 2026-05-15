@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from "vue"
+import { call } from "@/bridge"
 import type { EditDecision } from "@/types/project"
 
 const props = defineProps<{
@@ -16,7 +17,8 @@ const emit = defineEmits<{
 const videoRef = ref<HTMLVideoElement | null>(null)
 const isPlaying = ref(false)
 const currentTime = ref(0)
-const duration = ref(0)
+const videoDuration = ref(0)
+const videoSrc = ref("")
 let rafId: number | null = null
 
 const deleteRanges = computed(() => {
@@ -26,9 +28,21 @@ const deleteRanges = computed(() => {
     .sort((a, b) => a.start - b.start)
 })
 
-const videoSrc = computed(() => {
-  return props.proxyPath || props.mediaPath
-})
+async function loadVideoUrl() {
+  const path = props.proxyPath || props.mediaPath
+  if (!path) {
+    videoSrc.value = ""
+    return
+  }
+  try {
+    const res = await call<{ url: string; port: number }>("get_video_url", path)
+    if (res.success && res.data) {
+      videoSrc.value = res.data.url
+    }
+  } catch {
+    videoSrc.value = ""
+  }
+}
 
 function formatTime(seconds: number): string {
   const m = Math.floor(seconds / 60)
@@ -45,9 +59,11 @@ function togglePlay() {
   }
 }
 
-function seek(time: number) {
-  if (!videoRef.value) return
-  videoRef.value.currentTime = time
+function seekToPosition(e: MouseEvent) {
+  if (!videoRef.value || !videoDuration.value) return
+  const target = e.currentTarget as HTMLElement
+  const ratio = e.offsetX / target.clientWidth
+  videoRef.value.currentTime = ratio * videoDuration.value
 }
 
 function checkSkip(time: number): boolean {
@@ -79,7 +95,7 @@ function onTimeUpdate() {
 
 function onLoadedMetadata() {
   if (videoRef.value) {
-    duration.value = videoRef.value.duration
+    videoDuration.value = videoRef.value.duration
   }
 }
 
@@ -92,7 +108,6 @@ function onPause() {
 }
 
 function onSeeked() {
-  // Re-check after seek to handle edge cases
   if (videoRef.value && !videoRef.value.paused) {
     checkSkip(videoRef.value.currentTime)
   }
@@ -100,6 +115,7 @@ function onSeeked() {
 
 onMounted(() => {
   rafId = requestAnimationFrame(animationLoop)
+  loadVideoUrl()
 })
 
 onUnmounted(() => {
@@ -108,10 +124,8 @@ onUnmounted(() => {
   }
 })
 
-watch(() => props.mediaPath, () => {
-  if (videoRef.value) {
-    videoRef.value.load()
-  }
+watch(() => [props.mediaPath, props.proxyPath], () => {
+  loadVideoUrl()
 })
 </script>
 
@@ -139,10 +153,13 @@ watch(() => props.mediaPath, () => {
     <!-- Controls -->
     <div class="bg-gray-900 px-4 py-2">
       <!-- Progress bar -->
-      <div class="relative h-1 bg-gray-700 rounded-full mb-2 cursor-pointer" @click="seek($event.offsetX / $event.currentTarget.clientWidth * duration)">
+      <div
+        class="relative h-1 bg-gray-700 rounded-full mb-2 cursor-pointer"
+        @click="seekToPosition"
+      >
         <div
           class="absolute h-full bg-blue-500 rounded-full"
-          :style="{ width: `${(currentTime / duration) * 100}%` }"
+          :style="{ width: `${videoDuration ? (currentTime / videoDuration) * 100 : 0}%` }"
         />
         <!-- Delete ranges overlay -->
         <div
@@ -150,8 +167,8 @@ watch(() => props.mediaPath, () => {
           :key="i"
           class="absolute h-full bg-red-500 opacity-50"
           :style="{
-            left: `${(range.start / duration) * 100}%`,
-            width: `${((range.end - range.start) / duration) * 100}%`,
+            left: `${videoDuration ? (range.start / videoDuration) * 100 : 0}%`,
+            width: `${videoDuration ? ((range.end - range.start) / videoDuration) * 100 : 0}%`,
           }"
         />
       </div>
@@ -167,7 +184,7 @@ watch(() => props.mediaPath, () => {
         </button>
 
         <span class="text-sm text-gray-400 font-mono">
-          {{ formatTime(currentTime) }} / {{ formatTime(duration) }}
+          {{ formatTime(currentTime) }} / {{ formatTime(videoDuration) }}
         </span>
 
         <div class="flex-1" />
