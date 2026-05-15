@@ -38,11 +38,12 @@ export type BridgeMethod =
   // Phase 1: Edit Operations
   | "update_segment_text"
   | "merge_segments"
-  | "split_segment" | "add_segment"
+  | "split_segment" | "add_segment" | "delete_segment"
   | "search_replace"
   | "mark_segments"
   | "confirm_all_suggestions"
   | "reject_all_suggestions"
+  | "generate_subtitle_keep_ranges"
   | "get_edit_summary"
   | "validate_srt"
   | "get_recent_projects"

@@ -10,13 +10,13 @@ export function useExport(project: Ref<Project | null>) {
   const isExporting = computed(() => {
     const t = activeTask.value
     return t !== null
-      && (t.type === "export_video" || t.type === "export_subtitle")
+      && (t.type === "export_video" || t.type === "export_subtitle" || t.type === "export_audio")
       && isRunning.value
   })
 
   const exportProgress = computed(() => {
     const t = activeTask.value
-    if (t && (t.type === "export_video" || t.type === "export_subtitle")) {
+    if (t && (t.type === "export_video" || t.type === "export_subtitle" || t.type === "export_audio")) {
       return t.progress
     }
     return null
@@ -58,6 +58,16 @@ export function useExport(project: Ref<Project | null>) {
     return await startTask(task.id)
   }
 
+  async function exportAudio(outputPath?: string): Promise<boolean> {
+    const payload: Record<string, string> = {}
+    if (outputPath) {
+      payload.output_path = outputPath
+    }
+    const task = await createTask("export_audio", payload)
+    if (!task) return false
+    return await startTask(task.id)
+  }
+
   return {
     isExporting,
     exportProgress,
@@ -66,5 +76,6 @@ export function useExport(project: Ref<Project | null>) {
     getExportSummary,
     exportVideo,
     exportSrt,
+    exportAudio,
   }
 }

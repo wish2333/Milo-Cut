@@ -33,6 +33,7 @@ def export_video(
     edits: list[dict],
     output_path: str,
     *,
+    media_info: dict | None = None,
     progress_callback: Callable[[float, str], None] | None = None,
     cancel_event: threading.Event | None = None,
 ) -> dict:
@@ -49,6 +50,11 @@ def export_video(
         ffmpeg = _find_ffmpeg()
         deletions = _get_confirmed_deletions(edits)
         total_duration = _get_media_duration(segments, edits)
+
+        # Detect if input has video stream
+        has_video = True
+        if media_info:
+            has_video = media_info.get("width", 0) > 0
 
         if not deletions:
             logger.info("No confirmed deletions, copying original file")
@@ -76,7 +82,7 @@ def export_video(
                 pct = (i / total_segments) * 80.0
                 progress_callback(pct, f"Extracting segment {i + 1}/{total_segments}")
 
-            _extract_segment(ffmpeg, media_path, start, end, seg_path)
+            _extract_segment(ffmpeg, media_path, start, end, seg_path, has_video=has_video)
             seg_paths.append(seg_path)
 
         concat_list = str(temp_dir / "concat.txt")
@@ -100,6 +106,82 @@ def export_video(
 
     except Exception as e:
         logger.exception("export_video failed")
+        return {"success": False, "error": str(e)}
+
+
+def export_audio(
+    media_path: str,
+    segments: list[dict],
+    edits: list[dict],
+    output_path: str,
+    *,
+    progress_callback: Callable[[float, str], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> dict:
+    """Export cut audio by keeping non-deleted ranges.
+
+    Steps:
+    1. Collect confirmed deletions from edits
+    2. Compute keep-ranges (inverse of deletions)
+    3. Extract each keep-range as audio segment via FFmpeg
+    4. Concat all segments via FFmpeg concat demuxer
+    """
+    try:
+        output_path = _validate_output_path(output_path)
+        ffmpeg = _find_ffmpeg()
+        deletions = _get_confirmed_deletions(edits)
+        total_duration = _get_media_duration(segments, edits)
+
+        if not deletions:
+            logger.info("No confirmed deletions, copying original audio")
+            import shutil
+            shutil.copy2(media_path, output_path)
+            if progress_callback:
+                progress_callback(100.0, "Done (no cuts)")
+            return {"success": True, "data": {"path": output_path}}
+
+        keep_ranges = _compute_keep_ranges(total_duration, deletions)
+        if not keep_ranges:
+            return {"success": False, "error": "Nothing to export after applying all cuts"}
+
+        temp_dir = get_temp_dir()
+        seg_paths: list[str] = []
+        total_segments = len(keep_ranges)
+
+        for i, (start, end) in enumerate(keep_ranges):
+            if cancel_event and cancel_event.is_set():
+                _cleanup_files(seg_paths)
+                return {"success": False, "error": "Cancelled"}
+
+            seg_path = str(temp_dir / f"audio_seg_{i:04d}.ts")
+            if progress_callback:
+                pct = (i / total_segments) * 80.0
+                progress_callback(pct, f"Extracting segment {i + 1}/{total_segments}")
+
+            _extract_segment(ffmpeg, media_path, start, end, seg_path, has_video=False)
+            seg_paths.append(seg_path)
+
+        concat_list = str(temp_dir / "audio_concat.txt")
+        with open(concat_list, "w", encoding="utf-8") as f:
+            for p in seg_paths:
+                escaped = p.replace("'", "'\\''")
+                f.write(f"file '{escaped}'\n")
+
+        if progress_callback:
+            progress_callback(85.0, "Concatenating segments...")
+        _concat_segments(ffmpeg, concat_list, output_path)
+
+        _cleanup_files(seg_paths + [concat_list])
+
+        file_size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
+        if progress_callback:
+            progress_callback(100.0, "Export complete")
+
+        logger.info("Exported audio to {} ({} bytes)", output_path, file_size)
+        return {"success": True, "data": {"path": output_path, "size": file_size}}
+
+    except Exception as e:
+        logger.exception("export_audio failed")
         return {"success": False, "error": str(e)}
 
 
@@ -229,19 +311,22 @@ def _extract_segment(
     start: float,
     end: float,
     output_path: str,
+    has_video: bool = True,
 ) -> None:
     """Extract a single segment as MPEG-TS via FFmpeg re-encode."""
-    cmd = [
+    duration = end - start
+    base = [
         ffmpeg, "-hide_banner", "-y",
         "-ss", f"{start:.3f}",
-        "-to", f"{end:.3f}",
-        "-accurate_seek",
         "-i", input_path,
-        "-c:v", "libx264", "-preset", "medium",
-        "-c:a", "aac",
+        "-t", f"{duration:.3f}",
         "-avoid_negative_ts", "make_zero",
-        output_path,
     ]
+    if has_video:
+        codec_args = ["-c:v", "libx264", "-preset", "fast", "-c:a", "aac"]
+    else:
+        codec_args = ["-c:a", "aac", "-vn"]
+    cmd = base + codec_args + [output_path]
     result = subprocess.run(
         cmd, capture_output=True, text=True, encoding="utf-8",
         errors="replace", timeout=600,

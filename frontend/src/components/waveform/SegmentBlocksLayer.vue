@@ -14,6 +14,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   "select-range": [start: number, end: number]
   "add-segment": [start: number, end: number]
+  "delete-segment": [segmentId: string]
 }>()
 
 const metrics = inject<TimelineMetrics>(TIMELINE_METRICS_KEY)!
@@ -21,6 +22,8 @@ const metrics = inject<TimelineMetrics>(TIMELINE_METRICS_KEY)!
 const MIN_SEGMENT_DURATION = 0.1
 const hoverEdge = ref<"left" | "right" | "body" | null>(null)
 const EDGE_HANDLE_HIT_PX = 16
+const selectedBlockId = ref<string | null>(null)
+const contextMenu = ref<{ x: number; y: number; segmentId: string } | null>(null)
 
 interface Block {
   seg: Segment
@@ -101,6 +104,7 @@ function handleBlockMouseDown(
   block: Block,
   e: MouseEvent,
 ) {
+  selectedBlockId.value = block.seg.id
   const edge = detectEdge(e)
   if (edge === "body") {
     emit("select-range", block.seg.start, block.seg.end)
@@ -132,10 +136,48 @@ function handleBlockMouseDown(
   document.addEventListener("mouseup", onUp)
 }
 
+function handleBlockContextMenu(block: Block, e: MouseEvent) {
+  e.preventDefault()
+  e.stopPropagation()
+  selectedBlockId.value = block.seg.id
+  contextMenu.value = { x: e.clientX, y: e.clientY, segmentId: block.seg.id }
+}
+
+function closeContextMenu() {
+  contextMenu.value = null
+}
+
+function deleteSelected() {
+  if (selectedBlockId.value) {
+    emit("delete-segment", selectedBlockId.value)
+    selectedBlockId.value = null
+  }
+  closeContextMenu()
+}
+
+function handleKeyDown(e: KeyboardEvent) {
+  if (e.key === "Delete" || e.key === "Backspace") {
+    if (selectedBlockId.value) {
+      e.preventDefault()
+      deleteSelected()
+    }
+  }
+  if (e.key === "Escape") {
+    selectedBlockId.value = null
+    closeContextMenu()
+  }
+}
+
 </script>
 
 <template>
-  <div class="absolute inset-x-0 top-6 bottom-0" @mousedown.self="handleEmptyClick">
+  <div
+    class="absolute inset-x-0 top-6 bottom-0"
+    tabindex="0"
+    @mousedown.self="handleEmptyClick"
+    @keydown="handleKeyDown"
+    @click.self="selectedBlockId = null; closeContextMenu()"
+  >
     <div
       v-for="block in visibleBlocks"
       :key="block.seg.id"
@@ -143,6 +185,7 @@ function handleBlockMouseDown(
       :class="[
         statusColor(block),
         hoverEdge === 'left' || hoverEdge === 'right' ? 'cursor-ew-resize' : 'cursor-grab',
+        selectedBlockId === block.seg.id ? 'ring-2 ring-blue-500' : '',
       ]"
       :style="{
         left: block.leftPercent + '%',
@@ -152,6 +195,7 @@ function handleBlockMouseDown(
       @mousemove="handleBlockMouseMove"
       @mouseleave="handleBlockMouseLeave"
       @mousedown="handleBlockMouseDown(block, $event)"
+      @contextmenu="handleBlockContextMenu(block, $event)"
     >
       <!-- Left edge handle -->
       <div
@@ -170,5 +214,22 @@ function handleBlockMouseDown(
         </span>
       </div>
     </div>
+
+    <!-- Context Menu -->
+    <Teleport to="body">
+      <div
+        v-if="contextMenu"
+        class="fixed z-50 bg-white rounded-md shadow-lg border border-gray-200 py-1 min-w-[120px]"
+        :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
+        @click="closeContextMenu"
+      >
+        <button
+          class="w-full text-left px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
+          @click="deleteSelected"
+        >
+          删除
+        </button>
+      </div>
+    </Teleport>
   </div>
 </template>

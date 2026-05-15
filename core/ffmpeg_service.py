@@ -148,3 +148,80 @@ def detect_silence(
     except Exception as e:
         logger.exception("detect_silence failed")
         return {"success": False, "error": str(e)}
+
+
+def generate_waveform(
+    file_path: str,
+    duration: float,
+    output_path: str,
+    buckets_per_second: int = 100,
+) -> dict:
+    """Generate waveform peak data from a media file.
+
+    Extracts raw PCM audio via ffmpeg, computes min/max peaks per bucket,
+    and writes the result as JSON.
+
+    Returns {"success": True, "data": {"path": output_path, "buckets": N}}
+    or {"success": False, "error": ...}.
+    """
+    try:
+        ffmpeg = _find_ffmpeg()
+        total_buckets = max(1, int(duration * buckets_per_second))
+
+        # Extract mono f32le audio at 8kHz to reduce data volume
+        cmd = [
+            ffmpeg, "-hide_banner", "-y",
+            "-i", file_path,
+            "-f", "f32le",
+            "-ac", "1",
+            "-ar", "8000",
+            "-vn",
+            "pipe:1",
+        ]
+        result = subprocess.run(
+            cmd, capture_output=True, timeout=300,
+        )
+        if result.returncode != 0:
+            return {"success": False, "error": f"ffmpeg exited with code {result.returncode}"}
+
+        import struct
+        raw = result.stdout
+        sample_count = len(raw) // 4  # 4 bytes per f32
+        if sample_count == 0:
+            return {"success": False, "error": "No audio samples extracted"}
+
+        samples = struct.unpack(f"<{sample_count}f", raw)
+
+        # Compute samples per bucket
+        samples_per_bucket = max(1, sample_count // total_buckets)
+
+        peaks: list[dict[str, float]] = []
+        for i in range(total_buckets):
+            start_idx = i * samples_per_bucket
+            end_idx = min(start_idx + samples_per_bucket, sample_count)
+            if start_idx >= sample_count:
+                peaks.append({"min": 0.0, "max": 0.0})
+                continue
+
+            chunk = samples[start_idx:end_idx]
+            bucket_min = min(chunk)
+            bucket_max = max(chunk)
+            # Clamp to [-1, 1]
+            peaks.append({
+                "min": max(-1.0, min(1.0, bucket_min)),
+                "max": max(-1.0, min(1.0, bucket_max)),
+            })
+
+        # Write JSON
+        import json
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(peaks, f)
+
+        logger.info("Generated waveform: {} buckets -> {}", len(peaks), output_path)
+        return {"success": True, "data": {"path": output_path, "buckets": len(peaks)}}
+
+    except FileNotFoundError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        logger.exception("generate_waveform failed")
+        return {"success": False, "error": str(e)}

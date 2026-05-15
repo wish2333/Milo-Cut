@@ -14,7 +14,7 @@ from pywebvue import App, Bridge, expose
 from core.analysis_service import detect_errors, detect_fillers, run_full_analysis
 from core.config import load_settings
 from core.events import EDIT_SUMMARY_UPDATED, LOG_LINE
-from core.ffmpeg_service import detect_silence, probe_media
+from core.ffmpeg_service import detect_silence, generate_waveform, probe_media
 from core.logging import get_logger, setup_frontend_sink, setup_logging
 from core.media_server import MediaServer
 from core.models import TaskType
@@ -22,7 +22,7 @@ from core.paths import migrate_if_needed
 from core.project_service import ProjectService
 from core.subtitle_service import parse_srt
 from core.task_manager import TaskManager
-from core.export_service import export_srt, export_video
+from core.export_service import export_audio, export_srt, export_video
 
 
 class MiloCutApi(Bridge):
@@ -47,6 +47,9 @@ class MiloCutApi(Bridge):
             TaskType.EXPORT_SUBTITLE, self._handle_export_subtitle
         )
         self._task_manager.register_handler(
+            TaskType.EXPORT_AUDIO, self._handle_export_audio
+        )
+        self._task_manager.register_handler(
             TaskType.FILLER_DETECTION, self._handle_filler_detection
         )
         self._task_manager.register_handler(
@@ -54,6 +57,9 @@ class MiloCutApi(Bridge):
         )
         self._task_manager.register_handler(
             TaskType.FULL_ANALYSIS, self._handle_full_analysis
+        )
+        self._task_manager.register_handler(
+            TaskType.WAVEFORM_GENERATION, self._handle_waveform_generation
         )
 
     def _handle_silence_detection(self, task, cancel_event):
@@ -97,6 +103,7 @@ class MiloCutApi(Bridge):
             segments=segments_data,
             edits=edits_data,
             output_path=output_path,
+            media_info=project.media.model_dump() if project.media else None,
             progress_callback=progress_cb,
             cancel_event=cancel_event,
         )
@@ -118,6 +125,33 @@ class MiloCutApi(Bridge):
             segments=segments_data,
             edits=edits_data,
             output_path=output_path,
+        )
+
+    def _handle_export_audio(self, task, cancel_event):
+        """Export cut audio as a background task."""
+        if self._project.current is None:
+            raise ValueError("No project open")
+        if self._project.current.media is None:
+            raise ValueError("No media in project")
+        project = self._project.current
+        segments_data = [s.model_dump() for s in project.transcript.segments]
+        edits_data = [e.model_dump() for e in project.edits]
+        media_path = project.media.path
+        output_path = task.payload.get("output_path", "")
+        if not output_path:
+            base, _ = os.path.splitext(media_path)
+            output_path = f"{base}_cut.m4a"
+
+        def progress_cb(percent: float, message: str = "") -> None:
+            self._task_manager._update_progress(task.id, percent, message)
+
+        return export_audio(
+            media_path=media_path,
+            segments=segments_data,
+            edits=edits_data,
+            output_path=output_path,
+            progress_callback=progress_cb,
+            cancel_event=cancel_event,
         )
 
     def _handle_filler_detection(self, task, cancel_event):
@@ -158,6 +192,36 @@ class MiloCutApi(Bridge):
         if not store["success"]:
             raise RuntimeError(store.get("error", "Failed to store analysis results"))
         return {"project": store["data"], "results": results_dicts}
+
+    def _handle_waveform_generation(self, task, cancel_event):
+        """Generate waveform peak data for the project media."""
+        if self._project.current is None:
+            raise ValueError("No project open")
+        if self._project.current.media is None:
+            raise ValueError("No media in project")
+
+        media = self._project.current.media
+        media_path = media.path
+        duration = media.duration
+
+        # Output path: next to project file
+        from core.paths import get_projects_dir
+        waveform_path = str(get_projects_dir() / f"{media.media_hash}.waveform.json")
+
+        def progress_cb(percent: float, message: str = "") -> None:
+            self._task_manager._update_progress(task.id, percent, message)
+
+        progress_cb(10.0, "Extracting audio peaks...")
+        result = generate_waveform(media_path, duration, waveform_path)
+        if not result["success"]:
+            raise RuntimeError(result["error"])
+
+        progress_cb(90.0, "Updating project...")
+        # Update media info with waveform path
+        self._project.update_media_waveform(waveform_path)
+
+        progress_cb(100.0, "Waveform generated")
+        return {"project": self._project.current.model_dump() if self._project.current else None}
 
     # ================================================================
     # System
@@ -238,10 +302,26 @@ class MiloCutApi(Bridge):
 
     @expose
     def import_srt(self, file_path: str) -> dict:
+        from core.subtitle_service import validate_srt
+
+        # Validate SRT before importing
+        media = self._project.current.media if self._project.current else None
+        duration = media.duration if media else 0.0
+        validation = validate_srt(file_path, video_duration=duration)
+
         result = parse_srt(file_path)
         if not result["success"]:
             return result
-        return self._project.update_transcript(result["data"])
+
+        update_result = self._project.update_transcript(result["data"])
+
+        # Include validation warnings in the response
+        if update_result["success"] and validation.get("success"):
+            vdata = validation.get("data", {})
+            if vdata.get("error_count", 0) > 0 or vdata.get("warning_count", 0) > 0:
+                update_result["warnings"] = vdata.get("issues", [])
+
+        return update_result
 
     # ================================================================
     # FFmpeg
@@ -335,6 +415,10 @@ class MiloCutApi(Bridge):
         return self._project.add_segment(start, end, text, seg_type)
 
     @expose
+    def delete_segment(self, segment_id: str) -> dict:
+        return self._project.delete_segment(segment_id)
+
+    @expose
     def search_replace(self, query: str, replacement: str, scope: str = "all") -> dict:
         return self._project.search_replace(query, replacement, scope)
 
@@ -352,6 +436,13 @@ class MiloCutApi(Bridge):
     @expose
     def reject_all_suggestions(self) -> dict:
         result = self._project.reject_all_suggestions()
+        if result["success"]:
+            self._emit(EDIT_SUMMARY_UPDATED, self._project.get_edit_summary().get("data", {}))
+        return result
+
+    @expose
+    def generate_subtitle_keep_ranges(self, padding: float = 0.3) -> dict:
+        result = self._project.generate_subtitle_keep_ranges(padding)
         if result["success"]:
             self._emit(EDIT_SUMMARY_UPDATED, self._project.get_edit_summary().get("data", {}))
         return result

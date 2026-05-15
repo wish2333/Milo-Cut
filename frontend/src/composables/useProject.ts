@@ -15,6 +15,7 @@ export function useProject() {
   const edits = computed<EditDecision[]>(() => project.value?.edits ?? [])
   const mediaDuration = computed<number>(() => project.value?.media?.duration ?? 0)
   const mediaInfo = computed<MediaInfo | null>(() => project.value?.media ?? null)
+  const waveformPath = computed<string | undefined>(() => project.value?.media?.waveform_path ?? undefined)
 
   on(EVENT_PROJECT_SAVED, () => {
     isDirty.value = false
@@ -24,12 +25,23 @@ export function useProject() {
     isDirty.value = true
   })
 
+  async function triggerWaveformGeneration(): Promise<void> {
+    if (!project.value?.media || project.value.media.waveform_path) return
+    // Fire and forget -- waveform generation runs in background
+    call("create_task", "waveform_generation").then(res => {
+      if (res.success && res.data) {
+        call("start_task", (res.data as { id: string }).id)
+      }
+    })
+  }
+
   async function createProject(name: string, mediaPath: string): Promise<boolean> {
     loading.value = true
     try {
       const res = await call<Project>("create_project", name, mediaPath)
       if (res.success && res.data) {
         project.value = res.data
+        triggerWaveformGeneration()
         return true
       }
       return false
@@ -44,6 +56,7 @@ export function useProject() {
       const res = await call<Project>("open_project", path)
       if (res.success && res.data) {
         project.value = res.data
+        triggerWaveformGeneration()
         return true
       }
       return false
@@ -74,6 +87,7 @@ export function useProject() {
     edits,
     mediaDuration,
     mediaInfo,
+    waveformPath,
     createProject,
     openProject,
     saveProject,

@@ -117,6 +117,18 @@ class ProjectService:
         self._current_path = None
         return {"success": True}
 
+    def update_media_waveform(self, waveform_path: str) -> dict:
+        """Update the waveform_path in the current project's media info."""
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+        if self._current.media is None:
+            return {"success": False, "error": "No media in project"}
+
+        updated_media = self._current.media.model_copy(update={"waveform_path": waveform_path})
+        updated = self._current.model_copy(update={"media": updated_media})
+        self._current = updated
+        return {"success": True, "data": updated.model_dump()}
+
     def update_transcript(self, segments: list[dict]) -> dict:
         """Replace subtitle segments while preserving silence segments.
 
@@ -131,8 +143,17 @@ class ProjectService:
         existing_silence = [s for s in existing if s.type == SegmentType.SILENCE]
 
         all_segments = new_subtitles + existing_silence
+        new_seg_ids = {s.id for s in all_segments}
+
+        # Remove orphaned EditDecisions whose target_id no longer exists
+        cleaned_edits = [
+            e for e in self._current.edits
+            if e.target_id is None or e.target_id in new_seg_ids
+        ]
+
         updated = self._current.model_copy(update={
             "transcript": TranscriptData(segments=all_segments),
+            "edits": cleaned_edits,
         })
         self._current = updated
         return {"success": True, "data": updated.model_dump()}
@@ -181,7 +202,7 @@ class ProjectService:
             # Skip edit if range already covered by an existing edit
             already_covered = any(
                 e.action == "delete"
-                and e.status in (EditStatus.CONFIRMED, EditStatus.PENDING)
+                and e.status in (EditStatus.CONFIRMED, EditStatus.PENDING, EditStatus.REJECTED)
                 and abs(e.start - sil["start"]) < 0.05
                 and abs(e.end - sil["end"]) < 0.05
                 for e in existing_edits
@@ -340,6 +361,27 @@ class ProjectService:
         })
         self._current = updated
         logger.info("Added segment {} ({:.3f}s - {:.3f}s)", seg_id, start, end)
+        return {"success": True, "data": updated.model_dump()}
+
+    def delete_segment(self, segment_id: str) -> dict:
+        """Remove a segment and its associated edit decisions."""
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        segments = self._current.transcript.segments
+        target = [s for s in segments if s.id == segment_id]
+        if not target:
+            return {"success": False, "error": f"Segment not found: {segment_id}"}
+
+        remaining_segs = [s for s in segments if s.id != segment_id]
+        remaining_edits = [e for e in self._current.edits if e.target_id != segment_id]
+
+        updated = self._current.model_copy(update={
+            "transcript": self._current.transcript.model_copy(update={"segments": remaining_segs}),
+            "edits": remaining_edits,
+        })
+        self._current = updated
+        logger.info("Deleted segment {}", segment_id)
         return {"success": True, "data": updated.model_dump()}
 
     def merge_segments(self, segment_ids: list[str]) -> dict:
@@ -689,6 +731,84 @@ class ProjectService:
         self._current = updated
         logger.info("Added {} analysis results from {}", len(analysis_results), source)
         return {"success": True, "data": updated.model_dump()}
+
+    def generate_subtitle_keep_ranges(self, padding: float = 0.3) -> dict:
+        """Generate EditDecisions to delete ranges outside subtitle segments + padding.
+
+        For each subtitle segment, expands by `padding` seconds on both sides.
+        The gaps between these expanded ranges become delete EditDecisions.
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        subtitle_segs = sorted(
+            [s for s in self._current.transcript.segments if s.type == SegmentType.SUBTITLE],
+            key=lambda s: s.start,
+        )
+        if not subtitle_segs:
+            return {"success": False, "error": "No subtitle segments found"}
+
+        # Compute total duration
+        total_duration = max(s.end for s in self._current.transcript.segments)
+
+        # Build expanded keep ranges (subtitle + padding)
+        keep_ranges: list[tuple[float, float]] = []
+        for seg in subtitle_segs:
+            start = max(0.0, seg.start - padding)
+            end = min(total_duration, seg.end + padding)
+            if keep_ranges and start <= keep_ranges[-1][1]:
+                # Merge overlapping ranges
+                keep_ranges[-1] = (keep_ranges[-1][0], max(keep_ranges[-1][1], end))
+            else:
+                keep_ranges.append((start, end))
+
+        # Compute delete ranges (gaps between keep ranges)
+        delete_ranges: list[tuple[float, float]] = []
+        current = 0.0
+        for keep_start, keep_end in keep_ranges:
+            if current < keep_start:
+                delete_ranges.append((current, keep_start))
+            current = keep_end
+        if current < total_duration:
+            delete_ranges.append((current, total_duration))
+
+        # Create EditDecisions for delete ranges
+        existing_edits = list(self._current.edits)
+        new_edits: list[EditDecision] = []
+        for i, (start, end) in enumerate(delete_ranges):
+            edit_id = f"edit-subtitle-trim-{i:04d}"
+            # Skip if already covered by existing edit
+            already_covered = any(
+                e.action == "delete"
+                and e.status in (EditStatus.CONFIRMED, EditStatus.PENDING)
+                and abs(e.start - start) < 0.05
+                and abs(e.end - end) < 0.05
+                for e in existing_edits
+            )
+            if not already_covered:
+                new_edits.append(EditDecision(
+                    id=edit_id,
+                    start=start,
+                    end=end,
+                    action="delete",
+                    source="subtitle_trim",
+                    status=EditStatus.PENDING,
+                    priority=100,
+                    target_type="range",
+                ))
+
+        updated = self._current.model_copy(update={"edits": existing_edits + new_edits})
+        self._current = updated
+        logger.info("Generated {} delete ranges from subtitle trim (padding={:.1f}s)", len(new_edits), padding)
+        return {
+            "success": True,
+            "data": {
+                "keep_ranges": len(keep_ranges),
+                "delete_ranges": len(delete_ranges),
+                "new_edits": len(new_edits),
+                "project": updated.model_dump(),
+            },
+        }
 
     def get_recent_projects(self, limit: int = 10) -> dict:
         """Scan data/projects/*/project.json and return sorted by updated_at."""

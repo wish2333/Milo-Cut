@@ -101,6 +101,37 @@ export function useEdit(project: Ref<Project | null>) {
     return null
   }
 
+  async function deleteSegment(segmentId: string): Promise<boolean> {
+    const res = await call<Project>("delete_segment", segmentId)
+    if (res.success && res.data) {
+      project.value = res.data
+      return true
+    }
+    return false
+  }
+
+  async function generateSubtitleKeepRanges(padding: number = 0.3): Promise<{
+    keep_ranges: number
+    delete_ranges: number
+    new_edits: number
+  } | null> {
+    const res = await call<{
+      keep_ranges: number
+      delete_ranges: number
+      new_edits: number
+      project: Project
+    }>("generate_subtitle_keep_ranges", padding)
+    if (res.success && res.data) {
+      project.value = res.data.project
+      return {
+        keep_ranges: res.data.keep_ranges,
+        delete_ranges: res.data.delete_ranges,
+        new_edits: res.data.new_edits,
+      }
+    }
+    return null
+  }
+
   return {
     updateSegmentText,
     updateSegmentTime,
@@ -111,5 +142,7 @@ export function useEdit(project: Ref<Project | null>) {
     confirmAllSuggestions,
     rejectAllSuggestions,
     getEditSummary,
+    deleteSegment,
+    generateSubtitleKeepRanges,
   }
 }

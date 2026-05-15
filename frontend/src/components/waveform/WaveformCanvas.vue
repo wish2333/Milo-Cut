@@ -12,6 +12,7 @@ interface PeakData {
 const props = defineProps<{
   segments: Segment[]
   waveformPath?: string
+  duration?: number
 }>()
 
 const metrics = inject<TimelineMetrics>(TIMELINE_METRICS_KEY)!
@@ -77,7 +78,7 @@ function drawWaveform(ctx: CanvasRenderingContext2D, w: number, _h: number, mid:
 
   // Map peaks to viewport
   const totalBuckets = peakData.length
-  const bucketsPerSecond = totalBuckets / (vs + vd)
+  const bucketsPerSecond = props.duration ? totalBuckets / props.duration : totalBuckets / (vs + vd)
 
   const startBucket = Math.floor(vs * bucketsPerSecond)
   const endBucket = Math.min(Math.ceil(ve * bucketsPerSecond), totalBuckets)

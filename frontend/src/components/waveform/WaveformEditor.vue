@@ -22,6 +22,7 @@ const emit = defineEmits<{
   seek: [time: number]
   "select-range": [start: number, end: number]
   "add-segment": [start: number, end: number]
+  "delete-segment": [segmentId: string]
 }>()
 
 const durationRef = toRef(props, "duration")
@@ -61,6 +62,10 @@ function handleSelectRange(start: number, end: number) {
 function handleAddSegment(start: number, end: number) {
   emit("add-segment", start, end)
 }
+
+function handleDeleteSegment(segmentId: string) {
+  emit("delete-segment", segmentId)
+}
 </script>
 
 <template>
@@ -80,6 +85,7 @@ function handleAddSegment(start: number, end: number) {
       <WaveformCanvas
         :segments="segments"
         :waveform-path="waveformPath"
+        :duration="duration"
         style="z-index: 0; pointer-events: none"
       />
       <TimeMarksLayer
@@ -93,6 +99,7 @@ function handleAddSegment(start: number, end: number) {
         style="z-index: 2"
         @select-range="handleSelectRange"
         @add-segment="handleAddSegment"
+        @delete-segment="handleDeleteSegment"
       />
       <PlayheadOverlay style="z-index: 10; pointer-events: none" />
     </div>

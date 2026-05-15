@@ -1181,3 +1181,258 @@ feat(core): 实现 EditDecision ID 绑定与优先级逻辑遮罩
 - 逻辑遮罩：masked 段低透明度+中划线，kept 段绿色标记，原始数据保留
 - TranscriptRow/SilenceRow/TimelineRuler 同步支持 effectiveStatus 渲染
 ```
+
+---
+
+## Audit Fix: Phase 1-3 Bug Fixes & Feature Extensions (2026-05-15 Session 9)
+
+### 概述
+
+基于 `docs/audit-report-preview-2.md` 审计报告，修复 7 个 HIGH 优先级 Bug 并实现 4 个缺失功能，打通核心工作流：导入字幕 -> 检测静音 -> 审阅建议 -> 导出。
+
+### Phase 1: 关键 Bug 修复与开发者体验
+
+#### Task 1.1: 修复 `getEffectiveStatus` 忽略 rejected 状态 (B1)
+
+**问题:** `getEffectiveStatus` 按优先级排序但不检查 `status` 字段，rejected 的编辑决策仍然返回 "masked"。
+
+**修复:** 在排序前过滤 `status !== "rejected"`，仅从活跃编辑列表中选取最高优先级。
+
+**文件:** `frontend/src/utils/segmentHelpers.ts`
+
+```typescript
+// Before
+const top = [...related].sort((a, b) => b.priority - a.priority)[0]
+
+// After
+const active = related.filter(e => e.status !== "rejected")
+if (active.length === 0) return "normal"
+const top = [...active].sort((a, b) => b.priority - a.priority)[0]
+```
+
+**测试:** 新增 4 个测试用例（单个 rejected、多优先级回退、全部 rejected、阈值过滤）
+
+#### Task 1.2: 添加 `minOverlapSeconds` 参数 (A4)
+
+**问题:** 1ms 重叠即将整个字幕标记为 "masked"。
+
+**修复:** `isOverlapping` 新增 `minOverlapSeconds` 参数（默认 0.0），`getEffectiveStatus` 调用时传入 0.3s 阈值。
+
+**文件:** `frontend/src/utils/segmentHelpers.ts`
+
+```typescript
+export function isOverlapping(
+  edit: EditDecision,
+  seg: Segment,
+  minOverlapSeconds = 0.0,
+): boolean {
+  const overlapStart = Math.max(edit.start, seg.start)
+  const overlapEnd = Math.min(edit.end, seg.end)
+  return overlapEnd - overlapStart > minOverlapSeconds
+}
+```
+
+**测试:** 新增 2 个测试用例（低于阈值、超过阈值）
+
+#### Task 1.3: 欢迎页最近项目列表 (C1)
+
+**问题:** 仅有"上传媒体"流程，`get_recent_projects` API 已实现但未使用。
+
+**修复:** `WelcomePage.vue` 在 `onMounted` 时获取最近项目列表，渲染可点击列表，点击调用 `openProject`。
+
+**文件:** `frontend/src/pages/WelcomePage.vue`
+
+#### Task 1.4: 字幕段落删除功能 (A1)
+
+**问题:** 无法删除字幕段落。
+
+**修复:**
+- 后端: `project_service.py` 新增 `delete_segment(segment_id)` 方法，移除段落及关联的 EditDecision
+- 前端: `SegmentBlocksLayer.vue` 新增右键上下文菜单 + Delete 键删除；`useEdit.ts` 新增 `deleteSegment()` 方法
+
+**文件:** `core/project_service.py`, `main.py`, `frontend/src/components/waveform/SegmentBlocksLayer.vue`, `frontend/src/components/waveform/WaveformEditor.vue`, `frontend/src/composables/useEdit.ts`, `frontend/src/types/api.ts`
+
+#### Task 1.5: 波形渲染修复 (A3)
+
+**问题:** 波形从未渲染。两个根因：后端处理器未注册 + 前端数学错误。
+
+**修复:**
+- 后端: `main.py` 注册 `WAVEFORM_GENERATION` 任务处理器，实现 `_handle_waveform_generation`
+- 后端: `ffmpeg_service.py` 新增 `generate_waveform()` 函数（提取 PCM 音频、计算 min/max 峰值、写入 JSON）
+- 前端: `WaveformCanvas.vue` 修复数学错误：`totalBuckets / duration` 替代 `totalBuckets / (vs + vd)`
+- 前端: `useProject.ts` 新增 `triggerWaveformGeneration()`，项目创建/打开后自动触发
+
+**文件:** `core/ffmpeg_service.py`, `main.py`, `frontend/src/components/waveform/WaveformCanvas.vue`, `frontend/src/composables/useProject.ts`
+
+### Phase 2: 项目管理健壮性
+
+#### Task 2.1: 修复静音检测去重忽略 rejected (B2)
+
+**问题:** 重新检测静音时，已 rejected 的编辑决策被覆盖。
+
+**修复:** `add_silence_results` 的 `already_covered` 检查中添加 `EditStatus.REJECTED`。
+
+**文件:** `core/project_service.py`
+
+```python
+# Before
+and e.status in (EditStatus.CONFIRMED, EditStatus.PENDING)
+
+# After
+and e.status in (EditStatus.CONFIRMED, EditStatus.PENDING, EditStatus.REJECTED)
+```
+
+#### Task 2.2: SRT 导入校验 (C2)
+
+**问题:** SRT 导入无校验，重新导入后孤立的 EditDecision 引用未清理。
+
+**修复:**
+- `import_srt` 先调用 `validate_srt` 校验，返回 warnings
+- `update_transcript` 清理 `target_id` 不再存在的孤立 EditDecision
+
+**文件:** `main.py`, `core/project_service.py`
+
+### Phase 3: 核心功能扩展
+
+#### Task 3.1: 修复音频文件导出崩溃 (E1)
+
+**问题:** `_extract_segment` 硬编码视频编码参数，音频文件导出时崩溃。
+
+**修复:**
+- `_extract_segment` 新增 `has_video` 参数，音频文件使用 `-c:a aac -vn`
+- 使用 `-t` 替代 `-to`（duration vs end time），preset 改为 `fast`
+- `export_video` 新增 `media_info` 参数，自动检测是否有视频流
+- `main.py` 的 `_handle_export_video` 传递 `media_info`
+
+**文件:** `core/export_service.py`, `main.py`
+
+```python
+def _extract_segment(ffmpeg, input_path, start, end, output_path, has_video=True):
+    duration = end - start
+    base = [ffmpeg, "-hide_banner", "-y", "-ss", f"{start:.3f}", "-i", input_path,
+            "-t", f"{duration:.3f}", "-avoid_negative_ts", "make_zero"]
+    if has_video:
+        codec_args = ["-c:v", "libx264", "-preset", "fast", "-c:a", "aac"]
+    else:
+        codec_args = ["-c:a", "aac", "-vn"]
+    # ...
+```
+
+#### Task 3.2: 基于字幕的智能裁剪 (D1)
+
+**问题:** 缺少核心价值功能 -- 自动删除字幕之间的空白段落。
+
+**修复:**
+- 后端: `project_service.py` 新增 `generate_subtitle_keep_ranges(padding=0.3)` 方法
+  - 为每个字幕段扩展 padding 秒的保留区间
+  - 合并重叠的保留区间
+  - 计算保留区间之间的间隙作为删除范围
+  - 创建 `source="subtitle_trim"` 的 EditDecision
+- 前端: `useEdit.ts` 新增 `generateSubtitleKeepRanges(padding)` 方法
+- UI: 工具栏新增"Subtitle Trim"按钮（橙色）
+
+**文件:** `core/project_service.py`, `main.py`, `frontend/src/composables/useEdit.ts`, `frontend/src/types/api.ts`, `frontend/src/pages/WorkspacePage.vue`
+
+#### Task 3.3: 纯音频导出 (D3)
+
+**问题:** 缺少纯音频导出选项。
+
+**修复:**
+- `models.py` 新增 `EXPORT_AUDIO` 任务类型
+- `export_service.py` 新增 `export_audio()` 函数（复用 `export_video` 逻辑，`has_video=False`）
+- `main.py` 注册 `EXPORT_AUDIO` 处理器，新增 `_handle_export_audio`（默认输出 `.m4a`）
+- `useExport.ts` 新增 `exportAudio()` 方法
+- UI: 工具栏新增"Export Audio"按钮（绿色，音乐图标）
+
+**文件:** `core/models.py`, `core/export_service.py`, `main.py`, `frontend/src/composables/useExport.ts`, `frontend/src/pages/WorkspacePage.vue`
+
+### Bug 修复: 时间轴右键删除无效
+
+**问题:** `WaveformEditor` 定义了 `delete-segment` 事件，但 `WorkspacePage.vue` 未监听。
+
+**修复:** 添加 `@delete-segment="handleDeleteSegment"` 到 `WaveformEditor` 组件，从 `useEdit` 解构 `deleteSegment` 方法，添加 `handleDeleteSegment` 处理函数。
+
+**文件:** `frontend/src/pages/WorkspacePage.vue`
+
+### 修改文件汇总
+
+| 文件 | 变更 |
+|------|------|
+| `core/models.py` | TaskType 新增 EXPORT_AUDIO |
+| `core/export_service.py` | `_extract_segment` 新增 has_video 参数；`export_video` 新增 media_info 参数；新增 `export_audio()` |
+| `core/project_service.py` | 新增 `delete_segment()`, `generate_subtitle_keep_ranges()`, `update_media_waveform()`；修复 `add_silence_results` 去重；修复 `update_transcript` 清理孤立编辑 |
+| `core/ffmpeg_service.py` | 新增 `generate_waveform()` |
+| `main.py` | 注册 WAVEFORM_GENERATION/EXPORT_AUDIO 处理器；新增 `delete_segment`, `generate_subtitle_keep_ranges` 暴露方法；`import_srt` 新增校验；`_handle_export_video` 传递 media_info |
+| `frontend/src/utils/segmentHelpers.ts` | `isOverlapping` 新增 minOverlapSeconds；`getEffectiveStatus` 过滤 rejected |
+| `frontend/src/utils/segmentHelpers.test.ts` | 新增 6 个测试用例 |
+| `frontend/src/types/api.ts` | BridgeMethod 新增 delete_segment, generate_subtitle_keep_ranges |
+| `frontend/src/composables/useEdit.ts` | 新增 `deleteSegment()`, `generateSubtitleKeepRanges()` |
+| `frontend/src/composables/useExport.ts` | 新增 `exportAudio()`；isExporting/exportProgress 支持 export_audio |
+| `frontend/src/composables/useProject.ts` | 新增 `waveformPath` computed, `triggerWaveformGeneration()` |
+| `frontend/src/components/waveform/SegmentBlocksLayer.vue` | 新增右键上下文菜单、Delete 键删除、选区高亮 |
+| `frontend/src/components/waveform/WaveformEditor.vue` | 新增 `delete-segment` emit 和 handler；传递 duration prop |
+| `frontend/src/components/waveform/WaveformCanvas.vue` | 新增 duration prop；修复 bucketsPerSecond 数学错误 |
+| `frontend/src/pages/WelcomePage.vue` | 新增最近项目列表 |
+| `frontend/src/pages/WorkspacePage.vue` | 新增 Subtitle Trim/Export Audio 按钮；修复 @delete-segment 事件绑定 |
+
+### Bridge API 新增方法 (3 个)
+
+- `delete_segment(segment_id)` -- 删除字幕段落及关联编辑决策
+- `generate_subtitle_keep_ranges(padding)` -- 基于字幕生成智能裁剪范围
+- `export_audio` 任务类型 -- 纯音频导出
+
+### 验证结果
+
+- `uv run pytest tests/` 后端 64 测试全部通过 (0.4s)
+- `bun run test` 前端 89 测试全部通过 (3.5s)
+- TypeScript 类型检查通过
+
+### 📝 Commit Message
+
+```
+fix(audit): 修复 7 个 HIGH Bug 并实现 4 个缺失功能
+
+Phase 1 - 关键 Bug 修复:
+- 修复 getEffectiveStatus 忽略 rejected 状态 (B1)
+- 修复 1ms 重叠标记整段字幕为 masked (A4)
+- 新增欢迎页最近项目列表 (C1)
+- 新增字幕段落删除功能：右键菜单 + Delete 键 (A1)
+- 修复波形渲染：注册后端处理器 + 修复前端数学错误 (A3)
+
+Phase 2 - 项目管理健壮性:
+- 修复静音检测去重忽略 rejected 状态 (B2)
+- SRT 导入新增校验 + 清理孤立编辑决策 (C2)
+
+Phase 3 - 核心功能扩展:
+- 修复音频文件导出崩溃：has_video 条件编码 (E1)
+- 实现基于字幕的智能裁剪 (D1)
+- 实现纯音频导出 (D3)
+- 修复时间轴右键删除无效（缺少事件绑定）
+```
+
+---
+
+### 🚀 Release Notes
+
+```
+## 2026-05-15 - Audit Fix: 核心工作流打通
+
+### ✨ 新增
+- **智能字幕裁剪**：一键删除字幕之间的空白段落，自动保留 0.3s 边距，快速完成视频粗剪。
+- **纯音频导出**：支持导出 M4A 格式的纯音频文件，适用于播客等音频内容。
+- **段落删除**：时间轴右键菜单或 Delete 键可直接删除不需要的字幕段落。
+- **最近项目**：欢迎页显示最近打开的项目，一键快速访问。
+- **波形显示**：项目打开后自动生成音频波形数据并在时间轴上渲染。
+
+### ⚡ 优化
+- **编辑状态准确性**：rejected 状态的编辑决策不再影响段落显示，1ms 微小重叠不再误标记整段字幕。
+- **静音检测去重**：已拒绝的静音建议在重新检测时不会被覆盖。
+- **SRT 导入健壮性**：导入前自动校验文件，重新导入时清理孤立的编辑决策引用。
+
+### 🐛 修复
+- 修复音频文件（MP3/WAV 等）导出时崩溃的问题。
+- 修复波形从未显示的两个根因（后端处理器未注册 + 前端数学错误）。
+- 修复时间轴右键删除菜单点击无效的问题。
+- 修复 rejected 状态的编辑决策仍显示为"已删除"的问题。
+- 修复极小时间重叠（1ms）导致整段字幕被标记为 masked 的问题。
+```

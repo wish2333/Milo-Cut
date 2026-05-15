@@ -51,12 +51,15 @@ const {
   getExportSummary,
   exportVideo,
   exportSrt,
+  exportAudio,
 } = useExport(projectRef)
 
 const {
   searchReplace,
   confirmAllSuggestions,
   rejectAllSuggestions,
+  generateSubtitleKeepRanges,
+  deleteSegment,
 } = useEdit(projectRef)
 
 const {
@@ -231,6 +234,18 @@ async function handleRejectAllSuggestions() {
   await rejectAllSuggestions()
 }
 
+async function handleSubtitleTrim() {
+  errorMessage.value = ""
+  statusMessage.value = "Generating subtitle-based trim ranges..."
+  const result = await generateSubtitleKeepRanges(0.3)
+  statusMessage.value = ""
+  if (result) {
+    statusMessage.value = `Generated ${result.new_edits} delete ranges from ${result.keep_ranges} subtitle groups`
+  } else {
+    errorMessage.value = "Failed to generate subtitle trim ranges"
+  }
+}
+
 async function handleUpdateText(segmentId: string, text: string) {
   await updateSegmentText(segmentId, text)
 }
@@ -261,6 +276,14 @@ async function handleAddSegment(start: number, end: number) {
   }
 }
 
+async function handleDeleteSegment(segmentId: string) {
+  errorMessage.value = ""
+  const ok = await deleteSegment(segmentId)
+  if (!ok) {
+    errorMessage.value = "Failed to delete segment"
+  }
+}
+
 async function handleExportVideo() {
   errorMessage.value = ""
   const summary = await getExportSummary()
@@ -288,6 +311,14 @@ async function handleExportSrt() {
   const ok = await exportSrt()
   statusMessage.value = ""
   if (!ok) errorMessage.value = "Failed to export SRT"
+}
+
+async function handleExportAudio() {
+  errorMessage.value = ""
+  statusMessage.value = "Exporting audio..."
+  const ok = await exportAudio()
+  statusMessage.value = ""
+  if (!ok) errorMessage.value = "Failed to export audio"
 }
 
 async function handleCloseProject() {
@@ -459,6 +490,16 @@ onUnmounted(() => {
         </div>
       </div>
 
+      <button
+        class="inline-flex items-center gap-1.5 rounded-md bg-orange-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-600 disabled:opacity-50 transition-colors"
+        :disabled="isDetecting || isExporting"
+        title="Auto-trim: delete gaps between subtitle segments"
+        @click="handleSubtitleTrim"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L4.939 4.939m7.061 7.061l-2.879-2.879M12 12l2.879-2.879" /></svg>
+        Subtitle Trim
+      </button>
+
       <div class="mx-1 h-4 w-px bg-gray-300" />
 
       <button
@@ -476,6 +517,15 @@ onUnmounted(() => {
       >
         <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
         Export SRT
+      </button>
+      <button
+        class="inline-flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50 transition-colors"
+        :disabled="isExporting || confirmedEdits.length === 0"
+        title="Export audio only (M4A)"
+        @click="handleExportAudio"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" /></svg>
+        Export Audio
       </button>
 
       <div class="flex-1" />
@@ -573,6 +623,7 @@ onUnmounted(() => {
       @seek="handleSeek"
       @select-range="handleSelectRange"
       @add-segment="handleAddSegment"
+      @delete-segment="handleDeleteSegment"
     />
 
     <!-- Export summary modal -->

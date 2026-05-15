@@ -29,6 +29,7 @@ class TaskType(StrEnum):
     SILENCE_DETECTION = "silence_detection"
     EXPORT_VIDEO = "export_video"
     EXPORT_SUBTITLE = "export_subtitle"
+    EXPORT_AUDIO = "export_audio"
     # P1
     FILLER_DETECTION = "filler_detection"
     ERROR_DETECTION = "error_detection"
