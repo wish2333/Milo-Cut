@@ -92,15 +92,10 @@ function setSpeed(rate: number) {
   showSpeedMenu.value = false
 }
 
-// Keyboard shortcuts
+// Keyboard shortcuts (space is handled globally in WorkspacePage)
 function handleKeydown(e: KeyboardEvent) {
   if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
   switch (e.key) {
-    case " ":
-    case "k":
-      e.preventDefault()
-      emit("toggle-play")
-      break
     case "ArrowLeft":
       e.preventDefault()
       emit("update:currentTime", Math.max(0, props.currentTime - 5))

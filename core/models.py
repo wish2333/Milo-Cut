@@ -96,6 +96,8 @@ class EditDecision(BaseModel, frozen=True):
     analysis_id: str | None = None
     status: EditStatus = EditStatus.PENDING
     priority: int = 100
+    target_type: Literal["segment", "range"] = "range"
+    target_id: str | None = None
 
 
 class TaskProgress(BaseModel, frozen=True):

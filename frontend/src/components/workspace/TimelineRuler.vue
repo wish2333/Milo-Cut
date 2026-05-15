@@ -32,12 +32,17 @@ const selectionStart = ref<number | null>(null)
 const selectionEnd = ref<number | null>(null)
 const isSelecting = ref(false)
 const isDraggingHandle = ref<"left" | "right" | null>(null)
+const isDraggingSelection = ref(false)
 const dragOriginX = ref(0)
 const dragOriginValue = ref(0)
+const dragInitialOffset = ref(0) // Offset from click point to handle edge
 
 // Snap toggle
 const snapEnabled = ref(false)
 const SNAP_THRESHOLD = 0.1 // seconds
+const SNAP_RELEASE_PX = 5 // Snap on release if within 5px
+const HANDLE_ZONE_PX = 8 // Handle detection zone in pixels
+const MIN_SELECTION_DURATION = 0.1 // Minimum selection duration in seconds
 
 // ================================================================
 // View navigation
@@ -123,7 +128,6 @@ function handleTimecodeClick(e: MouseEvent) {
 
 function snapTime(time: number): number {
   if (!snapEnabled.value) return time
-  // Snap to segment boundaries
   for (const seg of props.segments) {
     if (Math.abs(time - seg.start) < SNAP_THRESHOLD) return seg.start
     if (Math.abs(time - seg.end) < SNAP_THRESHOLD) return seg.end
@@ -135,102 +139,170 @@ function getTimeFromX(clientX: number): number {
   if (!rulerRef.value) return 0
   const rect = rulerRef.value.getBoundingClientRect()
   const ratio = (clientX - rect.left) / rect.width
-  return snapTime(viewStart.value + ratio * viewDuration.value)
+  return viewStart.value + ratio * viewDuration.value
 }
+
+function getTimeFromXSnapped(clientX: number): number {
+  return snapTime(getTimeFromX(clientX))
+}
+
+function timeToPercent(time: number): number {
+  return ((time - viewStart.value) / viewDuration.value) * 100
+}
+
+function percentToPixels(pct: number): number {
+  if (!rulerRef.value) return 0
+  return (pct / 100) * rulerRef.value.getBoundingClientRect().width
+}
+
+function addBodySelectNone() {
+  document.body.style.userSelect = "none"
+  document.body.style.webkitUserSelect = "none"
+}
+
+function removeBodySelectNone() {
+  document.body.style.userSelect = ""
+  document.body.style.webkitUserSelect = ""
+}
+
+// ================================================================
+// Handle detection (pixel-based)
+// ================================================================
+
+function detectClickZone(e: MouseEvent): "left-handle" | "right-handle" | "body" | "outside" {
+  if (selectionStart.value === null || selectionEnd.value === null || !rulerRef.value) {
+    return "outside"
+  }
+
+  const rect = rulerRef.value.getBoundingClientRect()
+  const clickX = e.clientX - rect.left
+
+  const startPct = timeToPercent(selectionStart.value)
+  const endPct = timeToPercent(selectionEnd.value)
+  const startPx = percentToPixels(startPct)
+  const endPx = percentToPixels(endPct)
+
+  // Check left handle zone
+  if (Math.abs(clickX - startPx) <= HANDLE_ZONE_PX) {
+    return "left-handle"
+  }
+
+  // Check right handle zone
+  if (Math.abs(clickX - endPx) <= HANDLE_ZONE_PX) {
+    return "right-handle"
+  }
+
+  // Check body
+  if (clickX > startPx && clickX < endPx) {
+    return "body"
+  }
+
+  return "outside"
+}
+
+// ================================================================
+// Main mousedown dispatcher
+// ================================================================
 
 function handleSelectionMouseDown(e: MouseEvent) {
   if (e.button !== 0) return
-  const time = getTimeFromX(e.clientX)
 
-  // Check if clicking inside existing selection (or on its handles)
-  if (selectionStart.value !== null && selectionEnd.value !== null) {
-    const startPct = ((selectionStart.value - viewStart.value) / viewDuration.value) * 100
-    const endPct = ((selectionEnd.value - viewStart.value) / viewDuration.value) * 100
-    const clickPct = ((time - viewStart.value) / viewDuration.value) * 100
+  const zone = detectClickZone(e)
 
-    // Handle drag (edges)
-    if (Math.abs(clickPct - startPct) < 1.5) {
-      isDraggingHandle.value = "left"
-      dragOriginX.value = e.clientX
-      dragOriginValue.value = selectionStart.value
-      document.addEventListener("mousemove", handleHandleDrag)
-      document.addEventListener("mouseup", handleHandleDragEnd)
-      return
-    }
-    if (Math.abs(clickPct - endPct) < 1.5) {
-      isDraggingHandle.value = "right"
-      dragOriginX.value = e.clientX
-      dragOriginValue.value = selectionEnd.value
-      document.addEventListener("mousemove", handleHandleDrag)
-      document.addEventListener("mouseup", handleHandleDragEnd)
-      return
-    }
-
-    // Body drag (move entire selection)
-    if (clickPct > startPct && clickPct < endPct) {
-      isDraggingSelection.value = true
-      dragOriginX.value = e.clientX
-      dragOriginValue.value = time
-      selDragStartStart.value = selectionStart.value
-      selDragStartEnd.value = selectionEnd.value
-      document.addEventListener("mousemove", handleSelectionBodyDrag)
-      document.addEventListener("mouseup", handleSelectionBodyDragEnd)
-      return
-    }
+  switch (zone) {
+    case "left-handle":
+      startHandleDrag("left", e)
+      break
+    case "right-handle":
+      startHandleDrag("right", e)
+      break
+    case "body":
+      startBodyDrag(e)
+      break
+    case "outside":
+      startNewSelection(e)
+      break
   }
-
-  // Start new selection
-  isSelecting.value = true
-  selectionStart.value = time
-  selectionEnd.value = time
-  document.addEventListener("mousemove", handleSelectionMouseMove)
-  document.addEventListener("mouseup", handleSelectionMouseUp)
 }
 
-function handleSelectionMouseMove(e: MouseEvent) {
-  if (!isSelecting.value) return
-  const time = getTimeFromX(e.clientX)
-  if (time < selectionStart.value!) {
-    selectionStart.value = time
-    selectionEnd.value = selectionStart.value
+// ================================================================
+// Handle drag (edges) - with offset algorithm
+// ================================================================
+
+function startHandleDrag(side: "left" | "right", e: MouseEvent) {
+  e.stopPropagation()
+  isDraggingHandle.value = side
+  dragOriginX.value = e.clientX
+
+  const handleTime = side === "left" ? selectionStart.value! : selectionEnd.value!
+  const clickTime = getTimeFromX(e.clientX)
+  dragInitialOffset.value = handleTime - clickTime
+  dragOriginValue.value = handleTime
+
+  addBodySelectNone()
+  document.addEventListener("mousemove", handleHandleDrag)
+  document.addEventListener("mouseup", handleHandleDragEnd)
+}
+
+function handleHandleDrag(e: MouseEvent) {
+  if (!isDraggingHandle.value) return
+
+  const rawTime = getTimeFromX(e.clientX) + dragInitialOffset.value
+
+  if (isDraggingHandle.value === "left") {
+    const maxStart = selectionEnd.value! - MIN_SELECTION_DURATION
+    selectionStart.value = Math.max(0, Math.min(rawTime, maxStart))
   } else {
-    selectionEnd.value = time
+    const minEnd = selectionStart.value! + MIN_SELECTION_DURATION
+    selectionEnd.value = Math.min(props.duration, Math.max(rawTime, minEnd))
   }
 }
 
-function handleSelectionMouseUp() {
-  isSelecting.value = false
-  document.removeEventListener("mousemove", handleSelectionMouseMove)
-  document.removeEventListener("mouseup", handleSelectionMouseUp)
+function handleHandleDragEnd() {
+  isDraggingHandle.value = null
+  removeBodySelectNone()
+  document.removeEventListener("mousemove", handleHandleDrag)
+  document.removeEventListener("mouseup", handleHandleDragEnd)
 
-  // Normalize
-  if (selectionStart.value !== null && selectionEnd.value !== null) {
-    const s = Math.min(selectionStart.value, selectionEnd.value)
-    const e = Math.max(selectionStart.value, selectionEnd.value)
-    if (e - s < 0.1) {
-      // Too small, treat as click -> seek
-      emit("seek", s)
-      selectionStart.value = null
-      selectionEnd.value = null
-    } else {
-      selectionStart.value = s
-      selectionEnd.value = e
-      emit("select-range", s, e)
+  // Snap on release if close to a snap point
+  if (snapEnabled.value && selectionStart.value !== null && selectionEnd.value !== null) {
+    const snapped = maybeSnapOnRelease()
+    if (snapped) {
+      emit("select-range", selectionStart.value, selectionEnd.value)
+      return
     }
   }
+
+  if (selectionStart.value !== null && selectionEnd.value !== null) {
+    emit("select-range", selectionStart.value, selectionEnd.value)
+  }
 }
 
 // ================================================================
-// Selection body dragging (move entire selection)
+// Body drag (move entire selection)
 // ================================================================
-const isDraggingSelection = ref(false)
+
 const selDragStartStart = ref(0)
 const selDragStartEnd = ref(0)
 
+function startBodyDrag(e: MouseEvent) {
+  e.stopPropagation()
+  isDraggingSelection.value = true
+  dragOriginX.value = e.clientX
+  dragOriginValue.value = getTimeFromX(e.clientX)
+  selDragStartStart.value = selectionStart.value!
+  selDragStartEnd.value = selectionEnd.value!
+
+  addBodySelectNone()
+  document.addEventListener("mousemove", handleSelectionBodyDrag)
+  document.addEventListener("mouseup", handleSelectionBodyDragEnd)
+}
+
 function handleSelectionBodyDrag(e: MouseEvent) {
   if (!isDraggingSelection.value) return
-  const time = getTimeFromX(e.clientX)
-  const dt = time - dragOriginValue.value
+
+  const currentTime = getTimeFromX(e.clientX)
+  const dt = currentTime - dragOriginValue.value
   const duration = selDragStartEnd.value - selDragStartStart.value
   let newStart = selDragStartStart.value + dt
   let newEnd = selDragStartEnd.value + dt
@@ -251,35 +323,115 @@ function handleSelectionBodyDrag(e: MouseEvent) {
 
 function handleSelectionBodyDragEnd() {
   isDraggingSelection.value = false
+  removeBodySelectNone()
   document.removeEventListener("mousemove", handleSelectionBodyDrag)
   document.removeEventListener("mouseup", handleSelectionBodyDragEnd)
+
   if (selectionStart.value !== null && selectionEnd.value !== null) {
     emit("select-range", selectionStart.value, selectionEnd.value)
   }
 }
 
 // ================================================================
-// Handle dragging (edges)
+// New selection (click outside)
 // ================================================================
 
-function handleHandleDrag(e: MouseEvent) {
-  if (!isDraggingHandle.value || !rulerRef.value) return
-  const time = getTimeFromX(e.clientX)
+function startNewSelection(e: MouseEvent) {
+  isSelecting.value = true
+  const time = getTimeFromXSnapped(e.clientX)
+  selectionStart.value = time
+  selectionEnd.value = time
 
-  if (isDraggingHandle.value === "left") {
-    selectionStart.value = Math.min(time, selectionEnd.value! - 0.1)
+  addBodySelectNone()
+  document.addEventListener("mousemove", handleSelectionMouseMove)
+  document.addEventListener("mouseup", handleSelectionMouseUp)
+}
+
+function handleSelectionMouseMove(e: MouseEvent) {
+  if (!isSelecting.value) return
+  const time = getTimeFromXSnapped(e.clientX)
+
+  if (time < selectionStart.value!) {
+    selectionStart.value = time
+    selectionEnd.value = selectionStart.value
   } else {
-    selectionEnd.value = Math.max(time, selectionStart.value! + 0.1)
+    selectionEnd.value = time
   }
 }
 
-function handleHandleDragEnd() {
-  isDraggingHandle.value = null
-  document.removeEventListener("mousemove", handleHandleDrag)
-  document.removeEventListener("mouseup", handleHandleDragEnd)
+function handleSelectionMouseUp() {
+  isSelecting.value = false
+  removeBodySelectNone()
+  document.removeEventListener("mousemove", handleSelectionMouseMove)
+  document.removeEventListener("mouseup", handleSelectionMouseUp)
+
+  // Normalize
   if (selectionStart.value !== null && selectionEnd.value !== null) {
-    emit("select-range", selectionStart.value, selectionEnd.value)
+    const s = Math.min(selectionStart.value, selectionEnd.value)
+    const e = Math.max(selectionStart.value, selectionEnd.value)
+    if (e - s < MIN_SELECTION_DURATION) {
+      // Too small, treat as click -> seek
+      emit("seek", s)
+      selectionStart.value = null
+      selectionEnd.value = null
+    } else {
+      selectionStart.value = s
+      selectionEnd.value = e
+      emit("select-range", s, e)
+    }
   }
+}
+
+// ================================================================
+// Snap on release
+// ================================================================
+
+function maybeSnapOnRelease(): boolean {
+  if (!rulerRef.value || selectionStart.value === null || selectionEnd.value === null) return false
+
+  const rect = rulerRef.value.getBoundingClientRect()
+  const snapPx = SNAP_RELEASE_PX
+
+  // Convert pixel threshold to time threshold
+  const timePerPx = viewDuration.value / rect.width
+  const snapTimeThreshold = snapPx * timePerPx
+
+  let changed = false
+
+  // Try snapping start
+  for (const seg of props.segments) {
+    if (Math.abs(selectionStart.value - seg.start) < snapTimeThreshold) {
+      selectionStart.value = seg.start
+      changed = true
+      break
+    }
+    if (Math.abs(selectionStart.value - seg.end) < snapTimeThreshold) {
+      selectionStart.value = seg.end
+      changed = true
+      break
+    }
+  }
+
+  // Try snapping end
+  for (const seg of props.segments) {
+    if (Math.abs(selectionEnd.value - seg.start) < snapTimeThreshold) {
+      selectionEnd.value = seg.start
+      changed = true
+      break
+    }
+    if (Math.abs(selectionEnd.value - seg.end) < snapTimeThreshold) {
+      selectionEnd.value = seg.end
+      changed = true
+      break
+    }
+  }
+
+  // Ensure minimum duration after snapping
+  if (changed && selectionEnd.value! - selectionStart.value! < MIN_SELECTION_DURATION) {
+    selectionEnd.value = selectionStart.value! + MIN_SELECTION_DURATION
+  }
+
+  return changed
 }
 
 // ================================================================
@@ -336,7 +488,39 @@ interface Block {
   widthPercent: number
   type: "subtitle" | "silence"
   editStatus: string | null
+  effectiveStatus: "normal" | "masked" | "kept"
   text: string
+}
+
+function findEditForSegment(seg: Segment): EditDecision | undefined {
+  // 优先 ID 匹配
+  const byId = props.edits.find(e => e.target_id === seg.id)
+  if (byId) return byId
+
+  // 回退到时间匹配（兼容旧数据）
+  return props.edits.find(e =>
+    e.target_type === "range" &&
+    Math.abs(e.start - seg.start) < 0.01 &&
+    Math.abs(e.end - seg.end) < 0.01,
+  )
+}
+
+function isOverlapping(edit: EditDecision, seg: Segment): boolean {
+  return edit.start < seg.end && edit.end > seg.start
+}
+
+function getEffectiveStatus(seg: Segment): "normal" | "masked" | "kept" {
+  const related = props.edits.filter(e =>
+    e.target_id === seg.id || isOverlapping(e, seg),
+  )
+
+  if (related.length === 0) return "normal"
+
+  // 按优先级降序，取最高
+  const top = related.sort((a, b) => b.priority - a.priority)[0]
+
+  if (top.action === "delete") return "masked"
+  return "kept"
 }
 
 const visibleBlocks = computed<Block[]>(() => {
@@ -344,9 +528,7 @@ const visibleBlocks = computed<Block[]>(() => {
   return props.segments
     .filter(seg => seg.end > viewStart.value && seg.start < viewEnd.value)
     .map(seg => {
-      const edit = props.edits.find(e =>
-        Math.abs(e.start - seg.start) < 0.01 && Math.abs(e.end - seg.end) < 0.01,
-      )
+      const edit = findEditForSegment(seg)
       const clampStart = Math.max(seg.start, viewStart.value)
       const clampEnd = Math.min(seg.end, viewEnd.value)
       return {
@@ -355,6 +537,7 @@ const visibleBlocks = computed<Block[]>(() => {
         widthPercent: Math.max(0.3, ((clampEnd - clampStart) / viewDuration.value) * 100),
         type: seg.type,
         editStatus: edit?.status ?? null,
+        effectiveStatus: getEffectiveStatus(seg),
         text: seg.text || (seg.type === "silence" ? `silence ${(seg.end - seg.start).toFixed(1)}s` : ""),
       }
     })
@@ -475,6 +658,7 @@ onUnmounted(() => {
   document.removeEventListener("mouseup", handleScrollbarMouseUp)
   document.removeEventListener("mousemove", handleSelectionMouseMove)
   document.removeEventListener("mouseup", handleSelectionMouseUp)
+  removeBodySelectNone()
 })
 </script>
 
@@ -569,19 +753,35 @@ onUnmounted(() => {
         <!-- Selection highlight -->
         <div
           v-if="selectionVisible"
-          class="absolute top-0 bottom-0 bg-blue-500/20 border-y border-blue-400/40 pointer-events-none"
+          class="absolute top-0 bottom-0 bg-blue-500/20 border-y border-blue-400/40"
           :style="{
             left: selectionLeftPercent + '%',
             width: selectionWidthPercent + '%',
+            pointerEvents: 'none',
           }"
         >
-          <!-- Left handle -->
+          <!-- Left handle (wider hit zone) -->
           <div
-            class="absolute top-0 bottom-0 left-0 w-2 bg-blue-400/50 cursor-ew-resize hover:bg-blue-400/80 pointer-events-auto"
+            class="absolute top-0 bottom-0 -left-1 w-3 cursor-ew-resize"
+            style="pointer-events: all; z-index: 5"
+            :class="{
+              'bg-blue-400/80': isDraggingHandle === 'left',
+              'bg-blue-400/50 hover:bg-blue-400/70': isDraggingHandle !== 'left',
+            }"
           />
-          <!-- Right handle -->
+          <!-- Right handle (wider hit zone) -->
           <div
-            class="absolute top-0 bottom-0 right-0 w-2 bg-blue-400/50 cursor-ew-resize hover:bg-blue-400/80 pointer-events-auto"
+            class="absolute top-0 bottom-0 -right-1 w-3 cursor-ew-resize"
+            style="pointer-events: all; z-index: 5"
+            :class="{
+              'bg-blue-400/80': isDraggingHandle === 'right',
+              'bg-blue-400/50 hover:bg-blue-400/70': isDraggingHandle !== 'right',
+            }"
+          />
+          <!-- Body (for moving entire selection) -->
+          <div
+            class="absolute top-0 bottom-0 left-1 right-1 cursor-move"
+            style="pointer-events: all; z-index: 4"
           />
         </div>
 
@@ -591,11 +791,12 @@ onUnmounted(() => {
           :key="block.id"
           class="absolute top-0 bottom-0 cursor-pointer transition-opacity hover:opacity-80 rounded-sm"
           :class="{
-            'bg-blue-500/40': block.type === 'subtitle' && !block.editStatus,
+            'bg-blue-500/40': block.type === 'subtitle' && block.effectiveStatus === 'normal',
             'bg-yellow-500/40': block.editStatus === 'pending',
             'bg-red-500/40 opacity-60': block.editStatus === 'confirmed',
-            'bg-green-500/40': block.editStatus === 'rejected',
-            'bg-gray-600/40': block.type === 'silence' && !block.editStatus,
+            'bg-green-500/40': block.editStatus === 'rejected' || block.effectiveStatus === 'kept',
+            'bg-gray-600/40': block.type === 'silence' && block.effectiveStatus === 'normal',
+            'opacity-30 line-through': block.effectiveStatus === 'masked',
           }"
           :style="{
             left: block.leftPercent + '%',

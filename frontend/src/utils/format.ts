@@ -29,3 +29,35 @@ function pad(n: number): string {
 function pad3(n: number): string {
   return n.toString().padStart(3, "0")
 }
+
+/**
+ * Parse a time string into seconds.
+ * Accepts: "MM:SS.mmm", "MM:SS", "SS.mmm", "SS", "H:MM:SS.mmm"
+ */
+export function parseTime(input: string): number | null {
+  const s = input.trim()
+  if (!s) return null
+
+  // Pure number -> treat as seconds
+  if (/^\d+(\.\d+)?$/.test(s)) {
+    return parseFloat(s)
+  }
+
+  // Split by ":"
+  const parts = s.split(":")
+  if (parts.length === 2) {
+    const m = parseFloat(parts[0])
+    const sec = parseFloat(parts[1])
+    if (isNaN(m) || isNaN(sec)) return null
+    return m * 60 + sec
+  }
+  if (parts.length === 3) {
+    const h = parseFloat(parts[0])
+    const m = parseFloat(parts[1])
+    const sec = parseFloat(parts[2])
+    if (isNaN(h) || isNaN(m) || isNaN(sec)) return null
+    return h * 3600 + m * 60 + sec
+  }
+
+  return null
+}

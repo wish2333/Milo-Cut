@@ -30,6 +30,8 @@ export interface EditDecision {
   analysis_id?: string
   status: EditStatus
   priority: number
+  target_type: "segment" | "range"
+  target_id?: string
 }
 
 export interface MediaInfo {

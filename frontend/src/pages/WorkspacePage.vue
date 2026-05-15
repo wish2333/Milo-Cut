@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue"
+import { computed, onMounted, onUnmounted, ref, watch } from "vue"
 import type { Project, Segment, EditDecision } from "@/types/project"
 import type { EditSummary } from "@/types/edit"
 import { formatTimeShort } from "@/utils/format"
@@ -8,10 +8,8 @@ import { useAnalysis } from "@/composables/useAnalysis"
 import { useExport } from "@/composables/useExport"
 import { useEdit } from "@/composables/useEdit"
 import ProgressBar from "@/components/common/ProgressBar.vue"
-import TranscriptRow from "@/components/workspace/TranscriptRow.vue"
-import SilenceRow from "@/components/workspace/SilenceRow.vue"
+import Timeline from "@/components/workspace/Timeline.vue"
 import TimelineRuler from "@/components/workspace/TimelineRuler.vue"
-import SuggestionPanel from "@/components/workspace/SuggestionPanel.vue"
 import SearchReplaceBar from "@/components/workspace/SearchReplaceBar.vue"
 import EditSummaryModal from "@/components/workspace/EditSummaryModal.vue"
 import VideoControls from "@/components/workspace/VideoControls.vue"
@@ -56,6 +54,7 @@ const {
 
 const {
   updateSegmentText,
+  updateSegmentTime,
   searchReplace,
   confirmAllSuggestions,
   rejectAllSuggestions,
@@ -78,6 +77,7 @@ const videoPlaybackRate = ref(1)
 
 const silenceThreshold = ref(-30)
 const silenceMinDuration = ref(0.5)
+const globalEditMode = ref(false)
 
 const segments = computed<Segment[]>(() => props.project.transcript?.segments ?? [])
 const edits = computed<EditDecision[]>(() => props.project.edits ?? [])
@@ -121,16 +121,6 @@ async function saveSilenceSettings() {
     silence_min_duration: silenceMinDuration.value,
   })
   showSilenceSettings.value = false
-}
-
-function getEditForSegment(seg: Segment): EditDecision | undefined {
-  return edits.value.find(e =>
-    Math.abs(e.start - seg.start) < 0.01 && Math.abs(e.end - seg.end) < 0.01,
-  )
-}
-
-function getEditStatus(seg: Segment): EditDecision["status"] | null {
-  return getEditForSegment(seg)?.status ?? null
 }
 
 function handleSeek(time: number) {
@@ -263,6 +253,10 @@ async function handleUpdateText(segmentId: string, text: string) {
   await updateSegmentText(segmentId, text)
 }
 
+async function handleUpdateTime(segmentId: string, field: "start" | "end", value: number) {
+  await updateSegmentTime(segmentId, field, value)
+}
+
 
 
 async function handleSearchReplace(query: string, replacement: string, scope: string) {
@@ -322,16 +316,39 @@ async function handleCloseProject() {
   emit("project-closed")
 }
 
-function handleKeydown(e: KeyboardEvent) {
+function isTextInput(el: EventTarget | null): boolean {
+  if (!(el instanceof HTMLElement)) return false
+  const tag = el.tagName
+  if (tag === "INPUT" || tag === "TEXTAREA") return true
+  if (el.isContentEditable) return true
+  return false
+}
+
+function handleGlobalKeydown(e: KeyboardEvent) {
+  if (isTextInput(e.target)) return
+
+  if (e.key === " ") {
+    e.preventDefault()
+    handleTogglePlay()
+    return
+  }
   if (e.ctrlKey && e.key === "s") {
     e.preventDefault()
     call("save_project")
   }
 }
+
+onMounted(() => {
+  document.addEventListener("keydown", handleGlobalKeydown)
+})
+
+onUnmounted(() => {
+  document.removeEventListener("keydown", handleGlobalKeydown)
+})
 </script>
 
 <template>
-  <div class="flex h-screen flex-col bg-white" @keydown="handleKeydown">
+  <div class="flex h-screen flex-col bg-white">
     <!-- Top nav -->
     <nav class="flex h-11 items-center justify-between border-b border-gray-200 bg-gray-900 px-4">
       <div class="flex items-center gap-3">
@@ -541,63 +558,28 @@ function handleKeydown(e: KeyboardEvent) {
         </div>
       </div>
 
-      <!-- Right: Transcript editor + suggestion panel -->
-      <div class="flex w-3/5 min-w-[500px] flex-col">
-        <div class="flex items-center justify-between border-b border-gray-200 px-4 py-2">
-          <span class="text-sm font-medium">Timeline</span>
-          <span class="text-xs text-gray-500">{{ subtitleCount }} subtitles + {{ silenceCount }} silence</span>
-        </div>
-
-        <div class="flex flex-1 overflow-hidden">
-          <!-- Transcript list -->
-          <div class="flex-1 overflow-y-auto">
-            <div v-if="mergedSegments.length === 0" class="flex h-full items-center justify-center">
-              <div class="text-center">
-                <p class="text-sm text-gray-500">No segments loaded</p>
-                <p class="mt-1 text-xs text-gray-400">Click "Import SRT" to load subtitles</p>
-              </div>
-            </div>
-
-            <div v-else>
-              <template v-for="seg in mergedSegments" :key="seg.id">
-                <TranscriptRow
-                  v-if="seg.type === 'subtitle'"
-                  :segment="seg"
-                  :edit-status="getEditStatus(seg)"
-                  :is-selected="selectedSegmentId === seg.id"
-                  @seek="handleSeek"
-                  @update-text="handleUpdateText"
-                  @toggle-status="handleToggleEditStatus(seg)"
-                  @confirm-edit="handleToggleEditStatus(seg, 'confirmed')"
-                  @reject-edit="handleToggleEditStatus(seg, 'rejected')"
-
-                />
-                <SilenceRow
-                  v-else
-                  :segment="seg"
-                  :edit-status="getEditStatus(seg)"
-                  @seek="handleSeek"
-                  @toggle-status="handleToggleEditStatus(seg)"
-                />
-              </template>
-            </div>
-          </div>
-
-          <!-- Suggestion panel (right sidebar) -->
-          <div v-if="analysisResults.length > 0 || edits.some(e => e.status === 'pending')" class="w-72 border-l border-gray-200 overflow-y-auto">
-            <SuggestionPanel
-              :analysis-results="analysisResults"
-              :edits="edits"
-              :segments="segments"
-              @confirm-edit="confirmEdit"
-              @reject-edit="rejectEdit"
-              @confirm-all="handleConfirmAllSuggestions"
-              @reject-all="handleRejectAllSuggestions"
-              @seek="handleSeek"
-            />
-          </div>
-        </div>
-      </div>
+      <!-- Right: Timeline (transcript editor + suggestion panel) -->
+      <Timeline
+        :segments="mergedSegments"
+        :edits="edits"
+        :analysis-results="analysisResults"
+        :subtitle-count="subtitleCount"
+        :silence-count="silenceCount"
+        :selected-segment-id="selectedSegmentId"
+        :global-edit-mode="globalEditMode"
+        @seek="handleSeek"
+        @update-text="handleUpdateText"
+        @update-time="handleUpdateTime"
+        @toggle-status="(seg) => handleToggleEditStatus(seg)"
+        @confirm-segment="(seg) => handleToggleEditStatus(seg, 'confirmed')"
+        @reject-segment="(seg) => handleToggleEditStatus(seg, 'rejected')"
+        @confirm-suggestion="confirmEdit"
+        @reject-suggestion="rejectEdit"
+        @confirm-all="handleConfirmAllSuggestions"
+        @reject-all="handleRejectAllSuggestions"
+        @seek-suggestion="handleSeek"
+        @toggle-edit-mode="globalEditMode = !globalEditMode"
+      />
     </div>
 
     <!-- Bottom: Timeline ruler -->

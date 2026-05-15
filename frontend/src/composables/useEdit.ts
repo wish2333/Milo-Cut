@@ -14,6 +14,15 @@ export function useEdit(project: Ref<Project | null>) {
     return false
   }
 
+  async function updateSegmentTime(segmentId: string, field: "start" | "end", value: number): Promise<boolean> {
+    const res = await call<Project>("update_segment", segmentId, { [field]: value })
+    if (res.success && res.data) {
+      project.value = res.data
+      return true
+    }
+    return false
+  }
+
   async function mergeSegments(segmentIds: string[]): Promise<boolean> {
     const res = await call<Project>("merge_segments", segmentIds)
     if (res.success && res.data) {
@@ -94,6 +103,7 @@ export function useEdit(project: Ref<Project | null>) {
 
   return {
     updateSegmentText,
+    updateSegmentTime,
     mergeSegments,
     splitSegment,
     searchReplace,

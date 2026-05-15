@@ -877,3 +877,307 @@ feat(workspace): 重构时间轴 TimelineRuler 并优化视频播放性能与交
 - **稳定性增强**：解决了浏览器断开连接时后台产生冗余错误日志的问题。
 - **编辑权限修复**：现在可以自由标记删除任何字幕段落，不再局限于静音检测结果。
 ```
+
+---
+
+## 命名规范、时间戳编辑与事件系统修复 (2026-05-15 Session 6)
+
+### 概述
+
+建立 UI 组件命名规范（Timeline vs TimelineRuler），将时间戳编辑功能迁移到 Timeline 面板，实现全局空格键播放/暂停，修复时间戳重叠、文本输入显示不全、Detect 按钮冻结等多个问题。
+
+### 新增组件
+
+| 文件 | 说明 |
+|------|------|
+| `src/components/workspace/Timeline.vue` | 从 WorkspacePage 提取的右侧面板组件，包含 TranscriptRow/SilenceRow 列表 + SuggestionPanel 侧栏 |
+
+### 命名规范
+
+- **Timeline** = 右侧面板组件（字幕/静音段列表 + 建议面板）
+- **TimelineRuler** = 底部时间轴标尺组件（缩放/滚动/选区）
+- 已保存到项目记忆，防止后续混淆
+
+### 时间戳编辑迁移
+
+**原实现（已撤销）:** TimelineRuler 底部控制栏点击时间码编辑
+
+**新实现:** Timeline 面板中的 TranscriptRow/SilenceRow 行内编辑
+- 点击时间戳 -> 进入编辑模式（`@mousedown.stop.prevent` 确保单击触发）
+- 输入框自动选中文本（`nextTick(() => timeInputRef.value?.select())`）
+- Enter 确认 / Escape 取消 / 失焦确认
+- 支持格式：`MM:SS.mmm`、`SS.mmm`、`MM:SS`、`H:MM:SS.mmm`
+
+### 全局空格键播放/暂停
+
+- 在 WorkspacePage 注册全局 `keydown` 事件监听器
+- 文本输入区域（input/textarea/contentEditable）自动跳过
+- 与 VideoControls 中的空格键处理去重（移除组件级处理）
+
+### Bug 修复
+
+**1. 建议面板无法收起**
+- 原因：`analysisResults.length > 0` 条件使面板在无 pending 编辑时仍可见
+- 修复：仅保留 `edits.some(e => e.status === 'pending')` 条件
+
+**2. 时间戳需要两次点击才能编辑**
+- 原因：`@click.stop` 在事件冒泡阶段执行，父容器 click handler 先触发
+- 修复：改用 `@mousedown.stop.prevent`，在事件捕获阶段更早阻止传播
+
+**3. 时间戳与字幕文本重叠**
+- 原因：时间列宽度不足 + 文本列缺少溢出控制
+- 修复：时间列 `w-[120px]` -> `w-[130px]`，添加 `overflow-hidden whitespace-nowrap`；文本列添加 `overflow-hidden`，文本 span 添加 `truncate`
+
+**4. 文本编辑输入框显示不全**
+- 原因：输入框缺少 `min-w-0` 导致 flex 子项不收缩
+- 修复：输入框添加 `min-w-0 box-border`，文本 span 添加 `block`
+
+**5. Detect 按钮一直显示 "Detecting" 冻结**
+- 原因：`useTask` 的事件监听器通过 `useBridge()` 注册，绑定了首个调用组件的 `onUnmounted` 生命周期。组件卸载后监听器被移除，但 `listenersRegistered = true` 阻止重新注册
+- 修复：
+  - 改用 `onEvent` 直接注册（不经过 `useBridge`），避免生命周期耦合
+  - 新增轮询降级机制：每 3 秒检查后端，若任务运行超过 5 秒未收到事件则主动同步状态
+
+### 修改文件
+
+| 文件 | 变更 |
+|------|------|
+| `src/components/workspace/TranscriptRow.vue` | 时间戳编辑 UI：`@mousedown.stop.prevent`、`w-[130px]`、`overflow-hidden`；文本列 `overflow-hidden`、`truncate`；输入框 `min-w-0 box-border` |
+| `src/components/workspace/SilenceRow.vue` | 同上时间戳编辑 UI 修复 |
+| `src/components/workspace/Timeline.vue` | 新建：从 WorkspacePage 提取的 Timeline 面板组件 |
+| `src/composables/useTask.ts` | 改用 `onEvent` 直接注册事件；新增 `fetchTask`/`pollRunningTasks`/`ensurePolling` 轮询降级 |
+| `src/composables/useEdit.ts` | 新增 `updateSegmentTime` 函数 |
+| `src/utils/format.ts` | 新增 `parseTime` 函数（支持多种时间格式解析） |
+| `src/pages/WorkspacePage.vue` | 集成 Timeline 组件；全局空格键处理；移除 VideoControls 空格键重复 |
+| `src/components/workspace/VideoControls.vue` | 移除 Space/K 键盘快捷键（已全局处理） |
+| `src/components/workspace/TranscriptRow.test.ts` | 修复 dblclick 测试：目标从根元素改为 `.flex-1.min-w-0` 文本列 |
+
+### 验证结果
+
+- `vue-tsc --noEmit` TypeScript 类型检查通过
+- `vite build` 构建成功：CSS 60.18 KB, JS 129.24 KB (gzip 43.87 KB)
+- `bun run test` 前端 23/23 测试通过
+- `uv run pytest tests/` 后端 64 测试全部通过
+
+### 📝 Commit Message
+
+```
+fix(workspace): 修复时间戳编辑、文本重叠与 Detect 按钮冻结
+
+- 建立 Timeline/TimelineRuler 命名规范，提取 Timeline.vue 组件
+- 时间戳编辑迁移到 Timeline 面板，使用 mousedown.stop.prevent 单击触发
+- 修复时间列与文本列重叠（w-[130px] + overflow-hidden + truncate）
+- 修复文本编辑输入框显示不全（min-w-0 box-border）
+- 全局空格键播放/暂停，文本输入区域自动跳过
+- 修复 Detect 按钮冻结：useTask 改用 onEvent 直接注册避免生命周期耦合，
+  新增轮询降级机制确保任务状态最终同步
+```
+
+---
+
+## 字幕文本编辑 UX 重构 (2026-05-15 Session 7)
+
+### 概述
+
+重构字幕文本编辑交互：移除双击编辑，改为显式 Edit/Save/Cancel 按钮；修复点击外部退出行为；新增全局编辑模式。
+
+### 交互设计
+
+**单行编辑:**
+- 点击"编辑"按钮 -> 进入编辑模式（输入框出现）
+- 点击"保存"或 Enter -> 提交变更并退出
+- 点击"取消"或 Esc -> 恢复原文并退出
+- 点击行外区域 -> 保存并退出（非全局模式）
+
+**全局编辑:**
+- Timeline 标题栏"编辑字幕"按钮 -> 所有字幕行进入编辑模式
+- 点击"退出编辑" -> 全部保存并退出
+- 全局模式下，点击外部/失焦不退出编辑（冻结行为）
+- 单行仍可按 Esc 取消该行编辑
+
+### 修改文件
+
+| 文件 | 变更 |
+|------|------|
+| `src/components/workspace/TranscriptRow.vue` | 重写：移除 dblclick，新增 Edit/Save/Cancel 按钮，支持 globalEditMode prop，blur 保存/冻结逻辑 |
+| `src/components/workspace/Timeline.vue` | 新增 globalEditMode prop，标题栏新增编辑字幕/退出编辑按钮，传递 globalEditMode 到 TranscriptRow |
+| `src/pages/WorkspacePage.vue` | 新增 globalEditMode 状态，绑定 Timeline toggle-edit-mode 事件 |
+| `src/components/workspace/TranscriptRow.test.ts` | 重写：15 个测试覆盖编辑按钮、保存/取消、Esc、blur、全局编辑模式 |
+
+### 核心逻辑
+
+```typescript
+// blur 行为
+function handleTextEditBlur() {
+  if (props.globalEditMode) return  // 全局模式：冻结
+  saveEdit()                        // 普通模式：保存
+}
+
+// 全局模式切换
+watch(() => props.globalEditMode, (val) => {
+  if (val && !isEditingText.value) startEdit()
+  else if (!val && isEditingText.value) saveEdit()
+})
+```
+
+### 验证结果
+
+- `vue-tsc --noEmit` TypeScript 类型检查通过
+- `vite build` 构建成功
+- `bun run test` 前端 30/30 测试通过
+- `uv run pytest tests/` 后端 64 测试全部通过
+
+### 📝 Commit Message
+
+```
+feat(workspace): 重构字幕文本编辑 UX，支持显式按钮与全局编辑模式
+
+- 移除双击编辑，改为编辑/保存/取消文字按钮
+- 点击外部区域保存并退出编辑（非全局模式）
+- 新增全局编辑模式：Timeline 标题栏按钮，所有字幕行同时进入编辑
+- 全局模式冻结 blur/click-outside 退出行为，仅 Esc 取消单行
+- 更新测试覆盖：15 个测试用例验证所有编辑交互场景
+```
+
+---
+
+## TimelineRuler 选区拖动重构 (2026-05-15 Session 8 - Audit 1)
+
+### 概述
+
+重构 TimelineRuler 选区交互逻辑，从基于百分比的模糊匹配改为基于像素的精确控制，解决拖动手柄漂移和选区跳动问题。
+
+### 核心改进
+
+**1. 像素级手柄检测**
+- 原实现：`Math.abs(clickPct - startPct) < 1.5`（百分比，缩放时不稳定）
+- 新实现：8px 固定像素检测区，手柄 DOM 扩展 3px 透明感知区
+
+**2. 偏移量算法**
+- 记录 `dragInitialOffset = handleTime - clickTime`
+- 拖动时 `rawTime = getTimeFromX(clientX) + offset`
+- 解决"手柄跳到鼠标位置"的原点漂移问题
+
+**3. 释放吸附**
+- 释放时检查手柄是否在 5px 内的段落边界
+- 像素阈值动态转换为时间阈值：`snapTimeThreshold = snapPx * (viewDuration / rectWidth)`
+- 吸附后确保最小选区时长（0.1s）
+
+**4. 分层 mousedown 调度**
+- `detectClickZone()` 返回 `"left-handle" | "right-handle" | "body" | "outside"`
+- 每个区域独立处理器，使用 `e.stopPropagation()` 隔离
+- 手柄 > 选区主体 > 新选区（优先级递减）
+
+**5. 拖动防干扰**
+- 拖动期间 `document.body.style.userSelect = "none"`
+- mouseup 和组件卸载时恢复
+
+### 修改文件
+
+| 文件 | 变更 |
+|------|------|
+| `src/components/workspace/TimelineRuler.vue` | 重写选区交互：像素手柄检测、偏移量算法、释放吸附、分层调度、user-select 控制 |
+
+### 验证结果
+
+- `vue-tsc --noEmit` TypeScript 类型检查通过
+- `vite build` 构建成功
+- `bun run test` 前端 30/30 测试通过
+- `uv run pytest tests/` 后端 64 测试全部通过
+
+### 📝 Commit Message
+
+```
+feat(timeline): 重构 TimelineRuler 选区拖动为像素级精确控制
+
+- 手柄检测从百分比改为 8px 像素区，解决缩放时漂移问题
+- 引入偏移量算法，消除拖动手柄的原点跳动
+- 释放时自动吸附 5px 内的段落边界（动态时间阈值换算）
+- mousedown 分层调度：手柄 > 选区主体 > 新选区，stopPropagation 隔离
+- 拖动期间禁用 user-select 防止文本选中干扰
+```
+
+---
+
+## 冲突处理与逻辑遮罩 (2026-05-15 Session 8 - Audit 2)
+
+### 概述
+
+重构 EditDecision 数据模型，从时间范围匹配改为 ID 优先绑定；引入优先级冲突解决和逻辑遮罩机制，替代物理裁剪。
+
+### Schema 变更
+
+**EditDecision 新增字段:**
+```python
+target_type: Literal["segment", "range"] = "range"  # 绑定类型
+target_id: str | None = None                         # 绑定的 segment ID
+```
+
+**后端写入策略:**
+
+| 方法 | target_type | target_id |
+|------|-------------|-----------|
+| `add_silence_results` | `"range"` | undefined（新建段，无既有 ID）|
+| `mark_segments` | `"segment"` | `seg.id`（已有段 ID）|
+| `add_analysis_results` | `"segment"` | `ar.segment_ids[0]`（主段 ID）|
+
+### 匹配逻辑
+
+**ID 优先 + 时间回退:**
+```typescript
+function findEditForSegment(seg: Segment): EditDecision | undefined {
+  // 优先 ID 匹配
+  const byId = edits.find(e => e.target_id === seg.id)
+  if (byId) return byId
+  // 回退到时间匹配（兼容旧数据）
+  return edits.find(e => Math.abs(e.start - seg.start) < 0.01 && Math.abs(e.end - seg.end) < 0.01)
+}
+```
+
+### 逻辑遮罩
+
+**优先级冲突解决:**
+- 用户决策：`priority=200`（mark_segments 创建）
+- 自动检测：`priority=100`（silence/analysis 创建）
+
+**`getEffectiveStatus` 返回值:**
+- `"normal"` — 无编辑或编辑为 keep
+- `"masked"` — 最高优先级编辑为 delete（红色+中划线+低透明度）
+- `"kept"` — 最高优先级编辑为 keep（绿色边框）
+
+**渲染层行为:**
+- `masked` 段：`opacity-30 line-through`（TimelineRuler）/ `bg-red-50 line-through opacity-60`（TranscriptRow/SilenceRow）
+- `kept` 段：`bg-green-50 border-l-3 border-green-400`
+- 原始数据不删除，仅在导出时物理剔除 masked 段
+
+### 修改文件
+
+| 文件 | 变更 |
+|------|------|
+| `core/models.py` | EditDecision 新增 `target_type` + `target_id` 字段 |
+| `core/project_service.py` | 3 个 EditDecision 构造器写入 target_type/target_id |
+| `src/types/project.ts` | EditDecision 类型同步新增字段 |
+| `src/components/workspace/Timeline.vue` | getEditForSegment 改为 ID 优先匹配，新增 getEffectiveStatus |
+| `src/components/workspace/TimelineRuler.vue` | visibleBlocks 使用 ID 匹配 + effectiveStatus 渲染 |
+| `src/components/workspace/TranscriptRow.vue` | 新增 effectiveStatus prop，statusClass 优先使用逻辑遮罩状态 |
+| `src/components/workspace/SilenceRow.vue` | 新增 effectiveStatus prop，样式逻辑同步更新 |
+
+### 验证结果
+
+- `vue-tsc --noEmit` TypeScript 类型检查通过
+- `vite build` 构建成功：JS 133.78 KB (gzip 45.02 KB)
+- `bun run test` 前端 30/30 测试通过
+- `uv run pytest tests/` 后端 64 测试全部通过
+
+### 📝 Commit Message
+
+```
+feat(core): 实现 EditDecision ID 绑定与优先级逻辑遮罩
+
+- EditDecision 新增 target_type/target_id 字段，支持 segment 精确绑定
+- 后端 mark_segments/analysis/silence 三种场景写入绑定关系
+- 前端匹配改为 ID 优先 + 时间回退，兼容旧数据
+- 引入 getEffectiveStatus 优先级冲突解决：user(200) > auto(100)
+- 逻辑遮罩：masked 段低透明度+中划线，kept 段绿色标记，原始数据保留
+- TranscriptRow/SilenceRow/TimelineRuler 同步支持 effectiveStatus 渲染
+```

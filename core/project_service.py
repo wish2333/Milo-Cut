@@ -194,6 +194,7 @@ class ProjectService:
                     action="delete",
                     source="silence_detection",
                     status=EditStatus.PENDING,
+                    target_type="range",
                 ))
 
         all_segments = list(existing) + new_segments
@@ -519,6 +520,8 @@ class ProjectService:
                 source="user",
                 status=edit_status,
                 priority=200,
+                target_type="segment",
+                target_id=seg.id,
             ))
 
         # Merge: keep non-target edits, replace/add new ones
@@ -672,6 +675,8 @@ class ProjectService:
                 analysis_id=ar.id,
                 status=EditStatus.PENDING,
                 priority=100,
+                target_type="segment",
+                target_id=ar.segment_ids[0],
             ))
 
         updated = self._current.model_copy(update={

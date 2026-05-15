@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest"
 import { mount } from "@vue/test-utils"
+import { nextTick } from "vue"
 import TranscriptRow from "./TranscriptRow.vue"
 import type { Segment } from "@/types/project"
 
@@ -59,24 +60,119 @@ describe("TranscriptRow", () => {
     expect(wrapper.classes()).toContain("ring-1")
   })
 
-  it("enables inline editing on double click", async () => {
+  it("enters edit mode on edit button click", async () => {
     const wrapper = mount(TranscriptRow, {
       props: { segment: baseSegment },
     })
-    await wrapper.trigger("dblclick")
-    const input = wrapper.find("input")
-    expect(input.exists()).toBe(true)
+    const editBtn = wrapper.find("[title='Edit text']")
+    await editBtn.trigger("click")
+    expect(wrapper.find("input").exists()).toBe(true)
+    expect(wrapper.find("input").element.value).toBe("Hello world")
   })
 
-  it("emits update-text on edit blur with changed text", async () => {
+  it("emits update-text on save with changed text", async () => {
     const wrapper = mount(TranscriptRow, {
       props: { segment: baseSegment },
     })
-    await wrapper.trigger("dblclick")
+    const editBtn = wrapper.find("[title='Edit text']")
+    await editBtn.trigger("click")
+    const input = wrapper.find("input")
+    await input.setValue("Changed text")
+    const saveBtn = wrapper.find("[title='Save changes']")
+    await saveBtn.trigger("click")
+    expect(wrapper.emitted("update-text")).toBeTruthy()
+    expect(wrapper.emitted("update-text")![0]).toEqual(["seg-0001", "Changed text"])
+    expect(wrapper.find("input").exists()).toBe(false)
+  })
+
+  it("cancels edit on Esc and restores original text", async () => {
+    const wrapper = mount(TranscriptRow, {
+      props: { segment: baseSegment },
+    })
+    const editBtn = wrapper.find("[title='Edit text']")
+    await editBtn.trigger("click")
+    const input = wrapper.find("input")
+    await input.setValue("Changed text")
+    await input.trigger("keydown", { key: "Escape" })
+    expect(wrapper.emitted("update-text")).toBeFalsy()
+    expect(wrapper.find("input").exists()).toBe(false)
+    expect(wrapper.text()).toContain("Hello world")
+  })
+
+  it("saves edit on blur", async () => {
+    const wrapper = mount(TranscriptRow, {
+      props: { segment: baseSegment },
+    })
+    const editBtn = wrapper.find("[title='Edit text']")
+    await editBtn.trigger("click")
     const input = wrapper.find("input")
     await input.setValue("Changed text")
     await input.trigger("blur")
     expect(wrapper.emitted("update-text")).toBeTruthy()
     expect(wrapper.emitted("update-text")![0]).toEqual(["seg-0001", "Changed text"])
+    expect(wrapper.find("input").exists()).toBe(false)
+  })
+
+  it("saves edit on row click and seeks", async () => {
+    const wrapper = mount(TranscriptRow, {
+      props: { segment: baseSegment },
+    })
+    const editBtn = wrapper.find("[title='Edit text']")
+    await editBtn.trigger("click")
+    const input = wrapper.find("input")
+    await input.setValue("Changed text")
+    await wrapper.trigger("click")
+    expect(wrapper.emitted("update-text")).toBeTruthy()
+    expect(wrapper.emitted("update-text")![0]).toEqual(["seg-0001", "Changed text"])
+    expect(wrapper.find("input").exists()).toBe(false)
+    expect(wrapper.emitted("seek")).toBeTruthy()
+    expect(wrapper.emitted("seek")![0]).toEqual([1.0])
+  })
+
+  it("enters edit mode when globalEditMode becomes true", async () => {
+    const wrapper = mount(TranscriptRow, {
+      props: { segment: baseSegment, globalEditMode: false },
+    })
+    expect(wrapper.find("input").exists()).toBe(false)
+    await wrapper.setProps({ globalEditMode: true })
+    expect(wrapper.find("input").exists()).toBe(true)
+    expect(wrapper.find("input").element.value).toBe("Hello world")
+  })
+
+  it("saves and exits when globalEditMode becomes false", async () => {
+    const wrapper = mount(TranscriptRow, {
+      props: { segment: baseSegment, globalEditMode: true },
+    })
+    await nextTick()
+    expect(wrapper.find("input").exists()).toBe(true)
+    const input = wrapper.find("input")
+    await input.setValue("Edited in global mode")
+    await wrapper.setProps({ globalEditMode: false })
+    await nextTick()
+    expect(wrapper.emitted("update-text")).toBeTruthy()
+    expect(wrapper.emitted("update-text")![0]).toEqual(["seg-0001", "Edited in global mode"])
+    expect(wrapper.find("input").exists()).toBe(false)
+  })
+
+  it("shows save and cancel buttons when editing", async () => {
+    const wrapper = mount(TranscriptRow, {
+      props: { segment: baseSegment },
+    })
+    const editBtn = wrapper.find("[title='Edit text']")
+    await editBtn.trigger("click")
+    expect(wrapper.find("[title='Save changes']").exists()).toBe(true)
+    expect(wrapper.find("[title='Cancel editing']").exists()).toBe(true)
+  })
+
+  it("does not emit update-text when save with unchanged text", async () => {
+    const wrapper = mount(TranscriptRow, {
+      props: { segment: baseSegment },
+    })
+    const editBtn = wrapper.find("[title='Edit text']")
+    await editBtn.trigger("click")
+    const saveBtn = wrapper.find("[title='Save changes']")
+    await saveBtn.trigger("click")
+    expect(wrapper.emitted("update-text")).toBeFalsy()
+    expect(wrapper.find("input").exists()).toBe(false)
   })
 })

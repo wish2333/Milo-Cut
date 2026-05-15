@@ -1,10 +1,18 @@
 import { ref, computed } from "vue"
-import { call } from "@/bridge"
-import { useBridge } from "./useBridge"
+import { call, onEvent } from "@/bridge"
 import { EVENT_TASK_PROGRESS, EVENT_TASK_COMPLETED, EVENT_TASK_FAILED } from "@/utils/events"
 import type { MiloTask, TaskType } from "@/types/task"
 
 const tasks = ref<MiloTask[]>([])
+
+// Track when each task started running, for fallback polling
+const taskStartTimes = new Map<string, number>()
+const POLL_DELAY_MS = 5000
+
+async function fetchTask(id: string): Promise<MiloTask | null> {
+  const res = await call<MiloTask>("get_task", id)
+  return res.success && res.data ? res.data : null
+}
 
 let listenersRegistered = false
 
@@ -12,9 +20,9 @@ function ensureListeners() {
   if (listenersRegistered) return
   listenersRegistered = true
 
-  const { on } = useBridge()
-
-  on<{ task_id: string; percent: number; message: string }>(
+  // Use onEvent directly (not useBridge) so these singleton listeners
+  // are NOT tied to any component's onUnmounted lifecycle.
+  onEvent<{ task_id: string; percent: number; message: string }>(
     EVENT_TASK_PROGRESS,
     ({ task_id, percent, message }) => {
       const idx = tasks.value.findIndex((t) => t.id === task_id)
@@ -27,9 +35,10 @@ function ensureListeners() {
     },
   )
 
-  on<{ task_id: string; result?: Record<string, unknown> }>(
+  onEvent<{ task_id: string; result?: Record<string, unknown> }>(
     EVENT_TASK_COMPLETED,
     ({ task_id, result }) => {
+      taskStartTimes.delete(task_id)
       const idx = tasks.value.findIndex((t) => t.id === task_id)
       if (idx >= 0) {
         tasks.value[idx] = {
@@ -42,7 +51,8 @@ function ensureListeners() {
     },
   )
 
-  on<{ task_id: string; error: string }>(EVENT_TASK_FAILED, ({ task_id, error }) => {
+  onEvent<{ task_id: string; error: string }>(EVENT_TASK_FAILED, ({ task_id, error }) => {
+    taskStartTimes.delete(task_id)
     const idx = tasks.value.findIndex((t) => t.id === task_id)
     if (idx >= 0) {
       tasks.value[idx] = {
@@ -54,8 +64,35 @@ function ensureListeners() {
   })
 }
 
+async function pollRunningTasks() {
+  const now = Date.now()
+  for (const task of tasks.value) {
+    if (task.status !== "running") continue
+    const startTime = taskStartTimes.get(task.id)
+    if (!startTime || now - startTime < POLL_DELAY_MS) continue
+
+    // Task has been running longer than POLL_DELAY_MS without an event — poll backend
+    const backend = await fetchTask(task.id)
+    if (backend && backend.status !== "running") {
+      taskStartTimes.delete(task.id)
+      const idx = tasks.value.findIndex((t) => t.id === task.id)
+      if (idx >= 0) {
+        tasks.value[idx] = backend
+      }
+    }
+  }
+}
+
+let pollTimer: ReturnType<typeof setInterval> | null = null
+
+function ensurePolling() {
+  if (pollTimer) return
+  pollTimer = setInterval(pollRunningTasks, 3000)
+}
+
 export function useTask() {
   ensureListeners()
+  ensurePolling()
 
   const activeTask = computed<MiloTask | null>(
     () => tasks.value.find((t) => t.status === "running") ?? null,
@@ -81,6 +118,8 @@ export function useTask() {
       if (idx >= 0) {
         tasks.value[idx] = res.data
       }
+      // Track start time for fallback polling (in case TASK_COMPLETED event is lost)
+      taskStartTimes.set(id, Date.now())
       return true
     }
     return false
@@ -98,8 +137,7 @@ export function useTask() {
   }
 
   async function getTask(id: string): Promise<MiloTask | null> {
-    const res = await call<MiloTask>("get_task", id)
-    return res.success && res.data ? res.data : null
+    return fetchTask(id)
   }
 
   async function listTasks(): Promise<MiloTask[]> {
