@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, nextTick } from "vue"
-import type { Segment, EditStatus } from "@/types/project"
+import type { Segment } from "@/types/project"
 import { formatTime, parseTime } from "@/utils/format"
 
 const props = defineProps<{
   segment: Segment
-  editStatus?: EditStatus | null
-  effectiveStatus?: "normal" | "masked" | "kept"
+  displayStatus?: string
+  styleClass?: string
 }>()
 
 const emit = defineEmits<{
@@ -58,10 +58,10 @@ const duration = computed(() => {
   <div
     class="flex items-center gap-2 px-3 h-8 cursor-pointer transition-colors"
     :class="{
-      'bg-gray-50': !editStatus && (!effectiveStatus || effectiveStatus === 'normal'),
-      'bg-yellow-50 border-l-3 border-yellow-400': editStatus === 'pending',
-      'bg-red-50 border-l-3 border-red-400 opacity-60': editStatus === 'confirmed' || effectiveStatus === 'masked',
-      'bg-green-50 border-l-3 border-green-400': editStatus === 'rejected' || effectiveStatus === 'kept',
+      'bg-gray-50': !displayStatus || displayStatus === 'none',
+      'bg-yellow-50 border-l-3 border-yellow-400': displayStatus === 'pending',
+      'bg-red-50 border-l-3 border-red-400 opacity-60': displayStatus === 'confirmed' || styleClass === 'masked',
+      'bg-green-50 border-l-3 border-green-400': styleClass === 'kept',
     }"
     @click="handleRowClick"
   >
@@ -98,17 +98,17 @@ const duration = computed(() => {
       --- 静音 {{ duration }}s ---
     </span>
     <span
-      v-if="editStatus"
+      v-if="displayStatus && displayStatus !== 'none'"
       class="text-xs px-1.5 py-0.5 rounded shrink-0 cursor-pointer transition-colors"
       :class="{
-        'bg-yellow-100 text-yellow-700 hover:bg-yellow-200': editStatus === 'pending',
-        'bg-red-100 text-red-700 hover:bg-red-200': editStatus === 'confirmed',
-        'bg-green-100 text-green-700 hover:bg-green-200': editStatus === 'rejected',
+        'bg-yellow-100 text-yellow-700 hover:bg-yellow-200': displayStatus === 'pending',
+        'bg-red-100 text-red-700 hover:bg-red-200': displayStatus === 'confirmed',
+        'bg-green-100 text-green-700 hover:bg-green-200': displayStatus === 'rejected',
       }"
       title="Click to toggle confirmed/rejected"
       @click.stop="emit('toggle-status')"
     >
-      {{ editStatus === "pending" ? "建议删除" : editStatus === "confirmed" ? "已确认" : "已保留" }}
+      {{ displayStatus === "pending" ? "建议删除" : displayStatus === "confirmed" ? "已确认" : "已保留" }}
     </span>
   </div>
 </template>

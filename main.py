@@ -419,6 +419,14 @@ class MiloCutApi(Bridge):
         return self._project.delete_segment(segment_id)
 
     @expose
+    def delete_silence_segments(self) -> dict:
+        return self._project.delete_silence_segments()
+
+    @expose
+    def delete_subtitle_trim_edits(self) -> dict:
+        return self._project.delete_subtitle_trim_edits()
+
+    @expose
     def search_replace(self, query: str, replacement: str, scope: str = "all") -> dict:
         return self._project.search_replace(query, replacement, scope)
 

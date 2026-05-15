@@ -170,6 +170,69 @@ class ProjectService:
         self._current = updated
         return {"success": True, "data": updated.model_dump()}
 
+    def _resolve_subtitle_overlap(
+        self,
+        subtitle_segments: list[Segment],
+        silence_ranges: list[tuple[float, float]],
+    ) -> list[Segment]:
+        """Trim subtitle segments that overlap with silence ranges.
+
+        Never deletes a subtitle entirely - only shrinks or splits it.
+        """
+        if not silence_ranges:
+            return subtitle_segments
+
+        result: list[Segment] = []
+        for seg in subtitle_segments:
+            if seg.type != SegmentType.SUBTITLE:
+                result.append(seg)
+                continue
+
+            # Find all silence ranges that overlap with this subtitle
+            overlapping = []
+            for sil_start, sil_end in silence_ranges:
+                if sil_start < seg.end and sil_end > seg.start:
+                    overlapping.append((sil_start, sil_end))
+
+            if not overlapping:
+                result.append(seg)
+                continue
+
+            # Sort overlapping ranges
+            overlapping.sort(key=lambda x: x[0])
+
+            # Compute remaining parts of the subtitle after trimming
+            remaining_parts: list[tuple[float, float]] = []
+            current_start = seg.start
+
+            for sil_start, sil_end in overlapping:
+                if current_start < sil_start:
+                    remaining_parts.append((current_start, sil_start))
+                current_start = max(current_start, sil_end)
+
+            if current_start < seg.end:
+                remaining_parts.append((current_start, seg.end))
+
+            # If no parts remain, keep the original subtitle (never delete)
+            if not remaining_parts:
+                result.append(seg)
+                continue
+
+            # Create segments for each remaining part
+            for i, (part_start, part_end) in enumerate(remaining_parts):
+                if part_end - part_start < 0.01:
+                    continue
+                part_id = seg.id if i == 0 else f"{seg.id}_part{i}"
+                result.append(Segment(
+                    id=part_id,
+                    type=SegmentType.SUBTITLE,
+                    start=part_start,
+                    end=part_end,
+                    text=seg.text,
+                ))
+
+        return result
+
     def add_silence_results(self, silences: list[dict]) -> dict:
         """Convert raw silence intervals to Segments + EditDecisions.
 
@@ -220,6 +283,13 @@ class ProjectService:
 
         all_segments = list(existing) + new_segments
         all_edits = existing_edits + new_edits
+
+        # Resolve subtitle overlaps if setting is enabled
+        from core.config import load_settings
+        settings = load_settings()
+        if settings.get("trim_subtitles_on_silence_overlap", True):
+            silence_ranges = [(s["start"], s["end"]) for s in silences]
+            all_segments = self._resolve_subtitle_overlap(all_segments, silence_ranges)
 
         from core.models import AnalysisData
         updated = self._current.model_copy(update={
@@ -382,6 +452,47 @@ class ProjectService:
         })
         self._current = updated
         logger.info("Deleted segment {}", segment_id)
+        return {"success": True, "data": updated.model_dump()}
+
+    def delete_silence_segments(self) -> dict:
+        """Remove all silence-type segments and their associated edit decisions."""
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        segments = self._current.transcript.segments
+        silence_ids = {s.id for s in segments if s.type == SegmentType.SILENCE}
+
+        if not silence_ids:
+            return {"success": True, "data": self._current.model_dump()}
+
+        remaining_segs = [s for s in segments if s.type != SegmentType.SILENCE]
+        remaining_edits = [
+            e for e in self._current.edits
+            if e.target_id not in silence_ids and e.source != "silence_detection"
+        ]
+
+        updated = self._current.model_copy(update={
+            "transcript": self._current.transcript.model_copy(update={"segments": remaining_segs}),
+            "edits": remaining_edits,
+        })
+        self._current = updated
+        logger.info("Deleted {} silence segments", len(silence_ids))
+        return {"success": True, "data": updated.model_dump()}
+
+    def delete_subtitle_trim_edits(self) -> dict:
+        """Remove all subtitle_trim source edit decisions."""
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        remaining_edits = [e for e in self._current.edits if e.source != "subtitle_trim"]
+        removed_count = len(self._current.edits) - len(remaining_edits)
+
+        if removed_count == 0:
+            return {"success": True, "data": self._current.model_dump()}
+
+        updated = self._current.model_copy(update={"edits": remaining_edits})
+        self._current = updated
+        logger.info("Deleted {} subtitle trim edits", removed_count)
         return {"success": True, "data": updated.model_dump()}
 
     def merge_segments(self, segment_ids: list[str]) -> dict:
@@ -548,12 +659,11 @@ class ProjectService:
             edit_status = EditStatus.PENDING
 
         existing_edits = list(self._current.edits)
-        new_edit_ids_set: set[str] = set()
+        target_seg_ids = {seg.id for seg in target_segs}
         new_edits: list[EditDecision] = []
 
         for seg in target_segs:
             edit_id = f"edit-user-{seg.id}"
-            new_edit_ids_set.add(edit_id)
             new_edits.append(EditDecision(
                 id=edit_id,
                 start=seg.start,
@@ -566,8 +676,11 @@ class ProjectService:
                 target_id=seg.id,
             ))
 
-        # Merge: keep non-target edits, replace/add new ones
-        merged_edits = [e for e in existing_edits if e.id not in new_edit_ids_set] + new_edits
+        # Remove all old user edits targeting the same segments, then add new ones
+        merged_edits = [
+            e for e in existing_edits
+            if not (e.source == "user" and e.target_id in target_seg_ids)
+        ] + new_edits
 
         updated = self._current.model_copy(update={"edits": merged_edits})
         self._current = updated

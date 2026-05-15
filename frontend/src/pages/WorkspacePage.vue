@@ -8,6 +8,7 @@ import { useAnalysis } from "@/composables/useAnalysis"
 import { useExport } from "@/composables/useExport"
 import { useEdit } from "@/composables/useEdit"
 import { useSegmentEdit } from "@/composables/useSegmentEdit"
+import { useToast } from "@/composables/useToast"
 import ProgressBar from "@/components/common/ProgressBar.vue"
 import Timeline from "@/components/workspace/Timeline.vue"
 import WaveformEditor from "@/components/waveform/WaveformEditor.vue"
@@ -60,6 +61,8 @@ const {
   rejectAllSuggestions,
   generateSubtitleKeepRanges,
   deleteSegment,
+  deleteSilenceSegments,
+  deleteSubtitleTrimEdits,
 } = useEdit(projectRef)
 
 const {
@@ -70,8 +73,11 @@ const {
   toggleEditStatus,
 } = useSegmentEdit(projectRef as any, (val: Project) => emit("project-updated", val))
 
+const { showToast } = useToast()
+
 const statusMessage = ref("")
 const errorMessage = ref("")
+let statusTimer: ReturnType<typeof setTimeout> | null = null
 const showAnalysisDropdown = ref(false)
 const showExportSummary = ref(false)
 const showSilenceSettings = ref(false)
@@ -85,7 +91,24 @@ const videoPlaybackRate = ref(1)
 
 const silenceThreshold = ref(-30)
 const silenceMinDuration = ref(0.5)
+const trimSubtitlesOnOverlap = ref(true)
 const globalEditMode = ref(false)
+const showConfirmDeleteSilence = ref(false)
+const subtitleTrimPadding = ref(0.3)
+const showSubtitleTrimSettings = ref(false)
+
+watch(statusMessage, (msg) => {
+  if (statusTimer) {
+    clearTimeout(statusTimer)
+    statusTimer = null
+  }
+  if (msg) {
+    statusTimer = setTimeout(() => {
+      statusMessage.value = ""
+      statusTimer = null
+    }, 5000)
+  }
+})
 
 const segments = computed<Segment[]>(() => props.project.transcript?.segments ?? [])
 const edits = computed<EditDecision[]>(() => props.project.edits ?? [])
@@ -120,6 +143,7 @@ async function loadSilenceSettings() {
   if (res.success && res.data) {
     silenceThreshold.value = Number(res.data.silence_threshold_db ?? -30)
     silenceMinDuration.value = Number(res.data.silence_min_duration ?? 0.5)
+    trimSubtitlesOnOverlap.value = res.data.trim_subtitles_on_silence_overlap !== false
   }
 }
 
@@ -127,6 +151,7 @@ async function saveSilenceSettings() {
   await call("update_settings", {
     silence_threshold_db: silenceThreshold.value,
     silence_min_duration: silenceMinDuration.value,
+    trim_subtitles_on_silence_overlap: trimSubtitlesOnOverlap.value,
   })
   showSilenceSettings.value = false
 }
@@ -234,15 +259,43 @@ async function handleRejectAllSuggestions() {
   await rejectAllSuggestions()
 }
 
+async function handleSaveProject() {
+  const res = await call("save_project")
+  if (res.success) {
+    showToast("Project saved", "success", 2000)
+  } else {
+    showToast("Save failed", "error", 3000)
+  }
+}
+
 async function handleSubtitleTrim() {
   errorMessage.value = ""
   statusMessage.value = "Generating subtitle-based trim ranges..."
-  const result = await generateSubtitleKeepRanges(0.3)
+  const result = await generateSubtitleKeepRanges(subtitleTrimPadding.value)
   statusMessage.value = ""
   if (result) {
-    statusMessage.value = `Generated ${result.new_edits} delete ranges from ${result.keep_ranges} subtitle groups`
+    showToast(`Generated ${result.new_edits} delete ranges from ${result.keep_ranges} subtitle groups`, "success", 5000)
   } else {
-    errorMessage.value = "Failed to generate subtitle trim ranges"
+    showToast("Failed to generate subtitle trim ranges", "error", 5000)
+  }
+}
+
+async function handleDeleteSubtitleTrimEdits() {
+  const ok = await deleteSubtitleTrimEdits()
+  if (ok) {
+    showToast("All subtitle trim markers cleared", "success", 3000)
+  } else {
+    showToast("Failed to clear subtitle trim markers", "error", 3000)
+  }
+}
+
+async function handleConfirmDeleteSilence() {
+  showConfirmDeleteSilence.value = false
+  const ok = await deleteSilenceSegments()
+  if (ok) {
+    showToast("All silence markers deleted", "success", 3000)
+  } else {
+    showToast("Failed to delete silence markers", "error", 3000)
   }
 }
 
@@ -345,7 +398,7 @@ function handleGlobalKeydown(e: KeyboardEvent) {
   }
   if (e.ctrlKey && e.key === "s") {
     e.preventDefault()
-    call("save_project")
+    handleSaveProject()
   }
 }
 
@@ -384,7 +437,7 @@ onUnmounted(() => {
         <button
           class="rounded px-2 py-1 text-xs text-gray-400 hover:text-white transition-colors"
           title="Save project (Ctrl+S)"
-          @click="call('save_project')"
+          @click="handleSaveProject"
         >
           Save
         </button>
@@ -445,6 +498,14 @@ onUnmounted(() => {
               class="w-full mt-1"
             />
           </label>
+          <label class="flex items-center gap-2 mb-3 cursor-pointer">
+            <input
+              type="checkbox"
+              v-model="trimSubtitlesOnOverlap"
+              class="rounded border-gray-300"
+            />
+            <span class="text-xs text-gray-500">Trim overlapping subtitles</span>
+          </label>
           <button
             class="w-full rounded bg-blue-500 px-2 py-1 text-xs text-white hover:bg-blue-600"
             @click="saveSilenceSettings"
@@ -453,6 +514,16 @@ onUnmounted(() => {
           </button>
         </div>
       </div>
+
+      <!-- Delete all silence markers -->
+      <button
+        class="inline-flex items-center rounded-md bg-red-500 px-2 py-1.5 text-xs text-white hover:bg-red-600 disabled:opacity-50 transition-colors"
+        :disabled="isDetecting || isExporting || silenceCount === 0"
+        title="Delete all silence markers"
+        @click="showConfirmDeleteSilence = true"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+      </button>
 
       <!-- Analysis dropdown -->
       <div class="relative">
@@ -490,14 +561,51 @@ onUnmounted(() => {
         </div>
       </div>
 
+      <div class="relative inline-flex items-center">
+        <button
+          class="inline-flex items-center gap-1.5 rounded-md rounded-r-none bg-orange-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-600 disabled:opacity-50 transition-colors"
+          :disabled="isDetecting || isExporting"
+          title="Auto-trim: delete gaps between subtitle segments"
+          @click="handleSubtitleTrim"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L4.939 4.939m7.061 7.061l-2.879-2.879M12 12l2.879-2.879" /></svg>
+          Subtitle Trim
+        </button>
+        <button
+          class="inline-flex items-center rounded-md rounded-l-none bg-orange-600 px-1.5 py-1.5 text-xs text-white hover:bg-orange-700 disabled:opacity-50 transition-colors border-l border-orange-400"
+          :disabled="isDetecting || isExporting"
+          title="Subtitle trim settings"
+          @click="showSubtitleTrimSettings = !showSubtitleTrimSettings"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+        </button>
+        <div
+          v-if="showSubtitleTrimSettings"
+          class="absolute top-full left-0 mt-1 w-56 rounded-md border border-gray-200 bg-white shadow-lg z-20 p-3"
+        >
+          <div class="text-xs font-medium text-gray-700 mb-2">Subtitle Trim Settings</div>
+          <label class="block mb-3">
+            <span class="text-xs text-gray-500">Padding (s): {{ subtitleTrimPadding.toFixed(2) }}</span>
+            <input
+              type="range"
+              v-model.number="subtitleTrimPadding"
+              min="0"
+              max="2.0"
+              step="0.05"
+              class="w-full mt-1"
+            />
+          </label>
+        </div>
+      </div>
+
+      <!-- Clear subtitle trim markers -->
       <button
-        class="inline-flex items-center gap-1.5 rounded-md bg-orange-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-600 disabled:opacity-50 transition-colors"
+        class="inline-flex items-center rounded-md bg-red-500 px-2 py-1.5 text-xs text-white hover:bg-red-600 disabled:opacity-50 transition-colors"
         :disabled="isDetecting || isExporting"
-        title="Auto-trim: delete gaps between subtitle segments"
-        @click="handleSubtitleTrim"
+        title="Clear all subtitle trim markers"
+        @click="handleDeleteSubtitleTrimEdits"
       >
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L4.939 4.939m7.061 7.061l-2.879-2.879M12 12l2.879-2.879" /></svg>
-        Subtitle Trim
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
       </button>
 
       <div class="mx-1 h-4 w-px bg-gray-300" />
@@ -542,8 +650,16 @@ onUnmounted(() => {
     <SearchReplaceBar @search-replace="handleSearchReplace" />
 
     <!-- Status messages -->
-    <div v-if="statusMessage" class="border-b border-gray-200 bg-blue-50 px-4 py-1 text-xs text-blue-600">
-      {{ statusMessage }}
+    <div v-if="statusMessage" class="flex items-center border-b border-gray-200 bg-blue-50 px-4 py-1 text-xs text-blue-600">
+      <span class="flex-1">{{ statusMessage }}</span>
+      <button
+        class="ml-2 shrink-0 rounded p-0.5 hover:bg-blue-100 transition-colors"
+        @click="statusMessage = ''"
+      >
+        <svg class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+        </svg>
+      </button>
     </div>
     <div v-if="errorMessage" class="border-b border-gray-200 bg-red-50 px-4 py-1 text-xs text-red-600">
       {{ errorMessage }}
@@ -634,5 +750,35 @@ onUnmounted(() => {
       @confirm="handleConfirmExport"
       @cancel="showExportSummary = false"
     />
+
+    <!-- Delete silence confirmation dialog -->
+    <Teleport to="body">
+      <div
+        v-if="showConfirmDeleteSilence"
+        class="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40"
+        @click.self="showConfirmDeleteSilence = false"
+      >
+        <div class="rounded-lg bg-white p-5 shadow-xl max-w-sm w-full mx-4">
+          <h3 class="text-sm font-semibold text-gray-900">Delete All Silence Markers</h3>
+          <p class="mt-2 text-xs text-gray-500">
+            Delete all {{ silenceCount }} silence detection markers? This cannot be undone.
+          </p>
+          <div class="mt-4 flex justify-end gap-2">
+            <button
+              class="rounded px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-100 transition-colors"
+              @click="showConfirmDeleteSilence = false"
+            >
+              Cancel
+            </button>
+            <button
+              class="rounded bg-red-500 px-3 py-1.5 text-xs text-white hover:bg-red-600 transition-colors"
+              @click="handleConfirmDeleteSilence"
+            >
+              Delete All
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>

@@ -17,6 +17,16 @@ function handleStripClick(e: MouseEvent) {
 
 <template>
   <div class="absolute inset-x-0 top-0 h-6 cursor-pointer" @click="handleStripClick">
+    <!-- Minor ticks -->
+    <div
+      v-for="mark in metrics.minorTimeMarks.value"
+      :key="'minor-' + mark.time"
+      class="absolute top-0"
+      :style="{ left: mark.percent + '%' }"
+    >
+      <div class="h-1 w-px bg-gray-200" />
+    </div>
+    <!-- Major ticks -->
     <div
       v-for="mark in metrics.timeMarks.value"
       :key="mark.time"

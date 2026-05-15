@@ -40,7 +40,7 @@ describe("TranscriptRow", () => {
 
   it("shows pending status buttons", () => {
     const wrapper = mount(TranscriptRow, {
-      props: { segment: baseSegment, editStatus: "pending" },
+      props: { segment: baseSegment, displayStatus: "pending" },
     })
     expect(wrapper.text()).toContain("建议删除")
     expect(wrapper.text()).toContain("保留")
@@ -48,7 +48,7 @@ describe("TranscriptRow", () => {
 
   it("shows confirmed status with strikethrough class", () => {
     const wrapper = mount(TranscriptRow, {
-      props: { segment: baseSegment, editStatus: "confirmed" },
+      props: { segment: baseSegment, displayStatus: "confirmed", styleClass: "masked" },
     })
     expect(wrapper.classes()).toContain("line-through")
   })

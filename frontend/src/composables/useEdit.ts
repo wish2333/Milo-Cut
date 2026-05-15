@@ -110,6 +110,24 @@ export function useEdit(project: Ref<Project | null>) {
     return false
   }
 
+  async function deleteSilenceSegments(): Promise<boolean> {
+    const res = await call<Project>("delete_silence_segments")
+    if (res.success && res.data) {
+      project.value = res.data
+      return true
+    }
+    return false
+  }
+
+  async function deleteSubtitleTrimEdits(): Promise<boolean> {
+    const res = await call<Project>("delete_subtitle_trim_edits")
+    if (res.success && res.data) {
+      project.value = res.data
+      return true
+    }
+    return false
+  }
+
   async function generateSubtitleKeepRanges(padding: number = 0.3): Promise<{
     keep_ranges: number
     delete_ranges: number
@@ -143,6 +161,8 @@ export function useEdit(project: Ref<Project | null>) {
     rejectAllSuggestions,
     getEditSummary,
     deleteSegment,
+    deleteSilenceSegments,
+    deleteSubtitleTrimEdits,
     generateSubtitleKeepRanges,
   }
 }

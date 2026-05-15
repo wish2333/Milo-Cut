@@ -6,8 +6,8 @@ export const MAX_VIEW_DURATION = 600
 const ZOOM_IN_FACTOR = 0.87
 const ZOOM_OUT_FACTOR = 1.15
 const AUTO_FOLLOW_THROTTLE_MS = 200
-const NICE_STEPS = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300]
-const TIME_MARK_TARGET_COUNT = 10
+const NICE_STEPS = [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300]
+const TIME_MARK_TARGET_COUNT = 15
 
 export interface TimelineMetrics {
   duration: Ref<number>
@@ -33,6 +33,7 @@ export interface TimelineMetrics {
   thumbWidth: ComputedRef<number>
 
   timeMarks: ComputedRef<Array<{ percent: number; label: string; time: number }>>
+  minorTimeMarks: ComputedRef<Array<{ percent: number; time: number }>>
 
   containerRef: Ref<HTMLElement | null>
 }
@@ -177,6 +178,26 @@ export function useTimelineMetrics(
     return marks
   })
 
+  const minorTimeMarks = computed(() => {
+    if (viewDuration.value <= 0) return []
+    const rawStep = viewDuration.value / TIME_MARK_TARGET_COUNT
+    const step = NICE_STEPS.find(s => s >= rawStep) ?? rawStep
+    const minorStep = step / 2
+    if (minorStep < 0.025) return []
+    const marks: { percent: number; time: number }[] = []
+    const start = Math.ceil(viewStart.value / minorStep) * minorStep
+    for (let t = start; t <= viewEnd.value; t += minorStep) {
+      const majorAligned = Math.abs(t % step) < 0.001 || Math.abs(t % step - step) < 0.001
+      if (!majorAligned) {
+        marks.push({
+          percent: ((t - viewStart.value) / viewDuration.value) * 100,
+          time: t,
+        })
+      }
+    }
+    return marks
+  })
+
   // -- Watchers ---------------------------------------------------------
 
   watch(currentTime, maybeFollowPlayhead)
@@ -212,6 +233,7 @@ export function useTimelineMetrics(
     thumbWidth,
 
     timeMarks,
+    minorTimeMarks,
 
     containerRef,
   }

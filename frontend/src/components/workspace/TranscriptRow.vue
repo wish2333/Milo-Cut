@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, watch, onMounted } from "vue"
-import type { Segment, EditStatus } from "@/types/project"
+import type { Segment } from "@/types/project"
 import { formatTime, parseTime } from "@/utils/format"
 
 const props = defineProps<{
   segment: Segment
-  editStatus?: EditStatus | null
-  effectiveStatus?: "normal" | "masked" | "kept"
+  displayStatus?: string
+  styleClass?: string
   isSelected?: boolean
   globalEditMode?: boolean
 }>()
@@ -105,19 +105,9 @@ function handleRowClick() {
 }
 
 const statusClass = computed(() => {
-  // 优先使用 effectiveStatus（逻辑遮罩）
-  if (props.effectiveStatus === "masked") {
-    return "border-l-3 border-red-400 bg-red-50 line-through opacity-60"
-  }
-  if (props.effectiveStatus === "kept") {
-    return "border-l-3 border-green-400 bg-green-50"
-  }
-
-  // 回退到原始 editStatus
-  switch (props.editStatus) {
-    case "pending": return "border-l-3 border-yellow-400 bg-yellow-50"
-    case "confirmed": return "border-l-3 border-red-400 bg-red-50 line-through opacity-60"
-    case "rejected": return "border-l-3 border-green-400 bg-green-50"
+  switch (props.styleClass) {
+    case "masked": return "border-l-3 border-red-400 bg-red-50 line-through opacity-60"
+    case "kept": return "border-l-3 border-green-400 bg-green-50"
     default: return ""
   }
 })
@@ -205,7 +195,7 @@ const statusClass = computed(() => {
 
     <!-- Status column -->
     <div class="flex items-center gap-1 shrink-0">
-      <template v-if="editStatus === 'pending'">
+      <template v-if="displayStatus === 'pending'">
         <span
           class="text-xs px-1.5 py-0.5 rounded bg-yellow-100 text-yellow-700 cursor-pointer hover:bg-yellow-200 transition-colors"
           title="Click to confirm delete"
@@ -221,7 +211,7 @@ const statusClass = computed(() => {
           保留
         </button>
       </template>
-      <template v-else-if="editStatus === 'confirmed'">
+      <template v-else-if="displayStatus === 'confirmed'">
         <span
           class="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-700 cursor-pointer hover:bg-red-200 transition-colors"
           title="Click to keep"
@@ -230,7 +220,7 @@ const statusClass = computed(() => {
           已删除
         </span>
       </template>
-      <template v-else-if="editStatus === 'rejected'">
+      <template v-else-if="displayStatus === 'rejected'">
         <span
           class="text-xs px-1.5 py-0.5 rounded bg-green-100 text-green-700 cursor-pointer hover:bg-green-200 transition-colors"
           title="Click to delete"
@@ -241,11 +231,11 @@ const statusClass = computed(() => {
       </template>
       <template v-else>
         <span
-          class="text-xs px-1.5 py-0.5 rounded bg-green-100 text-green-700 cursor-pointer hover:bg-green-200 transition-colors"
+          class="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 cursor-pointer hover:bg-gray-200 transition-colors"
           title="Click to mark for deletion"
           @click.stop="emit('toggle-status')"
         >
-          已保留
+          无标注
         </span>
       </template>
     </div>

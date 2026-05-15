@@ -1436,3 +1436,254 @@ Phase 3 - 核心功能扩展:
 - 修复 rejected 状态的编辑决策仍显示为"已删除"的问题。
 - 修复极小时间重叠（1ms）导致整段字幕被标记为 masked 的问题。
 ```
+
+---
+
+## Session 10 序: 调试过程、附加功能与架构审查 (2026-05-15)
+
+### 概述
+
+### 第一阶段: EditStatus/EffectiveStatus 调试
+
+**问题现象:** Analysis 分析后，badge 显示"已保留"（绿色）但行有红色删除线。点击确认/忽略按钮无反应。"忽略所有建议"可恢复，"全部确认删除"后红色删除线 persist 无法恢复。
+
+**调试过程（多次失败迭代）:**
+
+1. **尝试 1:** 修改 `toggleEditStatus` 中无 edit 时的 fallback，从创建 `"delete"` edit 改为 `"keep"` edit -- 未解决问题
+2. **尝试 2:** 修改 `getEditForSegment` 添加 rejected 过滤（与 `getEffectiveStatus` 一致）-- 导致红色删除线直接不显示，整个标记逻辑错误，已回滚
+3. **根因定位:** 两套独立状态函数使用不同匹配/过滤逻辑。`getEditForSegment` 不过滤 rejected、返回第一个匹配；`getEffectiveStatus` 过滤 rejected、按 priority 排序取最高。两者返回不一致导致 badge 和行样式矛盾
+
+**用户反馈关键点:**
+
+- "整个标记逻辑都错了" -- 尝试 2 导致的回滚
+- "完全听不懂你在说什么" -- 需要更清晰的自然语言描述
+- 最终要求导出完整审计报告交由架构师审查
+
+### 第二阶段: 附加功能开发
+
+在调试间隙，实现了以下附加功能：
+
+#### 1. Toast 通知系统
+
+- **`frontend/src/composables/useToast.ts`** (新增): 管理 toast 列表，支持 info/success/error 类型，自动移除
+- **`frontend/src/components/common/ToastContainer.vue`** (新增): 固定右下角浮层，关闭按钮，Tailwind 过渡动画
+- **`frontend/src/App.vue`**: 根模板集成 `<ToastContainer />`
+
+#### 2. 静音标记批量删除
+
+- **`core/project_service.py`**: 新增 `delete_silence_segments()` -- 移除所有 silence 类型段落及关联 EditDecision
+- **`core/project_service.py`**: 新增 `delete_subtitle_trim_edits()` -- 移除所有 source="subtitle_trim" 的编辑决策
+- **`main.py`**: 暴露 `delete_silence_segments` 和 `delete_subtitle_trim_edits` API
+- **`frontend/src/composables/useEdit.ts`**: 新增 `deleteSilenceSegments()` 和 `deleteSubtitleTrimEdits()` 方法
+- **`frontend/src/pages/WorkspacePage.vue`**: 工具栏新增删除静音标记按钮（红色垃圾桶图标），带确认对话框；新增清除字幕裁剪标记按钮
+
+#### 3. 字幕裁剪设置
+
+- **`frontend/src/pages/WorkspacePage.vue`**: Subtitle Trim 按钮旁新增设置齿轮，可调整 padding（0-2.0s，默认 0.3s）
+- **`core/config.py`**: 新增 `trim_subtitles_on_silence_overlap` 设置项（默认 true）
+
+#### 4. 字幕-静音重叠处理
+
+- **`core/project_service.py`**: 新增 `_resolve_subtitle_overlap()` 方法 -- 当静音检测启用时，自动裁剪与静音范围重叠的字幕段（拆分或收缩，不删除字幕）
+- **`core/project_service.py`**: `add_silence_results` 集成重叠处理逻辑
+- **`frontend/src/pages/WorkspacePage.vue`**: 静音设置面板新增"Trim overlapping subtitles"复选框
+
+#### 5. UI 改进
+
+- **状态消息自动消失**: `statusMessage` 5 秒后自动清除，新增关闭按钮（X）
+- **保存项目 Toast**: Ctrl+S 和 Save 按钮改用 toast 通知替代 statusMessage
+- **波形编辑器编辑范围叠加层**: `SegmentBlocksLayer.vue` 新增 `visibleEditRanges` computed，渲染 source="subtitle_trim" 的 range 类型 EditDecision 为红色斜纹半透明叠加层
+- **时间刻度优化**: `useTimelineMetrics.ts` 新增 minor time marks（主刻度之间的中间刻度），`TimeMarksLayer.vue` 渲染为浅色短刻度
+
+### 第三阶段: 架构审计报告
+
+创建 `docs/audit-report-preview-3.md`，完整记录：
+
+- 两套状态系统的代码和匹配逻辑差异
+- `getEditForSegment` vs `getEffectiveStatus` 的不一致根因
+- 问题复现路径
+- 4 个需要架构师决定的问题
+- 所有相关代码导出（segmentHelpers.ts、TranscriptRow.vue、Timeline.vue、useSegmentEdit.ts、models.py、project_service.py）
+
+### 第四阶段: 架构师决策
+
+架构师对 4 个问题给出明确决策，写入审计报告第 6 节：
+
+1. **合并为统一状态函数 `resolveSegmentState`（选项 C）** -- 返回 `{ displayStatus, styleClass, activeEdit }` 结构体
+2. **badge 显示"无标注"而非"已保留"** -- none 语义为无编辑决策
+3. **toggleEditStatus 使用 activeEdit** -- 三路逻辑：activeEdit 存在则切换；无 edit 则创建 keep；全 rejected 则不操作
+4. **允许多个 edit 共存** -- user(200) > analysis(100) 优先级，同 source 去重，rejected 不参与样式
+
+### 第五阶段: 实施计划
+
+基于架构决策生成 5 阶段 10 步实施计划（写入 `~/.claude/plans/curried-knitting-biscuit.md`）：
+
+| 阶段               | 步骤 | 内容                                                         |
+| ------------------ | ---- | ------------------------------------------------------------ |
+| 1. 核心状态函数    | 1-2  | `segmentHelpers.ts` 新增 `resolveSegmentState` + TDD 测试    |
+| 2. Composable 适配 | 3-5  | `useSegmentEdit.ts` 改用新函数、修复 `toggleEditStatus`、更新测试 |
+| 3. UI 组件适配     | 6-8  | Timeline/TranscriptRow/SilenceRow 统一使用 `SegmentState`    |
+| 4. 波形编辑器      | 9    | SegmentBlocksLayer 适配                                      |
+| 5. 后端修复        | 10   | `mark_segments` 清理旧 user edit（可并行）                   |
+
+### 修改文件汇总
+
+| 文件                                                      | 变更                                                         |
+| --------------------------------------------------------- | ------------------------------------------------------------ |
+| `core/config.py`                                          | 新增 `trim_subtitles_on_silence_overlap` 设置                |
+| `core/project_service.py`                                 | 新增 `_resolve_subtitle_overlap`、`delete_silence_segments`、`delete_subtitle_trim_edits`；`mark_segments` 按 source 清理旧编辑；`add_silence_results` 集成重叠处理 |
+| `main.py`                                                 | 暴露 `delete_silence_segments`、`delete_subtitle_trim_edits` API |
+| `frontend/src/utils/segmentHelpers.ts`                    | 新增 `SegmentState` + `resolveSegmentState`；废弃旧函数为 wrapper |
+| `frontend/src/utils/segmentHelpers.test.ts`               | 新增 13 个 `resolveSegmentState` 测试                        |
+| `frontend/src/composables/useSegmentEdit.ts`              | `toggleEditStatus` 三路逻辑；新增 `resolveState` 导出        |
+| `frontend/src/composables/useSegmentEdit.test.ts`         | 新增 rejected 切换和 resolveState 测试                       |
+| `frontend/src/composables/useEdit.ts`                     | 新增 `deleteSilenceSegments`、`deleteSubtitleTrimEdits`      |
+| `frontend/src/composables/useTimelineMetrics.ts`          | 新增 minor time marks                                        |
+| `frontend/src/composables/useToast.ts`                    | 新增 toast 通知系统                                          |
+| `frontend/src/components/common/ToastContainer.vue`       | 新增 toast 容器组件                                          |
+| `frontend/src/components/workspace/Timeline.vue`          | 改用 `resolveSegmentState`；传递新 props                     |
+| `frontend/src/components/workspace/TranscriptRow.vue`     | Props 重构；无标注徽章修复                                   |
+| `frontend/src/components/workspace/SilenceRow.vue`        | Props 重构；类绑定简化                                       |
+| `frontend/src/components/workspace/TranscriptRow.test.ts` | Props 适配新接口                                             |
+| `frontend/src/components/workspace/SilenceRow.test.ts`    | Props 适配新接口                                             |
+| `frontend/src/components/waveform/SegmentBlocksLayer.vue` | `Block` 接口改为 `{ state: SegmentState }`；新增编辑范围叠加层 |
+| `frontend/src/components/waveform/TimeMarksLayer.vue`     | 渲染 minor time marks                                        |
+| `frontend/src/pages/WorkspacePage.vue`                    | 集成 toast、静音删除、字幕裁剪设置、重叠设置、状态消息改进   |
+| `frontend/src/App.vue`                                    | 集成 ToastContainer                                          |
+| `frontend/src/types/api.ts`                               | 新增 `delete_silence_segments`、`delete_subtitle_trim_edits` |
+| `docs/audit-report-preview-3.md`                          | 新增第 6 节架构决策                                          |
+
+### 相关文档
+
+- `docs/audit-report-preview-2.md` -- Phase 1-3 审计报告（Session 9 基于此修复）
+- `docs/audit-report-preview-3.md` -- EditStatus/EffectiveStatus 架构审计报告（含代码、逻辑分析、架构师决策）
+
+## 2026-05-15 - EditStatus/EffectiveStatus Sync Bug Fix (Session 10)
+
+### 背景
+
+前端使用两个独立的段落状态计算函数（`getEditForSegment` 用于徽章显示、`getEffectiveStatus` 用于行样式），具有不同的匹配/过滤逻辑，导致徽章文字与行背景/删除线不一致。同时后端 `mark_segments` 仅根据 ID 去重，未清理旧的 user 来源编辑，导致冲突。
+
+### 解决方案: resolveSegmentState 统一状态计算
+
+在 `frontend/src/utils/segmentHelpers.ts` 中新增 `SegmentState` 接口和 `resolveSegmentState` 函数，作为段落状态的唯一真相来源：
+
+```typescript
+export interface SegmentState {
+  displayStatus: "none" | EditDecision["status"]
+  styleClass: "normal" | "masked" | "kept"
+  activeEdit: EditDecision | undefined
+}
+
+export function resolveSegmentState(
+  edits: ReadonlyArray<EditDecision>,
+  seg: Segment,
+): SegmentState
+```
+
+**核心逻辑:**
+1. 收集所有相关编辑（按 `target_id` 或重叠 >=0.3s 匹配）
+2. 分离 active（非 rejected）和 rejected 编辑，按 priority 排序
+3. `topActive` = 最高优先级 active 编辑，决定 `styleClass`（delete→masked, keep→kept）
+4. `topEdit` = 最高优先级所有编辑。Rejected topEdit 仅在 action 不同于 topActive 时覆盖 `displayStatus`
+5. 无 active 编辑 → 显示 "none"（无编辑）或 "rejected"（仅有 rejected 编辑），`styleClass` 为 "normal"，`activeEdit` 为 undefined
+6. 优先级: user 来源 = 200, analysis 来源 = 100
+
+**废弃旧函数:** `getEffectiveStatus` 和 `getEditStatus` 保留为 `resolveSegmentState` 的包装器，标记 `@deprecated`。
+
+### 组件适配
+
+**`Timeline.vue`:** 导入从 `getEditStatus, getEffectiveStatus` 改为 `resolveSegmentState`。模版传递 `display-status` 和 `style-class` props。
+
+**`TranscriptRow.vue`:** Props 从 `editStatus?: EditStatus | null` + `effectiveStatus?: "normal" | "masked" | "kept"` 改为 `displayStatus?: string` + `styleClass?: string`。徽章在 `displayStatus === "none"` 时显示"无标注"（灰色背景）；之前逻辑错误显示"已保留"（绿色背景）。
+
+**`SilenceRow.vue`:** 同样改为新 props。类绑定使用 `displayStatus` 和 `styleClass`：
+```html
+'bg-gray-50': !displayStatus || displayStatus === 'none',
+'bg-yellow-50': displayStatus === 'pending',
+'bg-red-50 opacity-60': displayStatus === 'confirmed' || styleClass === 'masked',
+'bg-green-50': styleClass === 'kept',
+```
+
+**`SegmentBlocksLayer.vue`:** `Block` 接口改为 `{ state: SegmentState }`。`statusColor()` 使用 `block.state.styleClass`。
+
+### Critical Bug Fix 1: "无标注"切换为"已删除"显示绿色（keep 而非 delete）
+
+**根因:** `toggleEditStatus` 在无编辑时调用 `mark_segments([segment.id], "keep", "confirmed")` 创建了 KEEP 编辑，导致绿色保留样式而非红色删除线。
+
+**修复:** 改为 `mark_segments([segment.id], "delete", "confirmed")`。
+
+### Critical Bug Fix 2: "已保留"无法切换回"已删除"
+
+**根因:** 当所有编辑均为 rejected（`displayStatus === "rejected"`，`activeEdit === undefined`），`toggleEditStatus` 无匹配分支，点击无响应。
+
+**修复:** 新增分支：当 `displayStatus === "rejected"` 时，使用 `getEditForSegment`（可找到包括 rejected 的编辑）定位 rejected 编辑，调用 `update_edit_decision` 切换回 "confirmed"。
+
+修改后的 `toggleEditStatus` 三路逻辑：
+```typescript
+if (state.activeEdit) {
+  // Normal toggle: confirmed ↔ rejected
+} else if (state.displayStatus === "rejected") {
+  // All rejected → find rejected edit and toggle back to confirmed
+} else {
+  // No edit → create DELETE edit
+}
+```
+
+### 后端修复: mark_segments 清理旧用户编辑
+
+**`core/project_service.py`:** `mark_segments` 改为按 source 清理而非 ID 去重。在创建新编辑前移除所有 `source == "user"` 且 `target_id` 在目标段落集合中的旧编辑，防止不同 ID 的冲突编辑并存。
+
+```python
+merged_edits = [
+    e for e in existing_edits
+    if not (e.source == "user" and e.target_id in target_seg_ids)
+] + new_edits
+```
+
+### 测试更新
+
+| 文件 | 变更 |
+|------|------|
+| `segmentHelpers.test.ts` | 新增 13 个 `resolveSegmentState` 测试（无编辑、pending/confirmed/rejected delete、pending keep、多编辑优先级、fall-through、rejected high 影响 displayStatus 但不影响 styleClass、全部 rejected、低重叠阈值忽略、按 target_id 去重、按 range 重叠匹配、user 来源优先级） |
+| `useSegmentEdit.test.ts` | 重命名测试："creates keep edit" → "creates delete edit"；断言从 `("keep", "confirmed")` 改为 `("delete", "confirmed")`；新增 "toggles rejected edit back to confirmed" 测试；新增 `resolveState` describe 块 |
+| `TranscriptRow.test.ts` | Props: `editStatus: "pending"` → `displayStatus: "pending"`；`editStatus: "confirmed"` → `displayStatus: "confirmed", styleClass: "masked"`；`globalEditMode` 相关测试通过 |
+| `SilenceRow.test.ts` | Props: `editStatus: "pending"` → `displayStatus: "pending"`；`editStatus: "confirmed"` → `displayStatus: "confirmed"`；`editStatus: "rejected"` → `displayStatus: "rejected", styleClass: "kept"` |
+
+### 修改文件汇总
+
+| 文件 | 变更 |
+|------|------|
+| `frontend/src/utils/segmentHelpers.ts` | 新增 `SegmentState` 接口和 `resolveSegmentState`；废弃 `getEffectiveStatus`/`getEditStatus` 为包装器 |
+| `frontend/src/utils/segmentHelpers.test.ts` | 新增 13 个测试用例 |
+| `frontend/src/composables/useSegmentEdit.ts` | `toggleEditStatus` 三路逻辑修复；新增 `resolveState` 到公共 API；重新导入 `getEditForSegment` |
+| `frontend/src/composables/useSegmentEdit.test.ts` | 重命名测试；新增 rejected 切换和 resolveState 测试 |
+| `frontend/src/components/workspace/Timeline.vue` | 改用 `resolveSegmentState`；传递新 props |
+| `frontend/src/components/workspace/TranscriptRow.vue` | Props 重构：`editStatus`/`effectiveStatus` → `displayStatus`/`styleClass`；无标注徽章修复 |
+| `frontend/src/components/workspace/SilenceRow.vue` | Props 重构；类绑定简化 |
+| `frontend/src/components/waveform/SegmentBlocksLayer.vue` | `Block` 接口改为 `{ state: SegmentState }` |
+| `frontend/src/components/workspace/TranscriptRow.test.ts` | Props 适配新接口 |
+| `frontend/src/components/workspace/SilenceRow.test.ts` | Props 适配新接口 |
+| `core/project_service.py` | `mark_segments` 按 source 清理旧用户编辑 |
+
+### 验证结果
+
+- `uv run pytest tests/` 后端 64 测试全部通过 (0.36s)
+- `bun run test` 前端 105 测试全部通过 (3.16s, 7 test files)
+- TypeScript 类型检查通过
+
+### 提交信息
+
+```
+fix(audit): 统一 EditStatus/EffectiveStatus 状态计算并修复 2 个关键 UI 切换 Bug
+
+核心变更:
+- 新增 resolveSegmentState 统一 getEditForSegment/getEffectiveStatus 两个独立状态计算路径
+- 适配 Timeline/TranscriptRow/SilenceRow/SegmentBlocksLayer 全部消费组件
+- 修复"无标注"→"已删除"创建 keep 而非 delete 编辑导致显示绿色的 Bug
+- 修复"已保留"无法切换回"已删除"的 Bug（rejected→confirmed 死路）
+- 后端 mark_segments 按 source 清理旧用户编辑防止冲突
+```
+
+---
+

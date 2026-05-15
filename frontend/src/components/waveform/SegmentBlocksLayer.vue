@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, inject, ref } from "vue"
 import type { Segment, EditDecision } from "@/types/project"
-import { getEditForSegment, getEffectiveStatus } from "@/utils/segmentHelpers"
+import { resolveSegmentState } from "@/utils/segmentHelpers"
+import type { SegmentState } from "@/utils/segmentHelpers"
 import { TIMELINE_METRICS_KEY } from "./injectionKeys"
 import type { TimelineMetrics } from "@/composables/useTimelineMetrics"
 
@@ -29,8 +30,13 @@ interface Block {
   seg: Segment
   leftPercent: number
   widthPercent: number
-  edit: EditDecision | undefined
-  effectiveStatus: "normal" | "masked" | "kept"
+  state: SegmentState
+}
+
+interface EditRangeBlock {
+  edit: EditDecision
+  leftPercent: number
+  widthPercent: number
 }
 
 const visibleBlocks = computed<Block[]>(() => {
@@ -44,20 +50,38 @@ const visibleBlocks = computed<Block[]>(() => {
     .map(seg => {
       const clampStart = Math.max(seg.start, vs)
       const clampEnd = Math.min(seg.end, ve)
-      const edit = getEditForSegment(props.edits, seg)
+      const state = resolveSegmentState(props.edits, seg)
       return {
         seg,
         leftPercent: ((clampStart - vs) / vd) * 100,
         widthPercent: ((clampEnd - clampStart) / vd) * 100,
-        edit,
-        effectiveStatus: getEffectiveStatus(props.edits, seg),
+        state,
+      }
+    })
+})
+
+const visibleEditRanges = computed<EditRangeBlock[]>(() => {
+  const vs = metrics.viewStart.value
+  const ve = metrics.viewEnd.value
+  const vd = metrics.viewDuration.value
+  if (vd <= 0) return []
+
+  return props.edits
+    .filter(e => e.target_type === "range" && e.end > vs && e.start < ve)
+    .map(e => {
+      const clampStart = Math.max(e.start, vs)
+      const clampEnd = Math.min(e.end, ve)
+      return {
+        edit: e,
+        leftPercent: ((clampStart - vs) / vd) * 100,
+        widthPercent: ((clampEnd - clampStart) / vd) * 100,
       }
     })
 })
 
 function statusColor(block: Block): string {
-  if (block.effectiveStatus === "masked") return "bg-red-200 border-red-400"
-  if (block.effectiveStatus === "kept") return "bg-green-200 border-green-400"
+  if (block.state.styleClass === "masked") return "bg-red-200 border-red-400"
+  if (block.state.styleClass === "kept") return "bg-green-200 border-green-400"
   if (block.seg.type === "silence") return "bg-gray-200 border-gray-300"
   return "bg-blue-100 border-blue-300"
 }
@@ -213,6 +237,20 @@ function handleKeyDown(e: KeyboardEvent) {
           {{ block.seg.text || (block.seg.type === 'silence' ? '...' : '') }}
         </span>
       </div>
+    </div>
+
+    <!-- Edit range overlays (e.g., subtitle trim delete ranges) -->
+    <div
+      v-for="rangeBlock in visibleEditRanges"
+      :key="rangeBlock.edit.id"
+      class="absolute top-0 bottom-0 border border-red-400/60 bg-red-300/30 pointer-events-none"
+      :style="{
+        left: rangeBlock.leftPercent + '%',
+        width: rangeBlock.widthPercent + '%',
+      }"
+      :title="`Delete range: ${rangeBlock.edit.start.toFixed(1)}s - ${rangeBlock.edit.end.toFixed(1)}s`"
+    >
+      <div class="h-full w-full" style="background-image: repeating-linear-gradient(45deg, transparent, transparent 3px, rgba(239,68,68,0.15) 3px, rgba(239,68,68,0.15) 6px);" />
     </div>
 
     <!-- Context Menu -->

@@ -146,6 +146,60 @@ describe("useSegmentEdit", () => {
       await toggleEditStatus(makeSegment())
       expect(mockCall).toHaveBeenCalledWith("update_edit_decision", "ed-1", "rejected")
     })
+
+    it("toggles rejected edit back to confirmed instead of creating keep edit", async () => {
+      project.value = {
+        ...makeProject(),
+        edits: [{
+          id: "ed-rejected",
+          start: 1,
+          end: 5,
+          action: "delete",
+          source: "silence",
+          status: "rejected",
+          priority: 100,
+          target_type: "segment",
+          target_id: "seg-1",
+        }],
+      }
+      mockCall.mockResolvedValue({ success: true, data: makeProject() })
+      const { toggleEditStatus } = useSegmentEdit(project, onProjectUpdate)
+      await toggleEditStatus(makeSegment())
+      expect(mockCall).not.toHaveBeenCalledWith("mark_segments", expect.anything(), expect.anything(), expect.anything())
+      expect(mockCall).toHaveBeenCalledWith("update_edit_decision", "ed-rejected", "confirmed")
+    })
+  })
+
+  describe("resolveState", () => {
+    it("returns SegmentState from resolveSegmentState", () => {
+      const { resolveState } = useSegmentEdit(project, onProjectUpdate)
+      const state = resolveState(makeSegment())
+      expect(state.displayStatus).toBe("none")
+      expect(state.styleClass).toBe("normal")
+      expect(state.activeEdit).toBeUndefined()
+    })
+
+    it("reflects active edit when present", () => {
+      project.value = {
+        ...makeProject(),
+        edits: [{
+          id: "ed-active",
+          start: 1,
+          end: 5,
+          action: "delete",
+          source: "user",
+          status: "confirmed",
+          priority: 200,
+          target_type: "segment",
+          target_id: "seg-1",
+        }],
+      }
+      const { resolveState } = useSegmentEdit(project, onProjectUpdate)
+      const state = resolveState(makeSegment())
+      expect(state.displayStatus).toBe("confirmed")
+      expect(state.styleClass).toBe("masked")
+      expect(state.activeEdit).toBeDefined()
+    })
   })
 
   describe("status queries", () => {

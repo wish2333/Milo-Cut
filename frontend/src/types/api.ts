@@ -38,7 +38,7 @@ export type BridgeMethod =
   // Phase 1: Edit Operations
   | "update_segment_text"
   | "merge_segments"
-  | "split_segment" | "add_segment" | "delete_segment"
+  | "split_segment" | "add_segment" | "delete_segment" | "delete_silence_segments" | "delete_subtitle_trim_edits"
   | "search_replace"
   | "mark_segments"
   | "confirm_all_suggestions"

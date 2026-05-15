@@ -1,11 +1,8 @@
 import { type ComputedRef, computed, type Ref, ref } from "vue"
 import type { EditDecision, Project, Segment } from "@/types/project"
 import { call } from "@/bridge"
-import {
-  getEditForSegment,
-  getEditStatus as queryEditStatus,
-  getEffectiveStatus as queryEffectiveStatus,
-} from "@/utils/segmentHelpers"
+import { resolveSegmentState, getEditForSegment } from "@/utils/segmentHelpers"
+import type { SegmentState } from "@/utils/segmentHelpers"
 
 const DEBOUNCE_MS = 300
 
@@ -22,6 +19,7 @@ export interface UseSegmentEditReturn {
 
   getEffectiveStatus: (seg: Segment) => "normal" | "masked" | "kept"
   getEditStatus: (seg: Segment) => EditDecision["status"] | null
+  resolveState: (seg: Segment) => SegmentState
 
   flushPendingUpdates: () => Promise<void>
   pendingCount: ComputedRef<number>
@@ -67,11 +65,16 @@ export function useSegmentEdit(
   // -- Status queries ---------------------------------------------------
 
   function getEffectiveStatus(seg: Segment): "normal" | "masked" | "kept" {
-    return queryEffectiveStatus(project.value.edits, seg)
+    return resolveSegmentState(project.value.edits, seg).styleClass
   }
 
   function getEditStatus(seg: Segment): EditDecision["status"] | null {
-    return queryEditStatus(project.value.edits, seg)
+    const state = resolveSegmentState(project.value.edits, seg)
+    return state.displayStatus === "none" ? null : state.displayStatus
+  }
+
+  function resolveState(seg: Segment): SegmentState {
+    return resolveSegmentState(project.value.edits, seg)
   }
 
   // -- Debounced time updates -------------------------------------------
@@ -120,17 +123,22 @@ export function useSegmentEdit(
 
   async function toggleEditStatus(segment: Segment, nextStatus?: string): Promise<void> {
     const edits = project.value.edits
-    const edit = getEditForSegment(edits, segment)
+    const state = resolveSegmentState(edits, segment)
 
-    if (!edit) {
-      await call("mark_segments", [segment.id], "delete", "confirmed")
-    } else {
+    if (state.activeEdit) {
       const status = nextStatus ?? (
-        edit.status === "confirmed" ? "rejected"
-        : edit.status === "rejected" ? "confirmed"
+        state.activeEdit.status === "confirmed" ? "rejected"
+        : state.activeEdit.status === "rejected" ? "confirmed"
         : "confirmed"
       )
-      await call<Project>("update_edit_decision", edit.id, status)
+      await call<Project>("update_edit_decision", state.activeEdit.id, status)
+    } else if (state.displayStatus === "rejected") {
+      const rejectedEdit = getEditForSegment(edits, segment)
+      if (rejectedEdit) {
+        await call<Project>("update_edit_decision", rejectedEdit.id, "confirmed")
+      }
+    } else {
+      await call("mark_segments", [segment.id], "delete", "confirmed")
     }
 
     const projRes = await call<Project>("get_project")
@@ -163,6 +171,7 @@ export function useSegmentEdit(
 
     getEffectiveStatus,
     getEditStatus,
+    resolveState,
 
     flushPendingUpdates,
     pendingCount,

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Segment, EditDecision, AnalysisResult } from "@/types/project"
-import { getEditStatus as queryEditStatus, getEffectiveStatus as queryEffectiveStatus } from "@/utils/segmentHelpers"
+import { resolveSegmentState } from "@/utils/segmentHelpers"
 import TranscriptRow from "@/components/workspace/TranscriptRow.vue"
 import SilenceRow from "@/components/workspace/SilenceRow.vue"
 import SuggestionPanel from "@/components/workspace/SuggestionPanel.vue"
@@ -30,12 +30,8 @@ const emit = defineEmits<{
   "toggle-edit-mode": []
 }>()
 
-function getEditStatus(seg: Segment): EditDecision["status"] | null {
-  return queryEditStatus(props.edits, seg)
-}
-
-function getEffectiveStatus(seg: Segment): "normal" | "masked" | "kept" {
-  return queryEffectiveStatus(props.edits, seg)
+function getSegmentState(seg: Segment) {
+  return resolveSegmentState(props.edits, seg)
 }
 </script>
 
@@ -79,8 +75,8 @@ function getEffectiveStatus(seg: Segment): "normal" | "masked" | "kept" {
             <TranscriptRow
               v-if="seg.type === 'subtitle'"
               :segment="seg"
-              :edit-status="getEditStatus(seg)"
-              :effective-status="getEffectiveStatus(seg)"
+              :display-status="getSegmentState(seg).displayStatus"
+              :style-class="getSegmentState(seg).styleClass"
               :is-selected="selectedSegmentId === seg.id"
               :global-edit-mode="globalEditMode"
               @seek="(t) => emit('seek', t)"
@@ -93,8 +89,8 @@ function getEffectiveStatus(seg: Segment): "normal" | "masked" | "kept" {
             <SilenceRow
               v-else
               :segment="seg"
-              :edit-status="getEditStatus(seg)"
-              :effective-status="getEffectiveStatus(seg)"
+              :display-status="getSegmentState(seg).displayStatus"
+              :style-class="getSegmentState(seg).styleClass"
               @seek="(t) => emit('seek', t)"
               @update-time="(id, field, val) => emit('update-time', id, field, val)"
               @toggle-status="emit('toggle-status', seg)"

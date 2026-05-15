@@ -5,6 +5,7 @@ import {
   getEditForSegment,
   getEffectiveStatus,
   getEditStatus,
+  resolveSegmentState,
 } from "./segmentHelpers"
 
 function seg(overrides: Partial<Segment> = {}): Segment {
@@ -133,5 +134,111 @@ describe("getEditStatus", () => {
 
   it("returns null when no matching edit", () => {
     expect(getEditStatus([], seg())).toBeNull()
+  })
+})
+
+describe("resolveSegmentState", () => {
+  it("returns none/normal when no edits", () => {
+    const state = resolveSegmentState([], seg())
+    expect(state.displayStatus).toBe("none")
+    expect(state.styleClass).toBe("normal")
+    expect(state.activeEdit).toBeUndefined()
+  })
+
+  it("single pending delete returns pending/masked with activeEdit", () => {
+    const e = edit({ target_id: "seg-1", action: "delete", status: "pending" })
+    const state = resolveSegmentState([e], seg())
+    expect(state.displayStatus).toBe("pending")
+    expect(state.styleClass).toBe("masked")
+    expect(state.activeEdit).toBe(e)
+  })
+
+  it("single confirmed delete returns confirmed/masked with activeEdit", () => {
+    const e = edit({ target_id: "seg-1", action: "delete", status: "confirmed" })
+    const state = resolveSegmentState([e], seg())
+    expect(state.displayStatus).toBe("confirmed")
+    expect(state.styleClass).toBe("masked")
+    expect(state.activeEdit).toBe(e)
+  })
+
+  it("single rejected delete returns rejected/normal with no activeEdit", () => {
+    const e = edit({ target_id: "seg-1", action: "delete", status: "rejected" })
+    const state = resolveSegmentState([e], seg())
+    expect(state.displayStatus).toBe("rejected")
+    expect(state.styleClass).toBe("normal")
+    expect(state.activeEdit).toBeUndefined()
+  })
+
+  it("single pending keep returns pending/kept with activeEdit", () => {
+    const e = edit({ target_id: "seg-1", action: "keep", status: "pending" })
+    const state = resolveSegmentState([e], seg())
+    expect(state.displayStatus).toBe("pending")
+    expect(state.styleClass).toBe("kept")
+    expect(state.activeEdit).toBe(e)
+  })
+
+  it("picks highest priority among active edits", () => {
+    const low = edit({ id: "low", target_id: "seg-1", action: "keep", priority: 50, status: "pending" })
+    const high = edit({ id: "high", target_id: "seg-1", action: "delete", priority: 200, status: "pending" })
+    const state = resolveSegmentState([low, high], seg())
+    expect(state.activeEdit).toBe(high)
+    expect(state.styleClass).toBe("masked")
+  })
+
+  it("falls through to lower priority when highest is rejected", () => {
+    const rejectedHigh = edit({ id: "r", target_id: "seg-1", action: "delete", priority: 200, status: "rejected" })
+    const activeLow = edit({ id: "a", target_id: "seg-1", action: "delete", priority: 50, status: "pending" })
+    const state = resolveSegmentState([rejectedHigh, activeLow], seg())
+    expect(state.activeEdit).toBe(activeLow)
+    expect(state.styleClass).toBe("masked")
+    expect(state.displayStatus).toBe("pending")
+  })
+
+  it("rejected high-priority edit affects displayStatus but not styleClass", () => {
+    const rejectedHigh = edit({ id: "r", target_id: "seg-1", action: "delete", priority: 200, status: "rejected" })
+    const activeLow = edit({ id: "a", target_id: "seg-1", action: "keep", priority: 50, status: "pending" })
+    const state = resolveSegmentState([rejectedHigh, activeLow], seg())
+    expect(state.activeEdit).toBe(activeLow)
+    expect(state.styleClass).toBe("kept")
+    expect(state.displayStatus).toBe("rejected")
+  })
+
+  it("returns normal when all edits are rejected", () => {
+    const r1 = edit({ id: "e1", target_id: "seg-1", action: "delete", status: "rejected" })
+    const r2 = edit({ id: "e2", target_id: "seg-1", action: "keep", status: "rejected" })
+    const state = resolveSegmentState([r1, r2], seg())
+    expect(state.displayStatus).toBe("rejected")
+    expect(state.styleClass).toBe("normal")
+    expect(state.activeEdit).toBeUndefined()
+  })
+
+  it("ignores edits with overlap below 0.3s threshold", () => {
+    const marginal = edit({ start: 4.9, end: 5.1, action: "delete", status: "pending" })
+    const state = resolveSegmentState([marginal], seg())
+    expect(state.displayStatus).toBe("none")
+    expect(state.styleClass).toBe("normal")
+  })
+
+  it("deduplicates by target_id keeping highest priority", () => {
+    const high = edit({ id: "high", target_id: "seg-1", action: "delete", priority: 200, status: "pending" })
+    const low = edit({ id: "low", target_id: "seg-1", action: "keep", priority: 100, status: "pending" })
+    const state = resolveSegmentState([low, high], seg())
+    expect(state.activeEdit).toBe(high)
+  })
+
+  it("match by range overlap when no target_id match", () => {
+    const rangeEdit = edit({ target_type: "range", start: 1, end: 5, action: "delete", status: "confirmed" })
+    const state = resolveSegmentState([rangeEdit], seg())
+    expect(state.displayStatus).toBe("confirmed")
+    expect(state.styleClass).toBe("masked")
+    expect(state.activeEdit).toBe(rangeEdit)
+  })
+
+  it("user source has higher priority and wins", () => {
+    const analysis = edit({ id: "a", target_id: "seg-1", source: "silence", action: "delete", priority: 100, status: "pending" })
+    const user = edit({ id: "u", target_id: "seg-1", source: "user", action: "keep", priority: 200, status: "confirmed" })
+    const state = resolveSegmentState([analysis, user], seg())
+    expect(state.activeEdit).toBe(user)
+    expect(state.styleClass).toBe("kept")
   })
 })

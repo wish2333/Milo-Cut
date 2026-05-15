@@ -2,6 +2,7 @@
 import { ref } from "vue"
 import WelcomePage from "@/pages/WelcomePage.vue"
 import WorkspacePage from "@/pages/WorkspacePage.vue"
+import ToastContainer from "@/components/common/ToastContainer.vue"
 import { waitForPyWebView, call } from "./bridge"
 import type { Project, MediaInfo } from "@/types/project"
 
@@ -124,5 +125,7 @@ async function handleWindowDrop(e: DragEvent) {
     <WelcomePage v-else-if="!project" @project-created="onProjectCreated" />
 
     <WorkspacePage v-else :project="project" @project-updated="onProjectUpdated" @project-closed="onProjectClosed" />
+
+    <ToastContainer />
   </div>
 </template>
