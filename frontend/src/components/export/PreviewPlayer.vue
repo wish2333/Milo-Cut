@@ -19,6 +19,8 @@ const isPlaying = ref(false)
 const currentTime = ref(0)
 const videoDuration = ref(0)
 const videoSrc = ref("")
+const volume = ref(0.75)
+const isMuted = ref(false)
 let rafId: number | null = null
 
 const deleteRanges = computed(() => {
@@ -59,6 +61,24 @@ function togglePlay() {
   }
 }
 
+function toggleMute() {
+  if (!videoRef.value) return
+  isMuted.value = !isMuted.value
+  videoRef.value.muted = isMuted.value
+}
+
+function setVolume(e: Event) {
+  const val = Number((e.target as HTMLInputElement).value)
+  volume.value = val
+  if (videoRef.value) {
+    videoRef.value.volume = val
+    if (val > 0 && isMuted.value) {
+      isMuted.value = false
+      videoRef.value.muted = false
+    }
+  }
+}
+
 function seekToPosition(e: MouseEvent) {
   if (!videoRef.value || !videoDuration.value) return
   const target = e.currentTarget as HTMLElement
@@ -96,6 +116,7 @@ function onTimeUpdate() {
 function onLoadedMetadata() {
   if (videoRef.value) {
     videoDuration.value = videoRef.value.duration
+    videoRef.value.volume = volume.value
   }
 }
 
@@ -174,7 +195,7 @@ watch(() => [props.mediaPath, props.proxyPath], () => {
       </div>
 
       <!-- Buttons -->
-      <div class="flex items-center gap-4">
+      <div class="flex items-center gap-3">
         <button
           class="text-white hover:text-gray-300 transition-colors"
           @click="togglePlay"
@@ -188,6 +209,25 @@ watch(() => [props.mediaPath, props.proxyPath], () => {
         </span>
 
         <div class="flex-1" />
+
+        <!-- Volume control -->
+        <button
+          class="text-gray-400 hover:text-white transition-colors"
+          @click="toggleMute"
+        >
+          <svg v-if="isMuted || volume === 0" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /><path stroke-linecap="round" stroke-linejoin="round" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" /></svg>
+          <svg v-else-if="volume < 0.5" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.536 8.464a5 5 0 010 7.072M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /></svg>
+          <svg v-else xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /></svg>
+        </button>
+        <input
+          type="range"
+          min="0"
+          max="1"
+          step="0.05"
+          :value="volume"
+          class="w-20 h-1 accent-blue-500 cursor-pointer"
+          @input="setVolume"
+        />
 
         <span v-if="deleteRanges.length > 0" class="text-xs text-gray-500">
           {{ deleteRanges.length }} 个删除区域

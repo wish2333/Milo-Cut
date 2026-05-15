@@ -34,6 +34,12 @@ def export_video(
     output_path: str,
     *,
     media_info: dict | None = None,
+    video_codec: str = "libx264",
+    audio_codec: str = "aac",
+    audio_bitrate: str = "192k",
+    preset: str = "fast",
+    crf: int = 23,
+    resolution: str = "original",
     progress_callback: Callable[[float, str], None] | None = None,
     cancel_event: threading.Event | None = None,
 ) -> dict:
@@ -116,10 +122,16 @@ def export_video(
             "-i", media_path,
             "-filter_complex_script", filter_path,
             "-map", "[outv]", "-map", "[outa]",
-            "-c:v", "libx264", "-preset", "fast",
-            "-c:a", "aac",
-            output_path,
+            "-c:v", video_codec,
+            "-preset", preset,
+            "-crf", str(crf),
+            "-c:a", audio_codec,
+            "-b:a", audio_bitrate,
         ]
+        # Add scale filter if resolution is not original
+        if resolution and resolution != "original":
+            cmd.extend(["-vf", f"scale={resolution.replace('x', ':')}"])
+        cmd.append(output_path)
         logger.info("export_video: filter_complex length={}, written to {}", len(filter_complex), filter_path)
         result = subprocess.run(
             cmd, capture_output=True, text=True, encoding="utf-8",

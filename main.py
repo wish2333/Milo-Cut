@@ -96,6 +96,15 @@ class MiloCutApi(Bridge):
             base, ext = os.path.splitext(media_path)
             output_path = f"{base}_cut{ext}"
 
+        # Read encoding settings from project settings
+        settings = load_settings()
+        video_codec = settings.get("export_video_codec", "libx264")
+        audio_codec = settings.get("export_audio_codec", "aac")
+        audio_bitrate = settings.get("export_audio_bitrate", "192k")
+        preset = settings.get("export_preset", "fast")
+        crf = int(settings.get("export_crf", 23))
+        resolution = settings.get("export_resolution", "original")
+
         def progress_cb(percent: float, message: str = "") -> None:
             self._task_manager._update_progress(task.id, percent, message)
 
@@ -105,6 +114,12 @@ class MiloCutApi(Bridge):
             edits=edits_data,
             output_path=output_path,
             media_info=project.media.model_dump() if project.media else None,
+            video_codec=video_codec,
+            audio_codec=audio_codec,
+            audio_bitrate=audio_bitrate,
+            preset=preset,
+            crf=crf,
+            resolution=resolution,
             progress_callback=progress_cb,
             cancel_event=cancel_event,
         )
@@ -493,7 +508,14 @@ class MiloCutApi(Bridge):
             file_types=tuple(file_types),
         )
         if result:
-            return {"success": True, "data": str(result)}
+            # pywebview SAVE dialog returns a string on macOS/Linux
+            # but a tuple/list on Windows
+            if isinstance(result, (tuple, list)):
+                path = str(result[0]) if result else None
+            else:
+                path = str(result)
+            if path:
+                return {"success": True, "data": path}
         return {"success": True, "data": None}
 
     @expose
