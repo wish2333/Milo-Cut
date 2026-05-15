@@ -2,6 +2,7 @@
 import { ref } from "vue"
 import WelcomePage from "@/pages/WelcomePage.vue"
 import WorkspacePage from "@/pages/WorkspacePage.vue"
+import ExportPage from "@/pages/ExportPage.vue"
 import ToastContainer from "@/components/common/ToastContainer.vue"
 import { waitForPyWebView, call } from "./bridge"
 import type { Project, MediaInfo } from "@/types/project"
@@ -9,6 +10,7 @@ import type { Project, MediaInfo } from "@/types/project"
 const ready = ref(false)
 const bridgeError = ref("")
 const project = ref<Project | null>(null)
+const showExportPage = ref(false)
 const isDragging = ref(false)
 let dragCounter = 0
 
@@ -26,6 +28,19 @@ function onProjectCreated(data: Project) {
 
 function onProjectUpdated(data: Project) {
   project.value = data
+}
+
+function onProjectClosed() {
+  project.value = null
+  showExportPage.value = false
+}
+
+function onGoToExport() {
+  showExportPage.value = true
+}
+
+function onGoBackToWorkspace() {
+  showExportPage.value = false
 }
 
 function onProjectClosed() {
@@ -137,7 +152,20 @@ async function handleWindowDrop(e: DragEvent) {
 
     <WelcomePage v-else-if="!project" @project-created="onProjectCreated" />
 
-    <WorkspacePage v-else :project="project" @project-updated="onProjectUpdated" @project-closed="onProjectClosed" />
+    <ExportPage
+      v-else-if="showExportPage"
+      :project="project"
+      @go-back="onGoBackToWorkspace"
+      @project-updated="onProjectUpdated"
+    />
+
+    <WorkspacePage
+      v-else
+      :project="project"
+      @project-updated="onProjectUpdated"
+      @project-closed="onProjectClosed"
+      @go-to-export="onGoToExport"
+    />
 
     <ToastContainer />
   </div>

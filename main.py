@@ -493,6 +493,42 @@ class MiloCutApi(Bridge):
             return {"success": True, "data": str(result)}
         return {"success": True, "data": None}
 
+    @expose
+    def detect_gpu(self) -> dict:
+        """Detect NVIDIA GPU availability."""
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=5,
+            )
+            return {"success": True, "data": {"nvidia": result.returncode == 0}}
+        except FileNotFoundError:
+            return {"success": True, "data": {"nvidia": False}}
+
+    @expose
+    def export_edl(self, output_path: str) -> dict:
+        """Export EDL (CMX3600) file."""
+        from core.export_timeline import export_edl as _export_edl
+        project = self._project._current
+        if not project:
+            return {"success": False, "error": "No project open"}
+        segments = [s.model_dump() for s in project.transcript.segments]
+        edits = [e.model_dump() for e in project.edits]
+        media_info = project.media.model_dump() if project.media else {}
+        return _export_edl(segments, edits, media_info, output_path)
+
+    @expose
+    def export_fcpxml(self, output_path: str) -> dict:
+        """Export FCPXML file."""
+        from core.export_timeline import export_fcpxml as _export_fcpxml
+        project = self._project._current
+        if not project:
+            return {"success": False, "error": "No project open"}
+        segments = [s.model_dump() for s in project.transcript.segments]
+        edits = [e.model_dump() for e in project.edits]
+        media_info = project.media.model_dump() if project.media else {}
+        return _export_fcpxml(segments, edits, media_info, output_path)
+
 
 if __name__ == "__main__":
     migrate_if_needed()
