@@ -33,6 +33,21 @@ const emit = defineEmits<{
 function getSegmentState(seg: Segment) {
   return resolveSegmentState(props.edits, seg)
 }
+
+import { watch, nextTick } from "vue"
+
+watch(
+  () => props.selectedSegmentId,
+  (id) => {
+    if (!id) return
+    nextTick(() => {
+      const el = document.querySelector(`[data-segment-id="${id}"]`)
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "nearest" })
+      }
+    })
+  },
+)
 </script>
 
 <template>
@@ -62,7 +77,7 @@ function getSegmentState(seg: Segment) {
 
     <div class="flex flex-1 overflow-hidden">
       <!-- Transcript list -->
-      <div class="flex-1 overflow-y-auto">
+      <div ref="listContainer" class="flex-1 overflow-y-auto">
         <div v-if="segments.length === 0" class="flex h-full items-center justify-center">
           <div class="text-center">
             <p class="text-sm text-gray-500">No segments loaded</p>

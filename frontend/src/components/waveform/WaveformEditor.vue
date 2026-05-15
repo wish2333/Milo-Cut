@@ -23,6 +23,7 @@ const emit = defineEmits<{
   "select-range": [start: number, end: number]
   "add-segment": [start: number, end: number]
   "delete-segment": [segmentId: string]
+  "seek-segment": [segment: Segment]
 }>()
 
 const durationRef = toRef(props, "duration")
@@ -66,6 +67,10 @@ function handleAddSegment(start: number, end: number) {
 function handleDeleteSegment(segmentId: string) {
   emit("delete-segment", segmentId)
 }
+
+function handleSeekSegment(segment: Segment) {
+  emit("seek-segment", segment)
+}
 </script>
 
 <template>
@@ -100,6 +105,7 @@ function handleDeleteSegment(segmentId: string) {
         @select-range="handleSelectRange"
         @add-segment="handleAddSegment"
         @delete-segment="handleDeleteSegment"
+        @seek-segment="handleSeekSegment"
       />
       <PlayheadOverlay style="z-index: 10; pointer-events: none" />
     </div>

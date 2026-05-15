@@ -121,10 +121,12 @@ class MiloCutApi(Bridge):
         if not output_path:
             output_path = os.path.splitext(project.media.path)[0] + "_cut.srt"
 
+        media_duration = project.media.duration if project.media else 0.0
         return export_srt(
             segments=segments_data,
             edits=edits_data,
             output_path=output_path,
+            media_duration=media_duration,
         )
 
     def _handle_export_audio(self, task, cancel_event):
@@ -150,6 +152,7 @@ class MiloCutApi(Bridge):
             segments=segments_data,
             edits=edits_data,
             output_path=output_path,
+            media_info=project.media.model_dump() if project.media else None,
             progress_callback=progress_cb,
             cancel_event=cancel_event,
         )

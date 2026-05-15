@@ -117,6 +117,7 @@ const statusClass = computed(() => {
   <div
     class="flex items-start gap-2 px-3 py-2 cursor-pointer hover:bg-gray-50 transition-colors"
     :class="[statusClass, { 'ring-1 ring-blue-500': isSelected }]"
+    :data-segment-id="segment.id"
     @click="handleRowClick"
   >
     <!-- Time column: fixed width, no overlap -->

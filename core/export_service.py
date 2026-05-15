@@ -49,7 +49,10 @@ def export_video(
         output_path = _validate_output_path(output_path)
         ffmpeg = _find_ffmpeg()
         deletions = _get_confirmed_deletions(edits)
-        total_duration = _get_media_duration(segments, edits)
+        media_duration = media_info.get("duration", 0.0) if media_info else 0.0
+        if media_duration <= 0.0:
+            logger.warning("media_duration unavailable ({}), export may be truncated", media_duration)
+        total_duration = _get_media_duration(segments, edits, media_duration)
 
         # Detect if input has video stream
         has_video = True
@@ -115,6 +118,7 @@ def export_audio(
     edits: list[dict],
     output_path: str,
     *,
+    media_info: dict | None = None,
     progress_callback: Callable[[float, str], None] | None = None,
     cancel_event: threading.Event | None = None,
 ) -> dict:
@@ -130,7 +134,10 @@ def export_audio(
         output_path = _validate_output_path(output_path)
         ffmpeg = _find_ffmpeg()
         deletions = _get_confirmed_deletions(edits)
-        total_duration = _get_media_duration(segments, edits)
+        media_duration = media_info.get("duration", 0.0) if media_info else 0.0
+        if media_duration <= 0.0:
+            logger.warning("media_duration unavailable ({}), export may be truncated", media_duration)
+        total_duration = _get_media_duration(segments, edits, media_duration)
 
         if not deletions:
             logger.info("No confirmed deletions, copying original audio")
@@ -189,16 +196,21 @@ def export_srt(
     segments: list[dict],
     edits: list[dict],
     output_path: str,
+    *,
+    media_duration: float = 0.0,
 ) -> dict:
     """Export SRT with only kept subtitle segments and adjusted timestamps."""
     try:
         output_path = _validate_output_path(output_path)
         deletions = _get_confirmed_deletions(edits)
+        total_duration = _get_media_duration(segments, edits, media_duration)
+        keep_ranges = _compute_keep_ranges(total_duration, deletions)
+
         subtitle_segs = [s for s in segments if s.get("type") == "subtitle"]
 
         kept: list[dict] = []
         for seg in subtitle_segs:
-            if not _overlaps_deletions(seg["start"], seg["end"], deletions):
+            if _subtitle_survives_in_keep_ranges(seg["start"], seg["end"], keep_ranges):
                 kept.append(seg)
 
         kept.sort(key=lambda s: s["start"])
@@ -248,10 +260,20 @@ def _get_confirmed_deletions(edits: list[dict]) -> list[tuple[float, float]]:
     return result
 
 
-def _get_media_duration(segments: list[dict], edits: list[dict]) -> float:
-    """Compute total media duration from segments and edits."""
+def _get_media_duration(
+    segments: list[dict],
+    edits: list[dict],
+    media_duration: float = 0.0,
+) -> float:
+    """Compute total media duration from segments, edits, and optionally the actual media file duration.
+
+    Uses the larger of the computed duration (from segments/edits) and the actual
+    media file duration from ffprobe, so the export is never truncated by a gap
+    after the last subtitle segment.
+    """
     all_times = [s["end"] for s in segments] + [e["end"] for e in edits]
-    return max(all_times) if all_times else 0.0
+    computed = max(all_times) if all_times else 0.0
+    return max(computed, media_duration)
 
 
 def _compute_keep_ranges(
@@ -274,7 +296,8 @@ def _compute_keep_ranges(
     if current < total_duration:
         keep.append((current, total_duration))
 
-    return keep
+    # Clamp to prevent segment/edit endpoints exceeding actual media duration
+    return [(min(s, total_duration), min(e, total_duration)) for s, e in keep]
 
 
 def _merge_ranges(ranges: list[tuple[float, float]]) -> list[tuple[float, float]]:
@@ -301,6 +324,28 @@ def _overlaps_deletions(
         overlap_start = max(start, del_start)
         overlap_end = min(end, del_end)
         if overlap_end - overlap_start > 0.01:
+            return True
+    return False
+
+
+def _subtitle_survives_in_keep_ranges(
+    seg_start: float,
+    seg_end: float,
+    keep_ranges: list[tuple[float, float]],
+    min_keep: float = 0.3,
+) -> bool:
+    """Return True if the subtitle segment has enough content preserved.
+
+    For subtitles longer than `min_keep`, at least `min_keep` seconds must
+    survive in the keep_ranges.  For shorter subtitles the threshold is
+    lowered to 50% of the segment duration, so that brief but completely
+    intact subtitles are not silently dropped.
+    """
+    seg_duration = seg_end - seg_start
+    effective_min = min(min_keep, seg_duration * 0.5)
+    for ks, ke in keep_ranges:
+        overlap = max(0.0, min(seg_end, ke) - max(seg_start, ks))
+        if overlap >= effective_min:
             return True
     return False
 

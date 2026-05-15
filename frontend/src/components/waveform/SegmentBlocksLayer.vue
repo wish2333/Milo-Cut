@@ -16,6 +16,7 @@ const emit = defineEmits<{
   "select-range": [start: number, end: number]
   "add-segment": [start: number, end: number]
   "delete-segment": [segmentId: string]
+  "seek-segment": [segment: Segment]
 }>()
 
 const metrics = inject<TimelineMetrics>(TIMELINE_METRICS_KEY)!
@@ -167,6 +168,11 @@ function handleBlockContextMenu(block: Block, e: MouseEvent) {
   contextMenu.value = { x: e.clientX, y: e.clientY, segmentId: block.seg.id }
 }
 
+function handleBlockClick(block: Block) {
+  selectedBlockId.value = null
+  emit("seek-segment", block.seg)
+}
+
 function closeContextMenu() {
   contextMenu.value = null
 }
@@ -196,7 +202,7 @@ function handleKeyDown(e: KeyboardEvent) {
 
 <template>
   <div
-    class="absolute inset-x-0 top-6 bottom-0"
+    class="absolute inset-x-0 top-6 bottom-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
     tabindex="0"
     @mousedown.self="handleEmptyClick"
     @keydown="handleKeyDown"
@@ -220,6 +226,7 @@ function handleKeyDown(e: KeyboardEvent) {
       @mouseleave="handleBlockMouseLeave"
       @mousedown="handleBlockMouseDown(block, $event)"
       @contextmenu="handleBlockContextMenu(block, $event)"
+      @click="handleBlockClick(block)"
     >
       <!-- Left edge handle -->
       <div

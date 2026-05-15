@@ -337,6 +337,13 @@ async function handleDeleteSegment(segmentId: string) {
   }
 }
 
+function handleSeekSegment(seg: Segment) {
+  editSelectedSegmentId.value = seg.id
+  if (videoRef.value) {
+    videoRef.value.currentTime = seg.start
+  }
+}
+
 async function handleExportVideo() {
   errorMessage.value = ""
   const summary = await getExportSummary()
@@ -740,6 +747,7 @@ onUnmounted(() => {
       @select-range="handleSelectRange"
       @add-segment="handleAddSegment"
       @delete-segment="handleDeleteSegment"
+      @seek-segment="handleSeekSegment"
     />
 
     <!-- Export summary modal -->

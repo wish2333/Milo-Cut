@@ -1672,17 +1672,186 @@ merged_edits = [
 - `bun run test` 前端 105 测试全部通过 (3.16s, 7 test files)
 - TypeScript 类型检查通过
 
-### 提交信息
+### 📝 Commit Message
 
 ```
-fix(audit): 统一 EditStatus/EffectiveStatus 状态计算并修复 2 个关键 UI 切换 Bug
+fix(ui): 统一EditStatus/EffectiveStatus并修复关键切换Bug
 
-核心变更:
-- 新增 resolveSegmentState 统一 getEditForSegment/getEffectiveStatus 两个独立状态计算路径
-- 适配 Timeline/TranscriptRow/SilenceRow/SegmentBlocksLayer 全部消费组件
-- 修复"无标注"→"已删除"创建 keep 而非 delete 编辑导致显示绿色的 Bug
-- 修复"已保留"无法切换回"已删除"的 Bug（rejected→confirmed 死路）
+- 新增 resolveSegmentState 作为段落状态唯一计算源，消除
+  getEditForSegment 与 getEffectiveStatus 逻辑不一致
+- 修复"无标注"切换为"已删除"时误创建 keep 编辑导致绿色残留
+- 修复"已保留(rejected)"状态下确认/忽略按钮无响应问题
 - 后端 mark_segments 按 source 清理旧用户编辑防止冲突
+- 新增 Toast 通知系统(全局/成功/错误/自动消失)
+- 新增静音标记与字幕裁剪的批量删除功能
+- 新增字幕-静音重叠自动裁剪与 trim padding 设置
+- 波形编辑器新增字幕裁剪编辑范围叠加层与次刻度时间线
+- 全套 Props 重构(Timeline/TranscriptRow/SilenceRow/SegmentBlocksLayer)
+- 新增 13 个 resolveSegmentState 单元测试 + useSegmentEdit 测试覆盖
+```
+
+---
+
+### 🚀 Release Notes
+
+```
+## 2026-05-15 - 段落状态统一与批量操作功能
+
+### ✨ 新增
+- **Toast 通知系统**：操作成功后弹窗提示(右下角)，替换原有 status bar 消息，5 秒自动消失并支持手动关闭
+- **静音标记批量删除**：工具栏新增红色垃圾桶按钮，一键移除所有静音标记及关联编辑决策
+- **字幕裁剪标记批量清除**：支持一键清除所有字幕裁剪编辑决策
+- **字幕裁剪设置**：新增 padding 调整(0-2.0s，默认 0.3s)，裁剪行为更灵活
+- **字幕-静音自动裁剪**：开启静音检测后，重叠部分字幕段自动裁剪而非整段删除
+- **波形编辑范围叠加层**：字幕裁剪范围以红色斜纹半透明叠加层显示在波形图上
+- **次刻度时间线**：主刻度之间新增浅色短刻度，时间定位更精确
+
+### 🐛 修复
+- 修复分析后徽章显示"已保留"(绿色)但行出现红色删除线的不一致问题
+- 修复"无标注"段点击删除后错误显示绿色保留样式的问题
+- 修复"已保留"状态点击确认/忽略按钮无响应的逻辑死路问题
+- 修复后端 mark_segments 未清理旧用户编辑导致冲突编辑并存的隐患
+
+### ⚡ 优化
+- 状态消息 5 秒后自动清除并新增关闭按钮(X)
+- Ctrl+S / Save 按钮改用 Toast 通知，体验更轻量
+- 时间刻度新增次刻度显示，视觉定位更友好
+```
+
+---
+
+## Audit Report #4 Fixes: Export 截断、SubtitleTrim、SRT 导出、波形单击定位 (2026-05-16)
+
+### 概述
+
+基于 `docs/audit-report-preview-4.md` 执行 4 项修复（B1, B2, B3+B4, C2），涵盖后端导出截断、字幕裁剪逻辑遗漏、SRT 筛选不一致及前端波形块单击定位功能。
+
+### B1 [HIGH] 修复 `_get_media_duration` 低估实际媒体时长 + `export_audio` 缺少 media_info
+
+**问题:** `_get_media_duration` 仅从 segments/edits 计算最大 end time，忽略 ffprobe 探测的实际媒体文件 `duration`。末尾字幕段与视频结束之间的无声尾画面会在导出时被截断。`export_audio` 同样缺少 `media_info` 参数。
+
+**修复:**
+- `core/export_service.py`: `_get_media_duration` 新增可选 `media_duration: float = 0.0` 参数，返回 `max(computed, media_duration)`
+- `core/export_service.py`: `export_video` 从 `media_info` 提取 `duration` 并传递；不可用时输出 warning 日志
+- `core/export_service.py`: `export_audio` 新增 `media_info: dict | None = None` 关键字参数，同样提取 duration 传递
+- `core/export_service.py`: `_compute_keep_ranges` 新增端点钳位逻辑，防止 segment/edit 端点超出 `total_duration`
+- `main.py`: `_handle_export_audio` 传递 `project.media.model_dump()` 作为 `media_info`
+
+**文件:** `core/export_service.py`, `main.py`
+
+### B3+B4 [HIGH+MEDIUM] SubtitleTrim 排除已删除字幕 + already_covered 含 REJECTED
+
+**B3 问题:** `generate_subtitle_keep_ranges` 构建 `subtitle_segs` 时未排除已 confirmed delete 的字幕，导致已标记删除的字幕仍被计入 keep_ranges。
+
+**B4 问题:** `already_covered` 检查仅匹配 `CONFIRMED` 和 `PENDING` 状态，遗漏 `REJECTED`，导致重新运行 SubtitleTrim 时为已 rejected 的范围重复创建 PENDING 编辑。
+
+**修复:**
+- `core/project_service.py`: 新增 `confirmed_deleted_ids` 和 `confirmed_kept_ids` 集合，从 edits 中收集
+- `core/project_service.py`: `subtitle_segs` 构建时排除 `confirmed_deleted_ids` 中的段
+- `core/project_service.py`: `already_covered` 状态检查新增 `EditStatus.REJECTED`
+
+**技术债备忘:** `already_covered` 逻辑在 silence detection 和 SubtitleTrim 中重复出现，后续应提取为共用工具函数。
+
+**文件:** `core/project_service.py`
+
+### B2 [HIGH] SRT 导出字幕筛选标准与视频导出不一致
+
+**问题:** `export_srt` 使用 `_overlaps_deletions` 按 deletions 直接过滤字幕，而 `export_video` 使用 `_compute_keep_ranges`（逆运算）确定保留范围。两者逻辑不对称，且 SRT 未使用 `media_duration` 导致与视频导出总时长不同。
+
+**修复:**
+- `core/export_service.py`: 新增 `_subtitle_survives_in_keep_ranges` 辅助函数，使用自适应阈值（长字幕 >=0.3s 保留，短字幕 >=50% 即可）
+- `core/export_service.py`: `export_srt` 新增 `media_duration: float = 0.0` 关键字参数
+- `core/export_service.py`: `export_srt` 内部改用 `_compute_keep_ranges` + `_subtitle_survives_in_keep_ranges` 替代 `_overlaps_deletions`
+- `main.py`: `_handle_export_subtitle` 传递 `project.media.duration` 作为 `media_duration`
+- 保留 `_overlaps_deletions` 函数（可能有其他调用者）
+
+**文件:** `core/export_service.py`, `main.py`
+
+### C2 [FEATURE] 单击波形块定位到 Timeline 对应位置
+
+**功能:** 单击波形编辑器中的字幕/静音块时，右侧 Timeline 自动滚动定位到对应行，视频时间指针跳转到该段起始时间（不自动播放）。
+
+**实现:**
+- `SegmentBlocksLayer.vue`: emit 新增 `"seek-segment"`；新增 `handleBlockClick` 函数（清除 `selectedBlockId` + emit）；模板块元素新增 `@click="handleBlockClick(block)"`
+- `WaveformEditor.vue`: emit 新增 `"seek-segment"`；新增 `handleSeekSegment` 透传函数；模板 `SegmentBlocksLayer` 新增 `@seek-segment="handleSeekSegment"` 绑定
+- `WorkspacePage.vue`: `WaveformEditor` 新增 `@seek-segment="handleSeekSegment"` 绑定；新增 `handleSeekSegment` 函数：设置 `editSelectedSegmentId` + 设置 `videoRef.currentTime`（不调 play）
+- `Timeline.vue`: 新增 `watch(selectedSegmentId)`：`nextTick` 后用 `el.scrollIntoView({ behavior: "smooth", block: "nearest" })` 滚动到对应行
+- `TranscriptRow.vue`: 根元素新增 `:data-segment-id="segment.id"`
+- `SilenceRow.vue`: 根元素新增 `:data-segment-id="segment.id"`
+- `SegmentBlocksLayer.vue`: canvas 容器新增 `focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400` 防止浏览器默认黑色 focus outline
+
+**设计决策:**
+- 单击（非双击）：经过讨论改为单击触发，操作更直接
+- 不自动播放：仅设置 `currentTime`，不调用 `play()`，避免自动播放打断用户
+- `@click` 不用 `.stop`：父级 canvas `.self` 修饰符已隔离传播，无需额外阻止
+- `handleBlockClick` 清除 `selectedBlockId`：避免选中蓝环在 seek 后残留
+
+**文件:** `SegmentBlocksLayer.vue`, `WaveformEditor.vue`, `WorkspacePage.vue`, `Timeline.vue`, `TranscriptRow.vue`, `SilenceRow.vue`
+
+### Bug 修复: TaskType 缺少 "export_audio"
+
+**问题:** `useExport.ts` 使用 `"export_audio"` 作为 task type，但 `types/task.ts` 中 `TaskType` 联合类型未包含此项，导致 3 个 TypeScript 类型错误。
+
+**修复:** `types/task.ts` TaskType 新增 `| "export_audio"`。
+
+**文件:** `frontend/src/types/task.ts`
+
+### 修改文件汇总
+
+| 文件 | 变更 |
+|------|------|
+| `core/export_service.py` | `_get_media_duration` 新增 media_duration 参数；`export_video`/`export_audio` 传递 media_duration；`_compute_keep_ranges` 端点钳位；新增 `_subtitle_survives_in_keep_ranges`；`export_srt` 改用 keep_ranges；`export_audio` 新增 media_info 参数 |
+| `core/project_service.py` | `generate_subtitle_keep_ranges` 排除 confirmed-deleted 字幕；`already_covered` 新增 REJECTED 状态 |
+| `main.py` | `_handle_export_audio` 传递 media_info；`_handle_export_subtitle` 传递 media_duration |
+| `frontend/src/types/task.ts` | TaskType 新增 `"export_audio"` |
+| `frontend/src/components/waveform/SegmentBlocksLayer.vue` | 新增 seek-segment emit + handleBlockClick + @click；canvas 容器 focus:outline-none |
+| `frontend/src/components/waveform/WaveformEditor.vue` | 新增 seek-segment emit + handleSeekSegment + @seek-segment 绑定 |
+| `frontend/src/pages/WorkspacePage.vue` | 新增 handleSeekSegment + @seek-segment 绑定 |
+| `frontend/src/components/workspace/Timeline.vue` | 新增 watch(selectedSegmentId) + scrollIntoView |
+| `frontend/src/components/workspace/TranscriptRow.vue` | 新增 :data-segment-id |
+| `frontend/src/components/workspace/SilenceRow.vue` | 新增 :data-segment-id |
+
+### 验证结果
+
+- `uv run python -c "import ast"` 后端 3 个修改文件语法检查通过
+- `bun run test -- --run` 前端 105 测试全部通过 (7 test files)
+- `bun run build` 前端构建成功：CSS 59.46 KB, JS 158.69 KB (gzip 53.52 KB)
+
+### 实施顺序
+
+B1 -> B3+B4 -> B2 -> C2（B2 依赖 B1 的 `_get_media_duration` 新签名；B3+B4 为同一函数修改合并实施；C2 独立前端功能）
+
+### 回滚方案
+
+每项修复均可通过 `git revert` 逐项回滚。B2 依赖 B1 的 `media_duration` 参数，其余项目独立。
+
+### 📝 Commit Message
+
+```
+fix: 修复导出截断与字幕逻辑，新增波形定位
+
+- B1: _get_media_duration 取 max(计算, 实际) 防截断
+- B2: export_srt 改用 keep_ranges 逻辑对齐视频导出
+- B3+B4: SubtitleTrim 排除已删字幕及 REJECTED 状态
+- C2: 单击波形块 emit 事件联动 Timeline 滚动与 seek
+- 补充 TaskType 缺失的 "export_audio" 类型定义
+
+Resolves: docs/audit-report-preview-4.md (B1-B4, C2)
+```
+
+### 🚀 Release Notes
+
+```
+## 2026-05-16 - 导出准确性与编辑交互体验提升
+
+### ✨ 新增
+- 支持单击波形图中的字幕/静音块，自动跳转至时间轴对应位置并定位视频进度
+
+### 🐛 修复
+- 修复导出视频/音频时，末尾无声画面被错误截断的问题
+- 修复导出 SRT 字幕与导出视频的实际内容不一致的问题
+- 修复字幕裁剪功能误将已删除的字幕计入保留范围的问题
+- 修复重复执行字幕裁剪时可能产生重复冗余编辑记录的问题
 ```
 
 ---

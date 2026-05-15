@@ -57,6 +57,7 @@ const duration = computed(() => {
 <template>
   <div
     class="flex items-center gap-2 px-3 h-8 cursor-pointer transition-colors"
+    :data-segment-id="segment.id"
     :class="{
       'bg-gray-50': !displayStatus || displayStatus === 'none',
       'bg-yellow-50 border-l-3 border-yellow-400': displayStatus === 'pending',

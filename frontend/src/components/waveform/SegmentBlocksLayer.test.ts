@@ -55,6 +55,7 @@ function createMetrics(): TimelineMetrics {
     thumbLeft: computed(() => 0),
     thumbWidth: computed(() => 100),
     timeMarks: computed(() => []),
+    minorTimeMarks: computed(() => []),
     containerRef: ref(null),
   }
 }

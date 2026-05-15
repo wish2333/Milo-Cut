@@ -854,8 +854,22 @@ class ProjectService:
         if self._current is None:
             return {"success": False, "error": "No project is open"}
 
+        # Collect IDs of segments with confirmed delete edits
+        confirmed_deleted_ids: set[str] = {
+            e.target_id for e in self._current.edits
+            if e.status == EditStatus.CONFIRMED and e.action == "delete" and e.target_id
+        }
+
+        # Collect IDs of segments with confirmed keep edits
+        confirmed_kept_ids: set[str] = {
+            e.target_id for e in self._current.edits
+            if e.status == EditStatus.CONFIRMED and e.action == "keep" and e.target_id
+        }
+
+        # Exclude confirmed-deleted subtitles from keep ranges
         subtitle_segs = sorted(
-            [s for s in self._current.transcript.segments if s.type == SegmentType.SUBTITLE],
+            [s for s in self._current.transcript.segments
+             if s.type == SegmentType.SUBTITLE and s.id not in confirmed_deleted_ids],
             key=lambda s: s.start,
         )
         if not subtitle_segs:
@@ -893,7 +907,7 @@ class ProjectService:
             # Skip if already covered by existing edit
             already_covered = any(
                 e.action == "delete"
-                and e.status in (EditStatus.CONFIRMED, EditStatus.PENDING)
+                and e.status in (EditStatus.CONFIRMED, EditStatus.PENDING, EditStatus.REJECTED)
                 and abs(e.start - start) < 0.05
                 and abs(e.end - end) < 0.05
                 for e in existing_edits
