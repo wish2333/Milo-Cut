@@ -203,8 +203,12 @@
   - 导出界面允许导出通用时间线格式
 - 时间线需要新增功能，双击某个块时能够定位到Timeline中的对应位置
 
-## 待提出的问题
+## 0.2.0
 
 - Analysis按钮一到SubtitleTrim及其删除按钮右侧
 - DetectSilence检测出来的静音区域没法单独删除，只能全部清除（SubtitleTrim无需单独删除是因为他能够通过字幕块的调整之后重新检测重新划定，但是DetectSilence没法用这种方式，就需要有单独的DetectSilence块来编辑）
 - 首页导入页支持通过拖入project.json或一级含project.json的文件夹读取项目
+
+## 待提出的问题
+
+- 
