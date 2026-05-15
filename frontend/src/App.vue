@@ -43,10 +43,6 @@ function onGoBackToWorkspace() {
   showExportPage.value = false
 }
 
-function onProjectClosed() {
-  project.value = null
-}
-
 function handleWindowDragEnter(e: DragEvent) {
   e.preventDefault()
   dragCounter++
