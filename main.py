@@ -560,16 +560,16 @@ class MiloCutApi(Bridge):
         return _export_edl(segments, edits, media_info, output_path)
 
     @expose
-    def export_fcpxml(self, output_path: str) -> dict:
-        """Export FCPXML file."""
-        from core.export_timeline import export_fcpxml as _export_fcpxml
+    def export_xmeml_premiere(self, output_path: str) -> dict:
+        """Export xmeml for Premiere Pro."""
+        from core.export_timeline import export_xmeml_premiere as _export_xmeml_premiere
         project = self._project._current
         if not project:
             return {"success": False, "error": "No project open"}
         segments = [s.model_dump() for s in project.transcript.segments]
         edits = [e.model_dump() for e in project.edits]
         media_info = project.media.model_dump() if project.media else {}
-        return _export_fcpxml(segments, edits, media_info, output_path)
+        return _export_xmeml_premiere(segments, edits, media_info, output_path)
 
 
 if __name__ == "__main__":

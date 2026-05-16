@@ -95,15 +95,17 @@ async function handleExportEdl() {
   errorMessage.value = ""
   statusMessage.value = "正在导出 EDL..."
   try {
-    const name = props.project.project?.name ?? "export"
-    const res = await call<string>("select_export_path", `${name}.edl`, ["EDL files (*.edl)", "All files (*.*)"])
-    if (res.success && res.data) {
-      const exportRes = await call<string>("export_edl", res.data)
-      if (exportRes.success) {
-        statusMessage.value = "EDL 导出完成"
-      } else {
-        errorMessage.value = `EDL 导出失败: ${exportRes.error}`
-      }
+    const mediaPath = props.project.media?.path
+    if (!mediaPath) {
+      errorMessage.value = "无法获取源文件路径"
+      return
+    }
+    const outputPath = mediaPath.replace(/\.[^.]+$/, ".edl")
+    const exportRes = await call<string>("export_edl", outputPath)
+    if (exportRes.success) {
+      statusMessage.value = "EDL 导出完成"
+    } else {
+      errorMessage.value = `EDL 导出失败: ${exportRes.error}`
     }
   } catch (e) {
     errorMessage.value = `EDL 导出失败: ${e}`
@@ -112,22 +114,24 @@ async function handleExportEdl() {
   }
 }
 
-async function handleExportFcpxml() {
+async function handleExportXmemlPremiere() {
   errorMessage.value = ""
-  statusMessage.value = "正在导出 FCPXML..."
+  statusMessage.value = "正在导出 Premiere XML..."
   try {
-    const name = props.project.project?.name ?? "export"
-    const res = await call<string>("select_export_path", `${name}.fcpxml`, ["FCPXML files (*.fcpxml)", "All files (*.*)"])
-    if (res.success && res.data) {
-      const exportRes = await call<string>("export_fcpxml", res.data)
-      if (exportRes.success) {
-        statusMessage.value = "FCPXML 导出完成"
-      } else {
-        errorMessage.value = `FCPXML 导出失败: ${exportRes.error}`
-      }
+    const mediaPath = props.project.media?.path
+    if (!mediaPath) {
+      errorMessage.value = "无法获取源文件路径"
+      return
+    }
+    const outputPath = mediaPath.replace(/\.[^.]+$/, ".xml")
+    const exportRes = await call<string>("export_xmeml_premiere", outputPath)
+    if (exportRes.success) {
+      statusMessage.value = "Premiere XML 导出完成"
+    } else {
+      errorMessage.value = `Premiere XML 导出失败: ${exportRes.error}`
     }
   } catch (e) {
-    errorMessage.value = `FCPXML 导出失败: ${e}`
+    errorMessage.value = `Premiere XML 导出失败: ${e}`
   } finally {
     statusMessage.value = ""
   }
@@ -229,14 +233,14 @@ function formatTimeShort(seconds: number): string {
               :disabled="isExporting"
               @click="handleExportEdl"
             >
-              导出 EDL
+              导出 EDL (DaVinci)
             </button>
             <button
               class="w-full flex items-center gap-2 rounded-md bg-gray-100 px-4 py-2 text-sm text-gray-700 hover:bg-gray-200 transition-colors mt-2"
               :disabled="isExporting"
-              @click="handleExportFcpxml"
+              @click="handleExportXmemlPremiere"
             >
-              导出 FCPXML
+              导出 XML
             </button>
           </div>
         </div>
