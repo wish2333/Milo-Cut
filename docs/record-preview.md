@@ -427,3 +427,16 @@ FFmpeg 静音检测 -> margin 缩边 -> 字幕保护裁剪 -> 创建 Segment/Edi
 | `frontend/src/pages/ExportPage.vue` | Toast 时序修复 + 面板宽度调整 |
 | `frontend/src/composables/useExport.ts` | 重构为 `createExportTask` + 事件跟踪 |
 | `core/export_service.py` | 过渡音视频同步修复 |
+
+## OTIO 音频过渡时长独立控制
+
+**需求**: OTIO 工程导出时，视频和音频过渡时长可以分别控制（如视频短过渡 + 音频长过渡）。
+
+**UI 交互**: 调整主"过渡时长"滑块时，音频滑块同步跟随；单独调整"音频过渡时长"滑块时，仅音频值变化。
+
+**FFmpeg 导出**: 保持单一时长，强制音视频同步（避免刚修复的 desync 问题复现）。
+
+**实现**:
+- `ExportPage.vue`: 新增 `otioAudioFadeDuration` ref + `watch(otioFadeDuration)` 同步联动；过渡时长 > 0 时显示音频滑块
+- `main.py`: `export_otio` bridge 方法新增 `audio_fade_duration` 参数
+- `export_timeline.py`: `export_otio()` 新增 `audio_fade_duration` 参数，视频轨和音频轨分别使用不同 fade duration 构建 Transition；相同时复用 deepcopy 避免重复计算

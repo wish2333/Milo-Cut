@@ -629,7 +629,7 @@ class MiloCutApi(Bridge):
         return _export_xmeml_premiere(segments, edits, media_info, output_path, mode=mode)
 
     @expose
-    def export_otio(self, output_path: str, fade_duration: float = 0.0, mode: str = "clean", fade_mode: str = "crossfade") -> dict:
+    def export_otio(self, output_path: str, fade_duration: float = 0.0, mode: str = "clean", fade_mode: str = "crossfade", audio_fade_duration: float | None = None) -> dict:
         """Export OpenTimelineIO (.otio) file."""
         from core.export_timeline import export_otio as _export_otio
         project = self._project._current
@@ -638,7 +638,7 @@ class MiloCutApi(Bridge):
         segments = [s.model_dump() for s in project.transcript.segments]
         edits = [e.model_dump() for e in project.edits]
         media_info = project.media.model_dump() if project.media else {}
-        return _export_otio(segments, edits, media_info, output_path, fade_duration=fade_duration, mode=mode, fade_mode=fade_mode)
+        return _export_otio(segments, edits, media_info, output_path, fade_duration=fade_duration, mode=mode, fade_mode=fade_mode, audio_fade_duration=audio_fade_duration)
 
 
 if __name__ == "__main__":

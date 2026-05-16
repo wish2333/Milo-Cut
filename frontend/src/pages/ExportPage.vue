@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref } from "vue"
+import { computed, onUnmounted, ref, watch } from "vue"
 import type { Project } from "@/types/project"
 import EncodingSettings from "@/components/export/EncodingSettings.vue"
 import PreviewPlayer from "@/components/export/PreviewPlayer.vue"
@@ -40,8 +40,14 @@ const encodingSettings = ref({
 const statusMessage = ref("")
 const errorMessage = ref("")
 const otioFadeDuration = ref(0)
+const otioAudioFadeDuration = ref(0)
 const otioExportMode = ref<"clean" | "full_timeline">("clean")
 const otioFadeMode = ref<"crossfade" | "separate">("crossfade")
+
+// Sync audio duration when main slider changes
+watch(otioFadeDuration, (val) => {
+  otioAudioFadeDuration.value = val
+})
 
 // Track pending export task IDs to show Toast on completion
 const pendingExportTasks = new Map<string, { type: string; label: string }>()
@@ -193,7 +199,7 @@ async function handleExportOtio() {
       return
     }
     const outputPath = mediaPath.replace(/\.[^.]+$/, ".otio")
-    const exportRes = await call<string>("export_otio", outputPath, otioFadeDuration.value, otioExportMode.value, otioFadeMode.value)
+    const exportRes = await call<string>("export_otio", outputPath, otioFadeDuration.value, otioExportMode.value, otioFadeMode.value, otioAudioFadeDuration.value)
     if (exportRes.success) {
       showToast("OTIO 导出完成", "success")
     } else {
@@ -317,6 +323,20 @@ function formatTimeShort(seconds: number): string {
                 v-if="otioFadeDuration > 0"
                 class="mt-1.5 space-y-1"
               >
+                <label class="block">
+                  <span class="text-xs text-gray-500">
+                    音频过渡时长 (s): {{ otioAudioFadeDuration.toFixed(2) }}
+                  </span>
+                  <input
+                    type="range"
+                    v-model.number="otioAudioFadeDuration"
+                    min="0" max="2.0" step="0.1"
+                    class="w-full mt-1"
+                  />
+                  <p class="text-xs text-gray-400 mt-0.5">
+                    OTIO 导出音频轨独立过渡时长
+                  </p>
+                </label>
                 <label class="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
                   <input type="radio" v-model="otioFadeMode" value="crossfade" class="accent-indigo-600" />
                   Crossfade (audio dissolves with video)

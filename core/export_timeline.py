@@ -636,6 +636,7 @@ def export_otio(
     fade_duration: float = 0.0,
     mode: str = "clean",
     fade_mode: str = "crossfade",
+    audio_fade_duration: float | None = None,
 ) -> dict:
     """Export OpenTimelineIO (.otio) using the opentimelineio library.
 
@@ -708,14 +709,25 @@ def export_otio(
 
             # OTIO per-clip fade effects are not supported by major NLEs.
             # Both "crossfade" and "separate" modes use SMPTE_Dissolve transitions.
-            track_items: list = list(otio_clips)
+            audio_fade = audio_fade_duration if audio_fade_duration is not None else fade_duration
+            # Build video track transitions
+            video_items: list = list(otio_clips)
             if fade_duration > 0 and len(otio_clips) > 1:
-                track_items = _build_otio_clips_with_transitions(
+                video_items = _build_otio_clips_with_transitions(
                     otio_clips, fps, fade_duration, keep_ranges, source_duration,
                 )
-            for item in track_items:
+            for item in video_items:
                 video_track.append(item)
-                audio_track.append(item.deepcopy())
+            # Build audio track transitions (may use different duration)
+            if audio_fade > 0 and len(otio_clips) > 1 and audio_fade != fade_duration:
+                audio_items = _build_otio_clips_with_transitions(
+                    otio_clips, fps, audio_fade, keep_ranges, source_duration,
+                )
+                for item in audio_items:
+                    audio_track.append(item)
+            else:
+                for item in video_items:
+                    audio_track.append(item.deepcopy())
 
         timeline = otio.schema.Timeline(
             name=Path(media_path).stem + "_edited",
