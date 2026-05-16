@@ -77,7 +77,11 @@ class MiloCutApi(Bridge):
         )
         if not result["success"]:
             raise RuntimeError(result["error"])
-        store_result = self._project.add_silence_results(result["data"])
+        margin = settings.get("silence_margin", 0.0)
+        subtitle_padding = settings.get("silence_subtitle_padding", 0.0)
+        store_result = self._project.add_silence_results(
+            result["data"], margin=margin, subtitle_padding=subtitle_padding,
+        )
         if not store_result["success"]:
             raise RuntimeError(store_result.get("error", "Failed to store silence results"))
         return {"project": store_result["data"]}

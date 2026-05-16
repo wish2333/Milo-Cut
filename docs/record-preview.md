@@ -139,7 +139,44 @@
 - `frontend/src/components/waveform/SegmentBlocksLayer.vue` — 背景半透明
 - `frontend/src/components/waveform/SegmentBlocksLayer.test.ts` — 测试适配
 
-## Release Notes
+### DetectSilence 增强
+
+基于审计计划 `audit-plan-0.2.0-2`，对静音检测功能进行三项调整:
+
+**D-3: Min Duration 标尺调整**
+- 滑块范围从 0.1-3.0s (step 0.1) 改为 0.05-2.0s (step 0.05)
+- 显示精度改为两位小数
+- min_duration < 0.2s 时显示 amber 性能警告
+
+**D-1: Margin 缩边**
+- 静音检测后、创建 Segment 前，对每个静音区间两侧各收缩 margin 值
+- 新增配置项 `silence_margin` (默认 0.0, 范围 0-0.5s, step 0.01)
+- 缩边后区间 <= 0.01s 则丢弃，使用 `round(x, 3)` 防浮点误差
+- 前端 amber 警告提示，不阻断运行按钮
+
+**D-2: 字幕保护 Padding (v2)**
+- 新增 `_trim_silences_around_subtitles()` 方法，在创建 EditDecision 前用字幕扩展区裁剪静音区间
+- 静音主动避让字幕，字幕段本身不修改
+- 废弃旧 `_resolve_subtitle_overlap()` 调用 (方法保留但不调用)
+- 已确认删除的字幕块不参与扩展区计算
+- 新增配置项 `silence_subtitle_padding` (默认 0.0, 范围 0-1.0s, step 0.05)
+- 前端滑块仅在值 > 0 时显示说明文字
+
+**流水线架构:**
+```
+FFmpeg 静音检测 -> margin 缩边 -> 字幕保护裁剪 -> 创建 Segment/EditDecision -> 去重 -> 保存
+```
+
+#### Files Modified
+
+| 文件 | 变更 |
+|------|------|
+| `core/config.py` | 新增 `silence_margin`, `silence_subtitle_padding` 配置项 |
+| `core/project_service.py` | 新增 `_trim_silences_around_subtitles()`; `add_silence_results()` 增加 margin/padding 参数和缩边逻辑; 废弃旧字幕裁剪调用 |
+| `main.py` | 传递 `margin` 和 `subtitle_padding` 参数 |
+| `frontend/src/pages/WorkspacePage.vue` | 新增 margin/padding 滑块 + 性能警告; min duration 标尺调整 |
+| `tests/test_project_service.py` | 11 个新测试覆盖 margin 缩边和字幕保护裁剪 |
+| `docs/audit-plan-0.2.0-2.md` | 审计报告 (新增) |
 
 ### 0.2.0
 

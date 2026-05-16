@@ -85,6 +85,8 @@ const videoPlaybackRate = ref(1)
 
 const silenceThreshold = ref(-30)
 const silenceMinDuration = ref(0.5)
+const silenceMargin = ref(0.0)
+const silenceSubtitlePadding = ref(0.0)
 const trimSubtitlesOnOverlap = ref(true)
 const globalEditMode = ref(false)
 const showConfirmDeleteSilence = ref(false)
@@ -149,6 +151,8 @@ async function loadSilenceSettings() {
   if (res.success && res.data) {
     silenceThreshold.value = Number(res.data.silence_threshold_db ?? -30)
     silenceMinDuration.value = Number(res.data.silence_min_duration ?? 0.5)
+    silenceMargin.value = Number(res.data.silence_margin ?? 0.0)
+    silenceSubtitlePadding.value = Number(res.data.silence_subtitle_padding ?? 0.0)
     trimSubtitlesOnOverlap.value = res.data.trim_subtitles_on_silence_overlap !== false
   }
 }
@@ -157,6 +161,8 @@ async function saveSilenceSettings() {
   await call("update_settings", {
     silence_threshold_db: silenceThreshold.value,
     silence_min_duration: silenceMinDuration.value,
+    silence_margin: silenceMargin.value,
+    silence_subtitle_padding: silenceSubtitlePadding.value,
     trim_subtitles_on_silence_overlap: trimSubtitlesOnOverlap.value,
   })
   showSilenceSettings.value = false
@@ -465,15 +471,51 @@ onUnmounted(() => {
             />
           </label>
           <label class="block mb-3">
-            <span class="text-xs text-gray-500">Min Duration (s): {{ silenceMinDuration.toFixed(1) }}</span>
+            <span class="text-xs text-gray-500">Min Duration (s): {{ silenceMinDuration.toFixed(2) }}</span>
             <input
               type="range"
               v-model.number="silenceMinDuration"
-              min="0.1"
-              max="3.0"
-              step="0.1"
+              min="0.05"
+              max="2.0"
+              step="0.05"
               class="w-full mt-1"
             />
+            <p v-if="silenceMinDuration < 0.2" class="text-xs text-amber-600 mt-1">
+              Very short durations (&lt;0.2s) may generate many clips and affect performance.
+            </p>
+          </label>
+          <label class="block mb-2">
+            <span class="text-xs text-gray-500">
+              Margin (s): {{ silenceMargin.toFixed(2) }}
+            </span>
+            <input
+              type="range"
+              v-model.number="silenceMargin"
+              min="0"
+              max="0.5"
+              step="0.01"
+              class="w-full mt-1"
+            />
+            <p v-if="silenceMargin > 0 && silenceMargin * 2 >= silenceMinDuration"
+               class="text-xs text-amber-600 mt-1">
+              High margin may consume small silence intervals entirely.
+            </p>
+          </label>
+          <label class="block mb-2">
+            <span class="text-xs text-gray-500">
+              Subtitle Padding (s): {{ silenceSubtitlePadding.toFixed(2) }}
+            </span>
+            <input
+              type="range"
+              v-model.number="silenceSubtitlePadding"
+              min="0"
+              max="1.0"
+              step="0.05"
+              class="w-full mt-1"
+            />
+            <p v-if="silenceSubtitlePadding > 0" class="text-xs text-gray-400 mt-0.5">
+              Silence ranges will be trimmed to stay this far from subtitles.
+            </p>
           </label>
           <label class="flex items-center gap-2 mb-3 cursor-pointer">
             <input
