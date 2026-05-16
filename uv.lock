@@ -221,6 +221,7 @@ source = { editable = "." }
 dependencies = [
     { name = "loguru" },
     { name = "opentimelineio" },
+    { name = "pyaaf2" },
     { name = "pydantic" },
     { name = "pywebview" },
 ]
@@ -236,6 +237,7 @@ dev = [
 requires-dist = [
     { name = "loguru", specifier = ">=0.7" },
     { name = "opentimelineio", specifier = ">=0.18.1" },
+    { name = "pyaaf2", specifier = ">=1.7.1" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pywebview", specifier = ">=6.0" },
 ]
@@ -299,6 +301,15 @@ name = "proxy-tools"
 version = "0.1.0"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f2/cf/77d3e19b7fabd03895caca7857ef51e4c409e0ca6b37ee6e9f7daa50b642/proxy_tools-0.1.0.tar.gz", hash = "sha256:ccb3751f529c047e2d8a58440d86b205303cf0fe8146f784d1cbcd94f0a28010", size = 2978, upload-time = "2014-05-05T21:02:24.606Z" }
+
+[[package]]
+name = "pyaaf2"
+version = "1.7.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/77/c5/f3ad278fa038c7e0de5d3a084bae8bc2a403d2223acf9e0b5a7ad4f97768/pyaaf2-1.7.1.tar.gz", hash = "sha256:e18e5a84bca4ea18c1b9e8384958e2f6d296195c901a448f71f830b22b89c225", size = 116200, upload-time = "2023-09-17T06:47:56.347Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/21/a6/4d89acdb0cfa4791166103e4c8d4392fb1026bdb339705189d472c107d3c/pyaaf2-1.7.1-py2.py3-none-any.whl", hash = "sha256:67870dcce5239f463767f7acedcfab50f0a1e193525e3b6fa0889ebbeb0c55e6", size = 105656, upload-time = "2023-09-17T06:47:54.335Z" },
+]
 
 [[package]]
 name = "pycparser"
