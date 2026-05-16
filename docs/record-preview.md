@@ -295,3 +295,75 @@ FFmpeg 静音检测 -> margin 缩边 -> 字幕保护裁剪 -> 创建 Segment/Edi
 | `frontend/src/components/waveform/ScrollbarStrip.vue` | A-6 | ~15 行 |
 | `frontend/src/components/waveform/WaveformCanvas.vue` | A-6 | ~15 行 |
 | `frontend/src/composables/useTimelineMetrics.ts` | A-6 | ~15 行 |
+
+---
+
+# Milo-Cut 0.2.1 后期修复记录 (2026-05-16)
+
+## 波形文件按项目隔离
+
+**问题**: 波形文件使用全局 `data/projects/{media_hash}.waveform.json` 路径，`media_hash` 默认为空字串导致所有项目共享 `.waveform.json`，不同项目的波形互相覆盖。
+
+**修复**:
+- `main.py`: 波形路径改为 `data/projects/{project_name}/waveform.json`，存储在每个项目目录下
+- `regenerate_waveform` 同步使用相同路径
+
+## 波形重新生成后无法即时刷新
+
+**问题**: 重新生成波形后 URL 不变 (`http://127.0.0.1:{port}/waveform`)，Vue 响应式无法检测变化，WaveformCanvas 不会重新拉取。
+
+**修复**:
+- `WorkspacePage.vue`: `resolveWaveformUrl()` 和 `handleRegenerateWaveform()` 中的轮询都添加 `?t=Date.now()` 缓存破坏参数
+
+## Media Server CORS + 查询参数兼容
+
+**问题**:
+1. `self.path == "/waveform"` 精确匹配在 URL 含 `?t=xxx` 查询参数后返回 404
+2. `send_error()` 不包含 CORS 头，浏览器同时报 CORS + 404
+
+**修复** (`core/media_server.py`):
+- 新增 `_route()` 方法: `split("?", 1)[0]` 去掉查询参数后再匹配路径
+- 新增 `_send_cors_error()`: 所有错误响应带 `Access-Control-Allow-Origin: *`
+- 新增 `do_OPTIONS()`: CORS 预检请求处理
+- `do_HEAD()` 同步使用 `_route()` 并添加 CORS 头
+
+## OTIO 分别淡入淡出回退为交叉溶解
+
+**问题**: OTIO per-clip `Effect` 对象 (effect_name="Audio Fade In"/"Audio Fade Out") 不被 DaVinci Resolve 等主流 NLE 识别，且 `Effect.metadata` 属性无 setter 导致赋值报错。
+
+**修复**:
+- `export_timeline.py`: 移除 `_build_separate_fade_items()` 函数，OTIO 导出统一使用 `SMPTE_Dissolve` 过渡（交叉溶解）
+- UI 选 separate 时显示 amber 提示 "OTIO export falls back to crossfade"
+
+## FFmpeg 视频过渡实现
+
+**概述**: 将预留的 disabled checkbox 替换为完整的视频/音频过渡系统。
+
+### 视频过渡 (xfade chain)
+- `export_service.py`: 新增 `_build_video_xfade_filter()` — video 使用 `xfade=transition=fade` 链式交叉溶解
+- 追踪累积时长计算正确的 offset（修复了旧代码用原始 segment duration 导致视频卡住的 bug）
+
+### 音频过渡 (两种模式)
+- **Mode A (crossfade)**: `_build_audio_acrossfade_filter()` — `acrossfade` 链，音频段之间无缝交叉溶解
+- **Mode B (separate)**: `_build_audio_fade_filter()` — 每段独立 `afade=t=in` + `afade=t=out`，段间 `concat` 拼接
+
+### UI 重构
+- 移除 "FFmpeg video transitions (experimental)" 复选框
+- 过渡时长 `> 0` 时自动启用（时长 `= 0` 时不启用）
+- 过渡时长滑块范围扩展至 0~2.0s (step 0.1)
+- 现有 crossfade/separate 单选按钮同时控制 OTIO 和 FFmpeg 模式
+- 过渡设置区块移至 "时间线格式" 上方
+
+### 后端简化
+- 移除 `use_transitions` 参数，后端从 `fade_duration > 0` 自行判断
+
+## Files Modified
+
+| 文件 | 改动规模 |
+|------|----------|
+| `core/export_service.py` | ~180 行 |
+| `core/export_timeline.py` | ~100 行 |
+| `core/media_server.py` | ~55 行 |
+| `main.py` | ~20 行 |
+| `frontend/src/pages/ExportPage.vue` | ~80 行 |
+| `frontend/src/pages/WorkspacePage.vue` | ~10 行 |

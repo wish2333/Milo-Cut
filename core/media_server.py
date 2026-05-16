@@ -41,25 +41,40 @@ class _MediaHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         """Suppress default stderr logging."""
 
-    def do_GET(self):
-        # Route: /waveform serves the waveform JSON, /media serves the video
-        if self.path == "/waveform":
-            target = self.waveform_path
-            content_type = "application/json"
-        elif self.path == "/media":
-            target = self.file_path
-            content_type = self.mime_type
-        else:
-            self.send_error(404, "Not found")
-            return
+    def _route(self):
+        """Resolve the request path (without query string) to a target file."""
+        clean = self.path.split("?", 1)[0]
+        if clean == "/waveform":
+            return (self.waveform_path, "application/json")
+        if clean == "/media":
+            return (self.file_path, self.mime_type)
+        return (None, None)  # signal 404
 
+    def _send_cors_error(self, code: int, message: str) -> None:
+        """Send an error response with CORS headers."""
+        self.send_response(code, message)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+
+    def do_OPTIONS(self):
+        """Handle CORS preflight requests."""
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "*")
+        self.send_header("Access-Control-Max-Age", "86400")
+        self.end_headers()
+
+    def do_GET(self):
+        target, content_type = self._route()
         if not target:
-            self.send_error(404, "File not available")
+            self._send_cors_error(404, "Not found")
             return
 
         path = Path(target)
         if not path.exists():
-            self.send_error(404, "File not found")
+            self._send_cors_error(404, "File not found")
             return
 
         file_size = path.stat().st_size
@@ -112,23 +127,14 @@ class _MediaHandler(BaseHTTPRequestHandler):
             pass
 
     def do_HEAD(self):
-        if self.path == "/waveform":
-            target = self.waveform_path
-            content_type = "application/json"
-        elif self.path == "/media":
-            target = self.file_path
-            content_type = self.mime_type
-        else:
-            self.send_error(404, "Not found")
-            return
-
+        target, content_type = self._route()
         if not target:
-            self.send_error(404, "File not available")
+            self._send_cors_error(404, "Not found")
             return
 
         path = Path(target)
         if not path.exists():
-            self.send_error(404, "File not found")
+            self._send_cors_error(404, "File not found")
             return
 
         file_size = path.stat().st_size
@@ -136,6 +142,7 @@ class _MediaHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(file_size))
         self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
 
 

@@ -42,6 +42,8 @@ def export_video(
     resolution: str = "original",
     progress_callback: Callable[[float, str], None] | None = None,
     cancel_event: threading.Event | None = None,
+    fade_duration: float = 0.0,
+    fade_mode: str = "crossfade",
 ) -> dict:
     """Export cut video by keeping non-deleted ranges.
 
@@ -101,12 +103,18 @@ def export_video(
                 media_info=media_info,
                 progress_callback=progress_callback,
                 cancel_event=cancel_event,
+                fade_duration=fade_duration,
+                fade_mode=fade_mode,
             )
 
         # Video+audio: single-pass filter_complex
-        # Video: select keeps frames in desired time ranges, setpts resets timestamps
-        # Audio: asplit+atrim+concat (proven approach)
-        filter_complex = _build_video_trim_filter(keep_ranges)
+        if fade_duration > 0 and len(keep_ranges) > 1:
+            filter_complex = _build_video_xfade_filter(
+                keep_ranges, xfade_dur=fade_duration, fade_mode=fade_mode,
+            )
+            logger.info("export_video: xfade dur={} mode={} for {} ranges", fade_duration, fade_mode, len(keep_ranges))
+        else:
+            filter_complex = _build_video_trim_filter(keep_ranges)
         filter_path = str(temp_dir / "video_filter.txt")
         with open(filter_path, "w", encoding="utf-8") as f:
             f.write(filter_complex)
@@ -163,6 +171,8 @@ def export_audio(
     media_info: dict | None = None,
     progress_callback: Callable[[float, str], None] | None = None,
     cancel_event: threading.Event | None = None,
+    fade_duration: float = 0.0,
+    fade_mode: str = "crossfade",
 ) -> dict:
     """Export cut audio by keeping non-deleted ranges.
 
@@ -194,7 +204,14 @@ def export_audio(
         if progress_callback:
             progress_callback(10.0, "Exporting audio...")
 
-        filter_complex = _build_audio_trim_filter(keep_ranges)
+        if fade_duration > 0 and len(keep_ranges) > 1:
+            if fade_mode == "separate":
+                filter_complex = _build_audio_fade_filter(keep_ranges, fade_dur=fade_duration)
+            else:
+                filter_complex = _build_audio_acrossfade_filter(keep_ranges, xfade_dur=fade_duration)
+            logger.info("export_audio: dur={} mode={} for {} ranges", fade_duration, fade_mode, len(keep_ranges))
+        else:
+            filter_complex = _build_audio_trim_filter(keep_ranges)
 
         temp_dir = get_temp_dir()
         filter_path = str(temp_dir / "audio_filter.txt")
@@ -434,6 +451,160 @@ def _build_video_trim_filter(
                 parts.append(f"[s{i}]atrim=start={s:.6f}:end={e:.6f},asetpts=PTS-STARTPTS[a{i}]")
             a_inputs = "".join(f"[a{i}]" for i in range(n))
             parts.append(f"{a_inputs}concat=n={n}:v=0:a=1[out]")
+
+    return ";".join(parts)
+
+
+def _build_video_xfade_filter(
+    keep_ranges: list[tuple[float, float]],
+    *,
+    xfade_dur: float = 1.0,
+    fade_mode: str = "crossfade",
+) -> str:
+    """Build FFmpeg filter_complex: video xfade chain + audio (crossfade or separate).
+
+    Video: always xfade chain with accumulated offsets.
+    Audio: crossfade mode -> acrossfade chain (Mode A),
+           separate mode -> per-clip afade+concat (Mode B).
+    Output labels: [outv] and [outa].
+    """
+    n = len(keep_ranges)
+    parts: list[str] = []
+    xdur_s = f"{xfade_dur:.3f}"
+    half_fade = xfade_dur / 2.0
+
+    if n == 1:
+        s, e = keep_ranges[0]
+        parts.append(f"[0:v]trim=start={s:.6f}:end={e:.6f},setpts=PTS-STARTPTS[outv]")
+        parts.append(f"[0:a]atrim=start={s:.6f}:end={e:.6f},asetpts=PTS-STARTPTS[outa]")
+        return ";".join(parts)
+
+    # Split into per-segment streams
+    v_splits = "".join(f"[sv{i}]" for i in range(n))
+    a_splits = "".join(f"[sa{i}]" for i in range(n))
+    parts.append(f"[0:v]split={n}{v_splits}")
+    parts.append(f"[0:a]asplit={n}{a_splits}")
+
+    # Trim each segment
+    for i, (s, e) in enumerate(keep_ranges):
+        parts.append(f"[sv{i}]trim=start={s:.6f}:end={e:.6f},setpts=PTS-STARTPTS[fv{i}]")
+        if fade_mode == "separate":
+            seg_dur = e - s
+            fade_out_st = max(0, seg_dur - half_fade)
+            parts.append(
+                f"[sa{i}]atrim=start={s:.6f}:end={e:.6f},asetpts=PTS-STARTPTS,"
+                f"afade=t=in:d={half_fade:.3f},"
+                f"afade=t=out:st={fade_out_st:.6f}:d={half_fade:.3f}[a{i}]"
+            )
+        else:
+            parts.append(f"[sa{i}]atrim=start={s:.6f}:end={e:.6f},asetpts=PTS-STARTPTS[fa{i}]")
+
+    # Chain xfade for video with accumulated duration
+    prev_v = "fv0"
+    acc_dur = keep_ranges[0][1] - keep_ranges[0][0]
+    for i in range(1, n):
+        offset = max(0, acc_dur - xfade_dur)
+        next_v = f"xv{i - 1}" if i < n - 1 else "outv"
+        parts.append(
+            f"[{prev_v}][fv{i}]xfade=transition=fade:duration={xdur_s}:offset={offset:.6f}[{next_v}]"
+        )
+        prev_v = next_v
+        acc_dur = acc_dur + (keep_ranges[i][1] - keep_ranges[i][0]) - xfade_dur
+
+    # Audio: crossfade chain or per-clip concat
+    if fade_mode == "separate":
+        a_inputs = "".join(f"[a{i}]" for i in range(n))
+        parts.append(f"{a_inputs}concat=n={n}:v=0:a=1[outa]")
+    else:
+        prev_a = "fa0"
+        for i in range(1, n):
+            cross_len = min(xfade_dur,
+                            (keep_ranges[i - 1][1] - keep_ranges[i - 1][0]) * 0.5,
+                            (keep_ranges[i][1] - keep_ranges[i][0]) * 0.5)
+            next_a = f"xa{i - 1}" if i < n - 1 else "outa"
+            parts.append(
+                f"[{prev_a}][fa{i}]acrossfade=d={cross_len:.3f}:c1=tri:c2=tri[{next_a}]"
+            )
+            prev_a = next_a
+
+    return ";".join(parts)
+
+
+def _build_audio_fade_filter(
+    keep_ranges: list[tuple[float, float]],
+    *,
+    fade_dur: float = 1.0,
+) -> str:
+    """Build FFmpeg filter_complex for audio export with per-clip fade in/out.
+
+    Each clip gets afade in at start and afade out at end, then concat.
+    No crossfade between clips. Output label: [out].
+
+    Based on: afade=t=in:d=HALF at start, afade=t=out:st=(T-HALF):d=HALF at end.
+    """
+    n = len(keep_ranges)
+    parts: list[str] = []
+    half_fade = fade_dur / 2.0
+
+    if n == 1:
+        s, e = keep_ranges[0]
+        parts.append(f"[0:a]atrim=start={s:.6f}:end={e:.6f},asetpts=PTS-STARTPTS[out]")
+        return ";".join(parts)
+
+    # Split + trim + per-clip afade
+    a_splits = "".join(f"[s{i}]" for i in range(n))
+    parts.append(f"[0:a]asplit={n}{a_splits}")
+
+    for i, (s, e) in enumerate(keep_ranges):
+        seg_dur = e - s
+        fade_out_st = max(0, seg_dur - half_fade)
+        parts.append(
+            f"[s{i}]atrim=start={s:.6f}:end={e:.6f},asetpts=PTS-STARTPTS,"
+            f"afade=t=in:d={half_fade:.3f},"
+            f"afade=t=out:st={fade_out_st:.6f}:d={half_fade:.3f}[a{i}]"
+        )
+
+    # Concat (no crossfade)
+    a_inputs = "".join(f"[a{i}]" for i in range(n))
+    parts.append(f"{a_inputs}concat=n={n}:v=0:a=1[out]")
+
+    return ";".join(parts)
+
+
+def _build_audio_acrossfade_filter(
+    keep_ranges: list[tuple[float, float]],
+    *,
+    xfade_dur: float = 1.0,
+) -> str:
+    """Build FFmpeg filter_complex for audio export with acrossfade (crossfade).
+
+    Adjacent audio clips are chained through acrossfade for seamless dissolves.
+    Output label: [out].
+    """
+    n = len(keep_ranges)
+    parts: list[str] = []
+
+    if n == 1:
+        s, e = keep_ranges[0]
+        parts.append(f"[0:a]atrim=start={s:.6f}:end={e:.6f},asetpts=PTS-STARTPTS[out]")
+        return ";".join(parts)
+
+    a_splits = "".join(f"[s{i}]" for i in range(n))
+    parts.append(f"[0:a]asplit={n}{a_splits}")
+
+    for i, (s, e) in enumerate(keep_ranges):
+        parts.append(f"[s{i}]atrim=start={s:.6f}:end={e:.6f},asetpts=PTS-STARTPTS[a{i}]")
+
+    prev = "a0"
+    for i in range(1, n):
+        cross_len = min(xfade_dur,
+                        (keep_ranges[i - 1][1] - keep_ranges[i - 1][0]) * 0.5,
+                        (keep_ranges[i][1] - keep_ranges[i][0]) * 0.5)
+        nxt = f"x{i - 1}" if i < n - 1 else "out"
+        parts.append(
+            f"[{prev}][a{i}]acrossfade=d={cross_len:.3f}:c1=tri:c2=tri[{nxt}]"
+        )
+        prev = nxt
 
     return ";".join(parts)
 

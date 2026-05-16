@@ -654,10 +654,22 @@ def export_otio(
         media_filename = Path(media_path).name
         available_dur_frames = _sec_to_frames(source_duration, fps)
 
+        # Track items for full_timeline mode (no fades supported)
         if mode == "full_timeline":
             track_items = _build_full_timeline_items(
                 keep_ranges, edits, fps, media_filename, available_dur_frames,
             )
+            video_track = otio.schema.Track(
+                name="Video 1",
+                kind=otio.schema.TrackKind.Video,
+            )
+            audio_track = otio.schema.Track(
+                name="Audio 1",
+                kind=otio.schema.TrackKind.Audio,
+            )
+            for item in track_items:
+                video_track.append(item)
+                audio_track.append(item.deepcopy())
         else:
             # Build clips using OTIO schema objects
             otio_clips: list[otio.schema.Clip] = []
@@ -684,38 +696,26 @@ def export_otio(
                 )
                 otio_clips.append(clip)
 
-            # Build track children (clips + optional transitions/effects)
+            # Build timeline with separate Video and Audio tracks
+            video_track = otio.schema.Track(
+                name="Video 1",
+                kind=otio.schema.TrackKind.Video,
+            )
+            audio_track = otio.schema.Track(
+                name="Audio 1",
+                kind=otio.schema.TrackKind.Audio,
+            )
+
+            # OTIO per-clip fade effects are not supported by major NLEs.
+            # Both "crossfade" and "separate" modes use SMPTE_Dissolve transitions.
             track_items: list = list(otio_clips)
             if fade_duration > 0 and len(otio_clips) > 1:
-                if fade_mode == "separate":
-                    track_items = _build_otio_clips_with_fade_effects(
-                        otio_clips, fps, fade_duration,
-                    )
-                else:
-                    track_items = _build_otio_clips_with_transitions(
-                        otio_clips, fps, fade_duration, keep_ranges, source_duration,
-                    )
-            elif fade_duration > 0 and len(otio_clips) == 1:
-                if fade_mode == "separate":
-                    track_items = _build_otio_clips_with_fade_effects(
-                        otio_clips, fps, fade_duration,
-                    )
-
-        # Build timeline with separate Video and Audio tracks
-        video_track = otio.schema.Track(
-            name="Video 1",
-            kind=otio.schema.TrackKind.Video,
-        )
-        for item in track_items:
-            video_track.append(item)
-
-        audio_track = otio.schema.Track(
-            name="Audio 1",
-            kind=otio.schema.TrackKind.Audio,
-        )
-        # Deep copy: each track gets independent clip objects
-        for item in track_items:
-            audio_track.append(item.deepcopy())
+                track_items = _build_otio_clips_with_transitions(
+                    otio_clips, fps, fade_duration, keep_ranges, source_duration,
+                )
+            for item in track_items:
+                video_track.append(item)
+                audio_track.append(item.deepcopy())
 
         timeline = otio.schema.Timeline(
             name=Path(media_path).stem + "_edited",
@@ -784,46 +784,3 @@ def _build_otio_clips_with_transitions(
     return interleaved
 
 
-def _build_otio_clips_with_fade_effects(
-    clips: list,
-    fps: float,
-    fade_duration: float,
-) -> list:
-    """Add FadeIn/FadeOut Effects to each OTIO Clip.
-
-    First clip gets FadeOut only, last clip gets FadeIn only,
-    middle clips and single clips get both.
-    """
-    import opentimelineio as otio
-
-    fade_frames = _sec_to_frames(fade_duration, fps)
-    if fade_frames <= 0:
-        return list(clips)
-
-    result: list = []
-    for i, clip in enumerate(clips):
-        clip_copy = clip.deepcopy()
-
-        if i > 0 or len(clips) == 1:
-            fade_in = otio.schema.Effect(
-                name="AudioFadeIn",
-                effect_name="Audio Fade In",
-            )
-            fade_in.metadata = {
-                "duration": otio.opentime.RationalTime(fade_frames, fps),
-            }
-            clip_copy.effects.append(fade_in)
-
-        if i < len(clips) - 1 or len(clips) == 1:
-            fade_out = otio.schema.Effect(
-                name="AudioFadeOut",
-                effect_name="Audio Fade Out",
-            )
-            fade_out.metadata = {
-                "duration": otio.opentime.RationalTime(fade_frames, fps),
-            }
-            clip_copy.effects.append(fade_out)
-
-        result.append(clip_copy)
-
-    return result

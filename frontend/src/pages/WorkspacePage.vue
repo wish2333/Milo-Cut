@@ -137,8 +137,7 @@ async function handleRegenerateWaveform() {
     statusMessage.value = ""
     return
   }
-  // Poll get_waveform_url until regeneration completes (waveform_path is
-  // the same after regen so the watch on it won't fire)
+  // Poll get_waveform_url until regeneration completes
   if (regenPollTimer) clearInterval(regenPollTimer)
   const start = Date.now()
   regenPollTimer = setInterval(async () => {
@@ -146,7 +145,8 @@ async function handleRegenerateWaveform() {
     if (urlRes.success && urlRes.data) {
       clearInterval(regenPollTimer!)
       regenPollTimer = null
-      waveformUrl.value = urlRes.data.url
+      // Cache-bust: append timestamp so WaveformCanvas re-fetches
+      waveformUrl.value = urlRes.data.url + "?t=" + Date.now()
       statusMessage.value = ""
       showToast("Waveform regenerated", "success", 2000)
     } else if (Date.now() - start > 30000) {
@@ -162,7 +162,8 @@ async function resolveWaveformUrl() {
   for (let attempt = 0; attempt < 3; attempt++) {
     const res = await call<{ url: string }>("get_waveform_url")
     if (res.success && res.data) {
-      waveformUrl.value = res.data.url
+      // Cache-bust: avoid browser caching stale waveform data
+      waveformUrl.value = res.data.url + "?t=" + Date.now()
       return
     }
     if (attempt < 2) {

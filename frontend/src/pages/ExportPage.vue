@@ -62,6 +62,8 @@ async function handleExportVideo() {
     export_preset: encodingSettings.value.preset,
     export_crf: encodingSettings.value.quality,
     export_resolution: encodingSettings.value.resolution,
+    export_ffmpeg_fade_duration: otioFadeDuration.value,
+    export_ffmpeg_fade_mode: otioFadeMode.value,
   })
   const ok = await exportVideo()
   statusMessage.value = ""
@@ -75,6 +77,10 @@ async function handleExportVideo() {
 async function handleExportAudio() {
   errorMessage.value = ""
   statusMessage.value = "正在导出音频..."
+  await call("update_settings", {
+    export_ffmpeg_fade_duration: otioFadeDuration.value,
+    export_ffmpeg_fade_mode: otioFadeMode.value,
+  })
   const ok = await exportAudio()
   statusMessage.value = ""
   if (!ok) {
@@ -254,6 +260,44 @@ function formatTimeShort(seconds: number): string {
             导出 SRT
           </button>
 
+          <!-- Transition settings (applies to OTIO + FFmpeg export) -->
+          <div class="border-t border-gray-200 pt-3 mt-3">
+            <h4 class="text-xs font-medium text-gray-500 mb-2">过渡设置</h4>
+            <div :class="{ 'opacity-50 pointer-events-none': otioExportMode === 'full_timeline' }">
+              <label class="block">
+                <span class="text-xs text-gray-500">
+                  过渡时长 (s): {{ otioFadeDuration.toFixed(2) }}
+                </span>
+                <input
+                  type="range"
+                  v-model.number="otioFadeDuration"
+                  min="0" max="2.0" step="0.1"
+                  class="w-full mt-1"
+                />
+                <p v-if="otioFadeDuration > 0" class="text-xs text-gray-400 mt-0.5">
+                  时长 > 0 时 OTIO / FFmpeg 导出自动启用过渡
+                </p>
+              </label>
+              <div
+                v-if="otioFadeDuration > 0"
+                class="mt-1.5 space-y-1"
+              >
+                <label class="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
+                  <input type="radio" v-model="otioFadeMode" value="crossfade" class="accent-indigo-600" />
+                  Crossfade (audio dissolves with video)
+                </label>
+                <label class="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
+                  <input type="radio" v-model="otioFadeMode" value="separate" class="accent-indigo-600" />
+                  Separate Fade In/Out (audio per-clip, no cross-mix)
+                </label>
+                <p v-if="otioFadeMode === 'separate'" class="text-xs text-amber-600">
+                  OTIO export falls back to crossfade (per-clip not supported)
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Timeline formats -->
           <div class="border-t border-gray-200 pt-3 mt-3">
             <h4 class="text-xs font-medium text-gray-500 mb-2">时间线格式</h4>
             <button
@@ -289,41 +333,6 @@ function formatTimeShort(seconds: number): string {
               <p v-if="otioExportMode === 'full_timeline'" class="text-xs text-amber-600">
                 Full Timeline mode does not support transitions
               </p>
-            </div>
-            <div class="mt-2" :class="{ 'opacity-50 pointer-events-none': otioExportMode === 'full_timeline' }">
-              <label class="block">
-                <span class="text-xs text-gray-500">
-                  交叉淡入淡出 (s): {{ otioFadeDuration.toFixed(2) }}
-                </span>
-                <input
-                  type="range"
-                  v-model.number="otioFadeDuration"
-                  min="0" max="1.0" step="0.05"
-                  class="w-full mt-1"
-                />
-                <p v-if="otioFadeDuration > 0" class="text-xs text-gray-400 mt-0.5">
-                  OTIO 导出时在片段间添加交叉淡入淡出效果
-                </p>
-              </label>
-              <div
-                v-if="otioExportMode === 'clean' && otioFadeDuration > 0"
-                class="mt-1.5 space-y-1"
-              >
-                <label class="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
-                  <input type="radio" v-model="otioFadeMode" value="crossfade" class="accent-indigo-600" />
-                  Crossfade
-                </label>
-                <label class="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer" title="Separate Fade In/Out depends on NLE support">
-                  <input type="radio" v-model="otioFadeMode" value="separate" class="accent-indigo-600" />
-                  Separate Fade In/Out
-                </label>
-              </div>
-            </div>
-            <div class="mt-2">
-              <label class="flex items-center gap-1.5 text-xs text-gray-400 cursor-not-allowed">
-                <input type="checkbox" disabled class="accent-indigo-600" />
-                FFmpeg video transitions (experimental)
-              </label>
             </div>
           </div>
           </div>

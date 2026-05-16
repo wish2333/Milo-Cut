@@ -109,6 +109,8 @@ class MiloCutApi(Bridge):
         preset = settings.get("export_preset", "fast")
         crf = int(settings.get("export_crf", 23))
         resolution = settings.get("export_resolution", "original")
+        fade_dur = float(settings.get("export_ffmpeg_fade_duration", 0.0))
+        fade_mode = str(settings.get("export_ffmpeg_fade_mode", "crossfade"))
 
         def progress_cb(percent: float, message: str = "") -> None:
             self._task_manager._update_progress(task.id, percent, message)
@@ -127,6 +129,8 @@ class MiloCutApi(Bridge):
             resolution=resolution,
             progress_callback=progress_cb,
             cancel_event=cancel_event,
+            fade_duration=fade_dur,
+            fade_mode=fade_mode,
         )
 
     def _handle_export_subtitle(self, task, cancel_event):
@@ -165,6 +169,10 @@ class MiloCutApi(Bridge):
             base, _ = os.path.splitext(media_path)
             output_path = f"{base}_cut.m4a"
 
+        settings = load_settings()
+        fade_dur = float(settings.get("export_ffmpeg_fade_duration", 0.0))
+        fade_mode = str(settings.get("export_ffmpeg_fade_mode", "crossfade"))
+
         def progress_cb(percent: float, message: str = "") -> None:
             self._task_manager._update_progress(task.id, percent, message)
 
@@ -176,6 +184,8 @@ class MiloCutApi(Bridge):
             media_info=project.media.model_dump() if project.media else None,
             progress_callback=progress_cb,
             cancel_event=cancel_event,
+            fade_duration=fade_dur,
+            fade_mode=fade_mode,
         )
 
     def _handle_filler_detection(self, task, cancel_event):
@@ -228,9 +238,13 @@ class MiloCutApi(Bridge):
         media_path = media.path
         duration = media.duration
 
-        # Output path: next to project file
-        from core.paths import get_projects_dir
-        waveform_path = str(get_projects_dir() / f"{media.media_hash}.waveform.json")
+        # Output path: per-project waveform file
+        if self._project._current_path:
+            waveform_path = str(self._project._current_path.parent / "waveform.json")
+        else:
+            from core.paths import get_projects_dir
+            name = self._project.current.project.name
+            waveform_path = str(get_projects_dir() / name / "waveform.json")
 
         def progress_cb(percent: float, message: str = "") -> None:
             self._task_manager._update_progress(task.id, percent, message)
