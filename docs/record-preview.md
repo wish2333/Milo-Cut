@@ -367,3 +367,63 @@ FFmpeg 静音检测 -> margin 缩边 -> 字幕保护裁剪 -> 创建 Segment/Edi
 | `main.py` | ~20 行 |
 | `frontend/src/pages/ExportPage.vue` | ~80 行 |
 | `frontend/src/pages/WorkspacePage.vue` | ~10 行 |
+
+---
+
+# Milo-Cut 0.2.1 后期修复记录 (2026-05-17)
+
+## 波形显示持久化修复
+
+**问题**: 波形生成完成后 `waveform_path` 只更新了内存中的项目对象，未持久化到磁盘。用户关闭项目或重启应用后，`open_project` 从磁盘加载的 JSON 中 `waveform_path` 为空，波形不会加载。
+
+**修复** (`main.py` `_handle_waveform_generation`):
+- 波形生成成功后立即调用 `self._project.save_project()` 持久化 `waveform_path`
+- 包裹 try-except 防止磁盘写入失败导致后台线程崩溃
+
+## 波形加载事件驱动修复
+
+**问题**: 新项目创建后 `resolveWaveformUrl()` 在 `onMounted` 中立即调用，但长文件波形生成需 30+ 秒，此时查询必然失败。原实现仅重试 3 次（总约 3 秒），之后静默放弃。依赖 `watch(waveform_path)` 来重新触发，但 Vue 替换整个 `project` 对象时对嵌套属性的 watcher 存在时序不可靠问题。
+
+**修复** (`frontend/src/pages/WorkspacePage.vue`):
+- 移除 3 次重试循环，改为单次尝试 + 事件驱动兜底
+- 添加 `onEvent(EVENT_TASK_COMPLETED)` 监听器，当 `waveform_generation` 任务完成时直接调用 `resolveWaveformUrl()`
+- 此时后端已调用 `set_waveform()` 设置了媒体服务器，查询必然成功
+- `handleRegenerateWaveform` 轮询超时从 30s 增加到 120s，适配长文件
+
+## 导出 Toast 通知时序修复
+
+**问题**: `useExport` 的 `exportVideo/exportAudio/exportSrt` 通过任务系统执行，`startTask` 在线程启动后立即返回 `true`，但 `ExportPage` 将其视为导出完成，导致 Toast 在点击按钮时立即弹出。
+
+**修复**:
+- `useExport.ts`: 统一为 `createExportTask()` 方法，返回 task ID 而非 boolean
+- `ExportPage.vue`: 添加 `pendingExportTasks` Map 跟踪进行中的导出任务
+- 监听 `EVENT_TASK_COMPLETED/FAILED` 事件，匹配 task ID 后才显示成功/失败 Toast
+- `statusMessage` 在任务开始时设置，在任务完成/失败时清除
+
+## 过渡音视频同步修复
+
+**问题**: 两种过渡模式下音视频时长不一致:
+
+1. **crossfade 模式**: 音频 `acrossfade` 的 `cross_len` 被 `min(xfade_dur, half_prev, half_next)` 限制，但视频 `xfade` 始终使用完整 `xfade_dur`，短片段时两者时长偏差
+2. **separate 模式**: 视频用 `xfade`（移除重叠），音频用 `concat`（不移除），必然导致音频比视频长 `(N-1)*xfade_dur` 秒
+
+**修复** (`core/export_service.py` `_build_video_xfade_filter`):
+- **crossfade 模式**: 视频 `xfade` duration 改为与音频相同的 clamp 计算 `min(xfade_dur, half_prev, half_next)`，保证每段过渡时长一致
+- **separate 模式**: 音频从 `concat` 改为 `acrossfade` 链拼接，使用与视频相同的 clamp duration，保证总时长匹配；保留 per-clip `afade` 淡入淡出效果
+- 所有时长计算保留 3 位小数精度
+
+## 导出页面布局调整
+
+**修复** (`ExportPage.vue`):
+- 右侧导出按钮区域宽度从 `w-64` (256px) 扩宽到 `w-80` (320px)
+- 预留滚动条空间，避免内容宽度比之前更窄
+
+## Files Modified
+
+| 文件 | 变更 |
+|------|------|
+| `main.py` | 波形生成后自动保存项目 |
+| `frontend/src/pages/WorkspacePage.vue` | 事件驱动波形加载 + 轮询超时增加 |
+| `frontend/src/pages/ExportPage.vue` | Toast 时序修复 + 面板宽度调整 |
+| `frontend/src/composables/useExport.ts` | 重构为 `createExportTask` + 事件跟踪 |
+| `core/export_service.py` | 过渡音视频同步修复 |

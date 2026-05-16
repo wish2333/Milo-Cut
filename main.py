@@ -259,6 +259,11 @@ class MiloCutApi(Bridge):
         self._project.update_media_waveform(waveform_path)
         # Make waveform available via HTTP
         self._media_server.set_waveform(waveform_path)
+        # Persist waveform_path to disk so it survives restart
+        try:
+            self._project.save_project()
+        except Exception:
+            logger.exception("Failed to auto-save project after waveform generation")
 
         progress_cb(100.0, "Waveform generated")
         return {"project": self._project.current.model_dump() if self._project.current else None}

@@ -500,21 +500,36 @@ def _build_video_xfade_filter(
             parts.append(f"[sa{i}]atrim=start={s:.6f}:end={e:.6f},asetpts=PTS-STARTPTS[fa{i}]")
 
     # Chain xfade for video with accumulated duration
+    # Clamp each xfade duration to min(xfade_dur, half of each adjacent segment)
+    # so video and audio transition durations stay in sync.
     prev_v = "fv0"
     acc_dur = keep_ranges[0][1] - keep_ranges[0][0]
     for i in range(1, n):
-        offset = max(0, acc_dur - xfade_dur)
+        seg_xfade = min(xfade_dur,
+                        (keep_ranges[i - 1][1] - keep_ranges[i - 1][0]) * 0.5,
+                        (keep_ranges[i][1] - keep_ranges[i][0]) * 0.5)
+        offset = max(0, acc_dur - seg_xfade)
         next_v = f"xv{i - 1}" if i < n - 1 else "outv"
         parts.append(
-            f"[{prev_v}][fv{i}]xfade=transition=fade:duration={xdur_s}:offset={offset:.6f}[{next_v}]"
+            f"[{prev_v}][fv{i}]xfade=transition=fade:duration={seg_xfade:.3f}:offset={offset:.6f}[{next_v}]"
         )
         prev_v = next_v
-        acc_dur = acc_dur + (keep_ranges[i][1] - keep_ranges[i][0]) - xfade_dur
+        acc_dur = acc_dur + (keep_ranges[i][1] - keep_ranges[i][0]) - seg_xfade
 
-    # Audio: crossfade chain or per-clip concat
+    # Audio: crossfade chain or per-clip with acrossfade for sync
     if fade_mode == "separate":
-        a_inputs = "".join(f"[a{i}]" for i in range(n))
-        parts.append(f"{a_inputs}concat=n={n}:v=0:a=1[outa]")
+        # Per-clip afade in/out is already applied above; join with
+        # acrossfade (not concat) so total audio duration matches video xfade.
+        prev_a = "a0"
+        for i in range(1, n):
+            seg_cross = min(xfade_dur,
+                            (keep_ranges[i - 1][1] - keep_ranges[i - 1][0]) * 0.5,
+                            (keep_ranges[i][1] - keep_ranges[i][0]) * 0.5)
+            next_a = f"xa{i - 1}" if i < n - 1 else "outa"
+            parts.append(
+                f"[{prev_a}][a{i}]acrossfade=d={seg_cross:.3f}:c1=tri:c2=tri[{next_a}]"
+            )
+            prev_a = next_a
     else:
         prev_a = "fa0"
         for i in range(1, n):

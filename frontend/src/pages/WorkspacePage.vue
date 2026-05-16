@@ -2,12 +2,13 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue"
 import type { Project, Segment, EditDecision } from "@/types/project"
 import { formatTimeShort } from "@/utils/format"
-import { call } from "@/bridge"
+import { call, onEvent } from "@/bridge"
 import { useAnalysis } from "@/composables/useAnalysis"
 import { useExport } from "@/composables/useExport"
 import { useEdit } from "@/composables/useEdit"
 import { useSegmentEdit } from "@/composables/useSegmentEdit"
 import { useToast } from "@/composables/useToast"
+import { EVENT_TASK_COMPLETED } from "@/utils/events"
 import ProgressBar from "@/components/common/ProgressBar.vue"
 import Timeline from "@/components/workspace/Timeline.vue"
 import WaveformEditor from "@/components/waveform/WaveformEditor.vue"
@@ -149,7 +150,7 @@ async function handleRegenerateWaveform() {
       waveformUrl.value = urlRes.data.url + "?t=" + Date.now()
       statusMessage.value = ""
       showToast("Waveform regenerated", "success", 2000)
-    } else if (Date.now() - start > 30000) {
+    } else if (Date.now() - start > 120000) {
       clearInterval(regenPollTimer!)
       regenPollTimer = null
       statusMessage.value = ""
@@ -159,17 +160,12 @@ async function handleRegenerateWaveform() {
 }
 
 async function resolveWaveformUrl() {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const res = await call<{ url: string }>("get_waveform_url")
-    if (res.success && res.data) {
-      // Cache-bust: avoid browser caching stale waveform data
-      waveformUrl.value = res.data.url + "?t=" + Date.now()
-      return
-    }
-    if (attempt < 2) {
-      await new Promise((r) => setTimeout(r, 1000))
-    }
+  const res = await call<{ url: string }>("get_waveform_url")
+  if (res.success && res.data) {
+    waveformUrl.value = res.data.url + "?t=" + Date.now()
   }
+  // If not available yet, the watcher on waveform_path or the
+  // waveform_generation task completed event will re-trigger this.
 }
 
 onMounted(async () => {
@@ -181,6 +177,18 @@ onMounted(async () => {
 watch(() => props.project.media?.waveform_path, () => {
   resolveWaveformUrl()
 })
+
+// When waveform generation task completes, the backend updates the project's
+// waveform_path which triggers the watcher above. But as a safety net, also
+// listen for the task completed event and retry the URL resolution.
+onEvent<{ task_id: string; task_type?: string; result?: { project?: Project } }>(
+  EVENT_TASK_COMPLETED,
+  (data) => {
+    if (data.task_type === "waveform_generation") {
+      resolveWaveformUrl()
+    }
+  },
+)
 watch(() => props.project.media?.path, loadVideoUrl)
 
 async function loadSilenceSettings() {

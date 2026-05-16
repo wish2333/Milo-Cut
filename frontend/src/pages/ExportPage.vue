@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, ref } from "vue"
+import { computed, onUnmounted, ref } from "vue"
 import type { Project } from "@/types/project"
 import EncodingSettings from "@/components/export/EncodingSettings.vue"
 import PreviewPlayer from "@/components/export/PreviewPlayer.vue"
-import { call } from "@/bridge"
+import { call, onEvent } from "@/bridge"
 import { useExport } from "@/composables/useExport"
 import { useToast } from "@/composables/useToast"
+import { EVENT_TASK_COMPLETED, EVENT_TASK_FAILED } from "@/utils/events"
 
 const { showToast } = useToast()
 
@@ -23,9 +24,7 @@ const {
   exportProgress,
   confirmedEdits,
   estimatedSaving,
-  exportVideo,
-  exportSrt,
-  exportAudio,
+  createExportTask,
 } = useExport(computed(() => props.project))
 
 const encodingSettings = ref({
@@ -43,6 +42,39 @@ const errorMessage = ref("")
 const otioFadeDuration = ref(0)
 const otioExportMode = ref<"clean" | "full_timeline">("clean")
 const otioFadeMode = ref<"crossfade" | "separate">("crossfade")
+
+// Track pending export task IDs to show Toast on completion
+const pendingExportTasks = new Map<string, { type: string; label: string }>()
+
+const offTaskCompleted = onEvent<{ task_id: string; task_type?: string; error?: string }>(
+  EVENT_TASK_COMPLETED,
+  ({ task_id }) => {
+    const info = pendingExportTasks.get(task_id)
+    if (info) {
+      pendingExportTasks.delete(task_id)
+      statusMessage.value = ""
+      showToast(`${info.label}完成`, "success")
+    }
+  },
+)
+
+const offTaskFailed = onEvent<{ task_id: string; error: string }>(
+  EVENT_TASK_FAILED,
+  ({ task_id, error }) => {
+    const info = pendingExportTasks.get(task_id)
+    if (info) {
+      pendingExportTasks.delete(task_id)
+      statusMessage.value = ""
+      showToast(`${info.label}失败: ${error}`, "error")
+    }
+  },
+)
+
+onUnmounted(() => {
+  offTaskCompleted()
+  offTaskFailed()
+  pendingExportTasks.clear()
+})
 
 const subtitleCount = computed(() =>
   props.project.transcript?.segments?.filter(s => s.type === "subtitle").length ?? 0
@@ -65,12 +97,13 @@ async function handleExportVideo() {
     export_ffmpeg_fade_duration: otioFadeDuration.value,
     export_ffmpeg_fade_mode: otioFadeMode.value,
   })
-  const ok = await exportVideo()
-  statusMessage.value = ""
-  if (!ok) {
+  const task = await createExportTask("export_video")
+  if (task) {
+    pendingExportTasks.set(task, { type: "export_video", label: "视频导出" })
+  }
+  if (!task) {
+    statusMessage.value = ""
     showToast("视频导出失败", "error")
-  } else {
-    showToast("视频导出完成", "success")
   }
 }
 
@@ -81,24 +114,26 @@ async function handleExportAudio() {
     export_ffmpeg_fade_duration: otioFadeDuration.value,
     export_ffmpeg_fade_mode: otioFadeMode.value,
   })
-  const ok = await exportAudio()
-  statusMessage.value = ""
-  if (!ok) {
+  const task = await createExportTask("export_audio")
+  if (task) {
+    pendingExportTasks.set(task, { type: "export_audio", label: "音频导出" })
+  }
+  if (!task) {
+    statusMessage.value = ""
     showToast("音频导出失败", "error")
-  } else {
-    showToast("音频导出完成", "success")
   }
 }
 
 async function handleExportSrt() {
   errorMessage.value = ""
   statusMessage.value = "正在导出字幕..."
-  const ok = await exportSrt()
-  statusMessage.value = ""
-  if (!ok) {
+  const task = await createExportTask("export_subtitle")
+  if (task) {
+    pendingExportTasks.set(task, { type: "export_subtitle", label: "字幕导出" })
+  }
+  if (!task) {
+    statusMessage.value = ""
     showToast("字幕导出失败", "error")
-  } else {
-    showToast("字幕导出完成", "success")
   }
 }
 
@@ -229,7 +264,7 @@ function formatTimeShort(seconds: number): string {
       </div>
 
       <!-- Right: Export actions -->
-      <div class="w-64 border-l bg-white overflow-y-auto p-4">
+      <div class="w-80 border-l bg-white overflow-y-auto p-4">
         <h3 class="font-medium mb-3">导出选项</h3>
 
         <div class="space-y-3">
