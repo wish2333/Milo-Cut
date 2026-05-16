@@ -59,10 +59,12 @@ def export_xmeml_premiere(
     edits: list[dict],
     media_info: dict,
     output_path: str,
+    *,
+    mode: str = "clean",
 ) -> dict:
     """Export xmeml for Premiere Pro."""
     try:
-        lines = _build_xmeml_core(segments, edits, media_info, wrap_in_project=True)
+        lines = _build_xmeml_core(segments, edits, media_info, wrap_in_project=True, mode=mode)
         Path(output_path).write_text("\n".join(lines), encoding="utf-8")
         logger.info("Exported xmeml (Premiere) to {}", output_path)
         return {"success": True, "data": output_path}
@@ -71,11 +73,201 @@ def export_xmeml_premiere(
         return {"success": False, "error": str(e)}
 
 
+def _build_xmeml_full_timeline(
+    keep_ranges: list[tuple[float, float]],
+    edits: list[dict],
+    media_info: dict,
+    wrap_in_project: bool,
+    fps: float,
+    media_path: str,
+    media_name: str,
+    media_filename: str,
+    width: int,
+    height: int,
+    source_duration: float,
+    is_ntsc: bool,
+    ntsc_str: str,
+    timebase: int,
+    source_total_frames: int,
+) -> list[str]:
+    """Build xmeml XML with interleaved clipitem and gap elements."""
+    deleted_ranges = sorted(
+        (e["start"], e["end"])
+        for e in edits
+        if e.get("status") == "confirmed" and e.get("action") == "delete"
+    )
+
+    all_ranges: list[tuple[float, float, str]] = []
+    for s, e in keep_ranges:
+        all_ranges.append((s, e, "keep"))
+    for s, e in deleted_ranges:
+        all_ranges.append((s, e, "deleted"))
+    all_ranges.sort(key=lambda r: r[0])
+
+    total_frames = 0
+    for start, end, kind in all_ranges:
+        start_frame = _sec_to_frames(start, fps)
+        end_frame = _sec_to_frames(end, fps)
+        dur = end_frame - start_frame
+        if dur > 0:
+            total_frames += dur
+
+    file_url = Path(media_path).name if wrap_in_project else Path(media_path).resolve().as_uri()
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<!DOCTYPE xmeml>',
+        '<xmeml version="5">',
+    ]
+    if wrap_in_project:
+        lines.extend(["  <project>", f"    <name>{media_name}_edited</name>", "    <children>", "      <sequence>"])
+    else:
+        lines.append("  <sequence>")
+
+    si = "      " if wrap_in_project else "    "
+    lines.extend([
+        f"{si}<name>{media_name}_edited</name>",
+        f"{si}<duration>{total_frames}</duration>",
+        f"{si}<rate>", f"{si}  <ntsc>{ntsc_str}</ntsc>", f"{si}  <timebase>{timebase}</timebase>", f"{si}</rate>",
+        f"{si}<media>", f"{si}  <video>",
+        f"{si}    <format>", f"{si}      <samplecharacteristics>",
+        f"{si}        <width>{width}</width>", f"{si}        <height>{height}</height>",
+        f"{si}      </samplecharacteristics>", f"{si}    </format>",
+        f"{si}    <track>",
+    ])
+
+    ci = si + "      "
+    current_timeline_frame = 0
+    clip_idx = 0
+
+    for start, end, kind in all_ranges:
+        start_frame = _sec_to_frames(start, fps)
+        end_frame = _sec_to_frames(end, fps)
+        dur_frames = end_frame - start_frame
+        if dur_frames <= 0:
+            continue
+
+        seq_start = current_timeline_frame
+        seq_end = current_timeline_frame + dur_frames
+        current_timeline_frame = seq_end
+
+        if kind == "keep":
+            clip_idx += 1
+            v_id = f"clipitem-video-{clip_idx}"
+            a1_id = f"clipitem-audio1-{clip_idx}"
+            a2_id = f"clipitem-audio2-{clip_idx}"
+            lines.extend([
+                f"{ci}<clipitem id=\"{v_id}\">",
+                f"{ci}  <name>{media_filename}</name>",
+                f"{ci}  <duration>{dur_frames}</duration>",
+                f"{ci}  <rate>", f"{ci}    <ntsc>{ntsc_str}</ntsc>", f"{ci}    <timebase>{timebase}</timebase>", f"{ci}  </rate>",
+                f"{ci}  <start>{seq_start}</start>",
+                f"{ci}  <end>{seq_end}</end>",
+                f"{ci}  <in>{start_frame}</in>",
+                f"{ci}  <out>{end_frame}</out>",
+                f"{ci}  <file id=\"file-{clip_idx}\">",
+                f"{ci}    <name>{media_filename}</name>",
+                f"{ci}    <pathurl>{file_url}</pathurl>",
+                f"{ci}    <rate>", f"{ci}      <ntsc>{ntsc_str}</ntsc>", f"{ci}      <timebase>{timebase}</timebase>", f"{ci}    </rate>",
+                f"{ci}    <duration>{source_total_frames}</duration>",
+                f"{ci}    <timecode>", f"{ci}      <rate>", f"{ci}        <ntsc>{ntsc_str}</ntsc>", f"{ci}        <timebase>{timebase}</timebase>", f"{ci}      </rate>",
+                f"{ci}      <string>00:00:00:00</string>", f"{ci}      <frame>0</frame>", f"{ci}      <source>source</source>", f"{ci}    </timecode>",
+                f"{ci}    <media>", f"{ci}      <video>", f"{ci}        <samplecharacteristics>",
+                f"{ci}          <width>{width}</width>", f"{ci}          <height>{height}</height>",
+                f"{ci}        </samplecharacteristics>", f"{ci}      </video>",
+                f"{ci}      <audio>", f"{ci}        <samplecharacteristics>",
+                f"{ci}          <depth>16</depth>", f"{ci}          <samplerate>48000</samplerate>",
+                f"{ci}        </samplecharacteristics>", f"{ci}        <channelcount>2</channelcount>",
+                f"{ci}      </audio>", f"{ci}    </media>",
+                f"{ci}  </file>",
+                f"{ci}  <sourcetrack>", f"{ci}    <mediatype>video</mediatype>", f"{ci}  </sourcetrack>",
+                f"{ci}  <link>", f"{ci}    <linkclipref>{a1_id}</linkclipref>", f"{ci}    <mediatype>audio</mediatype>",
+                f"{ci}    <trackindex>1</trackindex>", f"{ci}    <clipindex>{clip_idx}</clipindex>", f"{ci}  </link>",
+                f"{ci}  <link>", f"{ci}    <linkclipref>{a2_id}</linkclipref>", f"{ci}    <mediatype>audio</mediatype>",
+                f"{ci}    <trackindex>2</trackindex>", f"{ci}    <clipindex>{clip_idx}</clipindex>", f"{ci}  </link>",
+                f"{ci}</clipitem>",
+            ])
+        else:
+            lines.extend([
+                f"{ci}<clipitem id=\"gap-{seq_start}\">",
+                f"{ci}  <name>Milo-Cut Deleted ({start:.3f}-{end:.3f})</name>",
+                f"{ci}  <duration>{dur_frames}</duration>",
+                f"{ci}  <rate>", f"{ci}    <ntsc>{ntsc_str}</ntsc>", f"{ci}    <timebase>{timebase}</timebase>", f"{ci}  </rate>",
+                f"{ci}  <start>{seq_start}</start>",
+                f"{ci}  <end>{seq_end}</end>",
+                f"{ci}  <in>0</in>",
+                f"{ci}  <out>{dur_frames}</out>",
+                f"{ci}  <syncoffset>0</syncoffset>",
+                f"{ci}</clipitem>",
+            ])
+
+    lines.extend([f"{si}    </track>", f"{si}  </video>", f"{si}  <audio>"])
+
+    # Audio tracks
+    for track_idx, track_suffix in ((1, "audio1"), (2, "audio2")):
+        if track_idx > 1:
+            lines.append(f"{si}    </track>")
+        lines.append(f"{si}    <track>")
+
+        current_timeline_frame = 0
+        clip_idx = 0
+        for start, end, kind in all_ranges:
+            start_frame = _sec_to_frames(start, fps)
+            end_frame = _sec_to_frames(end, fps)
+            dur_frames = end_frame - start_frame
+            if dur_frames <= 0:
+                continue
+            seq_start = current_timeline_frame
+            seq_end = current_timeline_frame + dur_frames
+            current_timeline_frame = seq_end
+
+            if kind == "keep":
+                clip_idx += 1
+                a_id = f"clipitem-{track_suffix}-{clip_idx}"
+                other_a_id = f"clipitem-{'audio2' if track_idx == 1 else 'audio1'}-{clip_idx}"
+                v_id = f"clipitem-video-{clip_idx}"
+                lines.extend([
+                    f"{ci}<clipitem id=\"{a_id}\">",
+                    f"{ci}  <name>{media_filename}</name>",
+                    f"{ci}  <duration>{dur_frames}</duration>",
+                    f"{ci}  <rate>", f"{ci}    <ntsc>{ntsc_str}</ntsc>", f"{ci}    <timebase>{timebase}</timebase>", f"{ci}  </rate>",
+                    f"{ci}  <start>{seq_start}</start>", f"{ci}  <end>{seq_end}</end>",
+                    f"{ci}  <in>{start_frame}</in>", f"{ci}  <out>{end_frame}</out>",
+                    f"{ci}  <file id=\"file-{clip_idx}\"/>",
+                    f"{ci}  <sourcetrack>", f"{ci}    <mediatype>audio</mediatype>", f"{ci}    <trackindex>{track_idx}</trackindex>", f"{ci}  </sourcetrack>",
+                    f"{ci}  <link>", f"{ci}    <linkclipref>{v_id}</linkclipref>", f"{ci}    <mediatype>video</mediatype>",
+                    f"{ci}    <trackindex>1</trackindex>", f"{ci}    <clipindex>{clip_idx}</clipindex>", f"{ci}  </link>",
+                    f"{ci}  <link>", f"{ci}    <linkclipref>{other_a_id}</linkclipref>", f"{ci}    <mediatype>audio</mediatype>",
+                    f"{ci}    <trackindex>{2 if track_idx == 1 else 1}</trackindex>", f"{ci}    <clipindex>{clip_idx}</clipindex>", f"{ci}  </link>",
+                    f"{ci}</clipitem>",
+                ])
+            else:
+                lines.extend([
+                    f"{ci}<clipitem id=\"gap-{track_suffix}-{seq_start}\">",
+                    f"{ci}  <name>Milo-Cut Deleted ({start:.3f}-{end:.3f})</name>",
+                    f"{ci}  <duration>{dur_frames}</duration>",
+                    f"{ci}  <rate>", f"{ci}    <ntsc>{ntsc_str}</ntsc>", f"{ci}    <timebase>{timebase}</timebase>", f"{ci}  </rate>",
+                    f"{ci}  <start>{seq_start}</start>", f"{ci}  <end>{seq_end}</end>",
+                    f"{ci}  <in>0</in>", f"{ci}  <out>{dur_frames}</out>",
+                    f"{ci}  <syncoffset>0</syncoffset>",
+                    f"{ci}</clipitem>",
+                ])
+
+    lines.extend([f"{si}    </track>", f"{si}  </audio>", f"{si}</media>"])
+    if wrap_in_project:
+        lines.extend(["      </sequence>", "    </children>", "  </project>"])
+    else:
+        lines.append("  </sequence>")
+    lines.append("</xmeml>")
+    return lines
+
+
 def _build_xmeml_core(
     segments: list[dict],
     edits: list[dict],
     media_info: dict,
     wrap_in_project: bool,
+    *,
+    mode: str = "clean",
 ) -> list[str]:
     """Build xmeml XML lines per FCP 7 XML version 5 spec.
 
@@ -100,6 +292,14 @@ def _build_xmeml_core(
     source_total_frames = _sec_to_frames(source_duration, fps)
 
     keep_ranges = _build_keep_ranges(segments, edits, source_duration, fps)
+
+    if mode == "full_timeline":
+        return _build_xmeml_full_timeline(
+            keep_ranges, edits, media_info, wrap_in_project, fps, media_path,
+            media_name, media_filename, width, height, source_duration,
+            is_ntsc, ntsc_str, timebase, source_total_frames,
+        )
+
     total_frames = sum(_sec_to_frames(end - start, fps) for start, end in keep_ranges)
 
     # Premiere prefers relative paths when the XML sits next to source media.
@@ -357,6 +557,76 @@ def _seconds_to_timecode(seconds: float, fps: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}:{frames:02d}"
 
 
+def _build_full_timeline_items(
+    keep_ranges: list[tuple[float, float]],
+    edits: list[dict],
+    fps: float,
+    media_filename: str,
+    available_dur_frames: int,
+) -> list:
+    """Build OTIO track items including Gap+Marker for deleted regions."""
+    import opentimelineio as otio
+
+    deleted_ranges = sorted(
+        (e["start"], e["end"])
+        for e in edits
+        if e.get("status") == "confirmed" and e.get("action") == "delete"
+    )
+
+    # Merge keep and deleted into a single sorted list
+    all_ranges: list[tuple[float, float, str]] = []
+    for s, e in keep_ranges:
+        all_ranges.append((s, e, "keep"))
+    for s, e in deleted_ranges:
+        all_ranges.append((s, e, "deleted"))
+    all_ranges.sort(key=lambda r: r[0])
+
+    items: list = []
+    for start, end, kind in all_ranges:
+        start_frame = _sec_to_frames(start, fps)
+        end_frame = _sec_to_frames(end, fps)
+        dur_frames = end_frame - start_frame
+        if dur_frames <= 0:
+            continue
+
+        if kind == "keep":
+            clip = otio.schema.Clip(
+                name=f"Clip {len([i for i in items if isinstance(i, otio.schema.Clip)]) + 1}",
+                source_range=otio.opentime.TimeRange(
+                    start_time=otio.opentime.RationalTime(start_frame, fps),
+                    duration=otio.opentime.RationalTime(dur_frames, fps),
+                ),
+                media_reference=otio.schema.ExternalReference(
+                    target_url=media_filename,
+                    available_range=otio.opentime.TimeRange(
+                        start_time=otio.opentime.RationalTime(0, fps),
+                        duration=otio.opentime.RationalTime(available_dur_frames, fps),
+                    ),
+                ),
+            )
+            items.append(clip)
+        else:
+            gap = otio.schema.Gap(
+                name="Milo-Cut Deleted",
+                source_range=otio.opentime.TimeRange(
+                    start_time=otio.opentime.RationalTime(0, fps),
+                    duration=otio.opentime.RationalTime(dur_frames, fps),
+                ),
+            )
+            marker = otio.schema.Marker(
+                name="Milo-Cut Deleted",
+                color=otio.schema.MarkerColor.RED,
+                marked_range=otio.opentime.TimeRange(
+                    start_time=otio.opentime.RationalTime(0, fps),
+                    duration=otio.opentime.RationalTime(dur_frames, fps),
+                ),
+            )
+            gap.markers.append(marker)
+            items.append(gap)
+
+    return items
+
+
 def export_otio(
     segments: list[dict],
     edits: list[dict],
@@ -364,6 +634,8 @@ def export_otio(
     output_path: str,
     *,
     fade_duration: float = 0.0,
+    mode: str = "clean",
+    fade_mode: str = "crossfade",
 ) -> dict:
     """Export OpenTimelineIO (.otio) using the opentimelineio library.
 
@@ -382,37 +654,52 @@ def export_otio(
         media_filename = Path(media_path).name
         available_dur_frames = _sec_to_frames(source_duration, fps)
 
-        # Build clips using OTIO schema objects
-        otio_clips: list[otio.schema.Clip] = []
-        for idx, (start, end) in enumerate(keep_ranges):
-            clip_dur = end - start
-            if clip_dur <= 0:
-                continue
-            src_start_frames = _sec_to_frames(start, fps)
-            src_dur_frames = _sec_to_frames(clip_dur, fps)
+        if mode == "full_timeline":
+            track_items = _build_full_timeline_items(
+                keep_ranges, edits, fps, media_filename, available_dur_frames,
+            )
+        else:
+            # Build clips using OTIO schema objects
+            otio_clips: list[otio.schema.Clip] = []
+            for idx, (start, end) in enumerate(keep_ranges):
+                clip_dur = end - start
+                if clip_dur <= 0:
+                    continue
+                src_start_frames = _sec_to_frames(start, fps)
+                src_dur_frames = _sec_to_frames(clip_dur, fps)
 
-            clip = otio.schema.Clip(
-                name=f"Clip {idx + 1}",
-                source_range=otio.opentime.TimeRange(
-                    start_time=otio.opentime.RationalTime(src_start_frames, fps),
-                    duration=otio.opentime.RationalTime(src_dur_frames, fps),
-                ),
-                media_reference=otio.schema.ExternalReference(
-                    target_url=media_filename,
-                    available_range=otio.opentime.TimeRange(
-                        start_time=otio.opentime.RationalTime(0, fps),
-                        duration=otio.opentime.RationalTime(available_dur_frames, fps),
+                clip = otio.schema.Clip(
+                    name=f"Clip {idx + 1}",
+                    source_range=otio.opentime.TimeRange(
+                        start_time=otio.opentime.RationalTime(src_start_frames, fps),
+                        duration=otio.opentime.RationalTime(src_dur_frames, fps),
                     ),
-                ),
-            )
-            otio_clips.append(clip)
+                    media_reference=otio.schema.ExternalReference(
+                        target_url=media_filename,
+                        available_range=otio.opentime.TimeRange(
+                            start_time=otio.opentime.RationalTime(0, fps),
+                            duration=otio.opentime.RationalTime(available_dur_frames, fps),
+                        ),
+                    ),
+                )
+                otio_clips.append(clip)
 
-        # Build track children (clips + optional transitions)
-        track_items: list = list(otio_clips)
-        if fade_duration > 0 and len(otio_clips) > 1:
-            track_items = _build_otio_clips_with_transitions(
-                otio_clips, fps, fade_duration, keep_ranges, source_duration,
-            )
+            # Build track children (clips + optional transitions/effects)
+            track_items: list = list(otio_clips)
+            if fade_duration > 0 and len(otio_clips) > 1:
+                if fade_mode == "separate":
+                    track_items = _build_otio_clips_with_fade_effects(
+                        otio_clips, fps, fade_duration,
+                    )
+                else:
+                    track_items = _build_otio_clips_with_transitions(
+                        otio_clips, fps, fade_duration, keep_ranges, source_duration,
+                    )
+            elif fade_duration > 0 and len(otio_clips) == 1:
+                if fade_mode == "separate":
+                    track_items = _build_otio_clips_with_fade_effects(
+                        otio_clips, fps, fade_duration,
+                    )
 
         # Build timeline with separate Video and Audio tracks
         video_track = otio.schema.Track(
@@ -495,3 +782,48 @@ def _build_otio_clips_with_transitions(
         interleaved.append(transition)
 
     return interleaved
+
+
+def _build_otio_clips_with_fade_effects(
+    clips: list,
+    fps: float,
+    fade_duration: float,
+) -> list:
+    """Add FadeIn/FadeOut Effects to each OTIO Clip.
+
+    First clip gets FadeOut only, last clip gets FadeIn only,
+    middle clips and single clips get both.
+    """
+    import opentimelineio as otio
+
+    fade_frames = _sec_to_frames(fade_duration, fps)
+    if fade_frames <= 0:
+        return list(clips)
+
+    result: list = []
+    for i, clip in enumerate(clips):
+        clip_copy = clip.deepcopy()
+
+        if i > 0 or len(clips) == 1:
+            fade_in = otio.schema.Effect(
+                name="AudioFadeIn",
+                effect_name="Audio Fade In",
+            )
+            fade_in.metadata = {
+                "duration": otio.opentime.RationalTime(fade_frames, fps),
+            }
+            clip_copy.effects.append(fade_in)
+
+        if i < len(clips) - 1 or len(clips) == 1:
+            fade_out = otio.schema.Effect(
+                name="AudioFadeOut",
+                effect_name="Audio Fade Out",
+            )
+            fade_out.metadata = {
+                "duration": otio.opentime.RationalTime(fade_frames, fps),
+            }
+            clip_copy.effects.append(fade_out)
+
+        result.append(clip_copy)
+
+    return result

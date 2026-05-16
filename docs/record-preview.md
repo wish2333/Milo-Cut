@@ -233,3 +233,65 @@ FFmpeg 静音检测 -> margin 缩边 -> 字幕保护裁剪 -> 创建 Segment/Edi
 - 使用 `round()` 而非 `int()` 进行秒到帧的转换，确保 NLE 兼容性
 - Python 3 `round()` 使用银行家舍入 (round-half-to-even)，跨帧过渡帧数可能差 1 帧，NLE 工作流可接受
 - 过渡只插入有足够 handle 的片段之间（源边界检查）
+
+### 审计计划 0.2.0-4 实施 (audit-plan-0.2.0-4)
+
+基于审计报告 `audit-report-0.2.0-4.md` 的实施，涵盖 P0 阻断修复、P1 核心功能、P2 进阶功能共 8 个任务。
+
+#### P0 阻断修复
+
+**A-1: 导出页返回编辑页后波形消失**
+- 根因: Python `HTTPServer` 单线程阻塞 + ExportPage 未主动释放 `<video>` 连接
+- `core/media_server.py`: `HTTPServer` -> `ThreadingHTTPServer`，支持并发请求
+- `frontend/src/components/export/PreviewPlayer.vue`: `onUnmounted` -> `onBeforeUnmount`，释放 video 连接 (pause + removeAttribute + load)
+- `frontend/src/pages/WorkspacePage.vue`: `resolveWaveformUrl()` 添加最多 3 次重试，间隔 1s
+
+**A-6: Waveform 滑块拖动性能优化**
+- 根因: 每帧 mousemove 触发 Canvas 完整重绘 + computed 重建
+- `frontend/src/components/waveform/ScrollbarStrip.vue`: `onMove` 添加 `requestAnimationFrame` 节流，`onUp` 中 `cancelAnimationFrame` 清理
+- `frontend/src/components/waveform/WaveformCanvas.vue`: `draw()` 添加 viewStart 变化阈值检查 (< 0.02s 跳过重绘)；非 viewStart 触发器重置 `lastDrawnViewStart`
+- `frontend/src/composables/useTimelineMetrics.ts`: `timeMarks` computed 添加步进缓存，仅当 viewStart 跨越刻度间隔后才重建数组
+
+#### P1 核心功能
+
+**A-7: OTIO 全量时间线导出 + 删除区域标记**
+- `core/export_timeline.py`: 新增 `_build_full_timeline_items()` -- 合并 keep/deleted 区间，按 start 排序，deleted 生成 `Gap + Marker(name, color=RED)`；`export_otio()` 添加 `mode` 参数 (clean/full_timeline)；全量模式下强制 `fade_duration=0`
+- `main.py`: bridge 方法传递 `mode` 参数
+- `frontend/src/pages/ExportPage.vue`: 新增 `otioExportMode` ref，radio 组 UI (Clean Export / Full Timeline)，Full Timeline 时禁用 fade 滑块
+
+**A-9-XML: XML 全量时间线导出**
+- `core/export_timeline.py`: 新增 `_build_xmeml_full_timeline()` -- 使用累积帧计数器维护 `<start>`/`<end>` 偏移，deleted 区间生成 gap `<clipitem>` (name 标识删除区域)；`export_xmeml_premiere()` 添加 `mode` 参数；`_build_xmeml_core()` 传递 mode
+- `main.py`: bridge 方法传递 `mode`
+- `frontend/src/pages/ExportPage.vue`: XML 导出按钮联动 `otioExportMode`
+
+**A-3: 时间线格式按钮重排**
+- 已验证按钮顺序 OTIO -> XML -> EDL 符合要求，无需修改
+
+**A-2: 旧通知改用 Toast 系统**
+- `frontend/src/pages/ExportPage.vue`: 导入 `useToast`，所有 export handler 的成功/失败通知改为 `showToast`；保留 `statusMessage` 用于持续状态（正在导出...）；修复 EDL/XML/OTIO handler 的 `finally` 块 bug（成功消息被立即清除）
+
+#### P2 进阶功能
+
+**A-4: OTIO 音频转场模式选择**
+- `core/export_timeline.py`: `export_otio()` 添加 `fade_mode` 参数 (crossfade/separate)；新增 `_build_otio_clips_with_fade_effects()` -- 为每个 Clip 添加 `AudioFadeIn`/`AudioFadeOut` Effect，duration 存储在 metadata；首个 Clip 仅 FadeOut，末个仅 FadeIn
+- `main.py`: bridge 方法传递 `fade_mode`
+- `frontend/src/pages/ExportPage.vue`: 新增 `otioFadeMode` ref，radio 组 UI (Crossfade / Separate Fade In/Out)，仅在 clean + fade > 0 时显示
+
+**A-5: FFmpeg filter_complex 接口预留**
+- `core/config.py`: 新增 `export_transition_mode` 设置（默认 "none"）
+- `frontend/src/pages/ExportPage.vue`: 预留 disabled checkbox "FFmpeg video transitions (experimental)"
+
+#### Files Modified
+
+| 文件 | 涉及任务 | 改动规模 |
+|------|----------|----------|
+| `core/media_server.py` | A-1 | ~3 行 |
+| `core/config.py` | A-5 | ~2 行 |
+| `core/export_timeline.py` | A-4, A-7, A-9-XML | ~200 行 |
+| `main.py` | A-4, A-7, A-9-XML | ~10 行 |
+| `frontend/src/pages/ExportPage.vue` | A-1, A-2, A-3, A-4, A-5, A-7, A-9-XML | ~80 行 |
+| `frontend/src/pages/WorkspacePage.vue` | A-1 | ~10 行 |
+| `frontend/src/components/export/PreviewPlayer.vue` | A-1 | ~8 行 |
+| `frontend/src/components/waveform/ScrollbarStrip.vue` | A-6 | ~15 行 |
+| `frontend/src/components/waveform/WaveformCanvas.vue` | A-6 | ~15 行 |
+| `frontend/src/composables/useTimelineMetrics.ts` | A-6 | ~15 行 |

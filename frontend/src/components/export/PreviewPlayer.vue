@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from "vue"
+import { ref, computed, onMounted, onBeforeUnmount, watch } from "vue"
 import { call } from "@/bridge"
 import type { EditDecision } from "@/types/project"
 
@@ -139,10 +139,16 @@ onMounted(() => {
   loadVideoUrl()
 })
 
-onUnmounted(() => {
+onBeforeUnmount(() => {
   if (rafId !== null) {
     cancelAnimationFrame(rafId)
   }
+  if (videoRef.value) {
+    videoRef.value.pause()
+    videoRef.value.removeAttribute("src")
+    videoRef.value.load()
+  }
+  videoSrc.value = ""
 })
 
 watch(() => [props.mediaPath, props.proxyPath], () => {

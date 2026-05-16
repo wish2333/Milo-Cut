@@ -10,7 +10,7 @@ from __future__ import annotations
 import mimetypes
 import socket
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from loguru import logger
@@ -18,8 +18,8 @@ from loguru import logger
 _EXPECTED_CONN_ERRORS = (ConnectionResetError, BrokenPipeError, ConnectionAbortedError)
 
 
-class _QuietHTTPServer(HTTPServer):
-    """HTTPServer that suppresses tracebacks for expected connection errors."""
+class _QuietHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer that suppresses tracebacks for expected connection errors."""
 
     def handle_error(self, request, client_address):
         """Suppress traceback for client disconnects."""
@@ -143,7 +143,7 @@ class MediaServer:
     """Manages a local HTTP server for streaming a single media file."""
 
     def __init__(self) -> None:
-        self._server: HTTPServer | None = None
+        self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._port: int = 0
         self._file_path: str = ""

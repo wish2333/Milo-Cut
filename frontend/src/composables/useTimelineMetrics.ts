@@ -162,10 +162,20 @@ export function useTimelineMetrics(
 
   // -- Time marks -------------------------------------------------------
 
+  let cachedStep = 0
+  let cachedStepIndex = -1
+  let cachedTimeMarks: Array<{ percent: number; label: string; time: number }> = []
+
   const timeMarks = computed(() => {
     if (viewDuration.value <= 0) return []
     const rawStep = viewDuration.value / TIME_MARK_TARGET_COUNT
     const step = NICE_STEPS.find(s => s >= rawStep) ?? rawStep
+    const currentIndex = Math.floor(viewStart.value / step)
+    if (step === cachedStep && currentIndex === cachedStepIndex) {
+      return cachedTimeMarks
+    }
+    cachedStep = step
+    cachedStepIndex = currentIndex
     const marks: { percent: number; label: string; time: number }[] = []
     const start = Math.ceil(viewStart.value / step) * step
     for (let t = start; t <= viewEnd.value; t += step) {
@@ -175,6 +185,7 @@ export function useTimelineMetrics(
         time: t,
       })
     }
+    cachedTimeMarks = marks
     return marks
   })
 

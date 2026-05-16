@@ -22,6 +22,7 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     "silence_subtitle_padding": 0.0,
     "trim_subtitles_on_silence_overlap": True,
     "export_fade_duration": 0.0,
+    "export_transition_mode": "none",
     "filler_words": [
         "嗯", "啊", "呃", "然后", "就是", "那个",
         "怎么说呢", "你知道", "对吧", "其实",

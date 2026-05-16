@@ -5,6 +5,9 @@ import EncodingSettings from "@/components/export/EncodingSettings.vue"
 import PreviewPlayer from "@/components/export/PreviewPlayer.vue"
 import { call } from "@/bridge"
 import { useExport } from "@/composables/useExport"
+import { useToast } from "@/composables/useToast"
+
+const { showToast } = useToast()
 
 const props = defineProps<{
   project: Project
@@ -38,6 +41,8 @@ const encodingSettings = ref({
 const statusMessage = ref("")
 const errorMessage = ref("")
 const otioFadeDuration = ref(0)
+const otioExportMode = ref<"clean" | "full_timeline">("clean")
+const otioFadeMode = ref<"crossfade" | "separate">("crossfade")
 
 const subtitleCount = computed(() =>
   props.project.transcript?.segments?.filter(s => s.type === "subtitle").length ?? 0
@@ -50,7 +55,6 @@ function handleEncodingSettingsUpdate(settings: typeof encodingSettings.value) {
 async function handleExportVideo() {
   errorMessage.value = ""
   statusMessage.value = "正在导出视频..."
-  // Save encoding settings to project before export
   await call("update_settings", {
     export_video_codec: encodingSettings.value.videoCodec,
     export_audio_codec: encodingSettings.value.audioCodec,
@@ -62,9 +66,9 @@ async function handleExportVideo() {
   const ok = await exportVideo()
   statusMessage.value = ""
   if (!ok) {
-    errorMessage.value = "视频导出失败"
+    showToast("视频导出失败", "error")
   } else {
-    statusMessage.value = "视频导出完成"
+    showToast("视频导出完成", "success")
   }
 }
 
@@ -74,9 +78,9 @@ async function handleExportAudio() {
   const ok = await exportAudio()
   statusMessage.value = ""
   if (!ok) {
-    errorMessage.value = "音频导出失败"
+    showToast("音频导出失败", "error")
   } else {
-    statusMessage.value = "音频导出完成"
+    showToast("音频导出完成", "success")
   }
 }
 
@@ -86,76 +90,76 @@ async function handleExportSrt() {
   const ok = await exportSrt()
   statusMessage.value = ""
   if (!ok) {
-    errorMessage.value = "字幕导出失败"
+    showToast("字幕导出失败", "error")
   } else {
-    statusMessage.value = "字幕导出完成"
+    showToast("字幕导出完成", "success")
   }
 }
 
 async function handleExportEdl() {
-  errorMessage.value = ""
   statusMessage.value = "正在导出 EDL..."
+  errorMessage.value = ""
   try {
     const mediaPath = props.project.media?.path
     if (!mediaPath) {
-      errorMessage.value = "无法获取源文件路径"
+      showToast("无法获取源文件路径", "error")
       return
     }
     const outputPath = mediaPath.replace(/\.[^.]+$/, ".edl")
     const exportRes = await call<string>("export_edl", outputPath)
     if (exportRes.success) {
-      statusMessage.value = "EDL 导出完成"
+      showToast("EDL 导出完成", "success")
     } else {
-      errorMessage.value = `EDL 导出失败: ${exportRes.error}`
+      showToast(`EDL 导出失败: ${exportRes.error}`, "error")
     }
   } catch (e) {
-    errorMessage.value = `EDL 导出失败: ${e}`
+    showToast(`EDL 导出失败: ${e}`, "error")
   } finally {
     statusMessage.value = ""
   }
 }
 
 async function handleExportXmemlPremiere() {
-  errorMessage.value = ""
   statusMessage.value = "正在导出 Premiere XML..."
+  errorMessage.value = ""
   try {
     const mediaPath = props.project.media?.path
     if (!mediaPath) {
-      errorMessage.value = "无法获取源文件路径"
+      showToast("无法获取源文件路径", "error")
       return
     }
     const outputPath = mediaPath.replace(/\.[^.]+$/, ".xml")
-    const exportRes = await call<string>("export_xmeml_premiere", outputPath)
+    const exportRes = await call<string>("export_xmeml_premiere", outputPath, otioExportMode.value)
     if (exportRes.success) {
-      statusMessage.value = "Premiere XML 导出完成"
+      showToast("Premiere XML 导出完成", "success")
     } else {
-      errorMessage.value = `Premiere XML 导出失败: ${exportRes.error}`
+      showToast(`Premiere XML 导出失败: ${exportRes.error}`, "error")
     }
   } catch (e) {
-    errorMessage.value = `Premiere XML 导出失败: ${e}`
+    showToast(`Premiere XML 导出失败: ${e}`, "error")
   } finally {
     statusMessage.value = ""
   }
 }
 
 async function handleExportOtio() {
-  errorMessage.value = ""
   statusMessage.value = "正在导出 OTIO..."
+  errorMessage.value = ""
   try {
     const mediaPath = props.project.media?.path
     if (!mediaPath) {
-      errorMessage.value = "无法获取源文件路径"
+      showToast("无法获取源文件路径", "error")
       return
     }
     const outputPath = mediaPath.replace(/\.[^.]+$/, ".otio")
-    const exportRes = await call<string>("export_otio", outputPath, otioFadeDuration.value)
+    const exportRes = await call<string>("export_otio", outputPath, otioFadeDuration.value, otioExportMode.value, otioFadeMode.value)
     if (exportRes.success) {
-      statusMessage.value = "OTIO 导出完成"
+      showToast("OTIO 导出完成", "success")
     } else {
-      errorMessage.value = `OTIO 导出失败: ${exportRes.error}`
+      showToast(`OTIO 导出失败: ${exportRes.error}`, "error")
     }
   } catch (e) {
-    errorMessage.value = `OTIO 导出失败: ${e}`
+    showToast(`OTIO 导出失败: ${e}`, "error")
   } finally {
     statusMessage.value = ""
   }
@@ -253,27 +257,40 @@ function formatTimeShort(seconds: number): string {
           <div class="border-t border-gray-200 pt-3 mt-3">
             <h4 class="text-xs font-medium text-gray-500 mb-2">时间线格式</h4>
             <button
-              class="w-full flex items-center gap-2 rounded-md bg-gray-100 px-4 py-2 text-sm text-gray-700 hover:bg-gray-200 transition-colors"
+              class="w-full flex items-center gap-2 rounded-md bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-700 transition-colors"
               :disabled="isExporting"
-              @click="handleExportEdl"
+              @click="handleExportOtio"
             >
-              导出 EDL (DaVinci)
+              导出 OTIO (DaVinci / New PR / Others)
             </button>
             <button
               class="w-full flex items-center gap-2 rounded-md bg-gray-100 px-4 py-2 text-sm text-gray-700 hover:bg-gray-200 transition-colors mt-2"
               :disabled="isExporting"
               @click="handleExportXmemlPremiere"
             >
-              导出 XML
+              导出 XML (FCP 7)
             </button>
             <button
-              class="w-full flex items-center gap-2 rounded-md bg-indigo-50 px-4 py-2 text-sm text-indigo-700 hover:bg-indigo-100 transition-colors mt-2"
+              class="w-full flex items-center gap-2 rounded-md bg-gray-100 px-4 py-2 text-sm text-gray-700 hover:bg-gray-200 transition-colors mt-2"
               :disabled="isExporting"
-              @click="handleExportOtio"
+              @click="handleExportEdl"
             >
-              导出 OTIO (DaVinci/PR)
+              导出 EDL (DaVinci Only)
             </button>
-            <div class="mt-2">
+            <div class="mt-2 space-y-1.5">
+              <label class="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
+                <input type="radio" v-model="otioExportMode" value="clean" class="accent-indigo-600" />
+                Clean Export
+              </label>
+              <label class="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
+                <input type="radio" v-model="otioExportMode" value="full_timeline" class="accent-indigo-600" />
+                Full Timeline
+              </label>
+              <p v-if="otioExportMode === 'full_timeline'" class="text-xs text-amber-600">
+                Full Timeline mode does not support transitions
+              </p>
+            </div>
+            <div class="mt-2" :class="{ 'opacity-50 pointer-events-none': otioExportMode === 'full_timeline' }">
               <label class="block">
                 <span class="text-xs text-gray-500">
                   交叉淡入淡出 (s): {{ otioFadeDuration.toFixed(2) }}
@@ -288,9 +305,28 @@ function formatTimeShort(seconds: number): string {
                   OTIO 导出时在片段间添加交叉淡入淡出效果
                 </p>
               </label>
+              <div
+                v-if="otioExportMode === 'clean' && otioFadeDuration > 0"
+                class="mt-1.5 space-y-1"
+              >
+                <label class="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
+                  <input type="radio" v-model="otioFadeMode" value="crossfade" class="accent-indigo-600" />
+                  Crossfade
+                </label>
+                <label class="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer" title="Separate Fade In/Out depends on NLE support">
+                  <input type="radio" v-model="otioFadeMode" value="separate" class="accent-indigo-600" />
+                  Separate Fade In/Out
+                </label>
+              </div>
+            </div>
+            <div class="mt-2">
+              <label class="flex items-center gap-1.5 text-xs text-gray-400 cursor-not-allowed">
+                <input type="checkbox" disabled class="accent-indigo-600" />
+                FFmpeg video transitions (experimental)
+              </label>
             </div>
           </div>
-        </div>
+          </div>
 
         <!-- Project info -->
         <div class="mt-6 pt-4 border-t border-gray-200">

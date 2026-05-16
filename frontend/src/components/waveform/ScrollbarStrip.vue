@@ -15,18 +15,28 @@ function handleMouseDown(e: MouseEvent) {
   dragOriginX.value = e.clientX
   dragOriginViewStart.value = metrics.viewStart.value
 
+  let rafId: number | null = null
+
   const onMove = (e: MouseEvent) => {
-    const el = scrollbarRef.value
-    if (!el) return
-    const rect = el.getBoundingClientRect()
-    const deltaPx = e.clientX - dragOriginX.value
-    const duration = metrics.duration.value
-    if (duration <= 0 || rect.width <= 0) return
-    metrics.viewStart.value = dragOriginViewStart.value + deltaPx * duration / rect.width
-    metrics.clampViewStart()
+    if (rafId !== null) return
+    rafId = requestAnimationFrame(() => {
+      rafId = null
+      const el = scrollbarRef.value
+      if (!el) return
+      const rect = el.getBoundingClientRect()
+      const deltaPx = e.clientX - dragOriginX.value
+      const duration = metrics.duration.value
+      if (duration <= 0 || rect.width <= 0) return
+      metrics.viewStart.value = dragOriginViewStart.value + deltaPx * duration / rect.width
+      metrics.clampViewStart()
+    })
   }
 
   const onUp = () => {
+    if (rafId !== null) {
+      cancelAnimationFrame(rafId)
+      rafId = null
+    }
     isDragging.value = false
     document.removeEventListener("mousemove", onMove)
     document.removeEventListener("mouseup", onUp)

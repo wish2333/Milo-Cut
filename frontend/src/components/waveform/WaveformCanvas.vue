@@ -40,12 +40,20 @@ async function loadWaveform(path: string) {
 
 // -- Canvas rendering ---------------------------------------------------
 
+let lastDrawnViewStart = -Infinity
+
 function draw() {
   const canvas = canvasRef.value
   if (!canvas) return
 
   const ctx = canvas.getContext("2d")
   if (!ctx) return
+
+  const currentViewStart = metrics.viewStart.value
+  if (Math.abs(currentViewStart - lastDrawnViewStart) < 0.02 && peaks.value !== null) {
+    return
+  }
+  lastDrawnViewStart = currentViewStart
 
   const dpr = window.devicePixelRatio || 1
   const rect = canvas.getBoundingClientRect()
@@ -171,7 +179,12 @@ watch(() => props.waveformPath, (path) => {
   }
 }, { immediate: true })
 
-watch([metrics.viewStart, metrics.viewDuration, peaks, () => props.segments], () => {
+watch([metrics.viewDuration, peaks, () => props.segments], () => {
+  lastDrawnViewStart = -Infinity
+  draw()
+})
+
+watch(metrics.viewStart, () => {
   draw()
 })
 </script>

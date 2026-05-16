@@ -159,9 +159,15 @@ async function handleRegenerateWaveform() {
 }
 
 async function resolveWaveformUrl() {
-  const res = await call<{ url: string }>("get_waveform_url")
-  if (res.success && res.data) {
-    waveformUrl.value = res.data.url
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const res = await call<{ url: string }>("get_waveform_url")
+    if (res.success && res.data) {
+      waveformUrl.value = res.data.url
+      return
+    }
+    if (attempt < 2) {
+      await new Promise((r) => setTimeout(r, 1000))
+    }
   }
 }
 
