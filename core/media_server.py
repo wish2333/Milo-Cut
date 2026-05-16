@@ -31,23 +31,38 @@ class _QuietHTTPServer(HTTPServer):
 
 
 class _MediaHandler(BaseHTTPRequestHandler):
-    """HTTP handler that serves a single file with range support."""
+    """HTTP handler that serves media and waveform files."""
 
     # Set by MediaServer before starting
     file_path: str = ""
     mime_type: str = "application/octet-stream"
+    waveform_path: str = ""
 
     def log_message(self, format, *args):
         """Suppress default stderr logging."""
 
     def do_GET(self):
-        path = Path(self.file_path)
+        # Route: /waveform serves the waveform JSON, /media serves the video
+        if self.path == "/waveform":
+            target = self.waveform_path
+            content_type = "application/json"
+        elif self.path == "/media":
+            target = self.file_path
+            content_type = self.mime_type
+        else:
+            self.send_error(404, "Not found")
+            return
+
+        if not target:
+            self.send_error(404, "File not available")
+            return
+
+        path = Path(target)
         if not path.exists():
             self.send_error(404, "File not found")
             return
 
         file_size = path.stat().st_size
-        content_type = self.mime_type
 
         # Parse Range header
         range_header = self.headers.get("Range")
@@ -97,14 +112,28 @@ class _MediaHandler(BaseHTTPRequestHandler):
             pass
 
     def do_HEAD(self):
-        path = Path(self.file_path)
+        if self.path == "/waveform":
+            target = self.waveform_path
+            content_type = "application/json"
+        elif self.path == "/media":
+            target = self.file_path
+            content_type = self.mime_type
+        else:
+            self.send_error(404, "Not found")
+            return
+
+        if not target:
+            self.send_error(404, "File not available")
+            return
+
+        path = Path(target)
         if not path.exists():
             self.send_error(404, "File not found")
             return
 
         file_size = path.stat().st_size
         self.send_response(200)
-        self.send_header("Content-Type", self.mime_type)
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(file_size))
         self.send_header("Accept-Ranges", "bytes")
         self.end_headers()
@@ -118,6 +147,7 @@ class MediaServer:
         self._thread: threading.Thread | None = None
         self._port: int = 0
         self._file_path: str = ""
+        self._waveform_path: str = ""
 
     @property
     def port(self) -> int:
@@ -153,7 +183,7 @@ class MediaServer:
         handler_cls = type(
             "BoundMediaHandler",
             (_MediaHandler,),
-            {"file_path": file_path, "mime_type": mime},
+            {"file_path": file_path, "mime_type": mime, "waveform_path": self._waveform_path},
         )
 
         # Find an available port
@@ -189,4 +219,14 @@ class MediaServer:
             self._thread = None
         self._port = 0
         self._file_path = ""
+        self._waveform_path = ""
         logger.info("Media server stopped")
+
+    def set_waveform(self, waveform_path: str) -> None:
+        """Set the waveform JSON file path. The running handler picks it up immediately."""
+        self._waveform_path = waveform_path
+        # Update the bound handler class so in-flight requests see the new path
+        if self._server:
+            handler_cls = self._server.RequestHandlerClass
+            handler_cls.waveform_path = waveform_path
+        logger.info("Waveform path set to {}", waveform_path)

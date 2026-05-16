@@ -8,6 +8,7 @@ from __future__ import annotations
 import sys
 import os
 import pathlib
+from pathlib import Path
 import subprocess
 
 from pywebvue import App, Bridge, expose
@@ -238,6 +239,8 @@ class MiloCutApi(Bridge):
         progress_cb(90.0, "Updating project...")
         # Update media info with waveform path
         self._project.update_media_waveform(waveform_path)
+        # Make waveform available via HTTP
+        self._media_server.set_waveform(waveform_path)
 
         progress_cb(100.0, "Waveform generated")
         return {"project": self._project.current.model_dump() if self._project.current else None}
@@ -353,7 +356,22 @@ class MiloCutApi(Bridge):
     @expose
     def get_video_url(self, file_path: str) -> dict:
         """Start a local HTTP server and return the streaming URL."""
-        return self._media_server.start(file_path)
+        result = self._media_server.start(file_path)
+        # If project already has a waveform, make it available via HTTP
+        if result.get("success") and self._project.current and self._project.current.media:
+            waveform_path = self._project.current.media.waveform_path
+            if waveform_path and Path(waveform_path).exists():
+                self._media_server.set_waveform(waveform_path)
+        return result
+
+    @expose
+    def get_waveform_url(self) -> dict:
+        """Return the HTTP URL for the waveform JSON, or error if not available."""
+        if not self._media_server.is_running:
+            return {"success": False, "error": "Media server not running"}
+        if not self._media_server._waveform_path:
+            return {"success": False, "error": "Waveform not available"}
+        return {"success": True, "data": {"url": f"http://127.0.0.1:{self._media_server.port}/waveform"}}
 
     @expose
     def stop_media_server(self) -> dict:

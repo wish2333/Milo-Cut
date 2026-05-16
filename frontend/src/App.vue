@@ -4,7 +4,8 @@ import WelcomePage from "@/pages/WelcomePage.vue"
 import WorkspacePage from "@/pages/WorkspacePage.vue"
 import ExportPage from "@/pages/ExportPage.vue"
 import ToastContainer from "@/components/common/ToastContainer.vue"
-import { waitForPyWebView, call } from "./bridge"
+import { waitForPyWebView, call, onEvent } from "./bridge"
+import { EVENT_TASK_COMPLETED } from "@/utils/events"
 import type { Project, MediaInfo } from "@/types/project"
 
 const ready = ref(false)
@@ -22,8 +23,27 @@ waitForPyWebView(10_000)
     bridgeError.value = err instanceof Error ? err.message : "Bridge init failed"
   })
 
+function triggerWaveformGeneration() {
+  if (!project.value?.media || project.value.media.waveform_path) return
+  call("create_task", "waveform_generation").then(res => {
+    if (res.success && res.data) {
+      call("start_task", (res.data as { id: string }).id)
+    }
+  })
+}
+
+onEvent<{ task_id: string; task_type?: string; result?: { project?: Project } }>(
+  EVENT_TASK_COMPLETED,
+  (data) => {
+    if (data.task_type === "waveform_generation" && data.result?.project) {
+      project.value = data.result.project
+    }
+  },
+)
+
 function onProjectCreated(data: Project) {
   project.value = data
+  triggerWaveformGeneration()
 }
 
 function onProjectUpdated(data: Project) {
@@ -84,6 +104,7 @@ async function handleWindowDrop(e: DragEvent) {
     const openRes = await call<Project>("open_project", filePath)
     if (openRes.success && openRes.data) {
       project.value = openRes.data
+      triggerWaveformGeneration()
     }
   } else if (!project.value && isMedia) {
     const probeRes = await call<MediaInfo>("probe_media", filePath)
@@ -92,6 +113,7 @@ async function handleWindowDrop(e: DragEvent) {
     const createRes = await call<Project>("create_project", name, filePath)
     if (createRes.success && createRes.data) {
       project.value = createRes.data
+      triggerWaveformGeneration()
     }
   } else if (project.value && isSrt) {
     const importRes = await call<Project>("import_srt", filePath)

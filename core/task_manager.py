@@ -153,6 +153,7 @@ class TaskManager:
 
             self._emit(TASK_COMPLETED, {
                 "task_id": task_id,
+                "task_type": task.type.value if task else None,
                 "result": result,
             })
 

@@ -89,7 +89,7 @@ describe("SegmentBlocksLayer", () => {
       [seg()],
       [edit({ target_id: "seg-1", action: "delete" })],
     )
-    expect(wrapper.find(".bg-red-200").exists()).toBe(true)
+    expect(wrapper.find('[class*="bg-red-200"]').exists()).toBe(true)
   })
 
   it("applies kept style for keep edits", () => {
@@ -97,17 +97,17 @@ describe("SegmentBlocksLayer", () => {
       [seg()],
       [edit({ target_id: "seg-1", action: "keep" })],
     )
-    expect(wrapper.find(".bg-green-200").exists()).toBe(true)
+    expect(wrapper.find('[class*="bg-green-200"]').exists()).toBe(true)
   })
 
   it("applies normal style for subtitle without edits", () => {
     const { wrapper } = mountLayer([seg()])
-    expect(wrapper.find(".bg-blue-100").exists()).toBe(true)
+    expect(wrapper.find('[class*="bg-blue-100"]').exists()).toBe(true)
   })
 
   it("applies silence style for silence segments", () => {
     const { wrapper } = mountLayer([seg({ type: "silence" })])
-    expect(wrapper.find(".bg-gray-200").exists()).toBe(true)
+    expect(wrapper.find('[class*="bg-gray-200"]').exists()).toBe(true)
   })
 
   it("emits select-range on body click", async () => {

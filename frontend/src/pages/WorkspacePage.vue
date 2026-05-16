@@ -76,6 +76,7 @@ let statusTimer: ReturnType<typeof setTimeout> | null = null
 const showAnalysisDropdown = ref(false)
 const showSilenceSettings = ref(false)
 const videoUrl = ref("")
+const waveformUrl = ref("")
 const videoRef = ref<HTMLVideoElement | null>(null)
 const currentTime = ref(0)
 const videoPaused = ref(true)
@@ -124,9 +125,21 @@ async function loadVideoUrl() {
   }
 }
 
+async function resolveWaveformUrl() {
+  const res = await call<{ url: string }>("get_waveform_url")
+  if (res.success && res.data) {
+    waveformUrl.value = res.data.url
+  }
+}
+
 onMounted(async () => {
   await loadVideoUrl()
+  await resolveWaveformUrl()
   await loadSilenceSettings()
+})
+
+watch(() => props.project.media?.waveform_path, () => {
+  resolveWaveformUrl()
 })
 
 watch(() => props.project.media?.path, loadVideoUrl)
@@ -683,7 +696,7 @@ onUnmounted(() => {
       :edits="edits"
       :duration="duration"
       :current-time="currentTime"
-      :waveform-path="project.media?.waveform_path"
+      :waveform-path="waveformUrl"
       :update-time="updateSegmentTime"
       @seek="handleSeek"
       @select-range="handleSelectRange"

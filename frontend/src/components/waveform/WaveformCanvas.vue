@@ -97,7 +97,7 @@ function drawWaveform(ctx: CanvasRenderingContext2D, w: number, _h: number, mid:
     const bucket = startBucket + i
     if (bucket >= totalBuckets) break
     const x = i * bucketWidth
-    const y = mid - (peakData[bucket].max * mid)
+    const y = mid - (peakData[bucket].max * mid * 1.3)
     ctx.lineTo(x, y)
   }
 
@@ -106,7 +106,7 @@ function drawWaveform(ctx: CanvasRenderingContext2D, w: number, _h: number, mid:
     const bucket = startBucket + i
     if (bucket >= totalBuckets) break
     const x = i * bucketWidth
-    const y = mid - (peakData[bucket].min * mid)
+    const y = mid - (peakData[bucket].min * mid * 1.3)
     ctx.lineTo(x, y)
   }
 

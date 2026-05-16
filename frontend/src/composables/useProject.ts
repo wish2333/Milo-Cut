@@ -1,7 +1,7 @@
 import { ref, computed } from "vue"
 import { call } from "@/bridge"
 import { useBridge } from "./useBridge"
-import { EVENT_PROJECT_SAVED, EVENT_PROJECT_DIRTY } from "@/utils/events"
+import { EVENT_PROJECT_SAVED, EVENT_PROJECT_DIRTY, EVENT_TASK_COMPLETED } from "@/utils/events"
 import type { Project, Segment, EditDecision, MediaInfo } from "@/types/project"
 
 export function useProject() {
@@ -23,6 +23,12 @@ export function useProject() {
 
   on(EVENT_PROJECT_DIRTY, () => {
     isDirty.value = true
+  })
+
+  on(EVENT_TASK_COMPLETED, (data: { task_id: string; task_type?: string; result?: { project?: Project } }) => {
+    if (data.task_type === "waveform_generation" && data.result?.project) {
+      project.value = data.result.project
+    }
   })
 
   async function triggerWaveformGeneration(): Promise<void> {
