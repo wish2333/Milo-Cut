@@ -2,6 +2,7 @@
 
 1. 字幕部分尽管不检测也应该能够选择删除，此外还要妥善处理好与空白检测的冲突
   2. TimelineRuler需要有滑块来滚动而非拖动滚动，避免与时间跳转的点击（改为点击时间码区域才跳转时间，点击时间范围改为选
+
     择某段时间）冲突；同时允许滚轮实现滚动，要处理好滚轮缩放（改为Ctrl+滚轮-->缩放）；区域高度可以放大一些；选择某段时间
     后可以拖动范围左右来更改选区范围，增加按钮开关吸附；优化性能表现
   3. Timeline中应当允许修改范围时间戳的数值
@@ -67,9 +68,11 @@
   当前问题:
 
   1. add_silence_results() 用 abs(e.start - sil["start"]) < 0.05
+
     做重复检测，只能匹配完全相同的时间范围。部分重叠（如字幕 1.0-3.0s，空白 2.5-4.0s）不处理
   2. 前端 mergedSegments 直接拼接所有 segments 排序，空白段和字幕段在时间线上可以重叠显示
   3. getEditForSegment() 用时间匹配找 EditDecision，但同一个时间点可能有多个
+
     EditDecision（一个来自空白检测，一个来自字幕删除），匹配不确定
   4. 没有优先级机制：用户手动标记字幕删除 vs 空白检测建议删除，冲突时不知道听谁的
 
@@ -209,6 +212,35 @@
 - DetectSilence检测出来的静音区域没法单独删除，只能全部清除（SubtitleTrim无需单独删除是因为他能够通过字幕块的调整之后重新检测重新划定，但是DetectSilence没法用这种方式，就需要有单独的DetectSilence块来编辑）
 - 首页导入页支持通过拖入project.json或一级含project.json的文件夹读取项目
 
+---
+
+- 导出按钮右对齐
+- 我的系统有nv显卡但是显示未检测到NVIDIAGPU，硬件编码不可用，没有显示av1_nvenc，而且libsvtav1应该除非系统为mac都要显示的啊
+  - Unhandled bridge exception in detect_gpu
+- 预览无法使用，仅显示xxx个删除区域
+- 导出失败:Method 'export_audio' not found on bridge
+  - Traceback (most recent call last):
+      File "Q:\Git\GithubManager\Milo-Cut\pywebvue\bridge.py", line 32, in wrapper
+        return func(*args, **kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^
+      File "Q:\Git\GithubManager\Milo-Cut\main.py", line 500, in detect_gpu
+        result = subprocess.run(
+                 ^^^^^^^^^^
+    NameError: name 'subprocess' is not defined
+- 导出失败:Method 'export_video' not found on bridge
+  - 控制台没有额外报错
+- 导出失败:Method'export_subtitle' not found on bridge
+  - 控制台没有额外报错
+- 导出失败:[Ermo 22] Invalid argument: "('D:I1下载\Timeline 1.edl.mp4,)"
+  - 控制台没有额外报错
+- 导出失败:[Errno 22] Invalid argument:"('D:11下载ITimeline 1.fcpxml.mp4,)"
+  - 控制台没有额外报错
+
+> - 预览播放需要支持音量调整
+> - 编码器设置并未成功，设置了AV1，导出的视频仍是H264编码
+> - EDL导出失败:[Errno 22] Invalid argument:"('D:1\下载\Timeline 1.edl,)"
+> FCPXML导出失败:[Errno 22] Invalid argument:"('D:\\下载\Timeline 1.fcpxml',)”
+
 ## 待提出的问题
 
-- 
+- 添加声波显示
