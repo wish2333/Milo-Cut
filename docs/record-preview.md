@@ -189,3 +189,47 @@ FFmpeg 静音检测 -> margin 缩边 -> 字幕保护裁剪 -> 创建 Segment/Edi
 - EDL 时间线导出：CMX3600 格式（达芬奇）
 - XML 时间线导出：FCP 7 XML 格式（Premiere Pro / 达芬奇）
 - 多项 Bug 修复和稳定性改进
+
+### B-1 修复: 波形滑块水平滚动条溢出
+
+**问题**: 当 Waveform 滑块滑到最右边时，thumb 宽度溢出容器，引发窗口横向滚动条出现，遮挡波形滑块且无法消除。
+
+**修复方案 (双层防御)**:
+
+| 位置 | 变更 |
+|------|------|
+| `App.vue` 根 div | `min-h-screen` 改为 `min-h-screen overflow-x-hidden`，禁止窗口横向滚动条 |
+| `ScrollbarStrip.vue` thumb | 添加 `maxWidth: Math.max(0, 100 - metrics.thumbLeft.value) + '%'` 约束 thumb 不超出右边界 |
+
+### 波形重新生成按钮
+
+在 WaveformEditor 控制栏左侧新增 "Regen" 按钮，用于清空缓存并重新触发生成波形，方便验证波形显示对齐。
+
+**实现细节**:
+
+| 文件 | 变更 |
+|------|------|
+| `main.py` | 新增 `regenerate_waveform` @expose 方法：调用 `update_media_waveform("")` 清空路径（frozen model 安全），重置 media server 波形路径，创建并启动 waveform_generation task |
+| `frontend/src/components/waveform/WaveformEditor.vue` | 新增 `regenerate-waveform` emit 声明 + Regen 按钮（controls bar 左端） |
+| `frontend/src/pages/WorkspacePage.vue` | 新增 `handleRegenerateWaveform` 处理函数 — 500ms 轮询 `get_waveform_url`（30s 超时），因为 regen 后 waveform_path 值不变，Vue watch 不会触发；清理定时器在 onUnmounted |
+
+**关键教训**: Pydantic frozen model 不能直接赋值，必须使用 `model_copy(update={...})`.
+
+### OTIO 导出
+
+新增 OpenTimelineIO (.otio) 格式导出，使用 `opentimelineio` 库构建标准 schema，PR 2025+ 和达芬奇 18+ 均原生支持。
+
+**实现细节**:
+
+| 文件 | 变更 |
+|------|------|
+| `core/config.py` | 新增 `export_fade_duration` 配置项（默认 0.0） |
+| `core/export_timeline.py` | 新增 `export_otio()` — 使用 OTIO schema 对象构建 Timeline、Track、Clip、ExternalReference；新增 `_build_otio_clips_with_transitions()` — 在片段间插入 SMPTE_Dissolve Transition（检查 source boundaries 确保有足够 handle）；修复 `_sec_to_frames()` 使用 `round()` 确保整数帧 |
+| `main.py` | 新增 `export_otio` bridge 方法 |
+| `frontend/src/pages/ExportPage.vue` | 新增 OTIO 导出按钮 + fade_duration 滑块（0-1s, step 0.05），带 amber 说明文字 |
+| `pyproject.toml` | 新增 `opentimelineio>=0.18.1` 依赖 |
+
+**注意事项**:
+- 使用 `round()` 而非 `int()` 进行秒到帧的转换，确保 NLE 兼容性
+- Python 3 `round()` 使用银行家舍入 (round-half-to-even)，跨帧过渡帧数可能差 1 帧，NLE 工作流可接受
+- 过渡只插入有足够 handle 的片段之间（源边界检查）

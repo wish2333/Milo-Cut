@@ -24,6 +24,7 @@ const emit = defineEmits<{
   "add-segment": [start: number, end: number]
   "delete-segment": [segmentId: string]
   "seek-segment": [segment: Segment]
+  "regenerate-waveform": []
 }>()
 
 const durationRef = toRef(props, "duration")
@@ -77,6 +78,13 @@ function handleSeekSegment(segment: Segment) {
   <div class="flex flex-col">
     <!-- Controls bar -->
     <div class="flex h-6 items-center gap-2 border-b border-gray-200 px-2 text-xs text-gray-500">
+      <button
+        class="shrink-0 rounded bg-gray-200 px-2 py-0.5 text-[11px] leading-none text-gray-600 hover:bg-gray-300 transition-colors"
+        title="Regenerate waveform"
+        @click="emit('regenerate-waveform')"
+      >
+        Regen
+      </button>
       <span>{{ metrics.viewStart.value.toFixed(1) }}s</span>
       <span class="flex-1 text-center">{{ metrics.viewDuration.value.toFixed(1) }}s window</span>
       <span>{{ metrics.viewEnd.value.toFixed(1) }}s</span>

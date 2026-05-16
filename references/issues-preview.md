@@ -241,6 +241,118 @@
 > - EDL导出失败:[Errno 22] Invalid argument:"('D:1\下载\Timeline 1.edl,)"
 > FCPXML导出失败:[Errno 22] Invalid argument:"('D:\\下载\Timeline 1.fcpxml',)”
 
+- /ecc:plan 在时间线上添加声音波形显示
+- 时间线区域的缩放出了Ctrl+滚轮还应该有实体按钮+-
+- DetectSilence允许在静音检测后、与字幕冲突检测前，先用margin值（0s-0.01s-0.5s，默认0s）自行缩一次范围（如果范围本身效果margin值则删除这个静音区域标识，如果margin值*2应当小于min duration）
+- 目前如果DetectSilence与字幕冲突默认优先字幕，会缩减静音区域到字幕空隙，希望进一步允许DetectSilence在字幕空隙中还要和字幕保持距离（类似SubtitleTrim的padding）
+- DetectSilence的min duration标尺缩到0.05-2s并允许0.05一格调整
+- DetectSilence有一个检测兼容问题，我希望如果执行检测时某个字幕块已经标注为已删除，则字幕保护裁剪忽略这一字幕块
+
 ## 待提出的问题
 
-- 添加声波显示
+- 一个前端bug，当Waveform滑块滑到最右边时会引发窗口横向滑块出现，遮挡Waveform滑块，并且无法消除，应当禁止窗口横向滑块出现
+- 时间线导出支持OTTI
+- OTTI（能否可选给每个音频块添加淡入淡出？OTTI还支持什么功能是适配我们这个项目的）
+
+- 目前OTIO无法导入剪辑软件，怀疑构建失败，python不是有opentimelineio吗，用这个库构建OTIO文件
+
+- OTTI建议如下：
+
+````
+OTIO 就是你要的那种：**一个 .otio 文件，PR 和达芬奇都能直接导入/导出**，而且比 XML/AAF 更现代、更稳、扩展性强很多。下面直接讲重点（2026 现状）。 --- ## ✅ OTIO 是什么 **OpenTimelineIO（.otio/.otioz）**：ASWF 开源的**时间线交换标准**，本质是 JSON，只存剪辑结构、时间码、轨道、元数据、素材路径，**不存视频画面**。 - **达芬奇**：**原生支持导入/导出 OTIO**（18+ 完全内置，不用插件） - **PR**：**2024 之后 Beta 原生支持 OTIO**；正式版 2025+ 已内置（文件 → 导入/导出 → OpenTimelineIO） - 结论：**2026 年，PR ↔ 达芬奇 用 OTIO 已经是官方原生工作流**，不需要 XML/AAF 绕路 --- ## ✅ PR ↔ 达芬奇 OTIO 互导（极简） ### 1）PR → 达芬奇（.otio） 1. PR：文件 → 导出 → **OpenTimelineIO（.otio）** 2. 达芬奇：文件 → 导入时间线 → **导入 OTIO** 3. 自动还原：**剪辑、多轨道、时间码、标记、帧率、素材路径** ### 2）达芬奇 → PR（.otio） 1. 达芬奇：交付 → 渲染预设选 **OpenTimelineIO（.otio）** 2. PR：文件 → 导入 → 选 .otio，直接生成序列 ### 3）OTIOZ（打包，更稳） - **.otioz = OTIO + 素材打包**（类似压缩包） - 适合：**换电脑/异地协作/路径乱了**的场景，直接打包带走，对方解压即用 --- ## ✅ OTIO vs XML/AAF（2026 实测） | 格式 | PR 原生 | 达芬奇原生 | 多轨道 | 元数据/标记 | 稳定性 | 扩展性 | |---|---|---|---|---|---|---| | **OTIO** | ✅ 2025+ | ✅ 18+ | ✅ 完美 | ✅ 完整 | ⭐⭐⭐⭐⭐ | 强（开源可扩展） | | FCP XML | ✅ | ✅ | ✅ 一般 | ❌ 丢失多 | ⭐⭐⭐⭐ | 弱 | | AAF | ✅ | ✅ | ✅ 好 | ⚠️ 部分丢 | ⭐⭐⭐⭐ | 中 | 一句话：**OTIO 是现在 PR ↔ 达芬奇 互导的最佳格式，没有之一**。 --- ## ✅ 注意（避坑） 1. **素材路径尽量不变**：OTIO 靠路径链接素材，路径变了要手动重链接 2. **复杂特效/插件会丢**：OTIO 只传**剪辑结构+元数据**，不传 PR 调色、Lumetri、第三方插件；达芬奇节点也不会回 PR 3. **分辨率/帧率统一**：工程设置一致（如 1080p 25fps），避免错位 --- ## ✅ 结论（你要的答案） - **能同时导入 PR 和达芬奇的工程文件：就是 OTIO（.otio/.otioz）** - **2026 年两者都原生支持**，比 XML/AAF 更稳、更全、更现代 - 工作流：**PR ↔ OTIO ↔ 达芬奇**，一步到位 要不要我给你一份可直接照着点的“PR ↔ 达芬奇 OTIO 互导极简操作清单”（含菜单路径和推荐参数）？
+# OTIO 相对路径标准模板（直接复制即用）
+保存为 `timeline.otio`，**仅改文件名即可**，全程相对路径，PR/达芬奇通用
+```json
+{
+    "OTIO_SCHEMA": "timeline.1",
+    "name": "项目时间线",
+    "global_start_time": {
+        "rate": 25.0,
+        "value": 0
+    },
+    "tracks": [
+        {
+            "OTIO_SCHEMA": "track.1",
+            "name": "视频轨道1",
+            "kind": "Video",
+            "children": [
+                {
+                    "OTIO_SCHEMA": "clip.1",
+                    "name": "素材片段",
+                    "media_reference": {
+                        "OTIO_SCHEMA": "external_reference.1",
+                        "target_url": "../media/video/素材.mp4",
+                        "available_range": {
+                            "start_time": {"rate":25.0,"value":0},
+                            "duration": {"rate":25.0,"value":100}
+                        }
+                    },
+                    "source_range": {
+                        "start_time": {"rate":25.0,"value":0},
+                        "duration": {"rate":25.0,"value":100}
+                    }
+                }
+            ]
+        },
+        {
+            "OTIO_SCHEMA": "track.1",
+            "name": "音频轨道1",
+            "kind": "Audio",
+            "children": [
+                {
+                    "OTIO_SCHEMA": "clip.1",
+                    "name": "音频素材",
+                    "media_reference": {
+                        "OTIO_SCHEMA": "external_reference.1",
+                        "target_url": "../media/audio/音效.wav",
+                        "available_range": {
+                            "start_time": {"rate":25.0,"value":0},
+                            "duration": {"rate":25.0,"value":100}
+                        }
+                    },
+                    "source_range": {
+                        "start_time": {"rate":25.0,"value":0},
+                        "duration": {"rate":25.0,"value":100}
+                    }
+                }
+            ]
+        }
+    ]
+}
+```
+
+## 固定目录结构（必遵守，永不脱机）
+```
+项目总文件夹
+├─ 剪辑工程文件夹
+│  └─ timeline.otio    # OTIO放这里
+└─ media               # 素材总文件夹
+   ├─ video
+   └─ audio
+```
+- `../media/` = **OTIO向上一级找到素材文件夹**
+- 整个项目文件夹**随便移动、换盘符、换电脑**，路径永久生效
+
+## 快速批量替换绝对路径 → 相对路径
+1. 用记事本打开导出的原生OTIO
+2. 查找所有：`file:///D:/你的长路径/`
+3. 全部替换为：`../media/`
+4. 保存直接导入PR/达芬奇，自动识别
+
+## 帧率修改
+把里面所有 `25.0` 改成你工程帧率：**24.0 / 30.0 / 60.0**
+
+## 软件导出强制相对路径最终设置
+1. PR：项目设置 → 勾选**首选使用相对路径**
+2. 达芬奇：导出选 **OTIOZ** 自动内置相对路径，无需手动改
+````
+
+请根据以上内容撰写 @docs/audit-report-0.2.0-3.md
+
+> - 导出界面播放预览再返回编辑界面之后，会有半分钟左右波形显示不见了，也无法回到导入页，半分钟后显示并可回到导入页
+> - 所有使用旧通知的均改用Toast 通知系统
+> - OTIO按钮提到最上方并写清楚是DaVinci/NewPR/Others
+> - OTIO音频转场可选交叉过渡或是分别淡入淡出
+> - 音视频转场导出能否通过filtercomplex实现（音频过渡是否也可选，共用一个勾选框）
+> - Waveform滑块滑动时非常卡顿，请优化性能
+> - 评估这几个问题，然后补充到 @..\docs\audit-report-0.2.0-3.md 的新附录中

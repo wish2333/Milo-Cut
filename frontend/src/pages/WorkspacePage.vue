@@ -127,6 +127,37 @@ async function loadVideoUrl() {
   }
 }
 
+let regenPollTimer: ReturnType<typeof setInterval> | null = null
+
+async function handleRegenerateWaveform() {
+  statusMessage.value = "Regenerating waveform..."
+  const res = await call<{ task_id: string }>("regenerate_waveform")
+  if (!res.success) {
+    showToast(res.error ?? "Failed to regenerate waveform", "error", 3000)
+    statusMessage.value = ""
+    return
+  }
+  // Poll get_waveform_url until regeneration completes (waveform_path is
+  // the same after regen so the watch on it won't fire)
+  if (regenPollTimer) clearInterval(regenPollTimer)
+  const start = Date.now()
+  regenPollTimer = setInterval(async () => {
+    const urlRes = await call<{ url: string }>("get_waveform_url")
+    if (urlRes.success && urlRes.data) {
+      clearInterval(regenPollTimer!)
+      regenPollTimer = null
+      waveformUrl.value = urlRes.data.url
+      statusMessage.value = ""
+      showToast("Waveform regenerated", "success", 2000)
+    } else if (Date.now() - start > 30000) {
+      clearInterval(regenPollTimer!)
+      regenPollTimer = null
+      statusMessage.value = ""
+      showToast("Waveform regeneration timed out", "error", 3000)
+    }
+  }, 500)
+}
+
 async function resolveWaveformUrl() {
   const res = await call<{ url: string }>("get_waveform_url")
   if (res.success && res.data) {
@@ -143,7 +174,6 @@ onMounted(async () => {
 watch(() => props.project.media?.waveform_path, () => {
   resolveWaveformUrl()
 })
-
 watch(() => props.project.media?.path, loadVideoUrl)
 
 async function loadSilenceSettings() {
@@ -391,6 +421,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.removeEventListener("keydown", handleGlobalKeydown)
+  if (regenPollTimer) clearInterval(regenPollTimer)
 })
 </script>
 
@@ -745,6 +776,7 @@ onUnmounted(() => {
       @add-segment="handleAddSegment"
       @delete-segment="handleDeleteSegment"
       @seek-segment="handleSeekSegment"
+      @regenerate-waveform="handleRegenerateWaveform"
     />
 
     <!-- Delete silence confirmation dialog -->

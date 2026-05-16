@@ -378,6 +378,22 @@ class MiloCutApi(Bridge):
         return {"success": True, "data": {"url": f"http://127.0.0.1:{self._media_server.port}/waveform"}}
 
     @expose
+    def regenerate_waveform(self) -> dict:
+        """Clear cached waveform and trigger regeneration."""
+        if self._project.current is None:
+            return {"success": False, "error": "No project open"}
+        if self._project.current.media is None:
+            return {"success": False, "error": "No media in project"}
+
+        # Clear existing waveform state so task can re-generate
+        self._project.update_media_waveform("")
+        self._media_server._waveform_path = ""
+
+        task = self._task_manager.create_task("waveform_generation")
+        self._task_manager.start_task(task["data"]["id"])
+        return {"success": True, "data": {"task_id": task["data"]["id"]}}
+
+    @expose
     def stop_media_server(self) -> dict:
         """Stop the local media server."""
         self._media_server.stop()
@@ -592,6 +608,18 @@ class MiloCutApi(Bridge):
         edits = [e.model_dump() for e in project.edits]
         media_info = project.media.model_dump() if project.media else {}
         return _export_xmeml_premiere(segments, edits, media_info, output_path)
+
+    @expose
+    def export_otio(self, output_path: str, fade_duration: float = 0.0) -> dict:
+        """Export OpenTimelineIO (.otio) file."""
+        from core.export_timeline import export_otio as _export_otio
+        project = self._project._current
+        if not project:
+            return {"success": False, "error": "No project open"}
+        segments = [s.model_dump() for s in project.transcript.segments]
+        edits = [e.model_dump() for e in project.edits]
+        media_info = project.media.model_dump() if project.media else {}
+        return _export_otio(segments, edits, media_info, output_path, fade_duration=fade_duration)
 
 
 if __name__ == "__main__":

@@ -45,6 +45,7 @@ function handleMouseDown(e: MouseEvent) {
       :style="{
         left: metrics.thumbLeft.value + '%',
         width: metrics.thumbWidth.value + '%',
+        maxWidth: Math.max(0, 100 - metrics.thumbLeft.value) + '%',
       }"
     />
   </div>

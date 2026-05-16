@@ -128,7 +128,7 @@ async function handleWindowDrop(e: DragEvent) {
 
 <template>
   <div
-    class="min-h-screen"
+    class="min-h-screen overflow-x-hidden"
     @dragenter="handleWindowDragEnter"
     @dragover="handleWindowDragOver"
     @dragleave="handleWindowDragLeave"

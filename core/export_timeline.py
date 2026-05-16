@@ -1,4 +1,4 @@
-"""Export timeline formats: EDL (CMX3600) and xmeml (FCP 7 XML)."""
+"""Export timeline formats: EDL (CMX3600), xmeml (FCP 7 XML), and OTIO."""
 
 from __future__ import annotations
 
@@ -342,8 +342,8 @@ def _build_keep_ranges(
 
 
 def _sec_to_frames(seconds: float, fps: float) -> int:
-    """Convert seconds to frame count."""
-    return int(seconds * fps)
+    """Convert seconds to frame count (strict integer for NLE compatibility)."""
+    return int(round(seconds * fps))
 
 
 def _seconds_to_timecode(seconds: float, fps: float) -> str:
@@ -355,3 +355,143 @@ def _seconds_to_timecode(seconds: float, fps: float) -> str:
     m = (total_seconds // 60) % 60
     h = total_seconds // 3600
     return f"{h:02d}:{m:02d}:{s:02d}:{frames:02d}"
+
+
+def export_otio(
+    segments: list[dict],
+    edits: list[dict],
+    media_info: dict,
+    output_path: str,
+    *,
+    fade_duration: float = 0.0,
+) -> dict:
+    """Export OpenTimelineIO (.otio) using the opentimelineio library.
+
+    The .otio file is saved next to the source video for easy relocation.
+    All RationalTime values are strict integers for NLE compatibility.
+    """
+    import opentimelineio as otio
+
+    try:
+        fps = media_info.get("fps", 25.0)
+        media_path = media_info.get("path", "")
+        source_duration = media_info.get("duration", 0)
+
+        keep_ranges = _build_keep_ranges(segments, edits, source_duration, fps)
+
+        media_filename = Path(media_path).name
+        available_dur_frames = _sec_to_frames(source_duration, fps)
+
+        # Build clips using OTIO schema objects
+        otio_clips: list[otio.schema.Clip] = []
+        for idx, (start, end) in enumerate(keep_ranges):
+            clip_dur = end - start
+            if clip_dur <= 0:
+                continue
+            src_start_frames = _sec_to_frames(start, fps)
+            src_dur_frames = _sec_to_frames(clip_dur, fps)
+
+            clip = otio.schema.Clip(
+                name=f"Clip {idx + 1}",
+                source_range=otio.opentime.TimeRange(
+                    start_time=otio.opentime.RationalTime(src_start_frames, fps),
+                    duration=otio.opentime.RationalTime(src_dur_frames, fps),
+                ),
+                media_reference=otio.schema.ExternalReference(
+                    target_url=media_filename,
+                    available_range=otio.opentime.TimeRange(
+                        start_time=otio.opentime.RationalTime(0, fps),
+                        duration=otio.opentime.RationalTime(available_dur_frames, fps),
+                    ),
+                ),
+            )
+            otio_clips.append(clip)
+
+        # Build track children (clips + optional transitions)
+        track_items: list = list(otio_clips)
+        if fade_duration > 0 and len(otio_clips) > 1:
+            track_items = _build_otio_clips_with_transitions(
+                otio_clips, fps, fade_duration, keep_ranges, source_duration,
+            )
+
+        # Build timeline with separate Video and Audio tracks
+        video_track = otio.schema.Track(
+            name="Video 1",
+            kind=otio.schema.TrackKind.Video,
+        )
+        for item in track_items:
+            video_track.append(item)
+
+        audio_track = otio.schema.Track(
+            name="Audio 1",
+            kind=otio.schema.TrackKind.Audio,
+        )
+        # Deep copy: each track gets independent clip objects
+        for item in track_items:
+            audio_track.append(item.deepcopy())
+
+        timeline = otio.schema.Timeline(
+            name=Path(media_path).stem + "_edited",
+            global_start_time=otio.opentime.RationalTime(0, fps),
+        )
+        timeline.tracks.append(video_track)
+        timeline.tracks.append(audio_track)
+
+        # Serialize via OTIO adapter (ensures valid schema output)
+        otio.adapters.write_to_file(timeline, output_path)
+        logger.info("Exported OTIO to {}", output_path)
+        return {"success": True, "data": output_path}
+
+    except Exception as e:
+        logger.exception("Failed to export OTIO")
+        return {"success": False, "error": str(e)}
+
+
+def _build_otio_clips_with_transitions(
+    clips: list,
+    fps: float,
+    fade_duration: float,
+    keep_ranges: list[tuple[float, float]],
+    source_duration: float,
+) -> list:
+    """Insert SMPTE_Dissolve Transition objects between OTIO Clips.
+
+    Handles check: clips at source boundaries are skipped because there
+    is no extra media available for crossfade.
+
+    Note: Python 3 round() uses banker's rounding (round-half-to-even).
+    For example, round(2.5) -> 2, round(3.5) -> 4. This means the total
+    transition duration may be off by one frame, keeping in_offset and
+    out_offset perfectly symmetric. This is acceptable in NLE workflows.
+    """
+    import opentimelineio as otio
+
+    half_fade_frames = _sec_to_frames(fade_duration / 2, fps)
+    if half_fade_frames <= 0:
+        return list(clips)
+
+    epsilon = 0.001
+    interleaved: list = []
+    for i, clip in enumerate(clips):
+        interleaved.append(clip)
+        if i >= len(clips) - 1:
+            break
+
+        a_start, a_end = keep_ranges[i]
+        b_start, _ = keep_ranges[i + 1]
+
+        a_has_handle = (a_end + fade_duration / 2) <= (source_duration + epsilon)
+        b_has_handle = b_start >= (fade_duration / 2 - epsilon)
+
+        if not (a_has_handle and b_has_handle):
+            continue
+
+        transition = otio.schema.Transition(
+            name=f"Crossfade {i + 1}",
+            transition_type="SMPTE_Dissolve",
+            in_offset=otio.opentime.RationalTime(half_fade_frames, fps),
+            out_offset=otio.opentime.RationalTime(half_fade_frames, fps),
+        )
+        interleaved.append(transition)
+
+    return interleaved

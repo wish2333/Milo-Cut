@@ -37,6 +37,7 @@ const encodingSettings = ref({
 
 const statusMessage = ref("")
 const errorMessage = ref("")
+const otioFadeDuration = ref(0)
 
 const subtitleCount = computed(() =>
   props.project.transcript?.segments?.filter(s => s.type === "subtitle").length ?? 0
@@ -132,6 +133,29 @@ async function handleExportXmemlPremiere() {
     }
   } catch (e) {
     errorMessage.value = `Premiere XML 导出失败: ${e}`
+  } finally {
+    statusMessage.value = ""
+  }
+}
+
+async function handleExportOtio() {
+  errorMessage.value = ""
+  statusMessage.value = "正在导出 OTIO..."
+  try {
+    const mediaPath = props.project.media?.path
+    if (!mediaPath) {
+      errorMessage.value = "无法获取源文件路径"
+      return
+    }
+    const outputPath = mediaPath.replace(/\.[^.]+$/, ".otio")
+    const exportRes = await call<string>("export_otio", outputPath, otioFadeDuration.value)
+    if (exportRes.success) {
+      statusMessage.value = "OTIO 导出完成"
+    } else {
+      errorMessage.value = `OTIO 导出失败: ${exportRes.error}`
+    }
+  } catch (e) {
+    errorMessage.value = `OTIO 导出失败: ${e}`
   } finally {
     statusMessage.value = ""
   }
@@ -242,6 +266,29 @@ function formatTimeShort(seconds: number): string {
             >
               导出 XML
             </button>
+            <button
+              class="w-full flex items-center gap-2 rounded-md bg-indigo-50 px-4 py-2 text-sm text-indigo-700 hover:bg-indigo-100 transition-colors mt-2"
+              :disabled="isExporting"
+              @click="handleExportOtio"
+            >
+              导出 OTIO (DaVinci/PR)
+            </button>
+            <div class="mt-2">
+              <label class="block">
+                <span class="text-xs text-gray-500">
+                  交叉淡入淡出 (s): {{ otioFadeDuration.toFixed(2) }}
+                </span>
+                <input
+                  type="range"
+                  v-model.number="otioFadeDuration"
+                  min="0" max="1.0" step="0.05"
+                  class="w-full mt-1"
+                />
+                <p v-if="otioFadeDuration > 0" class="text-xs text-gray-400 mt-0.5">
+                  OTIO 导出时在片段间添加交叉淡入淡出效果
+                </p>
+              </label>
+            </div>
           </div>
         </div>
 
