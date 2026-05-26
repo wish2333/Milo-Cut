@@ -3,6 +3,7 @@ import { call } from "@/bridge"
 import { useTask } from "./useTask"
 import type { Project } from "@/types/project"
 import type { EditSummary } from "@/types/edit"
+import type { TaskType } from "@/types/task"
 
 export function useExport(project: Ref<Project | null>) {
   const { createTask, startTask, activeTask, isRunning } = useTask()
@@ -38,34 +39,15 @@ export function useExport(project: Ref<Project | null>) {
     return null
   }
 
-  async function exportVideo(outputPath?: string): Promise<boolean> {
-    const payload: Record<string, string> = {}
-    if (outputPath) {
-      payload.output_path = outputPath
-    }
-    const task = await createTask("export_video", payload)
-    if (!task) return false
-    return await startTask(task.id)
-  }
-
-  async function exportSrt(outputPath?: string): Promise<boolean> {
-    const payload: Record<string, string> = {}
-    if (outputPath) {
-      payload.output_path = outputPath
-    }
-    const task = await createTask("export_subtitle", payload)
-    if (!task) return false
-    return await startTask(task.id)
-  }
-
-  async function exportAudio(outputPath?: string): Promise<boolean> {
-    const payload: Record<string, string> = {}
-    if (outputPath) {
-      payload.output_path = outputPath
-    }
-    const task = await createTask("export_audio", payload)
-    if (!task) return false
-    return await startTask(task.id)
+  async function createExportTask(
+    type: TaskType,
+    payload?: Record<string, unknown>,
+  ): Promise<string | null> {
+    const task = await createTask(type, payload)
+    if (!task) return null
+    const ok = await startTask(task.id)
+    if (!ok) return null
+    return task.id
   }
 
   return {
@@ -74,8 +56,6 @@ export function useExport(project: Ref<Project | null>) {
     confirmedEdits,
     estimatedSaving,
     getExportSummary,
-    exportVideo,
-    exportSrt,
-    exportAudio,
+    createExportTask,
   }
 }

@@ -10,7 +10,8 @@ export default defineConfig({
     alias: { "@": resolve(__dirname, "src") },
   },
   server: {
-    port: 5173,
+    host: "127.0.0.1",
+    port: 5200,
     strictPort: true,
   },
   build: {

@@ -40,7 +40,7 @@ describe("SilenceRow", () => {
     const wrapper = mount(SilenceRow, {
       props: { segment: silenceSegment, displayStatus: "confirmed" },
     })
-    expect(wrapper.text()).toContain("已确认")
+    expect(wrapper.text()).toContain("已删除")
     expect(wrapper.classes()).toContain("bg-red-50")
   })
 

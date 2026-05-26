@@ -9,7 +9,12 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
+
+_SUBPROCESS_KWARGS: dict = (
+    {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+)
 
 from loguru import logger
 
@@ -48,6 +53,7 @@ def probe_media(file_path: str) -> dict:
         result = subprocess.run(
             cmd, capture_output=True, timeout=30,
             encoding="utf-8", errors="replace",
+            **_SUBPROCESS_KWARGS,
         )
         if result.returncode != 0:
             return {"success": False, "error": f"ffprobe exited with code {result.returncode}"}
@@ -71,6 +77,8 @@ def probe_media(file_path: str) -> dict:
             except (ValueError, ZeroDivisionError):
                 fps = 0.0
 
+        pix_fmt = video_stream.get("pix_fmt", "") if video_stream else ""
+
         data = {
             "path": file_path,
             "duration": round(duration, 3),
@@ -78,6 +86,7 @@ def probe_media(file_path: str) -> dict:
             "width": width,
             "height": height,
             "fps": round(fps, 3),
+            "pix_fmt": pix_fmt,
             "audio_channels": int(audio_stream.get("channels", 0)) if audio_stream else 0,
             "sample_rate": int(audio_stream.get("sample_rate", 0)) if audio_stream else 0,
             "bit_rate": int(format_info.get("bit_rate", 0)),
@@ -113,6 +122,7 @@ def detect_silence(
         result = subprocess.run(
             cmd, capture_output=True, timeout=300,
             encoding="utf-8", errors="replace",
+            **_SUBPROCESS_KWARGS,
         )
         output = result.stderr
 
@@ -180,6 +190,7 @@ def generate_waveform(
         ]
         result = subprocess.run(
             cmd, capture_output=True, timeout=300,
+            **_SUBPROCESS_KWARGS,
         )
         if result.returncode != 0:
             return {"success": False, "error": f"ffmpeg exited with code {result.returncode}"}

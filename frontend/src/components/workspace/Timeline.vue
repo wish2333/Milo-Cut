@@ -22,6 +22,7 @@ const emit = defineEmits<{
   "toggle-status": [segment: Segment]
   "confirm-segment": [segment: Segment]
   "reject-segment": [segment: Segment]
+  "delete-segment": [segment: Segment]
   "confirm-suggestion": [editId: string]
   "reject-suggestion": [editId: string]
   "confirm-all": []
@@ -109,6 +110,9 @@ watch(
               @seek="(t) => emit('seek', t)"
               @update-time="(id, field, val) => emit('update-time', id, field, val)"
               @toggle-status="emit('toggle-status', seg)"
+              @confirm-edit="emit('confirm-segment', seg)"
+              @reject-edit="emit('reject-segment', seg)"
+              @delete="emit('delete-segment', seg)"
             />
           </template>
         </div>

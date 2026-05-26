@@ -81,11 +81,57 @@ class ProjectService:
             self._current = project
             self._current_path = project_path
             logger.info("Opened project: {}", path)
-            return {"success": True, "data": project.model_dump()}
+
+            # Migrate old format silence edits
+            self._migrate_silence_edits()
+
+            # Check media path reachability
+            warnings = []
+            if self._current.media and self._current.media.path:
+                if not Path(self._current.media.path).exists():
+                    warnings.append(f"Media file not found: {self._current.media.path}")
+
+            result = {"success": True, "data": self._current.model_dump()}
+            if warnings:
+                result["warnings"] = warnings
+            return result
 
         except Exception as e:
             logger.exception("Failed to open project: {}", path)
             return {"success": False, "error": str(e)}
+
+    def _migrate_silence_edits(self) -> None:
+        """Migrate old format silence EditDecisions to bind target_id."""
+        if not self._current:
+            return
+
+        silence_map = {
+            s.id: s for s in self._current.transcript.segments
+            if s.type == SegmentType.SILENCE
+        }
+
+        migrated = []
+        for edit in self._current.edits:
+            if (edit.source == "silence_detection"
+                    and edit.target_type == "range"
+                    and edit.target_id is None):
+                # Try to match by time range
+                matched = next(
+                    (s for s in silence_map.values()
+                     if abs(s.start - edit.start) < 0.05 and abs(s.end - edit.end) < 0.05),
+                    None,
+                )
+                if matched:
+                    migrated.append(edit.model_copy(update={
+                        "target_type": "segment",
+                        "target_id": matched.id,
+                    }))
+                else:
+                    migrated.append(edit)
+            else:
+                migrated.append(edit)
+
+        self._current = self._current.model_copy(update={"edits": migrated})
 
     def save_project(self) -> dict:
         """Save the current project to disk."""
@@ -233,14 +279,108 @@ class ProjectService:
 
         return result
 
-    def add_silence_results(self, silences: list[dict]) -> dict:
+    def _trim_silences_around_subtitles(
+        self,
+        silences: list[dict[str, float]],
+        padding: float = 0.0,
+    ) -> list[dict[str, float]]:
+        """Trim silence ranges to avoid subtitle extended regions.
+
+        For each subtitle segment, computes an extended region
+        [subtitle.start - padding, subtitle.end + padding].
+        Silence ranges are split/cropped to avoid these regions.
+        """
+        if not silences or padding <= 0:
+            return silences
+
+        # Exclude subtitles that have been confirmed for deletion
+        confirmed_deleted_ids: set[str] = {
+            e.target_id for e in (self._current.edits if self._current else [])
+            if e.status == EditStatus.CONFIRMED and e.action == "delete" and e.target_id
+        }
+
+        subtitle_segs = sorted(
+            [s for s in (self._current.transcript.segments if self._current else [])
+             if s.type == SegmentType.SUBTITLE and s.id not in confirmed_deleted_ids],
+            key=lambda s: s.start,
+        )
+        if not subtitle_segs:
+            return silences
+
+        # Build subtitle extended regions (merge overlapping)
+        extended: list[tuple[float, float]] = []
+        for seg in subtitle_segs:
+            ext_start = max(0.0, seg.start - padding)
+            ext_end = seg.end + padding
+            if extended and ext_start <= extended[-1][1]:
+                extended[-1] = (extended[-1][0], max(extended[-1][1], ext_end))
+            else:
+                extended.append((ext_start, ext_end))
+
+        # Trim each silence range against extended regions
+        result: list[dict[str, float]] = []
+        for sil in silences:
+            parts: list[tuple[float, float]] = [(sil["start"], sil["end"])]
+
+            for ext_start, ext_end in extended:
+                new_parts: list[tuple[float, float]] = []
+                for p_start, p_end in parts:
+                    if ext_end <= p_start or ext_start >= p_end:
+                        new_parts.append((p_start, p_end))
+                    else:
+                        if p_start < ext_start:
+                            new_parts.append((p_start, ext_start))
+                        if ext_end < p_end:
+                            new_parts.append((ext_end, p_end))
+                parts = new_parts
+                if not parts:
+                    break
+
+            for p_start, p_end in parts:
+                if p_end - p_start > 0.01:
+                    result.append({
+                        "start": round(p_start, 3),
+                        "end": round(p_end, 3),
+                        "duration": round(p_end - p_start, 3),
+                    })
+
+        return result
+
+    def add_silence_results(
+        self,
+        silences: list[dict],
+        margin: float = 0.0,
+        subtitle_padding: float = 0.0,
+    ) -> dict:
         """Convert raw silence intervals to Segments + EditDecisions.
 
+        Pipeline: raw silences -> margin shrink -> subtitle padding trim -> create segments/edits.
         Skips creating EditDecisions for silence ranges that already have
         a confirmed edit (e.g. from subtitle deletion).
         """
         if self._current is None:
             return {"success": False, "error": "No project is open"}
+
+        # --- D-1: Margin shrink ---
+        if margin > 0:
+            shrunk: list[dict] = []
+            for sil in silences:
+                new_start = sil["start"] + margin
+                new_end = sil["end"] - margin
+                if new_end - new_start > 0.01:
+                    shrunk.append({
+                        "start": round(new_start, 3),
+                        "end": round(new_end, 3),
+                        "duration": round(new_end - new_start, 3),
+                    })
+            silences = shrunk
+
+        # --- D-2: Subtitle padding trim ---
+        if subtitle_padding > 0:
+            silences = self._trim_silences_around_subtitles(silences, padding=subtitle_padding)
+
+        if not silences:
+            return {"success": True, "data": {"message": "No silence ranges after processing"}}
 
         existing = self._current.transcript.segments
         existing_edits = list(self._current.edits)
@@ -278,18 +418,15 @@ class ProjectService:
                     action="delete",
                     source="silence_detection",
                     status=EditStatus.PENDING,
-                    target_type="range",
+                    target_type="segment",
+                    target_id=seg_id,
                 ))
 
         all_segments = list(existing) + new_segments
         all_edits = existing_edits + new_edits
 
-        # Resolve subtitle overlaps if setting is enabled
-        from core.config import load_settings
-        settings = load_settings()
-        if settings.get("trim_subtitles_on_silence_overlap", True):
-            silence_ranges = [(s["start"], s["end"]) for s in silences]
-            all_segments = self._resolve_subtitle_overlap(all_segments, silence_ranges)
+        # Note: _resolve_subtitle_overlap is deprecated. D-2 handles subtitle
+        # protection via _trim_silences_around_subtitles before segment creation.
 
         from core.models import AnalysisData
         updated = self._current.model_copy(update={

@@ -10,7 +10,7 @@ from __future__ import annotations
 import mimetypes
 import socket
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from loguru import logger
@@ -18,8 +18,8 @@ from loguru import logger
 _EXPECTED_CONN_ERRORS = (ConnectionResetError, BrokenPipeError, ConnectionAbortedError)
 
 
-class _QuietHTTPServer(HTTPServer):
-    """HTTPServer that suppresses tracebacks for expected connection errors."""
+class _QuietHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer that suppresses tracebacks for expected connection errors."""
 
     def handle_error(self, request, client_address):
         """Suppress traceback for client disconnects."""
@@ -31,23 +31,53 @@ class _QuietHTTPServer(HTTPServer):
 
 
 class _MediaHandler(BaseHTTPRequestHandler):
-    """HTTP handler that serves a single file with range support."""
+    """HTTP handler that serves media and waveform files."""
 
     # Set by MediaServer before starting
     file_path: str = ""
     mime_type: str = "application/octet-stream"
+    waveform_path: str = ""
 
     def log_message(self, format, *args):
         """Suppress default stderr logging."""
 
+    def _route(self):
+        """Resolve the request path (without query string) to a target file."""
+        clean = self.path.split("?", 1)[0]
+        if clean == "/waveform":
+            return (self.waveform_path, "application/json")
+        if clean == "/media":
+            return (self.file_path, self.mime_type)
+        return (None, None)  # signal 404
+
+    def _send_cors_error(self, code: int, message: str) -> None:
+        """Send an error response with CORS headers."""
+        self.send_response(code, message)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+
+    def do_OPTIONS(self):
+        """Handle CORS preflight requests."""
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "*")
+        self.send_header("Access-Control-Max-Age", "86400")
+        self.end_headers()
+
     def do_GET(self):
-        path = Path(self.file_path)
+        target, content_type = self._route()
+        if not target:
+            self._send_cors_error(404, "Not found")
+            return
+
+        path = Path(target)
         if not path.exists():
-            self.send_error(404, "File not found")
+            self._send_cors_error(404, "File not found")
             return
 
         file_size = path.stat().st_size
-        content_type = self.mime_type
 
         # Parse Range header
         range_header = self.headers.get("Range")
@@ -97,16 +127,22 @@ class _MediaHandler(BaseHTTPRequestHandler):
             pass
 
     def do_HEAD(self):
-        path = Path(self.file_path)
+        target, content_type = self._route()
+        if not target:
+            self._send_cors_error(404, "Not found")
+            return
+
+        path = Path(target)
         if not path.exists():
-            self.send_error(404, "File not found")
+            self._send_cors_error(404, "File not found")
             return
 
         file_size = path.stat().st_size
         self.send_response(200)
-        self.send_header("Content-Type", self.mime_type)
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(file_size))
         self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
 
 
@@ -114,10 +150,11 @@ class MediaServer:
     """Manages a local HTTP server for streaming a single media file."""
 
     def __init__(self) -> None:
-        self._server: HTTPServer | None = None
+        self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._port: int = 0
         self._file_path: str = ""
+        self._waveform_path: str = ""
 
     @property
     def port(self) -> int:
@@ -153,7 +190,7 @@ class MediaServer:
         handler_cls = type(
             "BoundMediaHandler",
             (_MediaHandler,),
-            {"file_path": file_path, "mime_type": mime},
+            {"file_path": file_path, "mime_type": mime, "waveform_path": self._waveform_path},
         )
 
         # Find an available port
@@ -189,4 +226,14 @@ class MediaServer:
             self._thread = None
         self._port = 0
         self._file_path = ""
+        self._waveform_path = ""
         logger.info("Media server stopped")
+
+    def set_waveform(self, waveform_path: str) -> None:
+        """Set the waveform JSON file path. The running handler picks it up immediately."""
+        self._waveform_path = waveform_path
+        # Update the bound handler class so in-flight requests see the new path
+        if self._server:
+            handler_cls = self._server.RequestHandlerClass
+            handler_cls.waveform_path = waveform_path
+        logger.info("Waveform path set to {}", waveform_path)

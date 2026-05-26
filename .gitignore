@@ -232,3 +232,6 @@ settings.local.json
 # Project
 project.json
 /data/
+
+# Test Files
+/test/

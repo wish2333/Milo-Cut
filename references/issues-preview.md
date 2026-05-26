@@ -2,6 +2,7 @@
 
 1. 字幕部分尽管不检测也应该能够选择删除，此外还要妥善处理好与空白检测的冲突
   2. TimelineRuler需要有滑块来滚动而非拖动滚动，避免与时间跳转的点击（改为点击时间码区域才跳转时间，点击时间范围改为选
+
     择某段时间）冲突；同时允许滚轮实现滚动，要处理好滚轮缩放（改为Ctrl+滚轮-->缩放）；区域高度可以放大一些；选择某段时间
     后可以拖动范围左右来更改选区范围，增加按钮开关吸附；优化性能表现
   3. Timeline中应当允许修改范围时间戳的数值
@@ -67,9 +68,11 @@
   当前问题:
 
   1. add_silence_results() 用 abs(e.start - sil["start"]) < 0.05
+
     做重复检测，只能匹配完全相同的时间范围。部分重叠（如字幕 1.0-3.0s，空白 2.5-4.0s）不处理
   2. 前端 mergedSegments 直接拼接所有 segments 排序，空白段和字幕段在时间线上可以重叠显示
   3. getEditForSegment() 用时间匹配找 EditDecision，但同一个时间点可能有多个
+
     EditDecision（一个来自空白检测，一个来自字幕删除），匹配不确定
   4. 没有优先级机制：用户手动标记字幕删除 vs 空白检测建议删除，冲突时不知道听谁的
 
@@ -196,13 +199,186 @@
   - 导出的字幕与导出的音视频并不对应
   - 现在导出的完整逻辑是什么样的呢，导出是如何与Timeline联动的
 - 字幕块padding删除逻辑补充：如果某条字幕标记已删除，那么SubtitleTrim检测的时候也需要无视它
-- 新建导出界面
+- 新建导出界面（待实现）
   - 现有导出按钮删除，仅保留一个跳转导出界面的按钮
   - 导出界面中允许编码设置
   - 导出界面允许预览播放（跳过所有标注已删除区域的播放）
   - 导出界面允许导出通用时间线格式
 - 时间线需要新增功能，双击某个块时能够定位到Timeline中的对应位置
 
-## 待提出的问题
+## 0.2.0
 
-- 
+- Analysis按钮一到SubtitleTrim及其删除按钮右侧
+- DetectSilence检测出来的静音区域没法单独删除，只能全部清除（SubtitleTrim无需单独删除是因为他能够通过字幕块的调整之后重新检测重新划定，但是DetectSilence没法用这种方式，就需要有单独的DetectSilence块来编辑）
+- 首页导入页支持通过拖入project.json或一级含project.json的文件夹读取项目
+
+---
+
+- 导出按钮右对齐
+- 我的系统有nv显卡但是显示未检测到NVIDIAGPU，硬件编码不可用，没有显示av1_nvenc，而且libsvtav1应该除非系统为mac都要显示的啊
+  - Unhandled bridge exception in detect_gpu
+- 预览无法使用，仅显示xxx个删除区域
+- 导出失败:Method 'export_audio' not found on bridge
+  - Traceback (most recent call last):
+      File "Q:\Git\GithubManager\Milo-Cut\pywebvue\bridge.py", line 32, in wrapper
+        return func(*args, **kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^
+      File "Q:\Git\GithubManager\Milo-Cut\main.py", line 500, in detect_gpu
+        result = subprocess.run(
+                 ^^^^^^^^^^
+    NameError: name 'subprocess' is not defined
+- 导出失败:Method 'export_video' not found on bridge
+  - 控制台没有额外报错
+- 导出失败:Method'export_subtitle' not found on bridge
+  - 控制台没有额外报错
+- 导出失败:[Ermo 22] Invalid argument: "('D:I1下载\Timeline 1.edl.mp4,)"
+  - 控制台没有额外报错
+- 导出失败:[Errno 22] Invalid argument:"('D:11下载ITimeline 1.fcpxml.mp4,)"
+  - 控制台没有额外报错
+
+> - 预览播放需要支持音量调整
+> - 编码器设置并未成功，设置了AV1，导出的视频仍是H264编码
+> - EDL导出失败:[Errno 22] Invalid argument:"('D:1\下载\Timeline 1.edl,)"
+> FCPXML导出失败:[Errno 22] Invalid argument:"('D:\\下载\Timeline 1.fcpxml',)”
+
+- /ecc:plan 在时间线上添加声音波形显示
+- 时间线区域的缩放出了Ctrl+滚轮还应该有实体按钮+-
+- DetectSilence允许在静音检测后、与字幕冲突检测前，先用margin值（0s-0.01s-0.5s，默认0s）自行缩一次范围（如果范围本身效果margin值则删除这个静音区域标识，如果margin值*2应当小于min duration）
+- 目前如果DetectSilence与字幕冲突默认优先字幕，会缩减静音区域到字幕空隙，希望进一步允许DetectSilence在字幕空隙中还要和字幕保持距离（类似SubtitleTrim的padding）
+- DetectSilence的min duration标尺缩到0.05-2s并允许0.05一格调整
+- DetectSilence有一个检测兼容问题，我希望如果执行检测时某个字幕块已经标注为已删除，则字幕保护裁剪忽略这一字幕块
+
+## 0.2.1
+
+- 一个前端bug，当Waveform滑块滑到最右边时会引发窗口横向滑块出现，遮挡Waveform滑块，并且无法消除，应当禁止窗口横向滑块出现
+- 时间线导出支持OTTI
+- OTTI（能否可选给每个音频块添加淡入淡出？OTTI还支持什么功能是适配我们这个项目的）
+
+- 目前OTIO无法导入剪辑软件，怀疑构建失败，python不是有opentimelineio吗，用这个库构建OTIO文件
+
+- OTTI建议如下：
+
+````
+OTIO 就是你要的那种：**一个 .otio 文件，PR 和达芬奇都能直接导入/导出**，而且比 XML/AAF 更现代、更稳、扩展性强很多。下面直接讲重点（2026 现状）。 --- ## ✅ OTIO 是什么 **OpenTimelineIO（.otio/.otioz）**：ASWF 开源的**时间线交换标准**，本质是 JSON，只存剪辑结构、时间码、轨道、元数据、素材路径，**不存视频画面**。 - **达芬奇**：**原生支持导入/导出 OTIO**（18+ 完全内置，不用插件） - **PR**：**2024 之后 Beta 原生支持 OTIO**；正式版 2025+ 已内置（文件 → 导入/导出 → OpenTimelineIO） - 结论：**2026 年，PR ↔ 达芬奇 用 OTIO 已经是官方原生工作流**，不需要 XML/AAF 绕路 --- ## ✅ PR ↔ 达芬奇 OTIO 互导（极简） ### 1）PR → 达芬奇（.otio） 1. PR：文件 → 导出 → **OpenTimelineIO（.otio）** 2. 达芬奇：文件 → 导入时间线 → **导入 OTIO** 3. 自动还原：**剪辑、多轨道、时间码、标记、帧率、素材路径** ### 2）达芬奇 → PR（.otio） 1. 达芬奇：交付 → 渲染预设选 **OpenTimelineIO（.otio）** 2. PR：文件 → 导入 → 选 .otio，直接生成序列 ### 3）OTIOZ（打包，更稳） - **.otioz = OTIO + 素材打包**（类似压缩包） - 适合：**换电脑/异地协作/路径乱了**的场景，直接打包带走，对方解压即用 --- ## ✅ OTIO vs XML/AAF（2026 实测） | 格式 | PR 原生 | 达芬奇原生 | 多轨道 | 元数据/标记 | 稳定性 | 扩展性 | |---|---|---|---|---|---|---| | **OTIO** | ✅ 2025+ | ✅ 18+ | ✅ 完美 | ✅ 完整 | ⭐⭐⭐⭐⭐ | 强（开源可扩展） | | FCP XML | ✅ | ✅ | ✅ 一般 | ❌ 丢失多 | ⭐⭐⭐⭐ | 弱 | | AAF | ✅ | ✅ | ✅ 好 | ⚠️ 部分丢 | ⭐⭐⭐⭐ | 中 | 一句话：**OTIO 是现在 PR ↔ 达芬奇 互导的最佳格式，没有之一**。 --- ## ✅ 注意（避坑） 1. **素材路径尽量不变**：OTIO 靠路径链接素材，路径变了要手动重链接 2. **复杂特效/插件会丢**：OTIO 只传**剪辑结构+元数据**，不传 PR 调色、Lumetri、第三方插件；达芬奇节点也不会回 PR 3. **分辨率/帧率统一**：工程设置一致（如 1080p 25fps），避免错位 --- ## ✅ 结论（你要的答案） - **能同时导入 PR 和达芬奇的工程文件：就是 OTIO（.otio/.otioz）** - **2026 年两者都原生支持**，比 XML/AAF 更稳、更全、更现代 - 工作流：**PR ↔ OTIO ↔ 达芬奇**，一步到位 要不要我给你一份可直接照着点的“PR ↔ 达芬奇 OTIO 互导极简操作清单”（含菜单路径和推荐参数）？
+# OTIO 相对路径标准模板（直接复制即用）
+保存为 `timeline.otio`，**仅改文件名即可**，全程相对路径，PR/达芬奇通用
+```json
+{
+    "OTIO_SCHEMA": "timeline.1",
+    "name": "项目时间线",
+    "global_start_time": {
+        "rate": 25.0,
+        "value": 0
+    },
+    "tracks": [
+        {
+            "OTIO_SCHEMA": "track.1",
+            "name": "视频轨道1",
+            "kind": "Video",
+            "children": [
+                {
+                    "OTIO_SCHEMA": "clip.1",
+                    "name": "素材片段",
+                    "media_reference": {
+                        "OTIO_SCHEMA": "external_reference.1",
+                        "target_url": "../media/video/素材.mp4",
+                        "available_range": {
+                            "start_time": {"rate":25.0,"value":0},
+                            "duration": {"rate":25.0,"value":100}
+                        }
+                    },
+                    "source_range": {
+                        "start_time": {"rate":25.0,"value":0},
+                        "duration": {"rate":25.0,"value":100}
+                    }
+                }
+            ]
+        },
+        {
+            "OTIO_SCHEMA": "track.1",
+            "name": "音频轨道1",
+            "kind": "Audio",
+            "children": [
+                {
+                    "OTIO_SCHEMA": "clip.1",
+                    "name": "音频素材",
+                    "media_reference": {
+                        "OTIO_SCHEMA": "external_reference.1",
+                        "target_url": "../media/audio/音效.wav",
+                        "available_range": {
+                            "start_time": {"rate":25.0,"value":0},
+                            "duration": {"rate":25.0,"value":100}
+                        }
+                    },
+                    "source_range": {
+                        "start_time": {"rate":25.0,"value":0},
+                        "duration": {"rate":25.0,"value":100}
+                    }
+                }
+            ]
+        }
+    ]
+}
+```
+
+## 固定目录结构（必遵守，永不脱机）
+```
+项目总文件夹
+├─ 剪辑工程文件夹
+│  └─ timeline.otio    # OTIO放这里
+└─ media               # 素材总文件夹
+   ├─ video
+   └─ audio
+```
+- `../media/` = **OTIO向上一级找到素材文件夹**
+- 整个项目文件夹**随便移动、换盘符、换电脑**，路径永久生效
+
+## 快速批量替换绝对路径 → 相对路径
+1. 用记事本打开导出的原生OTIO
+2. 查找所有：`file:///D:/你的长路径/`
+3. 全部替换为：`../media/`
+4. 保存直接导入PR/达芬奇，自动识别
+
+## 帧率修改
+把里面所有 `25.0` 改成你工程帧率：**24.0 / 30.0 / 60.0**
+
+## 软件导出强制相对路径最终设置
+1. PR：项目设置 → 勾选**首选使用相对路径**
+2. 达芬奇：导出选 **OTIOZ** 自动内置相对路径，无需手动改
+````
+
+请根据以上内容撰写 @docs/audit-report-0.2.0-3.md
+
+> - 导出界面播放预览再返回编辑界面之后，会有半分钟左右波形显示不见了，也无法回到导入页，半分钟后显示并可回到导入页
+> - 所有使用旧通知的均改用Toast 通知系统
+> - OTIO按钮提到最上方并写清楚是DaVinci/NewPR/Others
+> - OTIO音频转场可选交叉过渡或是分别淡入淡出
+> - 音视频转场导出能否通过filtercomplex实现（音频过渡是否也可选，共用一个勾选框）
+> - Waveform滑块滑动时非常卡顿，请优化性能
+> - 补充信息：OTIO能否同时支持导出标记删除的区域并在导入后这些删除标记也能导入，这一模式下不能设置过渡，请调查一下，补充到report中
+> - 补充信息：A-4目前代码不是已经实现OTIO交叉过渡效果了吗，现在对的这个需求你是否有理解偏误，调查后补充到report中
+> - 补充信息：将EDL选项放到最下面，因为它兼容性最有问题，是否能添加导出AAF格式支持，pyaaf2这个库是否有用，调查后补充到report中
+> - 补充信息：XML在达芬奇与PR也可用（尤其兼容oldPR），XML和AAF格式是否能同样支持导出带已删除片段并标注已删除片段的选项，调查后补充到report中
+> - 评估这几个问题，然后补充到 @..\docs\audit-report-0.2.0-3.md 的新附录中
+
+> - 导出OTIO按钮的括号内容单独换行，XML括号里加上/Ohter
+> - 波形显示仍然是有问题，往往是一个项目没问题，其他项目有问题，能否改为每个项目一个单独的波形文件
+> - 波形的重新生成仍然没有立刻刷新，得切回到首页导入页再打开项目才能刷新
+> - OTIO导出淡入淡出效果即便选了separate还是交叉淡入淡出
+> - 音频和视频均无法勾选 FFmoeg video transition，你是否处理了导出音频模式的FFmoeg video transition
+
+
+
+- 由于OTIO无法实现分别淡入淡出，所以当模式选择分别淡入淡出时，仍然按照交叉溶解的方式导出OTIO时间线
+- FFmpeg video transitions关闭experimental情况，无需打勾，过渡时长为0时不启用，不为0时启用即可。 
+- 然后过渡时长滑块调整到“时间线格式”上方
+
+
+
+- 现在波形显示仍然有问题，较短的音视频进入项目时会加载波形并显示，但是较长的音视频则不会，必须再重新生成后才显示，而且退出到首页重进或者软件重启后不显示（不加载）波形的问题又重现
+- 音频、视频导出的Toast 通知显示得太早，一点就显示了，反观当导出完成，statusmessage才消失
+- 现在的过渡模式是否导致音视频不同步呢，请排除两种音频模式下的风险
+
+- 过渡时长滑块能否分视频和音频，导出视频的filtercomplex应该没问题吧，但是OTIO工程能否支持呢
+- 导出界面右侧导出按钮部分宽度扩宽一些并预留滚动条的位置（预留后内容宽度仍比之前要宽），以避免滚动条出现导致的排版变动
+
