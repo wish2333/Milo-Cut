@@ -8,8 +8,13 @@ and main.py to generate correct FFmpeg arguments for each codec.
 from __future__ import annotations
 
 import subprocess
+import sys
 
 from loguru import logger
+
+_SUBPROCESS_KWARGS: dict = (
+    {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+)
 
 # ---------------------------------------------------------------------------
 # Quality mode mapping: encoder -> FFmpeg quality flag type
@@ -158,6 +163,7 @@ def check_encoder_availability(ffmpeg: str, codec: str) -> bool:
         result = subprocess.run(
             [ffmpeg, "-hide_banner", "-encoders"],
             capture_output=True, text=True, timeout=10,
+            **_SUBPROCESS_KWARGS,
         )
         return codec in result.stdout
     except Exception:

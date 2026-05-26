@@ -13,6 +13,10 @@ import subprocess
 
 from pywebvue import App, Bridge, expose
 
+_SUBPROCESS_KWARGS: dict = (
+    {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+)
+
 from core.analysis_service import detect_errors, detect_fillers, run_full_analysis
 from core.config import load_settings
 from core.events import EDIT_SUMMARY_UPDATED, ENCODER_FALLBACK, LOG_LINE
@@ -600,6 +604,7 @@ class MiloCutApi(Bridge):
             result = subprocess.run(
                 ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
                 capture_output=True, text=True, timeout=5,
+                **_SUBPROCESS_KWARGS,
             )
             if result.returncode == 0 and result.stdout.strip():
                 gpu_name = result.stdout.strip().split("\n")[0]

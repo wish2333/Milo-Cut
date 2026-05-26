@@ -9,9 +9,14 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import threading
 from pathlib import Path
+
+_SUBPROCESS_KWARGS: dict = (
+    {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+)
 from typing import Callable
 
 from loguru import logger
@@ -152,6 +157,7 @@ def export_video(
         result = subprocess.run(
             cmd, capture_output=True, text=True, encoding="utf-8",
             errors="replace", timeout=600,
+            **_SUBPROCESS_KWARGS,
         )
         if result.returncode != 0:
             raise RuntimeError(f"FFmpeg video export failed: {result.stderr[-500:]}")
@@ -238,6 +244,7 @@ def export_audio(
         result = subprocess.run(
             cmd, capture_output=True, text=True, encoding="utf-8",
             errors="replace", timeout=600,
+            **_SUBPROCESS_KWARGS,
         )
         if result.returncode != 0:
             raise RuntimeError(f"FFmpeg audio export failed: {result.stderr[-500:]}")

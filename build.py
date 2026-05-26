@@ -195,6 +195,16 @@ def _generate_onefile_spec() -> str:
         _path = str(project_root / "index.html")
         datas_line = f'        (r"{_path}", "."),'
 
+    # opentimelineio plugin manifest
+    try:
+        import opentimelineio as _otio
+        _otio_dir = Path(_otio.__file__).parent
+        _otio_manifest = _otio_dir / "adapters" / "builtin_adapters.plugin_manifest.json"
+        if _otio_manifest.exists():
+            datas_line += f'\n        (r"{_otio_manifest}", "opentimelineio/adapters"),'
+    except ImportError:
+        pass
+
     icon_line = f'    icon=r"{icon}",' if icon else "    icon=None,"
 
     return f"""\

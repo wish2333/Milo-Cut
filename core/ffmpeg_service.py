@@ -9,7 +9,12 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
+
+_SUBPROCESS_KWARGS: dict = (
+    {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+)
 
 from loguru import logger
 
@@ -48,6 +53,7 @@ def probe_media(file_path: str) -> dict:
         result = subprocess.run(
             cmd, capture_output=True, timeout=30,
             encoding="utf-8", errors="replace",
+            **_SUBPROCESS_KWARGS,
         )
         if result.returncode != 0:
             return {"success": False, "error": f"ffprobe exited with code {result.returncode}"}
@@ -116,6 +122,7 @@ def detect_silence(
         result = subprocess.run(
             cmd, capture_output=True, timeout=300,
             encoding="utf-8", errors="replace",
+            **_SUBPROCESS_KWARGS,
         )
         output = result.stderr
 
@@ -183,6 +190,7 @@ def generate_waveform(
         ]
         result = subprocess.run(
             cmd, capture_output=True, timeout=300,
+            **_SUBPROCESS_KWARGS,
         )
         if result.returncode != 0:
             return {"success": False, "error": f"ffmpeg exited with code {result.returncode}"}
