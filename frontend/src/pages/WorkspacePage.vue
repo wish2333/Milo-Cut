@@ -1,19 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue"
 import type { Project, Segment, EditDecision } from "@/types/project"
-import type { EditSummary } from "@/types/edit"
 import { formatTimeShort } from "@/utils/format"
-import { call } from "@/bridge"
+import { call, onEvent } from "@/bridge"
 import { useAnalysis } from "@/composables/useAnalysis"
 import { useExport } from "@/composables/useExport"
 import { useEdit } from "@/composables/useEdit"
 import { useSegmentEdit } from "@/composables/useSegmentEdit"
 import { useToast } from "@/composables/useToast"
+import { EVENT_TASK_COMPLETED } from "@/utils/events"
 import ProgressBar from "@/components/common/ProgressBar.vue"
 import Timeline from "@/components/workspace/Timeline.vue"
 import WaveformEditor from "@/components/waveform/WaveformEditor.vue"
 import SearchReplaceBar from "@/components/workspace/SearchReplaceBar.vue"
-import EditSummaryModal from "@/components/workspace/EditSummaryModal.vue"
 import VideoControls from "@/components/workspace/VideoControls.vue"
 
 interface Props {
@@ -23,6 +22,7 @@ interface Props {
 interface Emits {
   (e: "project-updated", project: Project): void
   (e: "project-closed"): void
+  (e: "go-to-export"): void
 }
 
 const props = defineProps<Props>()
@@ -49,10 +49,6 @@ const {
   exportProgress,
   confirmedEdits,
   estimatedSaving,
-  getExportSummary,
-  exportVideo,
-  exportSrt,
-  exportAudio,
 } = useExport(projectRef)
 
 const {
@@ -79,10 +75,9 @@ const statusMessage = ref("")
 const errorMessage = ref("")
 let statusTimer: ReturnType<typeof setTimeout> | null = null
 const showAnalysisDropdown = ref(false)
-const showExportSummary = ref(false)
 const showSilenceSettings = ref(false)
-const exportSummaryData = ref<EditSummary | null>(null)
 const videoUrl = ref("")
+const waveformUrl = ref("")
 const videoRef = ref<HTMLVideoElement | null>(null)
 const currentTime = ref(0)
 const videoPaused = ref(true)
@@ -91,6 +86,8 @@ const videoPlaybackRate = ref(1)
 
 const silenceThreshold = ref(-30)
 const silenceMinDuration = ref(0.5)
+const silenceMargin = ref(0.0)
+const silenceSubtitlePadding = ref(0.0)
 const trimSubtitlesOnOverlap = ref(true)
 const globalEditMode = ref(false)
 const showConfirmDeleteSilence = ref(false)
@@ -131,11 +128,67 @@ async function loadVideoUrl() {
   }
 }
 
+let regenPollTimer: ReturnType<typeof setInterval> | null = null
+
+async function handleRegenerateWaveform() {
+  statusMessage.value = "Regenerating waveform..."
+  const res = await call<{ task_id: string }>("regenerate_waveform")
+  if (!res.success) {
+    showToast(res.error ?? "Failed to regenerate waveform", "error", 3000)
+    statusMessage.value = ""
+    return
+  }
+  // Poll get_waveform_url until regeneration completes
+  if (regenPollTimer) clearInterval(regenPollTimer)
+  const start = Date.now()
+  regenPollTimer = setInterval(async () => {
+    const urlRes = await call<{ url: string }>("get_waveform_url")
+    if (urlRes.success && urlRes.data) {
+      clearInterval(regenPollTimer!)
+      regenPollTimer = null
+      // Cache-bust: append timestamp so WaveformCanvas re-fetches
+      waveformUrl.value = urlRes.data.url + "?t=" + Date.now()
+      statusMessage.value = ""
+      showToast("Waveform regenerated", "success", 2000)
+    } else if (Date.now() - start > 120000) {
+      clearInterval(regenPollTimer!)
+      regenPollTimer = null
+      statusMessage.value = ""
+      showToast("Waveform regeneration timed out", "error", 3000)
+    }
+  }, 500)
+}
+
+async function resolveWaveformUrl() {
+  const res = await call<{ url: string }>("get_waveform_url")
+  if (res.success && res.data) {
+    waveformUrl.value = res.data.url + "?t=" + Date.now()
+  }
+  // If not available yet, the watcher on waveform_path or the
+  // waveform_generation task completed event will re-trigger this.
+}
+
 onMounted(async () => {
   await loadVideoUrl()
+  await resolveWaveformUrl()
   await loadSilenceSettings()
 })
 
+watch(() => props.project.media?.waveform_path, () => {
+  resolveWaveformUrl()
+})
+
+// When waveform generation task completes, the backend updates the project's
+// waveform_path which triggers the watcher above. But as a safety net, also
+// listen for the task completed event and retry the URL resolution.
+onEvent<{ task_id: string; task_type?: string; result?: { project?: Project } }>(
+  EVENT_TASK_COMPLETED,
+  (data) => {
+    if (data.task_type === "waveform_generation") {
+      resolveWaveformUrl()
+    }
+  },
+)
 watch(() => props.project.media?.path, loadVideoUrl)
 
 async function loadSilenceSettings() {
@@ -143,6 +196,8 @@ async function loadSilenceSettings() {
   if (res.success && res.data) {
     silenceThreshold.value = Number(res.data.silence_threshold_db ?? -30)
     silenceMinDuration.value = Number(res.data.silence_min_duration ?? 0.5)
+    silenceMargin.value = Number(res.data.silence_margin ?? 0.0)
+    silenceSubtitlePadding.value = Number(res.data.silence_subtitle_padding ?? 0.0)
     trimSubtitlesOnOverlap.value = res.data.trim_subtitles_on_silence_overlap !== false
   }
 }
@@ -151,6 +206,8 @@ async function saveSilenceSettings() {
   await call("update_settings", {
     silence_threshold_db: silenceThreshold.value,
     silence_min_duration: silenceMinDuration.value,
+    silence_margin: silenceMargin.value,
+    silence_subtitle_padding: silenceSubtitlePadding.value,
     trim_subtitles_on_silence_overlap: trimSubtitlesOnOverlap.value,
   })
   showSilenceSettings.value = false
@@ -344,42 +401,6 @@ function handleSeekSegment(seg: Segment) {
   }
 }
 
-async function handleExportVideo() {
-  errorMessage.value = ""
-  const summary = await getExportSummary()
-  if (summary) {
-    exportSummaryData.value = summary
-    showExportSummary.value = true
-  } else {
-    statusMessage.value = "Exporting video..."
-    const ok = await exportVideo()
-    if (!ok) errorMessage.value = "Export failed"
-  }
-}
-
-async function handleConfirmExport() {
-  showExportSummary.value = false
-  statusMessage.value = "Exporting video..."
-  const ok = await exportVideo()
-  statusMessage.value = ""
-  if (!ok) errorMessage.value = "Export failed"
-}
-
-async function handleExportSrt() {
-  errorMessage.value = ""
-  statusMessage.value = "Exporting SRT..."
-  const ok = await exportSrt()
-  statusMessage.value = ""
-  if (!ok) errorMessage.value = "Failed to export SRT"
-}
-
-async function handleExportAudio() {
-  errorMessage.value = ""
-  statusMessage.value = "Exporting audio..."
-  const ok = await exportAudio()
-  statusMessage.value = ""
-  if (!ok) errorMessage.value = "Failed to export audio"
-}
 
 async function handleCloseProject() {
   await call("close_project")
@@ -415,6 +436,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.removeEventListener("keydown", handleGlobalKeydown)
+  if (regenPollTimer) clearInterval(regenPollTimer)
 })
 </script>
 
@@ -495,15 +517,51 @@ onUnmounted(() => {
             />
           </label>
           <label class="block mb-3">
-            <span class="text-xs text-gray-500">Min Duration (s): {{ silenceMinDuration.toFixed(1) }}</span>
+            <span class="text-xs text-gray-500">Min Duration (s): {{ silenceMinDuration.toFixed(2) }}</span>
             <input
               type="range"
               v-model.number="silenceMinDuration"
-              min="0.1"
-              max="3.0"
-              step="0.1"
+              min="0.05"
+              max="2.0"
+              step="0.05"
               class="w-full mt-1"
             />
+            <p v-if="silenceMinDuration < 0.2" class="text-xs text-amber-600 mt-1">
+              Very short durations (&lt;0.2s) may generate many clips and affect performance.
+            </p>
+          </label>
+          <label class="block mb-2">
+            <span class="text-xs text-gray-500">
+              Margin (s): {{ silenceMargin.toFixed(2) }}
+            </span>
+            <input
+              type="range"
+              v-model.number="silenceMargin"
+              min="0"
+              max="0.5"
+              step="0.01"
+              class="w-full mt-1"
+            />
+            <p v-if="silenceMargin > 0 && silenceMargin * 2 >= silenceMinDuration"
+               class="text-xs text-amber-600 mt-1">
+              High margin may consume small silence intervals entirely.
+            </p>
+          </label>
+          <label class="block mb-2">
+            <span class="text-xs text-gray-500">
+              Subtitle Padding (s): {{ silenceSubtitlePadding.toFixed(2) }}
+            </span>
+            <input
+              type="range"
+              v-model.number="silenceSubtitlePadding"
+              min="0"
+              max="1.0"
+              step="0.05"
+              class="w-full mt-1"
+            />
+            <p v-if="silenceSubtitlePadding > 0" class="text-xs text-gray-400 mt-0.5">
+              Silence ranges will be trimmed to stay this far from subtitles.
+            </p>
           </label>
           <label class="flex items-center gap-2 mb-3 cursor-pointer">
             <input
@@ -532,41 +590,8 @@ onUnmounted(() => {
         <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
       </button>
 
-      <!-- Analysis dropdown -->
-      <div class="relative">
-        <button
-          class="inline-flex items-center gap-1.5 rounded-md bg-purple-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-purple-600 disabled:opacity-50 transition-colors"
-          :disabled="isDetecting || isExporting"
-          @click="showAnalysisDropdown = !showAnalysisDropdown"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
-          {{ isDetecting ? 'Analyzing...' : 'Analysis' }}
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" /></svg>
-        </button>
-        <div
-          v-if="showAnalysisDropdown"
-          class="absolute top-full left-0 mt-1 w-48 rounded-md border border-gray-200 bg-white shadow-lg z-10"
-        >
-          <button
-            class="block w-full px-3 py-2 text-left text-sm hover:bg-gray-50 transition-colors"
-            @click="handleRunAnalysis('filler')"
-          >
-            Detect Filler Words
-          </button>
-          <button
-            class="block w-full px-3 py-2 text-left text-sm hover:bg-gray-50 transition-colors"
-            @click="handleRunAnalysis('error')"
-          >
-            Detect Error Triggers
-          </button>
-          <button
-            class="block w-full px-3 py-2 text-left text-sm hover:bg-gray-50 transition-colors"
-            @click="handleRunAnalysis('full')"
-          >
-            Full Analysis
-          </button>
-        </div>
-      </div>
+      <!-- Separator: silence group | subtitle group -->
+      <div class="h-6 w-px bg-gray-300"></div>
 
       <div class="relative inline-flex items-center">
         <button
@@ -615,35 +640,52 @@ onUnmounted(() => {
         <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
       </button>
 
-      <div class="mx-1 h-4 w-px bg-gray-300" />
-
-      <button
-        class="inline-flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50 transition-colors"
-        :disabled="isExporting || confirmedEdits.length === 0"
-        @click="handleExportVideo"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
-        {{ isExporting ? 'Exporting...' : 'Export Video' }}
-      </button>
-      <button
-        class="inline-flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50 transition-colors"
-        :disabled="isExporting || confirmedEdits.length === 0"
-        @click="handleExportSrt"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-        Export SRT
-      </button>
-      <button
-        class="inline-flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50 transition-colors"
-        :disabled="isExporting || confirmedEdits.length === 0"
-        title="Export audio only (M4A)"
-        @click="handleExportAudio"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" /></svg>
-        Export Audio
-      </button>
+      <!-- Analysis dropdown -->
+      <div class="relative">
+        <button
+          class="inline-flex items-center gap-1.5 rounded-md bg-purple-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-purple-600 disabled:opacity-50 transition-colors"
+          :disabled="isDetecting || isExporting"
+          @click="showAnalysisDropdown = !showAnalysisDropdown"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
+          {{ isDetecting ? 'Analyzing...' : 'Analysis' }}
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" /></svg>
+        </button>
+        <div
+          v-if="showAnalysisDropdown"
+          class="absolute top-full left-0 mt-1 w-48 rounded-md border border-gray-200 bg-white shadow-lg z-10"
+        >
+          <button
+            class="block w-full px-3 py-2 text-left text-sm hover:bg-gray-50 transition-colors"
+            @click="handleRunAnalysis('filler')"
+          >
+            Detect Filler Words
+          </button>
+          <button
+            class="block w-full px-3 py-2 text-left text-sm hover:bg-gray-50 transition-colors"
+            @click="handleRunAnalysis('error')"
+          >
+            Detect Error Triggers
+          </button>
+          <button
+            class="block w-full px-3 py-2 text-left text-sm hover:bg-gray-50 transition-colors"
+            @click="handleRunAnalysis('full')"
+          >
+            Full Analysis
+          </button>
+        </div>
+      </div>
 
       <div class="flex-1" />
+
+      <button
+        class="inline-flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50 transition-colors"
+        :disabled="isExporting || confirmedEdits.length === 0"
+        @click="emit('go-to-export')"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" /></svg>
+        导出...
+      </button>
 
       <div v-if="isDetecting && detectionProgress" class="flex-1 max-w-xs">
         <ProgressBar :percent="detectionProgress.percent" :message="detectionProgress.message" />
@@ -726,6 +768,7 @@ onUnmounted(() => {
         @toggle-status="(seg) => handleToggleEditStatus(seg)"
         @confirm-segment="(seg) => handleToggleEditStatus(seg, 'confirmed')"
         @reject-segment="(seg) => handleToggleEditStatus(seg, 'rejected')"
+        @delete-segment="(seg) => handleDeleteSegment(seg.id)"
         @confirm-suggestion="confirmEdit"
         @reject-suggestion="rejectEdit"
         @confirm-all="handleConfirmAllSuggestions"
@@ -741,22 +784,14 @@ onUnmounted(() => {
       :edits="edits"
       :duration="duration"
       :current-time="currentTime"
-      :waveform-path="project.media?.waveform_path"
+      :waveform-path="waveformUrl"
       :update-time="updateSegmentTime"
       @seek="handleSeek"
       @select-range="handleSelectRange"
       @add-segment="handleAddSegment"
       @delete-segment="handleDeleteSegment"
       @seek-segment="handleSeekSegment"
-    />
-
-    <!-- Export summary modal -->
-    <EditSummaryModal
-      v-if="exportSummaryData"
-      :summary="exportSummaryData"
-      :visible="showExportSummary"
-      @confirm="handleConfirmExport"
-      @cancel="showExportSummary = false"
+      @regenerate-waveform="handleRegenerateWaveform"
     />
 
     <!-- Delete silence confirmation dialog -->

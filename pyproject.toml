@@ -1,12 +1,13 @@
 [project]
 name = "milo-cut"
-version = "0.1.0"
+version = "0.2.1"
 description = "AI-powered video preprocessing tool for oral presentation videos"
 requires-python = ">=3.11"
 dependencies = [
     "pywebview>=6.0",
     "loguru>=0.7",
     "pydantic>=2.0",
+    "opentimelineio>=0.18.1",
 ]
 
 [dependency-groups]

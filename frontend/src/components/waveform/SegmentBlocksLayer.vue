@@ -81,10 +81,10 @@ const visibleEditRanges = computed<EditRangeBlock[]>(() => {
 })
 
 function statusColor(block: Block): string {
-  if (block.state.styleClass === "masked") return "bg-red-200 border-red-400"
-  if (block.state.styleClass === "kept") return "bg-green-200 border-green-400"
-  if (block.seg.type === "silence") return "bg-gray-200 border-gray-300"
-  return "bg-blue-100 border-blue-300"
+  if (block.state.styleClass === "masked") return "bg-red-200/60 border-red-400"
+  if (block.state.styleClass === "kept") return "bg-green-200/60 border-green-400"
+  if (block.seg.type === "silence") return "bg-gray-200/50 border-gray-300"
+  return "bg-blue-100/60 border-blue-300"
 }
 
 function handleEmptyClick(e: MouseEvent) {

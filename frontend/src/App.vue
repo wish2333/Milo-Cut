@@ -2,13 +2,16 @@
 import { ref } from "vue"
 import WelcomePage from "@/pages/WelcomePage.vue"
 import WorkspacePage from "@/pages/WorkspacePage.vue"
+import ExportPage from "@/pages/ExportPage.vue"
 import ToastContainer from "@/components/common/ToastContainer.vue"
-import { waitForPyWebView, call } from "./bridge"
+import { waitForPyWebView, call, onEvent } from "./bridge"
+import { EVENT_TASK_COMPLETED } from "@/utils/events"
 import type { Project, MediaInfo } from "@/types/project"
 
 const ready = ref(false)
 const bridgeError = ref("")
 const project = ref<Project | null>(null)
+const showExportPage = ref(false)
 const isDragging = ref(false)
 let dragCounter = 0
 
@@ -20,8 +23,27 @@ waitForPyWebView(10_000)
     bridgeError.value = err instanceof Error ? err.message : "Bridge init failed"
   })
 
+function triggerWaveformGeneration() {
+  if (!project.value?.media || project.value.media.waveform_path) return
+  call("create_task", "waveform_generation").then(res => {
+    if (res.success && res.data) {
+      call("start_task", (res.data as { id: string }).id)
+    }
+  })
+}
+
+onEvent<{ task_id: string; task_type?: string; result?: { project?: Project } }>(
+  EVENT_TASK_COMPLETED,
+  (data) => {
+    if (data.task_type === "waveform_generation" && data.result?.project) {
+      project.value = data.result.project
+    }
+  },
+)
+
 function onProjectCreated(data: Project) {
   project.value = data
+  triggerWaveformGeneration()
 }
 
 function onProjectUpdated(data: Project) {
@@ -30,6 +52,15 @@ function onProjectUpdated(data: Project) {
 
 function onProjectClosed() {
   project.value = null
+  showExportPage.value = false
+}
+
+function onGoToExport() {
+  showExportPage.value = true
+}
+
+function onGoBackToWorkspace() {
+  showExportPage.value = false
 }
 
 function handleWindowDragEnter(e: DragEvent) {
@@ -63,16 +94,26 @@ async function handleWindowDrop(e: DragEvent) {
   if (!res.success || !res.data || res.data.length === 0) return
 
   const filePath = res.data[0]
+  const filename = filePath.split(/[/\\]/).pop() ?? ""
   const isMedia = /\.(mp4|mkv|avi|mov|webm|mp3|wav|aac|flac|ogg|m4a)$/i.test(filePath)
   const isSrt = /\.srt$/i.test(filePath)
+  const isProjectJson = filename === "project.json"
 
-  if (!project.value && isMedia) {
+  if (!project.value && isProjectJson) {
+    // Open existing project from project.json
+    const openRes = await call<Project>("open_project", filePath)
+    if (openRes.success && openRes.data) {
+      project.value = openRes.data
+      triggerWaveformGeneration()
+    }
+  } else if (!project.value && isMedia) {
     const probeRes = await call<MediaInfo>("probe_media", filePath)
     if (!probeRes.success || !probeRes.data) return
     const name = filePath.split(/[/\\]/).pop()?.replace(/\.[^.]+$/, "") ?? "Untitled"
     const createRes = await call<Project>("create_project", name, filePath)
     if (createRes.success && createRes.data) {
       project.value = createRes.data
+      triggerWaveformGeneration()
     }
   } else if (project.value && isSrt) {
     const importRes = await call<Project>("import_srt", filePath)
@@ -87,7 +128,7 @@ async function handleWindowDrop(e: DragEvent) {
 
 <template>
   <div
-    class="min-h-screen"
+    class="min-h-screen overflow-x-hidden"
     @dragenter="handleWindowDragEnter"
     @dragover="handleWindowDragOver"
     @dragleave="handleWindowDragLeave"
@@ -100,10 +141,10 @@ async function handleWindowDrop(e: DragEvent) {
     >
       <div class="rounded-2xl border-2 border-dashed border-blue-400 bg-white/90 px-16 py-12 text-center shadow-2xl">
         <p class="text-xl font-semibold text-blue-600">
-          {{ project ? "松开以导入 SRT 文件" : "松开以导入媒体文件" }}
+          {{ project ? "松开以导入 SRT 文件" : "松开以导入媒体文件或打开项目" }}
         </p>
         <p class="mt-2 text-sm text-gray-500">
-          {{ project ? "支持 .srt 字幕文件" : "支持 MP4, MKV, AVI, MOV, WebM, MP3, WAV 等" }}
+          {{ project ? "支持 .srt 字幕文件" : "支持视频、音频、project.json" }}
         </p>
       </div>
     </div>
@@ -124,7 +165,20 @@ async function handleWindowDrop(e: DragEvent) {
 
     <WelcomePage v-else-if="!project" @project-created="onProjectCreated" />
 
-    <WorkspacePage v-else :project="project" @project-updated="onProjectUpdated" @project-closed="onProjectClosed" />
+    <ExportPage
+      v-else-if="showExportPage"
+      :project="project"
+      @go-back="onGoBackToWorkspace"
+      @project-updated="onProjectUpdated"
+    />
+
+    <WorkspacePage
+      v-else
+      :project="project"
+      @project-updated="onProjectUpdated"
+      @project-closed="onProjectClosed"
+      @go-to-export="onGoToExport"
+    />
 
     <ToastContainer />
   </div>

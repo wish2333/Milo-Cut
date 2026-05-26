@@ -20,3 +20,6 @@ EDIT_SUMMARY_UPDATED = "edit:summary_updated"
 
 # Log forwarding
 LOG_LINE = "log_line"
+
+# Encoder fallback
+ENCODER_FALLBACK = "encoder:fallback"

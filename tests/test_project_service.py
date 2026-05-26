@@ -177,3 +177,150 @@ class TestProjectService:
         result = svc.get_recent_projects()
         assert result["success"] is True
         assert result["data"] == []
+
+    # --- D-1: Margin shrink ---
+
+    def test_add_silence_results_with_margin(self, tmp_dir, monkeypatch):
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        silences = [{"start": 5.0, "end": 6.0}, {"start": 10.0, "end": 11.0}]
+        result = svc.add_silence_results(silences, margin=0.1)
+        assert result["success"] is True
+        sil_segs = [s for s in svc.current.transcript.segments if s.type == SegmentType.SILENCE]
+        assert len(sil_segs) == 2
+        assert abs(sil_segs[0].start - 5.1) < 0.01
+        assert abs(sil_segs[0].end - 5.9) < 0.01
+
+    def test_add_silence_results_margin_consumes_short(self, tmp_dir, monkeypatch):
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        silences = [{"start": 5.0, "end": 5.1}]  # 0.1s duration, margin=0.1 -> consumed
+        result = svc.add_silence_results(silences, margin=0.1)
+        assert result["success"] is True
+        sil_segs = [s for s in svc.current.transcript.segments if s.type == SegmentType.SILENCE]
+        assert len(sil_segs) == 0
+
+    def test_add_silence_results_margin_zero(self, tmp_dir, monkeypatch):
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        silences = [{"start": 5.0, "end": 6.0}]
+        result = svc.add_silence_results(silences, margin=0.0)
+        assert result["success"] is True
+        sil_segs = [s for s in svc.current.transcript.segments if s.type == SegmentType.SILENCE]
+        assert len(sil_segs) == 1
+        assert abs(sil_segs[0].start - 5.0) < 0.01
+
+    # --- D-2: Subtitle padding trim ---
+
+    def _add_subtitles(self, svc, subtitles):
+        """Helper: add subtitle segments to the project. subtitles = [(start, end, text), ...]"""
+        from core.models import Segment, SegmentType
+        segs = [
+            Segment(id=f"sub-{i:04d}", type=SegmentType.SUBTITLE, start=s, end=e, text=t)
+            for i, (s, e, t) in enumerate(subtitles)
+        ]
+        svc.update_transcript([s.model_dump() for s in segs])
+
+    def test_trim_silences_no_overlap(self, tmp_dir, monkeypatch):
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        self._add_subtitles(svc, [(10.0, 12.0, "sub")])
+        silences = [{"start": 1.0, "end": 3.0, "duration": 2.0}]
+        result = svc._trim_silences_around_subtitles(silences, padding=0.3)
+        assert len(result) == 1
+        assert abs(result[0]["start"] - 1.0) < 0.01
+        assert abs(result[0]["end"] - 3.0) < 0.01
+
+    def test_trim_silences_full_enclosure(self, tmp_dir, monkeypatch):
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        self._add_subtitles(svc, [(5.0, 8.0, "sub")])
+        silences = [{"start": 4.0, "end": 9.0, "duration": 5.0}]
+        result = svc._trim_silences_around_subtitles(silences, padding=0.3)
+        assert len(result) == 2
+        assert abs(result[0]["start"] - 4.0) < 0.01
+        assert abs(result[0]["end"] - 4.7) < 0.01
+        assert abs(result[1]["start"] - 8.3) < 0.01
+        assert abs(result[1]["end"] - 9.0) < 0.01
+
+    def test_trim_silences_partial_overlap(self, tmp_dir, monkeypatch):
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        self._add_subtitles(svc, [(5.0, 8.0, "sub")])
+        silences = [{"start": 6.0, "end": 10.0, "duration": 4.0}]
+        result = svc._trim_silences_around_subtitles(silences, padding=0.3)
+        assert len(result) == 1
+        assert abs(result[0]["start"] - 8.3) < 0.01
+        assert abs(result[0]["end"] - 10.0) < 0.01
+
+    def test_trim_silences_padding_zero(self, tmp_dir, monkeypatch):
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        self._add_subtitles(svc, [(5.0, 8.0, "sub")])
+        silences = [{"start": 4.0, "end": 9.0, "duration": 5.0}]
+        result = svc._trim_silences_around_subtitles(silences, padding=0.0)
+        assert len(result) == 1  # passthrough
+
+    def test_trim_silences_fully_inside_extended(self, tmp_dir, monkeypatch):
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        self._add_subtitles(svc, [(5.0, 8.0, "sub")])
+        silences = [{"start": 6.0, "end": 7.0, "duration": 1.0}]
+        result = svc._trim_silences_around_subtitles(silences, padding=0.3)
+        assert len(result) == 0  # fully consumed
+
+    def test_trim_silences_adjacent_subtitles_merge(self, tmp_dir, monkeypatch):
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        self._add_subtitles(svc, [(5.0, 6.0, "a"), (6.2, 7.0, "b")])
+        silences = [{"start": 4.0, "end": 8.0, "duration": 4.0}]
+        result = svc._trim_silences_around_subtitles(silences, padding=0.3)
+        # extended: [4.7, 6.3] + [5.9, 7.3] -> merged [4.7, 7.3]
+        assert len(result) == 2
+        assert abs(result[0]["start"] - 4.0) < 0.01
+        assert abs(result[0]["end"] - 4.7) < 0.01
+        assert abs(result[1]["start"] - 7.3) < 0.01
+        assert abs(result[1]["end"] - 8.0) < 0.01
+
+    def test_trim_silences_no_subtitles(self, tmp_dir, monkeypatch):
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        silences = [{"start": 4.0, "end": 9.0, "duration": 5.0}]
+        result = svc._trim_silences_around_subtitles(silences, padding=0.3)
+        assert len(result) == 1  # no subtitles -> passthrough
+
+    def test_trim_silences_ignores_confirmed_deleted_subtitles(self, tmp_dir, monkeypatch):
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        self._add_subtitles(svc, [(5.0, 8.0, "sub")])
+        # Confirm-delete the subtitle via update_edit_decision
+        sub_id = next(s.id for s in svc.current.transcript.segments if s.type == "subtitle")
+        svc.add_silence_results([{"start": 5.0, "end": 8.0}])
+        # Mark the silence edit as confirmed so the subtitle gets a confirmed-delete edit
+        # Instead, directly add a confirmed delete edit for the subtitle
+        from core.models import EditDecision, EditStatus
+        confirmed_edit = EditDecision(
+            id="ed-sub-del", start=5.0, end=8.0, action="delete",
+            source="user", status=EditStatus.CONFIRMED, target_id=sub_id,
+        )
+        updated = svc._current.model_copy(update={
+            "edits": list(svc._current.edits) + [confirmed_edit],
+        })
+        svc._current = updated
+        silences = [{"start": 4.0, "end": 9.0, "duration": 5.0}]
+        result = svc._trim_silences_around_subtitles(silences, padding=0.3)
+        assert len(result) == 1  # deleted subtitle ignored, silence unchanged
+        assert abs(result[0]["start"] - 4.0) < 0.01
+        assert abs(result[0]["end"] - 9.0) < 0.01
+
+    def test_add_silence_results_with_subtitle_padding(self, tmp_dir, monkeypatch):
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        self._add_subtitles(svc, [(5.0, 8.0, "sub")])
+        silences = [{"start": 4.0, "end": 9.0}]
+        result = svc.add_silence_results(silences, subtitle_padding=0.3)
+        assert result["success"] is True
+        sil_segs = [s for s in svc.current.transcript.segments if s.type == SegmentType.SILENCE]
+        assert len(sil_segs) == 2
+        assert abs(sil_segs[0].start - 4.0) < 0.01
+        assert abs(sil_segs[0].end - 4.7) < 0.01

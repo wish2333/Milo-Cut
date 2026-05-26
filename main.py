@@ -8,12 +8,18 @@ from __future__ import annotations
 import sys
 import os
 import pathlib
+from pathlib import Path
+import subprocess
 
 from pywebvue import App, Bridge, expose
 
+_SUBPROCESS_KWARGS: dict = (
+    {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+)
+
 from core.analysis_service import detect_errors, detect_fillers, run_full_analysis
 from core.config import load_settings
-from core.events import EDIT_SUMMARY_UPDATED, LOG_LINE
+from core.events import EDIT_SUMMARY_UPDATED, ENCODER_FALLBACK, LOG_LINE
 from core.ffmpeg_service import detect_silence, generate_waveform, probe_media
 from core.logging import get_logger, setup_frontend_sink, setup_logging
 from core.media_server import MediaServer
@@ -23,6 +29,10 @@ from core.project_service import ProjectService
 from core.subtitle_service import parse_srt
 from core.task_manager import TaskManager
 from core.export_service import export_audio, export_srt, export_video
+from core.ffmpeg_presets import ENCODER_METADATA, get_fallback_codec
+from core.ffmpeg_service import _find_ffmpeg
+
+logger = get_logger()
 
 
 class MiloCutApi(Bridge):
@@ -75,7 +85,11 @@ class MiloCutApi(Bridge):
         )
         if not result["success"]:
             raise RuntimeError(result["error"])
-        store_result = self._project.add_silence_results(result["data"])
+        margin = settings.get("silence_margin", 0.0)
+        subtitle_padding = settings.get("silence_subtitle_padding", 0.0)
+        store_result = self._project.add_silence_results(
+            result["data"], margin=margin, subtitle_padding=subtitle_padding,
+        )
         if not store_result["success"]:
             raise RuntimeError(store_result.get("error", "Failed to store silence results"))
         return {"project": store_result["data"]}
@@ -95,6 +109,29 @@ class MiloCutApi(Bridge):
             base, ext = os.path.splitext(media_path)
             output_path = f"{base}_cut{ext}"
 
+        # Read encoding settings from project settings
+        settings = load_settings()
+        video_codec = settings.get("export_video_codec", "libx264")
+        audio_codec = settings.get("export_audio_codec", "aac")
+        audio_bitrate = settings.get("export_audio_bitrate", "192k")
+        preset = settings.get("export_preset", "medium")
+        crf = int(settings.get("export_crf", 23))
+        resolution = settings.get("export_resolution", "original")
+        fade_dur = float(settings.get("export_ffmpeg_fade_duration", 0.0))
+        fade_mode = str(settings.get("export_ffmpeg_fade_mode", "crossfade"))
+
+        # Check encoder availability and fallback if needed
+        ffmpeg = _find_ffmpeg()
+        original_codec = video_codec
+        video_codec, fallback_msg = get_fallback_codec(ffmpeg, video_codec)
+        if fallback_msg:
+            logger.warning(fallback_msg)
+            self._emit(ENCODER_FALLBACK, {
+                "requested": original_codec,
+                "fallback": video_codec,
+                "message": fallback_msg,
+            })
+
         def progress_cb(percent: float, message: str = "") -> None:
             self._task_manager._update_progress(task.id, percent, message)
 
@@ -104,8 +141,16 @@ class MiloCutApi(Bridge):
             edits=edits_data,
             output_path=output_path,
             media_info=project.media.model_dump() if project.media else None,
+            video_codec=video_codec,
+            audio_codec=audio_codec,
+            audio_bitrate=audio_bitrate,
+            preset=preset,
+            crf=crf,
+            resolution=resolution,
             progress_callback=progress_cb,
             cancel_event=cancel_event,
+            fade_duration=fade_dur,
+            fade_mode=fade_mode,
         )
 
     def _handle_export_subtitle(self, task, cancel_event):
@@ -144,6 +189,10 @@ class MiloCutApi(Bridge):
             base, _ = os.path.splitext(media_path)
             output_path = f"{base}_cut.m4a"
 
+        settings = load_settings()
+        fade_dur = float(settings.get("export_ffmpeg_fade_duration", 0.0))
+        fade_mode = str(settings.get("export_ffmpeg_fade_mode", "crossfade"))
+
         def progress_cb(percent: float, message: str = "") -> None:
             self._task_manager._update_progress(task.id, percent, message)
 
@@ -155,6 +204,8 @@ class MiloCutApi(Bridge):
             media_info=project.media.model_dump() if project.media else None,
             progress_callback=progress_cb,
             cancel_event=cancel_event,
+            fade_duration=fade_dur,
+            fade_mode=fade_mode,
         )
 
     def _handle_filler_detection(self, task, cancel_event):
@@ -207,9 +258,13 @@ class MiloCutApi(Bridge):
         media_path = media.path
         duration = media.duration
 
-        # Output path: next to project file
-        from core.paths import get_projects_dir
-        waveform_path = str(get_projects_dir() / f"{media.media_hash}.waveform.json")
+        # Output path: per-project waveform file
+        if self._project._current_path:
+            waveform_path = str(self._project._current_path.parent / "waveform.json")
+        else:
+            from core.paths import get_projects_dir
+            name = self._project.current.project.name
+            waveform_path = str(get_projects_dir() / name / "waveform.json")
 
         def progress_cb(percent: float, message: str = "") -> None:
             self._task_manager._update_progress(task.id, percent, message)
@@ -222,6 +277,13 @@ class MiloCutApi(Bridge):
         progress_cb(90.0, "Updating project...")
         # Update media info with waveform path
         self._project.update_media_waveform(waveform_path)
+        # Make waveform available via HTTP
+        self._media_server.set_waveform(waveform_path)
+        # Persist waveform_path to disk so it survives restart
+        try:
+            self._project.save_project()
+        except Exception:
+            logger.exception("Failed to auto-save project after waveform generation")
 
         progress_cb(100.0, "Waveform generated")
         return {"project": self._project.current.model_dump() if self._project.current else None}
@@ -337,7 +399,38 @@ class MiloCutApi(Bridge):
     @expose
     def get_video_url(self, file_path: str) -> dict:
         """Start a local HTTP server and return the streaming URL."""
-        return self._media_server.start(file_path)
+        result = self._media_server.start(file_path)
+        # If project already has a waveform, make it available via HTTP
+        if result.get("success") and self._project.current and self._project.current.media:
+            waveform_path = self._project.current.media.waveform_path
+            if waveform_path and Path(waveform_path).exists():
+                self._media_server.set_waveform(waveform_path)
+        return result
+
+    @expose
+    def get_waveform_url(self) -> dict:
+        """Return the HTTP URL for the waveform JSON, or error if not available."""
+        if not self._media_server.is_running:
+            return {"success": False, "error": "Media server not running"}
+        if not self._media_server._waveform_path:
+            return {"success": False, "error": "Waveform not available"}
+        return {"success": True, "data": {"url": f"http://127.0.0.1:{self._media_server.port}/waveform"}}
+
+    @expose
+    def regenerate_waveform(self) -> dict:
+        """Clear cached waveform and trigger regeneration."""
+        if self._project.current is None:
+            return {"success": False, "error": "No project open"}
+        if self._project.current.media is None:
+            return {"success": False, "error": "No media in project"}
+
+        # Clear existing waveform state so task can re-generate
+        self._project.update_media_waveform("")
+        self._media_server._waveform_path = ""
+
+        task = self._task_manager.create_task("waveform_generation")
+        self._task_manager.start_task(task["data"]["id"])
+        return {"success": True, "data": {"task_id": task["data"]["id"]}}
 
     @expose
     def stop_media_server(self) -> dict:
@@ -482,16 +575,99 @@ class MiloCutApi(Bridge):
         return self._project.update_settings(updates)
 
     @expose
-    def select_export_path(self, default_name: str) -> dict:
+    def select_export_path(self, default_name: str, file_types: list[str] | None = None) -> dict:
         import webview
+        if file_types is None:
+            file_types = ["All files (*.*)"]
         result = webview.windows[0].create_file_dialog(
             webview.FileDialog.SAVE,
             save_filename=default_name,
-            file_types=("Video files (*.mp4)", "All files (*.*)"),
+            file_types=tuple(file_types),
         )
         if result:
-            return {"success": True, "data": str(result)}
+            # pywebview SAVE dialog returns a string on macOS/Linux
+            # but a tuple/list on Windows
+            if isinstance(result, (tuple, list)):
+                path = str(result[0]) if result else None
+            else:
+                path = str(result)
+            if path:
+                return {"success": True, "data": path}
         return {"success": True, "data": None}
+
+    @expose
+    def detect_gpu(self) -> dict:
+        """Detect GPU availability and return supported hardware encoders."""
+        encoders: list[str] = []
+        gpu_name = ""
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=5,
+                **_SUBPROCESS_KWARGS,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                gpu_name = result.stdout.strip().split("\n")[0]
+                encoders.extend(["h264_nvenc", "hevc_nvenc", "av1_nvenc"])
+        except FileNotFoundError:
+            pass
+
+        # libsvtav1 is available on all platforms except some macOS builds
+        if sys.platform != "darwin":
+            encoders.append("libsvtav1")
+
+        return {
+            "success": True,
+            "data": {
+                "nvidia": bool(gpu_name),
+                "gpu_name": gpu_name,
+                "encoders": encoders,
+            },
+        }
+
+    @expose
+    def get_encoder_metadata(self) -> dict:
+        """Return encoder metadata for frontend UI configuration."""
+        return {
+            "success": True,
+            "data": ENCODER_METADATA,
+        }
+
+    @expose
+    def export_edl(self, output_path: str) -> dict:
+        """Export EDL (CMX3600) file."""
+        from core.export_timeline import export_edl as _export_edl
+        project = self._project._current
+        if not project:
+            return {"success": False, "error": "No project open"}
+        segments = [s.model_dump() for s in project.transcript.segments]
+        edits = [e.model_dump() for e in project.edits]
+        media_info = project.media.model_dump() if project.media else {}
+        return _export_edl(segments, edits, media_info, output_path)
+
+    @expose
+    def export_xmeml_premiere(self, output_path: str, mode: str = "clean") -> dict:
+        """Export xmeml for Premiere Pro."""
+        from core.export_timeline import export_xmeml_premiere as _export_xmeml_premiere
+        project = self._project._current
+        if not project:
+            return {"success": False, "error": "No project open"}
+        segments = [s.model_dump() for s in project.transcript.segments]
+        edits = [e.model_dump() for e in project.edits]
+        media_info = project.media.model_dump() if project.media else {}
+        return _export_xmeml_premiere(segments, edits, media_info, output_path, mode=mode)
+
+    @expose
+    def export_otio(self, output_path: str, fade_duration: float = 0.0, mode: str = "clean", fade_mode: str = "crossfade", audio_fade_duration: float | None = None) -> dict:
+        """Export OpenTimelineIO (.otio) file."""
+        from core.export_timeline import export_otio as _export_otio
+        project = self._project._current
+        if not project:
+            return {"success": False, "error": "No project open"}
+        segments = [s.model_dump() for s in project.transcript.segments]
+        edits = [e.model_dump() for e in project.edits]
+        media_info = project.media.model_dump() if project.media else {}
+        return _export_otio(segments, edits, media_info, output_path, fade_duration=fade_duration, mode=mode, fade_mode=fade_mode, audio_fade_duration=audio_fade_duration)
 
 
 if __name__ == "__main__":
