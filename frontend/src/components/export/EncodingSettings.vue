@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue"
+import { ref, computed, onMounted, watch } from "vue"
 import { call } from "@/bridge"
 
 const emit = defineEmits<{
@@ -14,6 +14,13 @@ interface EncodingSettings {
   audioCodec: string
   audioBitrate: string
   preset: string
+}
+
+interface EncoderMeta {
+  label: string
+  qualityMode: string
+  recommendedQuality: number
+  qualityRange: [number, number]
 }
 
 const advancedMode = ref(false)
@@ -34,23 +41,26 @@ const hasNvidiaGpu = ref(false)
 const gpuName = ref("")
 const hardwareEncoders = ref<string[]>([])
 
+// Encoder metadata from backend
+const encoderMeta = ref<Record<string, EncoderMeta>>({})
+
 const videoCodecs = computed(() => {
   const base = [
-    { value: "libx264", label: "H.264 (CPU)" },
-    { value: "libx265", label: "H.265 (CPU)" },
+    { value: "libx264", label: encoderMeta.value["libx264"]?.label ?? "H.264 (CPU)" },
+    { value: "libx265", label: encoderMeta.value["libx265"]?.label ?? "H.265 (CPU)" },
   ]
   if (hardwareEncoders.value.includes("libsvtav1")) {
-    base.push({ value: "libsvtav1", label: "AV1 (CPU, SVT-AV1)" })
+    base.push({ value: "libsvtav1", label: encoderMeta.value["libsvtav1"]?.label ?? "AV1 (CPU, SVT-AV1)" })
   }
   if (hasNvidiaGpu.value) {
     if (hardwareEncoders.value.includes("h264_nvenc")) {
-      base.push({ value: "h264_nvenc", label: "H.264 (NVIDIA GPU)" })
+      base.push({ value: "h264_nvenc", label: encoderMeta.value["h264_nvenc"]?.label ?? "H.264 (NVIDIA GPU)" })
     }
     if (hardwareEncoders.value.includes("hevc_nvenc")) {
-      base.push({ value: "hevc_nvenc", label: "H.265 (NVIDIA GPU)" })
+      base.push({ value: "hevc_nvenc", label: encoderMeta.value["hevc_nvenc"]?.label ?? "H.265 (NVIDIA GPU)" })
     }
     if (hardwareEncoders.value.includes("av1_nvenc")) {
-      base.push({ value: "av1_nvenc", label: "AV1 (NVIDIA GPU)" })
+      base.push({ value: "av1_nvenc", label: encoderMeta.value["av1_nvenc"]?.label ?? "AV1 (NVIDIA GPU)" })
     }
   }
   return base
@@ -82,11 +92,37 @@ const audioBitrates = [
   { value: "320k", label: "320 kbps" },
 ]
 
+// Dynamic quality range based on encoder
+const qualityRange = computed<[number, number]>(() => {
+  const meta = encoderMeta.value[videoCodec.value]
+  return meta?.qualityRange ?? [18, 32]
+})
+
+// Quality mode label (CRF/CQ/QP)
+const qualityModeLabel = computed(() => {
+  const meta = encoderMeta.value[videoCodec.value]
+  if (!meta) return "CRF"
+  const mode = meta.qualityMode.toUpperCase()
+  return mode === "Q" ? "Q" : mode
+})
+
 const qualityLabel = computed(() => {
-  if (quality.value <= 20) return "高质量"
-  if (quality.value <= 24) return "中等质量"
-  if (quality.value <= 27) return "小文件"
+  const range = qualityRange.value
+  const span = range[1] - range[0]
+  const pos = (quality.value - range[0]) / span
+  if (pos <= 0.3) return "高质量"
+  if (pos <= 0.5) return "中等质量"
+  if (pos <= 0.75) return "小文件"
   return "极小文件"
+})
+
+// Auto-adjust quality when encoder changes
+watch(videoCodec, (newCodec) => {
+  const meta = encoderMeta.value[newCodec]
+  if (meta) {
+    quality.value = meta.recommendedQuality
+  }
+  updateSettings()
 })
 
 onMounted(async () => {
@@ -99,6 +135,16 @@ onMounted(async () => {
     }
   } catch {
     // GPU detection failed, assume no hardware encoders
+  }
+
+  // Fetch encoder metadata from backend
+  try {
+    const metaRes = await call<Record<string, EncoderMeta>>("get_encoder_metadata")
+    if (metaRes.success && metaRes.data) {
+      encoderMeta.value = metaRes.data
+    }
+  } catch {
+    // Metadata fetch failed, use fallback labels
   }
 })
 
@@ -133,13 +179,13 @@ function updateSettings() {
 
     <div>
       <label class="block text-sm font-medium text-gray-700 mb-1">
-        质量: {{ qualityLabel }} (CRF {{ quality }})
+        质量: {{ qualityLabel }} ({{ qualityModeLabel }} {{ quality }})
       </label>
       <input
         v-model.number="quality"
         type="range"
-        min="18"
-        max="32"
+        :min="qualityRange[0]"
+        :max="qualityRange[1]"
         class="w-full"
         @input="updateSettings"
       />

@@ -6,7 +6,7 @@ import PreviewPlayer from "@/components/export/PreviewPlayer.vue"
 import { call, onEvent } from "@/bridge"
 import { useExport } from "@/composables/useExport"
 import { useToast } from "@/composables/useToast"
-import { EVENT_TASK_COMPLETED, EVENT_TASK_FAILED } from "@/utils/events"
+import { EVENT_ENCODER_FALLBACK, EVENT_TASK_COMPLETED, EVENT_TASK_FAILED } from "@/utils/events"
 
 const { showToast } = useToast()
 
@@ -76,9 +76,17 @@ const offTaskFailed = onEvent<{ task_id: string; error: string }>(
   },
 )
 
+const offEncoderFallback = onEvent<{ requested: string; fallback: string; message: string }>(
+  EVENT_ENCODER_FALLBACK,
+  ({ requested, fallback }) => {
+    showToast(`编码器 ${requested} 不可用，已回退到 ${fallback}`, "info")
+  },
+)
+
 onUnmounted(() => {
   offTaskCompleted()
   offTaskFailed()
+  offEncoderFallback()
   pendingExportTasks.clear()
 })
 

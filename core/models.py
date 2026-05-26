@@ -81,6 +81,7 @@ class MediaInfo(BaseModel, frozen=True):
     width: int = 0
     height: int = 0
     fps: float = 0.0
+    pix_fmt: str = ""
     audio_channels: int = 0
     sample_rate: int = 0
     bit_rate: int = 0

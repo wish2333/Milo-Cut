@@ -16,6 +16,7 @@ from typing import Callable
 
 from loguru import logger
 
+from core.ffmpeg_presets import get_quality_args, select_pixel_format
 from core.ffmpeg_service import _find_ffmpeg
 from core.paths import get_temp_dir
 
@@ -37,7 +38,7 @@ def export_video(
     video_codec: str = "libx264",
     audio_codec: str = "aac",
     audio_bitrate: str = "192k",
-    preset: str = "fast",
+    preset: str = "medium",
     crf: int = 23,
     resolution: str = "original",
     progress_callback: Callable[[float, str], None] | None = None,
@@ -125,6 +126,9 @@ def export_video(
         if progress_callback:
             progress_callback(20.0, "Exporting video...")
 
+        quality_args = get_quality_args(video_codec, crf)
+        pix_fmt = select_pixel_format(media_info)
+
         cmd = [
             ffmpeg, "-hide_banner", "-y",
             "-i", media_path,
@@ -132,13 +136,17 @@ def export_video(
             "-map", "[outv]", "-map", "[outa]",
             "-c:v", video_codec,
             "-preset", preset,
-            "-crf", str(crf),
+            *quality_args,
             "-c:a", audio_codec,
             "-b:a", audio_bitrate,
+            "-pix_fmt", pix_fmt,
         ]
         # Add scale filter if resolution is not original
         if resolution and resolution != "original":
             cmd.extend(["-vf", f"scale={resolution.replace('x', ':')}"])
+        # MP4/MOV: move moov atom to start for instant playback
+        if output_path.endswith((".mp4", ".mov")):
+            cmd.extend(["-movflags", "+faststart"])
         cmd.append(output_path)
         logger.info("export_video: filter_complex length={}, written to {}", len(filter_complex), filter_path)
         result = subprocess.run(
@@ -683,6 +691,9 @@ def _extract_segment(
     end: float,
     output_path: str,
     has_video: bool = True,
+    video_codec: str = "libx264",
+    preset: str = "medium",
+    crf: int = 23,
 ) -> None:
     """Extract a single segment as MPEG-TS via FFmpeg re-encode."""
     duration = end - start
@@ -694,7 +705,11 @@ def _extract_segment(
         "-avoid_negative_ts", "make_zero",
     ]
     if has_video:
-        codec_args = ["-c:v", "libx264", "-preset", "fast", "-c:a", "aac"]
+        quality_args = get_quality_args(video_codec, crf)
+        codec_args = [
+            "-c:v", video_codec, "-preset", preset,
+            *quality_args, "-pix_fmt", "yuv420p", "-c:a", "aac",
+        ]
     else:
         codec_args = ["-c:a", "aac", "-vn"]
     cmd = base + codec_args + [output_path]

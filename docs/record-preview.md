@@ -440,3 +440,113 @@ FFmpeg 静音检测 -> margin 缩边 -> 字幕保护裁剪 -> 创建 Segment/Edi
 - `ExportPage.vue`: 新增 `otioAudioFadeDuration` ref + `watch(otioFadeDuration)` 同步联动；过渡时长 > 0 时显示音频滑块
 - `main.py`: `export_otio` bridge 方法新增 `audio_fade_duration` 参数
 - `export_timeline.py`: `export_otio()` 新增 `audio_fade_duration` 参数，视频轨和音频轨分别使用不同 fade duration 构建 Transition；相同时复用 deepcopy 避免重复计算
+
+---
+
+# Milo-Cut 0.2.2 Development Record
+
+## Overview
+
+0.2.2 版本完善了视频导出的编码参数系统，解决了硬件编码器参数误用、像素格式缺失、容器优化缺失等结构性缺陷。参照 ff-intelligent-neo 2.1.0+ 的编码器注册表机制进行改造。
+
+## Branch
+
+`dev-0.2.2` (from `main`)
+
+## Key Changes
+
+### 编码器配置中心 (ffmpeg_presets.py)
+
+新建 `core/ffmpeg_presets.py` 作为编码器配置的单一事实来源:
+
+- `ENCODER_QUALITY_MODE`: 编码器 -> 质量模式映射 (crf/cq/qp/q)
+- `ENCODER_RECOMMENDED_QUALITY`: 编码器 -> 推荐质量值
+- `ENCODER_QUALITY_RANGE`: 编码器 -> 质量值范围
+- `QUALITY_FLAG_MAP`: 质量模式 -> FFmpeg 标志 (-crf/-cq/-qp/-q:v)
+- `ENCODER_FALLBACK_CHAIN`: 硬件编码器 -> CPU 编码器回退链
+- `get_quality_args(codec, quality)`: 根据编码器生成正确的质量参数
+- `select_pixel_format(media_info)`: 像素格式探测 (保留 HDR/10-bit 输入)
+- `check_encoder_availability(ffmpeg, codec)`: 编码器可用性检查
+- `get_fallback_codec(ffmpeg, requested)`: 获取可用的回退编码器
+
+### FFmpeg 命令构建修复
+
+**核心问题**: 所有编码器统一使用 `-crf` 参数，但硬件编码器 (NVENC/QSV/AMF) 忽略该参数，导致质量控制失效。
+
+**修复** (`core/export_service.py`):
+- `export_video()` 使用 `get_quality_args()` 替代硬编码 `-crf`
+- 添加 `-pix_fmt` 参数 (HDR 输入保留原始格式，8-bit 强制 yuv420p)
+- MP4/MOV 容器添加 `-movflags +faststart` (moov atom 前置)
+- `preset` 默认值从 `"fast"` 改为 `"medium"`
+
+### 像素格式探测
+
+**问题**: `probe_media` 不提取 `pix_fmt`，导致无法区分 HDR/SDR 输入。
+
+**修复**:
+- `core/ffmpeg_service.py`: `probe_media` 从视频流提取 `pix_fmt` 字段
+- `core/models.py`: `MediaInfo` 新增 `pix_fmt: str = ""` 字段
+
+### 编码器回退机制
+
+**问题**: 用户选择硬件编码器但 GPU 不可用时，FFmpeg 直接报错。
+
+**修复** (`main.py`):
+- 导出前调用 `get_fallback_codec()` 检查编码器可用性
+- 自动回退到 CPU 等效编码器 (如 h264_nvenc -> libx264)
+- 通过 `encoder:fallback` 事件通知前端
+
+### 前端动态编码器 UI
+
+**修复** (`frontend/src/components/export/EncodingSettings.vue`):
+- 从后端 `get_encoder_metadata` API 获取编码器元数据
+- 编码器切换时自动应用推荐质量值
+- CRF 滑块范围根据编码器动态调整
+- 质量标签显示正确的质量模式名称 (CRF/CQ/QP)
+
+### 编码器回退提示
+
+**修复** (`frontend/src/pages/ExportPage.vue`):
+- 监听 `encoder:fallback` 事件
+- Toast 通知用户编码器已回退
+
+## Files Modified
+
+| 文件 | 变更 |
+|------|------|
+| `core/ffmpeg_presets.py` | **新建** -- 编码器配置中心 |
+| `core/ffmpeg_service.py` | probe_media 增加 pix_fmt 提取 |
+| `core/models.py` | MediaInfo 新增 pix_fmt 字段 |
+| `core/export_service.py` | 动态质量参数 + pix_fmt + movflags |
+| `core/events.py` | 新增 ENCODER_FALLBACK 事件 |
+| `main.py` | 编码器回退 + get_encoder_metadata API |
+| `frontend/src/components/export/EncodingSettings.vue` | 动态编码器 UI |
+| `frontend/src/pages/ExportPage.vue` | 编码器回退 Toast 提示 |
+| `frontend/src/utils/events.ts` | 新增 EVENT_ENCODER_FALLBACK |
+
+## Commit Message
+
+```
+feat(export): 视频编码参数系统完善 -- 编码器注册表、质量参数动态适配、像素格式探测
+
+- 新建 core/ffmpeg_presets.py 编码器配置单一事实来源
+- 修复硬件编码器 (-cq/-qp) 质量参数误用 (-crf) 问题
+- 添加像素格式探测，HDR/10-bit 输入保留原始格式
+- MP4/MOV 容器添加 -movflags +faststart
+- 编码器不可用时自动回退到 CPU 等效编码器
+- 前端编码器 UI 从后端获取元数据，动态调整质量范围
+```
+
+## Release Note
+
+### 视频编码参数完善 (0.2.2)
+
+本版本修复了视频导出模块的编码参数问题，提升了不同硬件环境下的导出质量和兼容性。
+
+**修复内容:**
+- 修复硬件编码器 (NVENC/QSV/AMF) 质量参数被忽略的问题，现在根据编码器类型自动使用正确的参数 (-crf/-cq/-qp)
+- 添加像素格式探测，HDR/10-bit 视频输入保留原始像素格式避免色带问题
+- MP4/MOV 输出添加 `-movflags +faststart`，改善网络播放首帧加载速度
+- 编码器不可用时自动回退到 CPU 编码器并提示用户
+- 编码设置面板现在根据所选编码器动态调整质量滑块范围和推荐值
+- `preset` 默认值从 "fast" 改为 "medium"，平衡编码速度和质量

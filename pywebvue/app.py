@@ -54,7 +54,7 @@ class App:
         height: int = 600,
         min_size: tuple[int, int] = (600, 400),
         frontend_dir: str = "frontend_dist",
-        dev_url: str = "http://localhost:5173",
+        dev_url: str = "http://localhost:5200",
         tick_interval: int = 50,
         on_start: Callable[[], None] | None = None,
     ) -> None:

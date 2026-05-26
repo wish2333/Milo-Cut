@@ -71,6 +71,8 @@ def probe_media(file_path: str) -> dict:
             except (ValueError, ZeroDivisionError):
                 fps = 0.0
 
+        pix_fmt = video_stream.get("pix_fmt", "") if video_stream else ""
+
         data = {
             "path": file_path,
             "duration": round(duration, 3),
@@ -78,6 +80,7 @@ def probe_media(file_path: str) -> dict:
             "width": width,
             "height": height,
             "fps": round(fps, 3),
+            "pix_fmt": pix_fmt,
             "audio_channels": int(audio_stream.get("channels", 0)) if audio_stream else 0,
             "sample_rate": int(audio_stream.get("sample_rate", 0)) if audio_stream else 0,
             "bit_rate": int(format_info.get("bit_rate", 0)),

@@ -20,7 +20,7 @@ How it works
 
     1. uv sync                        Install Python dependencies
     2. npm/bun install                 Install frontend dependencies
-    3. Start Vite dev server           Background process at :5173
+    3. Start Vite dev server           Background process at :5200
     4. Start main.py                   Launch the pywebview window
     5. On exit (Ctrl+C or window close): stop all background processes
 
@@ -139,12 +139,12 @@ def _start_vite(frontend_dir: Path, pm: str) -> None:
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
         try:
-            urllib.request.urlopen("http://localhost:5173", timeout=1)
-            _info("    Vite ready at http://localhost:5173")
+            urllib.request.urlopen("http://localhost:5200", timeout=1)
+            _info("    Vite ready at http://localhost:5200")
             return
         except Exception:
             time.sleep(0.5)
-    _error("Vite dev server failed to start on port 5173 within 20s")
+    _error("Vite dev server failed to start on port 5200 within 20s")
 
 
 def _start_app(env_extra: dict[str, str] | None = None) -> None:

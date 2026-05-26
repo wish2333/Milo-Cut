@@ -15,7 +15,7 @@ from pywebvue import App, Bridge, expose
 
 from core.analysis_service import detect_errors, detect_fillers, run_full_analysis
 from core.config import load_settings
-from core.events import EDIT_SUMMARY_UPDATED, LOG_LINE
+from core.events import EDIT_SUMMARY_UPDATED, ENCODER_FALLBACK, LOG_LINE
 from core.ffmpeg_service import detect_silence, generate_waveform, probe_media
 from core.logging import get_logger, setup_frontend_sink, setup_logging
 from core.media_server import MediaServer
@@ -25,6 +25,10 @@ from core.project_service import ProjectService
 from core.subtitle_service import parse_srt
 from core.task_manager import TaskManager
 from core.export_service import export_audio, export_srt, export_video
+from core.ffmpeg_presets import ENCODER_METADATA, get_fallback_codec
+from core.ffmpeg_service import _find_ffmpeg
+
+logger = get_logger()
 
 
 class MiloCutApi(Bridge):
@@ -106,11 +110,23 @@ class MiloCutApi(Bridge):
         video_codec = settings.get("export_video_codec", "libx264")
         audio_codec = settings.get("export_audio_codec", "aac")
         audio_bitrate = settings.get("export_audio_bitrate", "192k")
-        preset = settings.get("export_preset", "fast")
+        preset = settings.get("export_preset", "medium")
         crf = int(settings.get("export_crf", 23))
         resolution = settings.get("export_resolution", "original")
         fade_dur = float(settings.get("export_ffmpeg_fade_duration", 0.0))
         fade_mode = str(settings.get("export_ffmpeg_fade_mode", "crossfade"))
+
+        # Check encoder availability and fallback if needed
+        ffmpeg = _find_ffmpeg()
+        original_codec = video_codec
+        video_codec, fallback_msg = get_fallback_codec(ffmpeg, video_codec)
+        if fallback_msg:
+            logger.warning(fallback_msg)
+            self._emit(ENCODER_FALLBACK, {
+                "requested": original_codec,
+                "fallback": video_codec,
+                "message": fallback_msg,
+            })
 
         def progress_cb(percent: float, message: str = "") -> None:
             self._task_manager._update_progress(task.id, percent, message)
@@ -602,6 +618,14 @@ class MiloCutApi(Bridge):
                 "gpu_name": gpu_name,
                 "encoders": encoders,
             },
+        }
+
+    @expose
+    def get_encoder_metadata(self) -> dict:
+        """Return encoder metadata for frontend UI configuration."""
+        return {
+            "success": True,
+            "data": ENCODER_METADATA,
         }
 
     @expose
