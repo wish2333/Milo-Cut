@@ -1,6 +1,7 @@
 """Tests for core.project_service."""
 
 import json
+import tempfile
 from pathlib import Path
 
 from core.models import EditStatus, SegmentType
@@ -15,16 +16,22 @@ class TestProjectService:
         svc = ProjectService()
         return svc
 
+    def _create_media_file(self, tmp_dir) -> str:
+        """Create a temporary media file for testing."""
+        media_file = tmp_dir / "test.mp4"
+        media_file.write_bytes(b"fake media content")
+        return str(media_file)
+
     def test_create_and_open(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)
-        result = svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        result = svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         assert result["success"] is True
         assert svc.current is not None
         assert svc.current.project.name == "test"
 
     def test_save_and_reload(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         save_result = svc.save_project()
         assert save_result["success"] is True
 
@@ -37,13 +44,13 @@ class TestProjectService:
 
     def test_close_project(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         svc.close_project()
         assert svc.current is None
 
     def test_update_transcript(self, tmp_dir, monkeypatch, sample_segments):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         segs = [s.model_dump() for s in sample_segments]
         result = svc.update_transcript(segs)
         assert result["success"] is True
@@ -51,7 +58,7 @@ class TestProjectService:
 
     def test_add_silence_results(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         silences = [{"start": 5.0, "end": 5.5}, {"start": 10.0, "end": 11.0}]
         result = svc.add_silence_results(silences)
         assert result["success"] is True
@@ -61,7 +68,7 @@ class TestProjectService:
 
     def test_update_edit_decision(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         svc.add_silence_results([{"start": 5.0, "end": 5.5}])
         edit_id = svc.current.edits[0].id
         result = svc.update_edit_decision(edit_id, "confirmed")
@@ -70,7 +77,7 @@ class TestProjectService:
 
     def test_update_segment(self, tmp_dir, monkeypatch, sample_segments):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         svc.update_transcript([s.model_dump() for s in sample_segments])
         result = svc.update_segment("seg-0001", {"text": "Updated text"})
         assert result["success"] is True
@@ -79,7 +86,7 @@ class TestProjectService:
 
     def test_merge_segments(self, tmp_dir, monkeypatch, sample_segments):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         svc.update_transcript([s.model_dump() for s in sample_segments])
         result = svc.merge_segments(["seg-0001", "seg-0002"])
         assert result["success"] is True
@@ -90,7 +97,7 @@ class TestProjectService:
 
     def test_split_segment(self, tmp_dir, monkeypatch, sample_segments):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         svc.update_transcript([s.model_dump() for s in sample_segments])
         result = svc.split_segment("seg-0001", 3.0)
         assert result["success"] is True
@@ -104,7 +111,7 @@ class TestProjectService:
 
     def test_search_replace(self, tmp_dir, monkeypatch, sample_segments):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         svc.update_transcript([s.model_dump() for s in sample_segments])
         result = svc.search_replace("Hello", "Hi")
         assert result["success"] is True
@@ -114,7 +121,7 @@ class TestProjectService:
 
     def test_mark_segments(self, tmp_dir, monkeypatch, sample_segments):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         svc.update_transcript([s.model_dump() for s in sample_segments])
         result = svc.mark_segments(["seg-0001"], "delete")
         assert result["success"] is True
@@ -122,7 +129,7 @@ class TestProjectService:
 
     def test_confirm_all_suggestions(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         svc.add_silence_results([{"start": 5.0, "end": 5.5}, {"start": 10.0, "end": 11.0}])
         result = svc.confirm_all_suggestions()
         assert result["success"] is True
@@ -131,7 +138,7 @@ class TestProjectService:
 
     def test_reject_all_suggestions(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         svc.add_silence_results([{"start": 5.0, "end": 5.5}])
         result = svc.reject_all_suggestions()
         assert result["success"] is True
@@ -139,7 +146,7 @@ class TestProjectService:
 
     def test_get_edit_summary(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         svc.add_silence_results([{"start": 5.0, "end": 5.5}])
         svc.confirm_all_suggestions()
         result = svc.get_edit_summary()
@@ -148,7 +155,7 @@ class TestProjectService:
 
     def test_add_analysis_results(self, tmp_dir, monkeypatch, sample_segments):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         svc.update_transcript([s.model_dump() for s in sample_segments])
         results = [{"id": "ar-1", "type": "filler", "segment_ids": ["seg-0001"], "confidence": 0.9, "detail": "test"}]
         result = svc.add_analysis_results(results, source="test")
@@ -158,7 +165,7 @@ class TestProjectService:
 
     def test_update_segment_text(self, tmp_dir, monkeypatch, sample_segments):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         svc.update_transcript([s.model_dump() for s in sample_segments])
         result = svc.update_segment_text("seg-0001", "New text")
         assert result["success"] is True
@@ -182,7 +189,7 @@ class TestProjectService:
 
     def test_add_silence_results_with_margin(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         silences = [{"start": 5.0, "end": 6.0}, {"start": 10.0, "end": 11.0}]
         result = svc.add_silence_results(silences, margin=0.1)
         assert result["success"] is True
@@ -193,7 +200,7 @@ class TestProjectService:
 
     def test_add_silence_results_margin_consumes_short(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         silences = [{"start": 5.0, "end": 5.1}]  # 0.1s duration, margin=0.1 -> consumed
         result = svc.add_silence_results(silences, margin=0.1)
         assert result["success"] is True
@@ -202,7 +209,7 @@ class TestProjectService:
 
     def test_add_silence_results_margin_zero(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         silences = [{"start": 5.0, "end": 6.0}]
         result = svc.add_silence_results(silences, margin=0.0)
         assert result["success"] is True
@@ -223,7 +230,7 @@ class TestProjectService:
 
     def test_trim_silences_no_overlap(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         self._add_subtitles(svc, [(10.0, 12.0, "sub")])
         silences = [{"start": 1.0, "end": 3.0, "duration": 2.0}]
         result = svc._trim_silences_around_subtitles(silences, padding=0.3)
@@ -233,7 +240,7 @@ class TestProjectService:
 
     def test_trim_silences_full_enclosure(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         self._add_subtitles(svc, [(5.0, 8.0, "sub")])
         silences = [{"start": 4.0, "end": 9.0, "duration": 5.0}]
         result = svc._trim_silences_around_subtitles(silences, padding=0.3)
@@ -245,7 +252,7 @@ class TestProjectService:
 
     def test_trim_silences_partial_overlap(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         self._add_subtitles(svc, [(5.0, 8.0, "sub")])
         silences = [{"start": 6.0, "end": 10.0, "duration": 4.0}]
         result = svc._trim_silences_around_subtitles(silences, padding=0.3)
@@ -255,7 +262,7 @@ class TestProjectService:
 
     def test_trim_silences_padding_zero(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         self._add_subtitles(svc, [(5.0, 8.0, "sub")])
         silences = [{"start": 4.0, "end": 9.0, "duration": 5.0}]
         result = svc._trim_silences_around_subtitles(silences, padding=0.0)
@@ -263,7 +270,7 @@ class TestProjectService:
 
     def test_trim_silences_fully_inside_extended(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         self._add_subtitles(svc, [(5.0, 8.0, "sub")])
         silences = [{"start": 6.0, "end": 7.0, "duration": 1.0}]
         result = svc._trim_silences_around_subtitles(silences, padding=0.3)
@@ -271,7 +278,7 @@ class TestProjectService:
 
     def test_trim_silences_adjacent_subtitles_merge(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         self._add_subtitles(svc, [(5.0, 6.0, "a"), (6.2, 7.0, "b")])
         silences = [{"start": 4.0, "end": 8.0, "duration": 4.0}]
         result = svc._trim_silences_around_subtitles(silences, padding=0.3)
@@ -284,14 +291,14 @@ class TestProjectService:
 
     def test_trim_silences_no_subtitles(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         silences = [{"start": 4.0, "end": 9.0, "duration": 5.0}]
         result = svc._trim_silences_around_subtitles(silences, padding=0.3)
         assert len(result) == 1  # no subtitles -> passthrough
 
     def test_trim_silences_ignores_confirmed_deleted_subtitles(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         self._add_subtitles(svc, [(5.0, 8.0, "sub")])
         # Confirm-delete the subtitle via update_edit_decision
         sub_id = next(s.id for s in svc.current.transcript.segments if s.type == "subtitle")
@@ -315,7 +322,7 @@ class TestProjectService:
 
     def test_add_silence_results_with_subtitle_padding(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)
-        svc.create_project("test", "/tmp/test.mp4", {"duration": 60.0})
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         self._add_subtitles(svc, [(5.0, 8.0, "sub")])
         silences = [{"start": 4.0, "end": 9.0}]
         result = svc.add_silence_results(silences, subtitle_padding=0.3)

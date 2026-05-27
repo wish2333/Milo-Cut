@@ -8,12 +8,13 @@ import { useExport } from "@/composables/useExport"
 import { useEdit } from "@/composables/useEdit"
 import { useSegmentEdit } from "@/composables/useSegmentEdit"
 import { useToast } from "@/composables/useToast"
-import { EVENT_TASK_COMPLETED } from "@/utils/events"
+import { EVENT_TASK_COMPLETED, EVENT_PROJECT_DIRTY, EVENT_PROJECT_SAVED } from "@/utils/events"
 import ProgressBar from "@/components/common/ProgressBar.vue"
 import Timeline from "@/components/workspace/Timeline.vue"
 import WaveformEditor from "@/components/waveform/WaveformEditor.vue"
 import SearchReplaceBar from "@/components/workspace/SearchReplaceBar.vue"
 import VideoControls from "@/components/workspace/VideoControls.vue"
+import SubtitleOverlay from "@/components/workspace/SubtitleOverlay.vue"
 
 interface Props {
   project: Project
@@ -105,6 +106,35 @@ watch(statusMessage, (msg) => {
       statusTimer = null
     }, 5000)
   }
+})
+
+// Auto-save state
+const isDirty = ref(false)
+const isSaving = ref(false)
+let saveTimer: ReturnType<typeof setTimeout> | null = null
+
+onEvent<void>(EVENT_PROJECT_DIRTY, () => {
+  isDirty.value = true
+})
+
+onEvent<void>(EVENT_PROJECT_SAVED, () => {
+  isDirty.value = false
+})
+
+watch(isDirty, (dirty) => {
+  if (!dirty || isSaving.value) return
+  if (saveTimer) clearTimeout(saveTimer)
+  saveTimer = setTimeout(async () => {
+    isSaving.value = true
+    try {
+      const res = await call<void>("save_project")
+      if (res.success) {
+        showToast("Auto-saved", "success", 1500)
+      }
+    } finally {
+      isSaving.value = false
+    }
+  }, 2000)
 })
 
 const segments = computed<Segment[]>(() => props.project.transcript?.segments ?? [])
@@ -317,11 +347,19 @@ async function handleRejectAllSuggestions() {
 }
 
 async function handleSaveProject() {
-  const res = await call("save_project")
-  if (res.success) {
-    showToast("Project saved", "success", 2000)
-  } else {
-    showToast("Save failed", "error", 3000)
+  if (isSaving.value) return
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
+  isSaving.value = true
+  try {
+    const res = await call("save_project")
+    if (res.success) {
+      isDirty.value = false
+      showToast("Project saved", "success", 2000)
+    } else {
+      showToast("Save failed", "error", 3000)
+    }
+  } finally {
+    isSaving.value = false
   }
 }
 
@@ -719,7 +757,7 @@ onUnmounted(() => {
       <!-- Left: Video player area -->
       <div class="flex w-2/5 min-w-[400px] flex-col border-r border-gray-200 bg-gray-900">
         <div class="flex flex-1 items-center justify-center p-2 overflow-hidden">
-          <div v-if="videoUrl" class="flex flex-col w-full h-full items-center justify-center">
+          <div v-if="videoUrl" class="relative flex flex-col w-full h-full items-center justify-center">
             <video
               ref="videoRef"
               :src="videoUrl"
@@ -730,6 +768,10 @@ onUnmounted(() => {
               @play="videoPaused = false"
               @pause="videoPaused = true"
               @click="handleTogglePlay"
+            />
+            <SubtitleOverlay
+              :segments="segments"
+              :video-ref="videoRef"
             />
           </div>
           <div v-else class="text-center text-gray-400">

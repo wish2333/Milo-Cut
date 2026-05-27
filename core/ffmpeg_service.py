@@ -19,20 +19,76 @@ _SUBPROCESS_KWARGS: dict = (
 from loguru import logger
 
 
+def _get_settings_ffmpeg_path() -> str | None:
+    """Read user-configured ffmpeg path from settings."""
+    try:
+        from core.config import load_settings
+        settings = load_settings()
+        path = settings.get("ffmpeg_path", "")
+        if path and Path(path).is_file():
+            return path
+    except Exception:
+        pass
+    return None
+
+
+def _get_settings_ffprobe_path() -> str | None:
+    """Read user-configured ffprobe path from settings."""
+    try:
+        from core.config import load_settings
+        settings = load_settings()
+        path = settings.get("ffprobe_path", "")
+        if path and Path(path).is_file():
+            return path
+    except Exception:
+        pass
+    return None
+
+
 def _find_ffprobe() -> str:
-    """Find ffprobe binary on PATH."""
+    """Find ffprobe binary with priority chain.
+
+    Priority: user settings > PATH > static_ffmpeg
+    """
+    # 1. User-configured path
+    custom = _get_settings_ffprobe_path()
+    if custom:
+        return custom
+    # 2. PATH lookup
     ffprobe = shutil.which("ffprobe")
-    if ffprobe is None:
-        raise FileNotFoundError("ffprobe not found on PATH")
-    return ffprobe
+    if ffprobe:
+        return ffprobe
+    # 3. static_ffmpeg package
+    try:
+        import static_ffmpeg
+        paths = static_ffmpeg.utils.get_or_fetch_platform_executables_else_raise()
+        return paths[1]  # ffprobe is second
+    except Exception:
+        pass
+    raise FileNotFoundError("ffprobe not found. Configure path in Settings or install FFmpeg.")
 
 
 def _find_ffmpeg() -> str:
-    """Find ffmpeg binary on PATH."""
+    """Find ffmpeg binary with priority chain.
+
+    Priority: user settings > PATH > static_ffmpeg
+    """
+    # 1. User-configured path
+    custom = _get_settings_ffmpeg_path()
+    if custom:
+        return custom
+    # 2. PATH lookup
     ffmpeg = shutil.which("ffmpeg")
-    if ffmpeg is None:
-        raise FileNotFoundError("ffmpeg not found on PATH")
-    return ffmpeg
+    if ffmpeg:
+        return ffmpeg
+    # 3. static_ffmpeg package
+    try:
+        import static_ffmpeg
+        paths = static_ffmpeg.utils.get_or_fetch_platform_executables_else_raise()
+        return paths[0]  # ffmpeg is first
+    except Exception:
+        pass
+    raise FileNotFoundError("ffmpeg not found. Configure path in Settings or install FFmpeg.")
 
 
 def probe_media(file_path: str) -> dict:

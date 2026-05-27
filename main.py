@@ -35,6 +35,25 @@ from core.ffmpeg_service import _find_ffmpeg
 logger = get_logger()
 
 
+def _get_version() -> str:
+    """Get app version with packaging fallback."""
+    # Method 1: importlib.metadata (dev env / pip install)
+    try:
+        from importlib.metadata import version
+        return version("milo-cut")
+    except Exception:
+        pass
+    # Method 2: read pyproject.toml (PyInstaller/Nuitka packaging fallback)
+    try:
+        import tomllib
+        with open(Path(__file__).parent / "pyproject.toml", "rb") as f:
+            return tomllib.load(f)["project"]["version"]
+    except Exception:
+        pass
+    # Method 3: final fallback
+    return "unknown"
+
+
 class MiloCutApi(Bridge):
     """Bridge API exposed to the Vue frontend."""
 
@@ -298,7 +317,7 @@ class MiloCutApi(Bridge):
             "success": True,
             "data": {
                 "name": "Milo-Cut",
-                "version": "0.1.0",
+                "version": _get_version(),
                 "python": sys.version,
                 "platform": sys.platform,
             },
@@ -360,6 +379,10 @@ class MiloCutApi(Bridge):
     def close_project(self) -> dict:
         self._media_server.stop()
         return self._project.close_project()
+
+    @expose
+    def relink_media(self, new_path: str) -> dict:
+        return self._project.relink_media(new_path)
 
     # ================================================================
     # Subtitle
@@ -597,33 +620,61 @@ class MiloCutApi(Bridge):
 
     @expose
     def detect_gpu(self) -> dict:
-        """Detect GPU availability and return supported hardware encoders."""
-        encoders: list[str] = []
-        gpu_name = ""
+        """Detect GPU via ffmpeg -hwaccels for cross-platform support."""
+        encoders: list[str] = ["libsvtav1"]  # software encoder always available
         try:
+            from core.ffmpeg_service import _find_ffmpeg
+            ffmpeg = _find_ffmpeg()
             result = subprocess.run(
-                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                [ffmpeg, "-hide_banner", "-hwaccels"],
                 capture_output=True, text=True, timeout=5,
                 **_SUBPROCESS_KWARGS,
             )
-            if result.returncode == 0 and result.stdout.strip():
-                gpu_name = result.stdout.strip().split("\n")[0]
-                encoders.extend(["h264_nvenc", "hevc_nvenc", "av1_nvenc"])
-        except FileNotFoundError:
+            if result.returncode == 0:
+                hwaccels = result.stdout.strip().split("\n")[1:]  # skip title line
+                for hw in hwaccels:
+                    hw = hw.strip().lower()
+                    if "cuda" in hw or "nvenc" in hw:
+                        encoders.extend(["h264_nvenc", "hevc_nvenc", "av1_nvenc"])
+                    elif "qsv" in hw:
+                        encoders.extend(["h264_qsv", "hevc_qsv"])
+                    elif "videotoolbox" in hw:
+                        encoders.extend(["h264_videotoolbox", "hevc_videotoolbox"])
+                    elif "vaapi" in hw:
+                        encoders.extend(["h264_vaapi", "hevc_vaapi"])
+                    elif "amf" in hw:
+                        encoders.extend(["h264_amf", "hevc_amf"])
+        except Exception:
             pass
-
-        # libsvtav1 is available on all platforms except some macOS builds
-        if sys.platform != "darwin":
-            encoders.append("libsvtav1")
 
         return {
             "success": True,
             "data": {
-                "nvidia": bool(gpu_name),
-                "gpu_name": gpu_name,
-                "encoders": encoders,
+                "encoders": sorted(set(encoders)),
             },
         }
+
+    @expose
+    def get_ffmpeg_info(self) -> dict:
+        """Return FFmpeg status for settings page."""
+        from core.ffmpeg_service import _find_ffmpeg, _find_ffprobe
+        info: dict = {"ffmpeg_path": "", "ffprobe_path": "", "version": ""}
+        try:
+            info["ffmpeg_path"] = _find_ffmpeg()
+            result = subprocess.run(
+                [info["ffmpeg_path"], "-version"],
+                capture_output=True, text=True, timeout=5,
+                **_SUBPROCESS_KWARGS,
+            )
+            if result.returncode == 0:
+                info["version"] = result.stdout.split("\n")[0]
+        except Exception:
+            pass
+        try:
+            info["ffprobe_path"] = _find_ffprobe()
+        except Exception:
+            pass
+        return {"success": True, "data": info}
 
     @expose
     def get_encoder_metadata(self) -> dict:

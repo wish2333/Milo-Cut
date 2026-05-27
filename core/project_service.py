@@ -5,6 +5,7 @@ Projects are stored as JSON files in the data/projects/ directory.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import datetime
@@ -27,6 +28,25 @@ from core.models import (
 from core.paths import get_projects_dir
 
 
+def compute_media_fingerprint(path: str) -> str:
+    """Lightweight fingerprint: size + mtime hash. O(1) regardless of file size."""
+    try:
+        stat = os.stat(path)
+        raw = f"{stat.st_size}:{stat.st_mtime_ns}"
+        return hashlib.sha256(raw.encode()).hexdigest()
+    except OSError:
+        return ""
+
+
+def compute_media_hash_deep(path: str) -> str:
+    """Full SHA-256. Only use on relink confirmation, NOT on project open."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 class ProjectService:
     """Manages project lifecycle and persistence."""
 
@@ -44,6 +64,8 @@ class ProjectService:
 
     def create_project(self, name: str, media_path: str, media_info: dict) -> dict:
         """Create a new project with media info."""
+        media_fields = {k: v for k, v in media_info.items() if k in MediaInfo.model_fields and k != "path"}
+        media_fields["media_hash"] = compute_media_fingerprint(media_path)
         project = Project(
             project=ProjectMeta(
                 name=name,
@@ -52,7 +74,7 @@ class ProjectService:
             ),
             media=MediaInfo(
                 path=media_path,
-                **{k: v for k, v in media_info.items() if k in MediaInfo.model_fields and k != "path"},
+                **media_fields,
             ),
         )
 
@@ -86,15 +108,28 @@ class ProjectService:
             self._migrate_silence_edits()
 
             # Check media path reachability
-            warnings = []
             if self._current.media and self._current.media.path:
-                if not Path(self._current.media.path).exists():
-                    warnings.append(f"Media file not found: {self._current.media.path}")
+                media_path = Path(self._current.media.path)
+                if not media_path.exists():
+                    return {
+                        "success": False,
+                        "error": "MEDIA_NOT_FOUND",
+                        "data": {"path": self._current.media.path},
+                    }
 
-            result = {"success": True, "data": self._current.model_dump()}
-            if warnings:
-                result["warnings"] = warnings
-            return result
+                # Fingerprint mismatch warning (file may have been overwritten)
+                warnings = []
+                if self._current.media.media_hash:
+                    current_fp = compute_media_fingerprint(self._current.media.path)
+                    if current_fp != self._current.media.media_hash:
+                        warnings.append("MEDIA_HASH_MISMATCH")
+
+                result = {"success": True, "data": self._current.model_dump()}
+                if warnings:
+                    result["warnings"] = warnings
+                return result
+
+            return {"success": True, "data": self._current.model_dump()}
 
         except Exception as e:
             logger.exception("Failed to open project: {}", path)
@@ -162,6 +197,20 @@ class ProjectService:
         self._current = None
         self._current_path = None
         return {"success": True}
+
+    def relink_media(self, new_path: str) -> dict:
+        """Relink media to a new path. Updates path + fingerprint."""
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+        if not Path(new_path).is_file():
+            return {"success": False, "error": "File not found"}
+        media = self._current.media.model_copy(update={
+            "path": new_path,
+            "media_hash": compute_media_fingerprint(new_path),
+        })
+        self._current = self._current.model_copy(update={"media": media})
+        self.save_project()
+        return {"success": True, "data": self._current.model_dump()}
 
     def update_media_waveform(self, waveform_path: str) -> dict:
         """Update the waveform_path in the current project's media info."""

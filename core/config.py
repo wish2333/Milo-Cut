@@ -31,6 +31,15 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
         "不对", "重来", "重新说", "说错了", "刚才说错了",
         "这段不要", "再来一遍", "算了", "不是这样的",
     ],
+    "export_video_codec": "libx264",
+    "export_audio_codec": "aac",
+    "export_audio_bitrate": "192k",
+    "export_preset": "medium",
+    "export_crf": 23,
+    "export_resolution": "original",
+    "export_ffmpeg_transitions": True,
+    "export_ffmpeg_fade_duration": 0,
+    "export_ffmpeg_fade_mode": "crossfade",
 }
 
 
