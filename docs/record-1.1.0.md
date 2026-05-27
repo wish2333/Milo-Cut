@@ -453,6 +453,256 @@ Ctrl+S -> handleSaveProject() -> 检查 isSaving 锁
 
 ---
 
+## Sprint 4: 交叉高亮、右键菜单、VTT 导出
+
+### Task 4.1: 交叉高亮
+
+**目标**: 选中静音段时，高亮其前后相邻的字幕段，方便用户确认裁剪边界。
+
+**修改文件**:
+- `frontend/src/components/workspace/Timeline.vue`
+- `frontend/src/components/workspace/TranscriptRow.vue`
+
+**实现细节**:
+
+1. `Timeline.vue` 新增 `adjacentSubtitleIds` 计算属性：
+   - 接收 `selectedSegmentId` prop，查找其在 `segments` 数组中的索引
+   - 仅当选中的是静音段时生效，否则返回 `{ prev: null, next: null }`
+   - 从选中索引向前扫描找到前一个字幕段 ID（`prev`）
+   - 从选中索引向后扫描找到后一个字幕段 ID（`next`）
+   - 将结果通过 `is-adjacent-highlighted` prop 传递给 TranscriptRow
+
+2. `TranscriptRow.vue` 新增 `isAdjacentHighlighted` prop：
+   - `statusClass` 计算属性中，amber 高亮优先级最高（高于 confirmed/rejected/pending）
+   - 样式：`border-l-3 border-amber-400 bg-amber-50`
+
+---
+
+### Task 4.2: 右键上下文菜单
+
+**目标**: 为 TranscriptRow 和 SilenceRow 添加右键菜单，提供快捷操作入口。
+
+**修改文件**:
+- `frontend/src/components/workspace/TranscriptRow.vue`
+- `frontend/src/components/workspace/SilenceRow.vue`
+- `frontend/src/components/workspace/Timeline.vue`
+
+**实现细节**:
+
+1. 两个组件使用相同的上下文菜单模式：
+   - `contextMenu` ref 存储 `{ x, y }` 坐标
+   - `handleContextMenu(e)` 阻止默认行为，记录鼠标位置
+   - `closeContextMenu()` 清除菜单状态
+   - `watch(contextMenu)` 监听：显示时注册 `document.click` once 监听器自动关闭
+
+2. TranscriptRow 菜单项：
+   - 编辑文本 -- 调用 `startEdit()` 进入内联编辑模式
+   - 标记删除/取消删除 -- 调用 `emit('toggle-status')`
+   - 删除段落 -- 调用 `emit('delete')`（新增事件）
+
+3. SilenceRow 菜单项：
+   - 标记删除/取消删除 -- 调用 `emit('toggle-status')`
+   - 删除段落 -- 调用 `emit('delete')`
+
+4. Timeline.vue 为 TranscriptRow 接通 `@delete` 事件，转发为 `emit('delete-segment', seg)`
+
+**技术细节**:
+- 菜单使用 `fixed` 定位（相对于视口），`z-50` 确保层级在最上
+- 使用 `document.addEventListener("click", closeContextMenu, { once: true })` 实现点击外部关闭
+- 通过 `setTimeout(0)` 确保监听器在当前事件循环之后注册，避免立即触发
+
+---
+
+### Task 4.3: VTT 导出
+
+**目标**: 新增 WebVTT 字幕格式导出，兼容更多播放器和剪辑软件。
+
+**修改文件**:
+- `core/export_service.py` -- VTT 导出逻辑
+- `core/models.py` -- TaskType 枚举
+- `main.py` -- 任务处理器注册
+- `frontend/src/types/task.ts` -- 前端类型
+- `frontend/src/composables/useExport.ts` -- 任务识别
+- `frontend/src/pages/ExportPage.vue` -- 导出按钮
+
+**实现细节**:
+
+1. 后端 `export_service.py`：
+   - 新增 `export_vtt(segments, edits, output_path, *, media_duration=0.0)` 函数
+   - 逻辑与 `export_srt()` 相同，区别在于：
+     - 文件头为 `WEBVTT\n\n`（VTT 规范要求）
+     - 时间戳格式为 `HH:MM:SS.mmm`（句点而非逗号）
+     - 不需要序号（VTT 规范可选）
+   - 新增 `_format_vtt_time(seconds)` 辅助函数
+
+2. 后端任务系统：
+   - `models.py` TaskType 新增 `EXPORT_VTT = "export_vtt"`
+   - `main.py` 注册 `_handle_export_vtt` 处理器，调用 `export_vtt()`
+   - 默认输出文件名后缀 `_cut.vtt`
+
+3. 前端集成：
+   - `types/task.ts` TaskType 联合类型新增 `"export_vtt"`
+   - `useExport.ts` 的 `isExporting` 和 `exportProgress` 计算属性识别 `export_vtt`
+   - `ExportPage.vue` 新增 `handleExportVtt()` 函数和"导出 VTT"按钮
+
+---
+
+### Task 4.4: 测试覆盖与文档
+
+**目标**: 为 Sprint 4 新增功能补充测试，更新文档。
+
+**修改文件**:
+- `tests/test_export_service.py` -- 新建：导出服务测试
+- `tests/TEST_GUIDE.md` -- 测试指南更新
+
+**新增测试**:
+
+1. `test_export_service.py`（21 个测试）：
+   - `TestFormatSrtTime`（6 个）：边界值、零值、大值、四舍五入
+   - `TestFormatVttTime`（6 个）：同上，验证句点分隔符
+   - `TestExportSrt`（3 个）：正常导出、编辑裁剪、空段落处理
+   - `TestExportVtt`（6 个）：WEBVTT 头、时间戳格式、编辑裁剪、句点分隔符
+
+2. 修复多根组件问题：
+   - TranscriptRow.vue 和 SilenceRow.vue 添加上下文菜单后变为多根组件
+   - Vue Test Utils 的 `wrapper.trigger("click")` 和 `wrapper.classes()` 在多根组件上行为不同
+   - 修复方案：将上下文菜单 div 移入主 div 内部，恢复单根组件结构
+
+3. `TEST_GUIDE.md` 更新：
+   - 后端测试计数：97 tests across 6 modules
+   - 前端测试计数：105 tests across 7 test files
+   - 新增 `test_export_service.py` 行
+   - 更新前端测试模块表（7 个文件全覆盖）
+
+---
+
+### Task 4.5: 上下文菜单关闭逻辑修复
+
+**目标**: 修复右键菜单在右键其他位置、滚动、点击外部时不能正确关闭的问题。
+
+**修改文件**:
+- `frontend/src/utils/contextMenuManager.ts` — 新建：上下文菜单生命周期管理
+- `frontend/src/components/workspace/TranscriptRow.vue` — 接入 manager
+- `frontend/src/components/workspace/SilenceRow.vue` — 接入 manager
+- `frontend/src/components/waveform/SegmentBlocksLayer.vue` — 接入 manager
+
+**问题根因**:
+1. 原方案使用 `watch(contextMenu)` 注册 `document.click` once 监听器，但 `stopPropagation()` 阻止了右键事件冒泡到 document
+2. 右键其他位置时，`contextmenu` 事件被 `stopPropagation()` 拦截，旧菜单无法关闭
+3. 滚动时菜单不跟随也不关闭，用户体验差
+
+**实现细节**:
+
+1. `contextMenuManager.ts` 模块级单例：
+   - `openContextMenu(closeFn)` — 关闭旧菜单，注册 document 级 `click`、`contextmenu`、`scroll` 监听器
+   - `closeContextMenu()` — 主动关闭当前菜单
+   - `closeActive()` — 内部函数，清理监听器并调用关闭回调
+   - 使用 `{ once: true }` 监听器，触发后自动清理
+   - `setTimeout(0)` 确保监听器在当前事件循环之后注册
+
+2. 三个组件统一接入模式：
+   - `handleContextMenu()` 中调用 `openContextMenu(() => { contextMenu.value = null })`
+   - `closeContextMenu()` 中调用 `closeContextMenuManager()` 清理 manager 状态
+   - 移除原有的 `watch(contextMenu)` 监听器
+
+---
+
+### Task 4.6: 上下文菜单层级修复
+
+**目标**: 修复上下文菜单被父容器 overflow: hidden 裁剪、层级不正确的问题。
+
+**修改文件**:
+- `frontend/src/components/workspace/TranscriptRow.vue`
+- `frontend/src/components/workspace/SilenceRow.vue`
+- `frontend/src/components/waveform/SegmentBlocksLayer.vue`
+
+**问题根因**:
+- 菜单 div 渲染在组件 DOM 内部，被父容器的 `overflow: hidden` 裁剪
+- `z-50` 不够高，被其他元素遮挡
+
+**实现细节**:
+- 三个组件的上下文菜单均使用 `<Teleport to="body">` 逃逸父容器 DOM
+- z-index 从 `z-50` 提升至 `z-[9999]`
+- 移除不必要的 `opacity-90` 透明度（用户反馈太奇怪）
+
+---
+
+### Task 4.7: 导出页面字幕预览
+
+**目标**: 导出页面播放器显示当前字幕文本，方便用户在导出前确认裁剪效果。
+
+**修改文件**:
+- `frontend/src/components/export/PreviewPlayer.vue` — 内联字幕渲染
+- `frontend/src/pages/ExportPage.vue` — 传递排序后的 segments
+
+**尝试过但失败的方案**:
+1. 复用 SubtitleOverlay 组件 — 跨组件 videoRef watch 时序不可靠，字幕不显示
+2. 添加 `immediate: true` + `loadeddata` 监听 — 仍不生效
+3. 二分查找 — 混合类型 segments（subtitle + silence）可能跳过目标段
+
+**最终方案**: 内联字幕渲染到 PreviewPlayer 自身，使用 computed 属性。
+
+**实现细节**:
+
+1. `PreviewPlayer.vue` 改造：
+   - 移除 SubtitleOverlay 组件导入
+   - 新增 `currentSubtitleText` computed 属性，从 `currentTime` + `segments` 派生
+   - 使用线性扫描替代二分查找，兼容混合类型 segments
+   - 字幕 div 使用 `absolute bottom-4` 定位，`pointer-events-none` 不阻挡交互
+   - `currentTime` 在 `animationLoop`（每帧）、`onTimeUpdate`、`onLoadedMetadata`、`onSeeked` 中更新
+   - Vue 响应式系统自动在 currentTime 变化时重新计算字幕文本
+
+2. `ExportPage.vue` 改造：
+   - 新增 `sortedSegments` computed，按 start 时间排序
+   - PreviewPlayer 接收 `:segments="sortedSegments"`
+
+**为什么 computed 比命令式更新更可靠**:
+- 无跨组件 ref 时序问题（字幕逻辑完全在 PreviewPlayer 内部）
+- 无游标状态管理（不需要 subtitleCursor 变量）
+- Vue 响应式保证：currentTime 变化 -> computed 自动重算 -> 模板自动更新
+- 无 rAF 生命周期耦合（不依赖 play/pause 事件启停）
+
+---
+
+## Files Modified Summary (Sprint 4)
+
+### Backend (core/)
+- `export_service.py` — VTT 导出逻辑（export_vtt + _format_vtt_time）
+- `models.py` — TaskType 新增 EXPORT_VTT
+- `main.py` — export_vtt 任务处理器注册
+
+### Frontend (frontend/src/)
+- `components/workspace/Timeline.vue` — 交叉高亮（adjacentSubtitleIds）、@delete 事件接通
+- `components/workspace/TranscriptRow.vue` — 右键菜单 + Teleport + contextMenuManager + isAdjacentHighlighted
+- `components/workspace/SilenceRow.vue` — 右键菜单 + Teleport + contextMenuManager
+- `components/waveform/SegmentBlocksLayer.vue` — contextMenuManager 接入 + z-index 修复
+- `utils/contextMenuManager.ts` — 新建：上下文菜单生命周期管理单例
+- `components/export/PreviewPlayer.vue` — 内联字幕渲染（computed 属性 + 线性扫描）
+- `pages/ExportPage.vue` — sortedSegments computed + VTT 导出按钮
+- `types/task.ts` — TaskType 新增 export_vtt
+- `composables/useExport.ts` — 识别 export_vtt 任务类型
+
+### Tests
+- `tests/test_export_service.py` — 新建：21 个导出服务测试
+
+---
+
+## Verification (Sprint 4)
+
+- [x] 后端 97 个测试全部通过
+- [x] 前端 105 个测试全部通过
+- [x] 前端 `vue-tsc --noEmit && vite build` 构建成功
+- [x] 选中静音段时相邻字幕段 amber 高亮
+- [x] TranscriptRow / SilenceRow 右键菜单功能正常
+- [x] VTT 导出产生有效 WEBVTT 文件
+- [x] 上下文菜单不影响现有测试（单根组件修复）
+- [x] 右键菜单在右键其他位置时自动关闭
+- [x] 右键菜单在滚动时自动关闭
+- [x] 右键菜单不被父容器 overflow 裁剪（Teleport to body）
+- [x] 导出页面字幕预览正常显示
+
+---
+
 ## Commit Messages
 
 ### Sprint 1
@@ -505,4 +755,42 @@ feat(workspace): Undo/Redo、桥接修复、硬件编码器检测、设置同步
 - EncodingSettings 移除 NVIDIA-only 门控，支持 NVENC/QSV/AMF/VideoToolbox/VAAPI 全平台
 - EncodingSettings onMounted 从 get_settings 加载设置并同步父组件
 - libsvtav1 不再跳过检测，兼容 macOS FFmpeg 缺失场景
+```
+
+### Sprint 4
+
+```
+feat(workspace): 交叉高亮、右键菜单、VTT 导出、上下文菜单修复、导出字幕预览
+
+- Task 4.1: 选中静音段时高亮相邻字幕段（amber 边框+背景）
+- Timeline.vue 新增 adjacentSubtitleIds 计算属性，双向扫描 segments 数组
+- TranscriptRow 新增 isAdjacentHighlighted prop，statusClass 中 amber 样式优先级高于其他状态
+- Task 4.2: TranscriptRow / SilenceRow 添加右键上下文菜单
+- TranscriptRow 菜单项：编辑文本、标记删除/取消删除、删除段落
+- SilenceRow 菜单项：标记删除/取消删除、删除段落
+- Timeline.vue 为 TranscriptRow 接通 @delete 事件
+- Task 4.3: WebVTT 字幕导出
+- core/export_service.py 新增 export_vtt() 和 _format_vtt_time() 辅助函数
+- core/models.py TaskType 新增 EXPORT_VTT
+- main.py 注册 export_vtt 任务处理器
+- frontend types/task.ts 新增 export_vtt 类型
+- useExport composable 识别 export_vtt 任务类型
+- ExportPage 新增"导出 VTT"按钮
+- Task 4.4: 测试覆盖与文档
+- 新增 tests/test_export_service.py（21 个测试：格式化、SRT 导出、VTT 导出）
+- 修复上下文菜单导致的多根组件问题（Vue Test Utils 兼容）
+- 更新 TEST_GUIDE.md 测试计数和模块列表
+- Task 4.5: 上下文菜单关闭逻辑修复
+- 新建 contextMenuManager.ts 模块级单例，管理菜单生命周期
+- 解决 stopPropagation 阻止 document 监听器接收右键事件的问题
+- 统一处理：右键其他位置关闭、点击外部关闭、滚动关闭
+- TranscriptRow / SilenceRow / SegmentBlocksLayer 三个组件统一接入
+- Task 4.6: 上下文菜单层级修复
+- 上下文菜单使用 Teleport to body 逃逸父容器 overflow: hidden 裁剪
+- z-index 从 z-50 提升至 z-[9999]
+- Task 4.7: 导出页面字幕预览
+- PreviewPlayer 内联字幕渲染，使用 computed 属性从 currentTime + segments 派生
+- 线性扫描替代二分查找，兼容混合类型 segments
+- ExportPage 新增 sortedSegments computed 按 start 时间排序
+- 最终状态：97 后端测试 + 105 前端测试全部通过
 ```

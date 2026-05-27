@@ -30,6 +30,7 @@ class TaskType(StrEnum):
     EXPORT_VIDEO = "export_video"
     EXPORT_SUBTITLE = "export_subtitle"
     EXPORT_AUDIO = "export_audio"
+    EXPORT_VTT = "export_vtt"
     # P1
     FILLER_DETECTION = "filler_detection"
     ERROR_DETECTION = "error_detection"

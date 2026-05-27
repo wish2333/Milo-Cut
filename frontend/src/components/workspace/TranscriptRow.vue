@@ -2,12 +2,14 @@
 import { ref, computed, nextTick, watch, onMounted } from "vue"
 import type { Segment } from "@/types/project"
 import { formatTime, parseTime } from "@/utils/format"
+import { openContextMenu, closeContextMenu as closeContextMenuManager } from "@/utils/contextMenuManager"
 
 const props = defineProps<{
   segment: Segment
   displayStatus?: string
   styleClass?: string
   isSelected?: boolean
+  isAdjacentHighlighted?: boolean
   globalEditMode?: boolean
 }>()
 
@@ -18,7 +20,23 @@ const emit = defineEmits<{
   "toggle-status": []
   "confirm-edit": []
   "reject-edit": []
+  "delete": []
 }>()
+
+// Context menu
+const contextMenu = ref<{ x: number; y: number } | null>(null)
+
+function handleContextMenu(e: MouseEvent) {
+  e.preventDefault()
+  e.stopPropagation()
+  contextMenu.value = { x: e.clientX, y: e.clientY }
+  openContextMenu(() => { contextMenu.value = null })
+}
+
+function closeContextMenu() {
+  contextMenu.value = null
+  closeContextMenuManager()
+}
 
 // Text editing
 const isEditingText = ref(false)
@@ -74,6 +92,7 @@ function cancelEdit() {
 }
 
 // Enter edit mode when globalEditMode turns on, save when it turns off
+
 onMounted(() => {
   if (props.globalEditMode) startEdit()
 })
@@ -108,7 +127,9 @@ const statusClass = computed(() => {
   switch (props.styleClass) {
     case "masked": return "border-l-3 border-red-400 bg-red-50 line-through opacity-60"
     case "kept": return "border-l-3 border-green-400 bg-green-50"
-    default: return ""
+    default:
+      if (props.isAdjacentHighlighted) return "border-l-3 border-amber-400 bg-amber-50"
+      return ""
   }
 })
 </script>
@@ -119,6 +140,7 @@ const statusClass = computed(() => {
     :class="[statusClass, { 'ring-1 ring-blue-500': isSelected }]"
     :data-segment-id="segment.id"
     @click="handleRowClick"
+    @contextmenu="handleContextMenu"
   >
     <!-- Time column: fixed width, no overlap -->
     <div class="text-xs text-gray-400 w-[130px] shrink-0 pt-0.5 font-mono overflow-hidden whitespace-nowrap">
@@ -240,5 +262,34 @@ const statusClass = computed(() => {
         </span>
       </template>
     </div>
+    <!-- Context Menu -->
+    <Teleport to="body">
+      <div
+        v-if="contextMenu"
+        class="fixed z-[9999] bg-white rounded-md shadow-lg border border-gray-200 py-1 min-w-[140px]"
+        :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
+        @click="closeContextMenu"
+      >
+        <button
+          class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+          @click="startEdit"
+        >
+          编辑文本
+        </button>
+        <button
+          class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+          @click="emit('toggle-status')"
+        >
+          {{ displayStatus === 'confirmed' ? '取消删除' : '标记删除' }}
+        </button>
+        <div class="border-t border-gray-100 my-1" />
+        <button
+          class="w-full text-left px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
+          @click="emit('delete')"
+        >
+          删除段落
+        </button>
+      </div>
+    </Teleport>
   </div>
 </template>

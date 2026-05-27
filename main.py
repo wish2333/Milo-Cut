@@ -28,7 +28,7 @@ from core.paths import migrate_if_needed
 from core.project_service import ProjectService
 from core.subtitle_service import parse_srt
 from core.task_manager import TaskManager
-from core.export_service import export_audio, export_srt, export_video
+from core.export_service import export_audio, export_srt, export_video, export_vtt
 from core.ffmpeg_presets import ENCODER_METADATA, get_fallback_codec
 from core.ffmpeg_service import _find_ffmpeg
 
@@ -77,6 +77,9 @@ class MiloCutApi(Bridge):
         )
         self._task_manager.register_handler(
             TaskType.EXPORT_AUDIO, self._handle_export_audio
+        )
+        self._task_manager.register_handler(
+            TaskType.EXPORT_VTT, self._handle_export_vtt
         )
         self._task_manager.register_handler(
             TaskType.FILLER_DETECTION, self._handle_filler_detection
@@ -187,6 +190,27 @@ class MiloCutApi(Bridge):
 
         media_duration = project.media.duration if project.media else 0.0
         return export_srt(
+            segments=segments_data,
+            edits=edits_data,
+            output_path=output_path,
+            media_duration=media_duration,
+        )
+
+    def _handle_export_vtt(self, task, cancel_event):
+        """Export WebVTT as a background task."""
+        if self._project.current is None:
+            raise ValueError("No project open")
+        if self._project.current.media is None:
+            raise ValueError("No media in project")
+        project = self._project.current
+        segments_data = [s.model_dump() for s in project.transcript.segments]
+        edits_data = [e.model_dump() for e in project.edits]
+        output_path = task.payload.get("output_path", "")
+        if not output_path:
+            output_path = os.path.splitext(project.media.path)[0] + "_cut.vtt"
+
+        media_duration = project.media.duration if project.media else 0.0
+        return export_vtt(
             segments=segments_data,
             edits=edits_data,
             output_path=output_path,

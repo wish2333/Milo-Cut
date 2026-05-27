@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from "vue"
 import type { Segment, EditDecision, AnalysisResult } from "@/types/project"
 import { resolveSegmentState } from "@/utils/segmentHelpers"
 import TranscriptRow from "@/components/workspace/TranscriptRow.vue"
@@ -34,6 +35,24 @@ const emit = defineEmits<{
 function getSegmentState(seg: Segment) {
   return resolveSegmentState(props.edits, seg)
 }
+
+// Cross-validation highlight: when a silence segment is selected,
+// find the adjacent subtitle segments for visual highlighting.
+const adjacentSubtitleIds = computed(() => {
+  if (!props.selectedSegmentId) return { prev: null, next: null }
+  const idx = props.segments.findIndex(s => s.id === props.selectedSegmentId)
+  if (idx < 0 || props.segments[idx].type !== "silence") return { prev: null, next: null }
+
+  let prev: string | null = null
+  for (let i = idx - 1; i >= 0; i--) {
+    if (props.segments[i].type === "subtitle") { prev = props.segments[i].id; break }
+  }
+  let next: string | null = null
+  for (let i = idx + 1; i < props.segments.length; i++) {
+    if (props.segments[i].type === "subtitle") { next = props.segments[i].id; break }
+  }
+  return { prev, next }
+})
 
 import { watch, nextTick } from "vue"
 
@@ -94,6 +113,7 @@ watch(
               :display-status="getSegmentState(seg).displayStatus"
               :style-class="getSegmentState(seg).styleClass"
               :is-selected="selectedSegmentId === seg.id"
+              :is-adjacent-highlighted="seg.id === adjacentSubtitleIds.prev || seg.id === adjacentSubtitleIds.next"
               :global-edit-mode="globalEditMode"
               @seek="(t) => emit('seek', t)"
               @update-text="(id, text) => emit('update-text', id, text)"
@@ -101,6 +121,7 @@ watch(
               @toggle-status="emit('toggle-status', seg)"
               @confirm-edit="emit('confirm-segment', seg)"
               @reject-edit="emit('reject-segment', seg)"
+              @delete="emit('delete-segment', seg)"
             />
             <SilenceRow
               v-else

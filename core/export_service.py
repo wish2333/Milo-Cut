@@ -312,6 +312,50 @@ def export_srt(
         return {"success": False, "error": str(e)}
 
 
+def export_vtt(
+    segments: list[dict],
+    edits: list[dict],
+    output_path: str,
+    *,
+    media_duration: float = 0.0,
+) -> dict:
+    """Export WebVTT with only kept subtitle segments and adjusted timestamps."""
+    try:
+        output_path = _validate_output_path(output_path)
+        deletions = _get_confirmed_deletions(edits)
+        total_duration = _get_media_duration(segments, edits, media_duration)
+        keep_ranges = _compute_keep_ranges(total_duration, deletions)
+
+        subtitle_segs = [s for s in segments if s.get("type") == "subtitle"]
+
+        kept: list[dict] = []
+        for seg in subtitle_segs:
+            if _subtitle_survives_in_keep_ranges(seg["start"], seg["end"], keep_ranges):
+                kept.append(seg)
+        kept.sort(key=lambda s: s["start"])
+
+        adjusted: list[tuple[float, float, str]] = []
+        for seg in kept:
+            new_start, new_end = _map_to_exported_timeline(
+                seg["start"], seg["end"], keep_ranges,
+            )
+            adjusted.append((new_start, new_end, seg.get("text", "")))
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write("WEBVTT\n\n")
+            for idx, (start, end, text) in enumerate(adjusted, 1):
+                f.write(f"{idx}\n")
+                f.write(f"{_format_vtt_time(start)} --> {_format_vtt_time(end)}\n")
+                f.write(f"{text}\n\n")
+
+        logger.info("Exported {} VTT subtitle segments to {}", len(adjusted), output_path)
+        return {"success": True, "data": {"path": output_path, "segment_count": len(adjusted)}}
+
+    except Exception as e:
+        logger.exception("export_vtt failed")
+        return {"success": False, "error": str(e)}
+
+
 # ================================================================
 # Helpers
 # ================================================================
@@ -763,6 +807,17 @@ def _format_srt_time(seconds: float) -> str:
     secs = int(seconds % 60)
     millis = int(round((seconds % 1) * 1000)) % 1000
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def _format_vtt_time(seconds: float) -> str:
+    """Convert seconds to VTT timestamp HH:MM:SS.mmm."""
+    if seconds < 0:
+        seconds = 0.0
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    millis = int(round((seconds % 1) * 1000)) % 1000
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
 
 
 def _cleanup_files(paths: list[str]) -> None:

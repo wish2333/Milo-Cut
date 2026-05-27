@@ -5,6 +5,7 @@ import { resolveSegmentState } from "@/utils/segmentHelpers"
 import type { SegmentState } from "@/utils/segmentHelpers"
 import { TIMELINE_METRICS_KEY } from "./injectionKeys"
 import type { TimelineMetrics } from "@/composables/useTimelineMetrics"
+import { openContextMenu, closeContextMenu as closeContextMenuManager } from "@/utils/contextMenuManager"
 
 const props = defineProps<{
   segments: Segment[]
@@ -166,6 +167,7 @@ function handleBlockContextMenu(block: Block, e: MouseEvent) {
   e.stopPropagation()
   selectedBlockId.value = block.seg.id
   contextMenu.value = { x: e.clientX, y: e.clientY, segmentId: block.seg.id }
+  openContextMenu(() => { contextMenu.value = null })
 }
 
 function handleBlockClick(block: Block) {
@@ -175,6 +177,7 @@ function handleBlockClick(block: Block) {
 
 function closeContextMenu() {
   contextMenu.value = null
+  closeContextMenuManager()
 }
 
 function deleteSelected() {
@@ -264,7 +267,7 @@ function handleKeyDown(e: KeyboardEvent) {
     <Teleport to="body">
       <div
         v-if="contextMenu"
-        class="fixed z-50 bg-white rounded-md shadow-lg border border-gray-200 py-1 min-w-[120px]"
+        class="fixed z-[9999] bg-white rounded-md shadow-lg border border-gray-200 py-1 min-w-[120px]"
         :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
         @click="closeContextMenu"
       >

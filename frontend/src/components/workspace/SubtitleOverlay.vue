@@ -74,6 +74,7 @@ watch(() => props.videoRef, (video, _old, onCleanup) => {
   if (!video) return
   video.addEventListener("play", startTracking)
   video.addEventListener("pause", stopTracking)
+  video.addEventListener("loadeddata", () => { if (!video.paused) startTracking() })
   if (!video.paused) startTracking()
 
   onCleanup(() => {
@@ -81,7 +82,7 @@ watch(() => props.videoRef, (video, _old, onCleanup) => {
     video.removeEventListener("play", startTracking)
     video.removeEventListener("pause", stopTracking)
   })
-})
+}, { immediate: true })
 
 // Reset cursor on segment change
 watch(() => props.segments, () => {

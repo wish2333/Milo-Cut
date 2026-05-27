@@ -11,13 +11,13 @@ export function useExport(project: Ref<Project | null>) {
   const isExporting = computed(() => {
     const t = activeTask.value
     return t !== null
-      && (t.type === "export_video" || t.type === "export_subtitle" || t.type === "export_audio")
+      && (t.type === "export_video" || t.type === "export_subtitle" || t.type === "export_audio" || t.type === "export_vtt")
       && isRunning.value
   })
 
   const exportProgress = computed(() => {
     const t = activeTask.value
-    if (t && (t.type === "export_video" || t.type === "export_subtitle" || t.type === "export_audio")) {
+    if (t && (t.type === "export_video" || t.type === "export_subtitle" || t.type === "export_audio" || t.type === "export_vtt")) {
       return t.progress
     }
     return null

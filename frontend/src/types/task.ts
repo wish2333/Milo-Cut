@@ -6,6 +6,7 @@ export type TaskType =
   | "export_video"
   | "export_subtitle"
   | "export_audio"
+  | "export_vtt"
   // P1
   | "filler_detection"
   | "error_detection"

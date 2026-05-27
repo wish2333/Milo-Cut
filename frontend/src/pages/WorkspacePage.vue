@@ -812,7 +812,7 @@ onUnmounted(() => {
               @click="handleTogglePlay"
             />
             <SubtitleOverlay
-              :segments="segments"
+              :segments="mergedSegments"
               :video-ref="videoRef"
             />
           </div>
