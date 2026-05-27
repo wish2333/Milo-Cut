@@ -77,8 +77,31 @@ export interface Project {
 
 export interface AnalysisResult {
   id: string
-  type: "filler" | "error"
+  type: "filler" | "error" | "duplicate"
   segment_ids: string[]
   confidence: number
   detail: string
+}
+
+// ================================================================
+// Plugin / Model types
+// ================================================================
+
+export interface PluginInfo {
+  plugin_id: string
+  display_name: string
+  engine: "faster-whisper" | "qwen3-asr"
+  version: string
+  status: "installed" | "installing" | "not_installed" | "error"
+  installed_at: string
+  venv_path: string
+}
+
+export interface ModelInfo {
+  model_id: string
+  display_name: string
+  plugin_id: string
+  size_bytes: number
+  local_path: string
+  status: "downloaded" | "downloading" | "not_downloaded"
 }

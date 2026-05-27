@@ -25,6 +25,7 @@ from core.logging import get_logger, setup_frontend_sink, setup_logging
 from core.media_server import MediaServer
 from core.models import TaskType
 from core.paths import migrate_if_needed
+from core.plugin_manager import PluginManager, PLUGIN_REGISTRY
 from core.project_service import ProjectService
 from core.subtitle_service import parse_srt
 from core.task_manager import TaskManager
@@ -62,6 +63,7 @@ class MiloCutApi(Bridge):
         self._project = ProjectService()
         self._task_manager = TaskManager(self._emit)
         self._media_server = MediaServer()
+        self._plugin_manager = PluginManager()
         self._register_task_handlers()
 
     def _register_task_handlers(self) -> None:
@@ -92,6 +94,12 @@ class MiloCutApi(Bridge):
         )
         self._task_manager.register_handler(
             TaskType.WAVEFORM_GENERATION, self._handle_waveform_generation
+        )
+        self._task_manager.register_handler(
+            TaskType.PLUGIN_INSTALL, self._handle_plugin_install
+        )
+        self._task_manager.register_handler(
+            TaskType.TRANSCRIPTION, self._handle_transcription
         )
 
     def _handle_silence_detection(self, task, cancel_event):
@@ -330,6 +338,88 @@ class MiloCutApi(Bridge):
 
         progress_cb(100.0, "Waveform generated")
         return {"project": self._project.current.model_dump() if self._project.current else None}
+
+    def _handle_plugin_install(self, task, cancel_event):
+        """Install an ASR plugin and optionally download its model."""
+        plugin_id = task.payload.get("plugin_id", "")
+        model_id = task.payload.get("model_id", "")
+
+        if not plugin_id:
+            raise ValueError("plugin_id is required")
+
+        def progress_cb(percent: float, message: str = "") -> None:
+            self._task_manager._update_progress(task.id, percent, message)
+
+        # Install plugin
+        self._plugin_manager.install_plugin(plugin_id, progress_cb=progress_cb)
+
+        # Optionally download model
+        if model_id:
+            progress_cb(50.0, f"Downloading model {model_id}...")
+            self._plugin_manager.ensure_model(model_id, progress_cb=progress_cb)
+
+        return {
+            "plugin_id": plugin_id,
+            "model_id": model_id,
+            "status": "installed",
+        }
+
+    def _handle_transcription(self, task, cancel_event):
+        """Run ASR transcription as a background task."""
+        from core.asr_service import transcribe_with_whisper
+
+        if self._project.current is None:
+            raise ValueError("No project open")
+        if self._project.current.media is None:
+            raise ValueError("No media in project")
+
+        media_path = self._project.current.media.path
+        settings = load_settings()
+
+        engine = task.payload.get("engine", settings.get("asr_engine", "faster-whisper"))
+        model_size = task.payload.get("model_size", settings.get("asr_model_size", "large-v3-turbo"))
+        language = task.payload.get("language", settings.get("asr_language", "zh"))
+        device = task.payload.get("device", settings.get("asr_device", "cpu"))
+        compute_type = task.payload.get("compute_type", settings.get("asr_compute_type", "int8"))
+
+        def progress_cb(percent: float, message: str = "") -> None:
+            self._task_manager._update_progress(task.id, percent, message)
+
+        if engine == "faster-whisper":
+            from core.ffmpeg_service import _find_ffmpeg
+            ffmpeg = _find_ffmpeg()
+            result = transcribe_with_whisper(
+                plugin_manager=self._plugin_manager,
+                media_path=media_path,
+                ffmpeg_path=ffmpeg,
+                model_size=model_size,
+                language=language,
+                device=device,
+                compute_type=compute_type,
+                progress_cb=progress_cb,
+                cancel_event=cancel_event,
+            )
+        else:
+            raise ValueError(f"Unsupported ASR engine: {engine}")
+
+        if not result["success"]:
+            raise RuntimeError(result["error"])
+
+        # Update project transcript with ASR results
+        transcript_data = {
+            "engine": engine,
+            "language": result["data"].get("language", language),
+            "segments": result["data"].get("segments", []),
+        }
+        update_result = self._project.update_transcript(transcript_data)
+        if not update_result["success"]:
+            raise RuntimeError(update_result.get("error", "Failed to update transcript"))
+
+        return {
+            "project": update_result["data"],
+            "segment_count": len(result["data"].get("segments", [])),
+            "word_count": result["data"].get("word_count", 0),
+        }
 
     # ================================================================
     # System
@@ -613,6 +703,114 @@ class MiloCutApi(Bridge):
     @expose
     def get_recent_projects(self) -> dict:
         return self._project.get_recent_projects()
+
+    # ================================================================
+    # Plugin Management
+    # ================================================================
+
+    @expose
+    def list_plugins(self) -> dict:
+        """Return all registered plugins with their installation status."""
+        return {"success": True, "data": self._plugin_manager.list_plugins()}
+
+    @expose
+    def install_plugin(self, plugin_id: str, model_id: str = "") -> dict:
+        """Start a background task to install a plugin and optionally download its model."""
+        if plugin_id not in PLUGIN_REGISTRY:
+            return {"success": False, "error": f"Unknown plugin: {plugin_id}"}
+        task = self._task_manager.create_task(
+            "plugin_install",
+            {"plugin_id": plugin_id, "model_id": model_id},
+        )
+        if not task["success"]:
+            return task
+        self._task_manager.start_task(task["data"]["id"])
+        return {"success": True, "data": {"task_id": task["data"]["id"]}}
+
+    @expose
+    def uninstall_plugin(self, plugin_id: str) -> dict:
+        """Uninstall a plugin by removing its venv and registry entry."""
+        try:
+            self._plugin_manager.uninstall_plugin(plugin_id)
+            return {"success": True}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    @expose
+    def list_models(self) -> dict:
+        """Return all registered models with their download status."""
+        return {"success": True, "data": self._plugin_manager.list_models()}
+
+    @expose
+    def download_model(self, model_id: str) -> dict:
+        """Download a model. Returns immediately; use task progress for updates."""
+        try:
+            # Run download synchronously on a background thread via task system
+            # For now, use a simple task wrapper
+            task = self._task_manager.create_task(
+                "plugin_install", {"plugin_id": "", "model_id": model_id}
+            )
+            if not task["success"]:
+                return task
+            self._task_manager.start_task(task["data"]["id"])
+            return {"success": True, "data": {"task_id": task["data"]["id"]}}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    @expose
+    def delete_model(self, model_id: str) -> dict:
+        """Delete a downloaded model."""
+        try:
+            self._plugin_manager.delete_model(model_id)
+            return {"success": True}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    @expose
+    def check_plugin_status(self, engine: str) -> dict:
+        """Check if an ASR engine is ready (plugin installed + model downloaded)."""
+        # Find the plugin for this engine
+        plugin_id = None
+        for pid, meta in PLUGIN_REGISTRY.items():
+            if meta["engine"] == engine:
+                plugin_id = pid
+                break
+
+        if plugin_id is None:
+            return {"success": False, "error": f"Unknown engine: {engine}"}
+
+        installed = self._plugin_manager.is_installed(plugin_id)
+        models = PLUGIN_REGISTRY[plugin_id]["models"]
+        downloaded_models = {
+            mid: self._plugin_manager.is_model_downloaded(mid)
+            for mid in models
+        }
+
+        return {
+            "success": True,
+            "data": {
+                "engine": engine,
+                "plugin_id": plugin_id,
+                "installed": installed,
+                "models": downloaded_models,
+                "ready": installed and any(downloaded_models.values()),
+            },
+        }
+
+    @expose
+    def get_asr_log(self, task_id: str) -> dict:
+        """Return the log content for an ASR task."""
+        return {"success": True, "data": self._plugin_manager.get_asr_log(task_id)}
+
+    @expose
+    def list_asr_logs(self) -> dict:
+        """Return ASR log file list sorted by modification time (newest first)."""
+        return {"success": True, "data": self._plugin_manager.list_asr_logs()}
+
+    @expose
+    def get_asr_task_state(self, task_id: str) -> dict:
+        """Return the current state of a subprocess ASR task."""
+        return {"success": True, "data": self._plugin_manager.get_subprocess_state(task_id)}
 
     @expose
     def get_settings(self) -> dict:

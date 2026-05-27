@@ -42,4 +42,12 @@ export interface AppSettings {
   export_ffmpeg_transitions: boolean
   export_ffmpeg_fade_duration: number
   export_ffmpeg_fade_mode: string
+  // ASR / AI
+  asr_engine: "faster-whisper" | "qwen3-asr"
+  asr_model_size: string
+  asr_language: string
+  asr_device: "cpu" | "cuda" | "auto"
+  asr_compute_type: "int8" | "float16" | "float32"
+  duplicate_threshold: number
+  duplicate_min_length: number
 }

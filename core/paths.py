@@ -57,6 +57,28 @@ def get_temp_dir() -> Path:
     return d
 
 
+def get_plugin_data_dir() -> Path:
+    """Return the cross-platform plugin data directory.
+
+    - Windows: %LOCALAPPDATA%/MiloCut/
+    - macOS: ~/Library/Application Support/MiloCut/
+    - Linux: ~/.local/share/milocut/
+
+    This directory persists across app updates and is suitable for
+    plugin venvs, ML models, and plugin registries.
+    """
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        d = base / "MiloCut"
+    elif sys.platform == "darwin":
+        d = Path.home() / "Library" / "Application Support" / "MiloCut"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+        d = base / "milocut"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def _old_appdata_dir() -> Path | None:
     """Check for legacy data in APPDATA / XDG_CONFIG_HOME."""
     if sys.platform == "win32":

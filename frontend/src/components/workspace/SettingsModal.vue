@@ -2,6 +2,8 @@
 import { ref, onMounted } from "vue"
 import { call } from "@/bridge"
 import type { AppSettings } from "@/types/edit"
+import type { PluginInfo, ModelInfo } from "@/types/project"
+import { usePluginManager } from "@/composables/usePluginManager"
 
 defineProps<{
   visible: boolean
@@ -16,6 +18,15 @@ const ffmpegInfo = ref<{ ffmpeg_path: string; ffprobe_path: string; version: str
 const gpuEncoders = ref<string[]>([])
 const saving = ref(false)
 const statusMsg = ref("")
+
+// Plugin manager
+const pluginManager = usePluginManager()
+const pluginList = ref<PluginInfo[]>([])
+const modelList = ref<ModelInfo[]>([])
+const expandedPlugin = ref<string | null>(null)
+const installingPlugin = ref<string | null>(null)
+const installProgress = ref(0)
+const installMessage = ref("")
 
 onMounted(async () => {
   const [settingsRes, ffmpegRes, gpuRes] = await Promise.all([
@@ -32,6 +43,9 @@ onMounted(async () => {
   if (gpuRes.success && gpuRes.data) {
     gpuEncoders.value = gpuRes.data.encoders
   }
+  // Load plugins and models
+  pluginList.value = await pluginManager.listPlugins()
+  modelList.value = await pluginManager.listModels()
 })
 
 async function handleSave() {
@@ -78,6 +92,82 @@ function updateField<K extends keyof AppSettings>(key: K, value: AppSettings[K])
   if (settings.value) {
     settings.value = { ...settings.value, [key]: value }
   }
+}
+
+function togglePluginExpand(pluginId: string) {
+  expandedPlugin.value = expandedPlugin.value === pluginId ? null : pluginId
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return "0 B"
+  const k = 1024
+  const sizes = ["B", "KB", "MB", "GB"]
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`
+}
+
+async function handleInstallPlugin(pluginId: string) {
+  installingPlugin.value = pluginId
+  installProgress.value = 0
+  installMessage.value = "Starting installation..."
+
+  const success = await pluginManager.installPlugin(
+    pluginId,
+    undefined,
+    (progress) => {
+      installProgress.value = progress.percent
+      installMessage.value = progress.message
+    },
+  )
+
+  if (success) {
+    statusMsg.value = "Plugin installed successfully"
+    pluginList.value = await pluginManager.listPlugins()
+    modelList.value = await pluginManager.listModels()
+  } else {
+    statusMsg.value = pluginManager.error.value || "Installation failed"
+  }
+
+  installingPlugin.value = null
+  setTimeout(() => { statusMsg.value = "" }, 3000)
+}
+
+async function handleUninstallPlugin(pluginId: string) {
+  const success = await pluginManager.uninstallPlugin(pluginId)
+  if (success) {
+    statusMsg.value = "Plugin uninstalled"
+    pluginList.value = await pluginManager.listPlugins()
+    modelList.value = await pluginManager.listModels()
+  } else {
+    statusMsg.value = pluginManager.error.value || "Uninstall failed"
+  }
+  setTimeout(() => { statusMsg.value = "" }, 3000)
+}
+
+async function handleDownloadModel(modelId: string) {
+  statusMsg.value = `Downloading ${modelId}...`
+  const success = await pluginManager.downloadModel(modelId, (progress) => {
+    installProgress.value = progress.percent
+    installMessage.value = progress.message
+  })
+  if (success) {
+    statusMsg.value = "Model downloaded"
+    modelList.value = await pluginManager.listModels()
+  } else {
+    statusMsg.value = pluginManager.error.value || "Download failed"
+  }
+  setTimeout(() => { statusMsg.value = "" }, 3000)
+}
+
+async function handleDeleteModel(modelId: string) {
+  const success = await pluginManager.deleteModel(modelId)
+  if (success) {
+    statusMsg.value = "Model deleted"
+    modelList.value = await pluginManager.listModels()
+  } else {
+    statusMsg.value = pluginManager.error.value || "Delete failed"
+  }
+  setTimeout(() => { statusMsg.value = "" }, 3000)
 }
 </script>
 
@@ -166,6 +256,196 @@ function updateField<K extends keyof AppSettings>(key: K, value: AppSettings[K])
             </span>
           </div>
           <p v-else class="text-sm text-gray-500">No encoders detected</p>
+        </section>
+
+        <!-- AI Engine Section -->
+        <section>
+          <h3 class="text-sm font-semibold text-gray-700 mb-3">AI Engine</h3>
+
+          <!-- Install progress -->
+          <div v-if="installingPlugin" class="mb-3 p-3 bg-blue-50 rounded-lg">
+            <div class="flex items-center justify-between text-sm mb-1">
+              <span class="text-blue-700">{{ installMessage }}</span>
+              <span class="text-blue-600">{{ Math.round(installProgress) }}%</span>
+            </div>
+            <div class="w-full bg-blue-200 rounded-full h-2">
+              <div
+                class="bg-blue-500 h-2 rounded-full transition-all duration-300"
+                :style="{ width: `${installProgress}%` }"
+              />
+            </div>
+          </div>
+
+          <!-- Plugin list -->
+          <div class="space-y-2">
+            <div
+              v-for="plugin in pluginList"
+              :key="plugin.plugin_id"
+              class="border border-gray-200 rounded-lg overflow-hidden"
+            >
+              <div
+                class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-gray-50"
+                @click="togglePluginExpand(plugin.plugin_id)"
+              >
+                <div class="flex items-center gap-2">
+                  <span class="text-sm font-medium text-gray-800">{{ plugin.display_name }}</span>
+                  <span class="text-xs text-gray-500">{{ plugin.engine }}</span>
+                </div>
+                <div class="flex items-center gap-2">
+                  <span
+                    class="px-2 py-0.5 text-xs rounded-full"
+                    :class="{
+                      'bg-green-100 text-green-800': plugin.status === 'installed',
+                      'bg-yellow-100 text-yellow-800': plugin.status === 'installing',
+                      'bg-gray-100 text-gray-600': plugin.status === 'not_installed',
+                      'bg-red-100 text-red-800': plugin.status === 'error',
+                    }"
+                  >
+                    {{ plugin.status === "installed" ? "Installed" : plugin.status === "installing" ? "Installing..." : plugin.status === "error" ? "Error" : "Not installed" }}
+                  </span>
+                  <svg
+                    class="w-4 h-4 text-gray-400 transition-transform"
+                    :class="{ 'rotate-180': expandedPlugin === plugin.plugin_id }"
+                    fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                  >
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                  </svg>
+                </div>
+              </div>
+
+              <!-- Expanded content -->
+              <div v-if="expandedPlugin === plugin.plugin_id" class="px-3 py-2 border-t border-gray-100 bg-gray-50">
+                <!-- Action buttons -->
+                <div class="flex gap-2 mb-3">
+                  <button
+                    v-if="plugin.status !== 'installed'"
+                    class="px-3 py-1.5 text-sm bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50"
+                    :disabled="!!installingPlugin"
+                    @click.stop="handleInstallPlugin(plugin.plugin_id)"
+                  >
+                    Install
+                  </button>
+                  <button
+                    v-if="plugin.status === 'installed'"
+                    class="px-3 py-1.5 text-sm border border-red-300 text-red-600 rounded-lg hover:bg-red-50"
+                    @click.stop="handleUninstallPlugin(plugin.plugin_id)"
+                  >
+                    Uninstall
+                  </button>
+                </div>
+
+                <!-- Models for this plugin -->
+                <div class="space-y-1.5">
+                  <p class="text-xs font-medium text-gray-500 uppercase tracking-wide">Models</p>
+                  <div
+                    v-for="model in modelList.filter(m => m.plugin_id === plugin.plugin_id)"
+                    :key="model.model_id"
+                    class="flex items-center justify-between py-1"
+                  >
+                    <div>
+                      <span class="text-sm text-gray-700">{{ model.display_name }}</span>
+                      <span class="text-xs text-gray-400 ml-1">({{ formatBytes(model.size_bytes) }})</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <span
+                        class="px-2 py-0.5 text-xs rounded-full"
+                        :class="{
+                          'bg-green-100 text-green-800': model.status === 'downloaded',
+                          'bg-gray-100 text-gray-600': model.status === 'not_downloaded',
+                        }"
+                      >
+                        {{ model.status === "downloaded" ? "Downloaded" : "Not downloaded" }}
+                      </span>
+                      <button
+                        v-if="model.status !== 'downloaded'"
+                        class="px-2 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600"
+                        @click.stop="handleDownloadModel(model.model_id)"
+                      >
+                        Download
+                      </button>
+                      <button
+                        v-if="model.status === 'downloaded'"
+                        class="px-2 py-1 text-xs border border-red-300 text-red-600 rounded hover:bg-red-50"
+                        @click.stop="handleDeleteModel(model.model_id)"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <p v-if="pluginList.length === 0" class="text-sm text-gray-500">No plugins available</p>
+        </section>
+
+        <!-- ASR Settings Section -->
+        <section v-if="settings">
+          <h3 class="text-sm font-semibold text-gray-700 mb-3">ASR Settings</h3>
+          <div class="space-y-3">
+            <div class="flex items-center justify-between">
+              <label class="text-sm text-gray-600">Default engine</label>
+              <select
+                :value="settings.asr_engine"
+                class="px-2 py-1 text-sm border border-gray-300 rounded"
+                @change="updateField('asr_engine', ($event.target as HTMLSelectElement).value as 'faster-whisper' | 'qwen3-asr')"
+              >
+                <option value="faster-whisper">Faster Whisper</option>
+                <option value="qwen3-asr">Qwen3 ASR</option>
+              </select>
+            </div>
+            <div class="flex items-center justify-between">
+              <label class="text-sm text-gray-600">Language</label>
+              <select
+                :value="settings.asr_language"
+                class="px-2 py-1 text-sm border border-gray-300 rounded"
+                @change="updateField('asr_language', ($event.target as HTMLSelectElement).value)"
+              >
+                <option value="zh">Chinese</option>
+                <option value="en">English</option>
+                <option value="ja">Japanese</option>
+                <option value="ko">Korean</option>
+                <option value="auto">Auto-detect</option>
+              </select>
+            </div>
+            <div class="flex items-center justify-between">
+              <label class="text-sm text-gray-600">Device</label>
+              <select
+                :value="settings.asr_device"
+                class="px-2 py-1 text-sm border border-gray-300 rounded"
+                @change="updateField('asr_device', ($event.target as HTMLSelectElement).value as 'cpu' | 'cuda' | 'auto')"
+              >
+                <option value="cpu">CPU</option>
+                <option value="cuda">CUDA (GPU)</option>
+                <option value="auto">Auto</option>
+              </select>
+            </div>
+            <div class="flex items-center justify-between">
+              <label class="text-sm text-gray-600">Compute type</label>
+              <select
+                :value="settings.asr_compute_type"
+                class="px-2 py-1 text-sm border border-gray-300 rounded"
+                @change="updateField('asr_compute_type', ($event.target as HTMLSelectElement).value as 'int8' | 'float16' | 'float32')"
+              >
+                <option value="int8">INT8 (fastest, lower quality)</option>
+                <option value="float16">FP16 (balanced)</option>
+                <option value="float32">FP32 (highest quality)</option>
+              </select>
+            </div>
+            <div class="flex items-center justify-between">
+              <label class="text-sm text-gray-600">Duplicate threshold</label>
+              <input
+                type="number"
+                :value="settings.duplicate_threshold"
+                step="0.05"
+                min="0.5"
+                max="1.0"
+                class="w-24 px-2 py-1 text-sm border border-gray-300 rounded text-right"
+                @input="updateField('duplicate_threshold', Number(($event.target as HTMLInputElement).value))"
+              />
+            </div>
+          </div>
         </section>
 
         <!-- Silence Detection Section -->

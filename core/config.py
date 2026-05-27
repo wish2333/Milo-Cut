@@ -40,6 +40,14 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     "export_ffmpeg_transitions": True,
     "export_ffmpeg_fade_duration": 0,
     "export_ffmpeg_fade_mode": "crossfade",
+    # ASR / AI
+    "asr_engine": "faster-whisper",
+    "asr_model_size": "large-v3-turbo",
+    "asr_language": "zh",
+    "asr_device": "cpu",
+    "asr_compute_type": "int8",
+    "duplicate_threshold": 0.85,
+    "duplicate_min_length": 5,
 }
 
 
