@@ -329,9 +329,10 @@ class MiloCutApi(Bridge):
         result = webview.windows[0].create_file_dialog(
             webview.FileDialog.OPEN,
             file_types=(
-                "Media files (*.mp4;*.mkv;*.avi;*.mov;*.webm;*.mp3;*.wav;*.aac;*.flac;*.ogg;*.m4a)",
+                "Media files (*.mp4;*.mkv;*.avi;*.mov;*.webm;*.mp3;*.wav;*.aac;*.flac;*.ogg;*.m4a;*.json)",
                 "Video files (*.mp4;*.mkv;*.avi;*.mov;*.webm)",
                 "Audio files (*.mp3;*.wav;*.aac;*.flac;*.ogg;*.m4a)",
+                "Project files (*.json)",
                 "All files (*.*)",
             ),
         )
@@ -620,30 +621,23 @@ class MiloCutApi(Bridge):
 
     @expose
     def detect_gpu(self) -> dict:
-        """Detect GPU via ffmpeg -hwaccels for cross-platform support."""
-        encoders: list[str] = ["libsvtav1"]  # software encoder always available
+        """Detect available encoders via ffmpeg -encoders for reliable detection."""
+        from core.ffmpeg_presets import ENCODER_METADATA
+        encoders: list[str] = []
         try:
             from core.ffmpeg_service import _find_ffmpeg
             ffmpeg = _find_ffmpeg()
             result = subprocess.run(
-                [ffmpeg, "-hide_banner", "-hwaccels"],
+                [ffmpeg, "-hide_banner", "-encoders"],
                 capture_output=True, text=True, timeout=5,
                 **_SUBPROCESS_KWARGS,
             )
             if result.returncode == 0:
-                hwaccels = result.stdout.strip().split("\n")[1:]  # skip title line
-                for hw in hwaccels:
-                    hw = hw.strip().lower()
-                    if "cuda" in hw or "nvenc" in hw:
-                        encoders.extend(["h264_nvenc", "hevc_nvenc", "av1_nvenc"])
-                    elif "qsv" in hw:
-                        encoders.extend(["h264_qsv", "hevc_qsv"])
-                    elif "videotoolbox" in hw:
-                        encoders.extend(["h264_videotoolbox", "hevc_videotoolbox"])
-                    elif "vaapi" in hw:
-                        encoders.extend(["h264_vaapi", "hevc_vaapi"])
-                    elif "amf" in hw:
-                        encoders.extend(["h264_amf", "hevc_amf"])
+                registered = result.stdout
+                for codec_name in ENCODER_METADATA:
+                    # Check encoder is registered: line starts with whitespace + codec name
+                    if f" {codec_name} " in registered:
+                        encoders.append(codec_name)
         except Exception:
             pass
 

@@ -18,11 +18,18 @@ const error = ref("")
 const recentProjects = ref<RecentProject[]>([])
 const loadingRecent = ref(false)
 const showSettings = ref(false)
+const appVersion = ref("")
 
 onMounted(async () => {
-  const res = await call<RecentProject[]>("get_recent_projects")
-  if (res.success && res.data) {
-    recentProjects.value = res.data
+  const [recentRes, infoRes] = await Promise.all([
+    call<RecentProject[]>("get_recent_projects"),
+    call<{ version: string }>("get_app_info"),
+  ])
+  if (recentRes.success && recentRes.data) {
+    recentProjects.value = recentRes.data
+  }
+  if (infoRes.success && infoRes.data) {
+    appVersion.value = infoRes.data.version
   }
 })
 
@@ -138,7 +145,7 @@ function formatRelativeTime(iso: string): string {
       </div>
 
       <div class="mt-8 text-center text-xs text-ink-muted-48">
-        Phase 0 - 技术验证
+        {{ appVersion ? `v${appVersion}` : 'Milo-Cut' }}
       </div>
     </div>
   </div>

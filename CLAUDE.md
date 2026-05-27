@@ -131,6 +131,21 @@ Event names in `core/events.py` must stay in sync with `frontend/src/utils/event
 - **Project persistence**: Each project saves to `data/projects/<name>/project.json`
 - **Ignore**: `uv/`, `.venv/`, `*.bat`, `*_old/` directories.
 
+## Git Commit Style
+
+两段式格式：主题行 + 空行 + 详细列表。
+
+- **主题行**: `type(module): 简短摘要`，module 填修改的大致模块（如 export、project、workspace、ffmpeg），不用版本号
+- **详细列表**: 空行后用 `- ` 开头逐条列出改动
+
+```
+feat(export): 视频编码参数系统完善 -- 编码器注册表、质量参数动态适配、像素格式探测
+
+- 新建 core/ffmpeg_presets.py 编码器配置单一事实来源
+- 修复硬件编码器 (-cq/-qp) 质量参数误用 (-crf) 问题
+- 添加像素格式探测，HDR/10-bit 输入保留原始格式
+```
+
 ## External Dependencies
 
 - **FFmpeg/FFprobe**: Required at runtime, invoked as subprocesses. Paths configurable in `data/settings.json`.

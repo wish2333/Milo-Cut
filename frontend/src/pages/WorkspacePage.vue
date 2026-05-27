@@ -8,6 +8,7 @@ import { useExport } from "@/composables/useExport"
 import { useEdit } from "@/composables/useEdit"
 import { useSegmentEdit } from "@/composables/useSegmentEdit"
 import { useToast } from "@/composables/useToast"
+import { useUndoRedo } from "@/composables/useUndoRedo"
 import { EVENT_TASK_COMPLETED, EVENT_PROJECT_DIRTY, EVENT_PROJECT_SAVED } from "@/utils/events"
 import ProgressBar from "@/components/common/ProgressBar.vue"
 import Timeline from "@/components/workspace/Timeline.vue"
@@ -35,6 +36,13 @@ const projectRef = computed({
 })
 
 const {
+  pushSnapshot,
+  undo,
+  redo,
+  clearHistory,
+} = useUndoRedo()
+
+const {
   isDetecting,
   detectionProgress,
   runSilenceDetection,
@@ -43,7 +51,7 @@ const {
   runFullAnalysis,
   confirmEdit,
   rejectEdit,
-} = useAnalysis(projectRef)
+} = useAnalysis(projectRef, pushSnapshot)
 
 const {
   isExporting,
@@ -60,7 +68,7 @@ const {
   deleteSegment,
   deleteSilenceSegments,
   deleteSubtitleTrimEdits,
-} = useEdit(projectRef)
+} = useEdit(projectRef, pushSnapshot)
 
 const {
   selectedSegmentId: editSelectedSegmentId,
@@ -68,7 +76,8 @@ const {
   updateSegmentTime,
   updateSegmentText,
   toggleEditStatus,
-} = useSegmentEdit(projectRef as any, (val: Project) => emit("project-updated", val))
+  flushPendingUpdates,
+} = useSegmentEdit(projectRef as any, (val: Project) => emit("project-updated", val), pushSnapshot)
 
 const { showToast } = useToast()
 
@@ -220,6 +229,7 @@ onEvent<{ task_id: string; task_type?: string; result?: { project?: Project } }>
   },
 )
 watch(() => props.project.media?.path, loadVideoUrl)
+watch(() => props.project.project?.name, () => { clearHistory() })
 
 async function loadSilenceSettings() {
   const res = await call<Record<string, unknown>>("get_settings")
@@ -311,6 +321,7 @@ async function handleImportSrt() {
     return
   }
   statusMessage.value = "Importing SRT..."
+  if (projectRef.value) pushSnapshot(projectRef.value)
   const importRes = await call<Project>("import_srt", fileRes.data)
   if (importRes.success && importRes.data) {
     emit("project-updated", importRes.data)
@@ -416,6 +427,7 @@ function handleSelectRange(start: number, end: number) {
 }
 
 async function handleAddSegment(start: number, end: number) {
+  if (projectRef.value) pushSnapshot(projectRef.value)
   const res = await call<Project>("add_segment", start, end, "", "subtitle")
   if (res.success && res.data) {
     emit("project-updated", res.data)
@@ -465,6 +477,36 @@ function handleGlobalKeydown(e: KeyboardEvent) {
   if (e.ctrlKey && e.key === "s") {
     e.preventDefault()
     handleSaveProject()
+    return
+  }
+  if (e.ctrlKey && e.key === "z" && !e.shiftKey) {
+    e.preventDefault()
+    handleUndo()
+    return
+  }
+  if (e.ctrlKey && (e.key === "y" || (e.key === "z" && e.shiftKey))) {
+    e.preventDefault()
+    handleRedo()
+  }
+}
+
+async function handleUndo() {
+  await flushPendingUpdates()
+  if (!projectRef.value) return
+  const restored = undo(projectRef.value)
+  if (restored) {
+    emit("project-updated", restored)
+    showToast("Undo", "success", 1500)
+  }
+}
+
+async function handleRedo() {
+  await flushPendingUpdates()
+  if (!projectRef.value) return
+  const restored = redo(projectRef.value)
+  if (restored) {
+    emit("project-updated", restored)
+    showToast("Redo", "success", 1500)
   }
 }
 
