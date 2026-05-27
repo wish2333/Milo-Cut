@@ -3,8 +3,8 @@
 ## Overview
 
 Milo-Cut uses two test frameworks:
-- **Backend (Python)**: pytest with 64 tests across 5 modules
-- **Frontend (TypeScript/Vue)**: Vitest with happy-dom, 23 tests across 3 component files
+- **Backend (Python)**: pytest with 97 tests across 6 modules
+- **Frontend (TypeScript/Vue)**: Vitest with happy-dom, 105 tests across 7 test files
 
 ## Prerequisites
 
@@ -43,6 +43,7 @@ Backend test modules:
 | `test_subtitle_service.py` | 14 | SRT parsing, validation, multi-encoding |
 | `test_project_service.py` | 18 | CRUD, merge/split, search-replace, batch edits, settings |
 | `test_config.py` | 5 | Load/save, atomic write, corruption recovery |
+| `test_export_service.py` | 21 | SRT/VTT export, format helpers, deletion handling |
 
 ### Frontend Tests
 
@@ -61,9 +62,13 @@ Frontend test modules:
 
 | File | Tests | Coverage |
 |------|-------|----------|
-| `TranscriptRow.test.ts` | 8 | Rendering, click-to-seek, inline editing, status badges |
-| `SilenceRow.test.ts` | 6 | Duration display, status colors, click-to-seek |
+| `TranscriptRow.test.ts` | 15 | Rendering, click-to-seek, inline editing, status badges, context menu |
+| `SilenceRow.test.ts` | 6 | Duration display, status colors, click-to-seek, context menu |
 | `EditSummaryModal.test.ts` | 9 | Visibility, hero stats, warnings, confirm/cancel events |
+| `SegmentBlocksLayer.test.ts` | 9 | Block rendering, drag-to-create, context menu |
+| `segmentHelpers.test.ts` | 32 | Segment splitting, merging, search, time formatting |
+| `useSegmentEdit.test.ts` | 14 | Edit operations, undo/redo integration |
+| `useTimelineMetrics.test.ts` | 20 | Timeline calculations, zoom, scroll |
 
 ### Running All Tests
 

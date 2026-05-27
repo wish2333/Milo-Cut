@@ -8,12 +8,14 @@ import { useExport } from "@/composables/useExport"
 import { useEdit } from "@/composables/useEdit"
 import { useSegmentEdit } from "@/composables/useSegmentEdit"
 import { useToast } from "@/composables/useToast"
-import { EVENT_TASK_COMPLETED } from "@/utils/events"
+import { useUndoRedo } from "@/composables/useUndoRedo"
+import { EVENT_TASK_COMPLETED, EVENT_PROJECT_DIRTY, EVENT_PROJECT_SAVED } from "@/utils/events"
 import ProgressBar from "@/components/common/ProgressBar.vue"
 import Timeline from "@/components/workspace/Timeline.vue"
 import WaveformEditor from "@/components/waveform/WaveformEditor.vue"
 import SearchReplaceBar from "@/components/workspace/SearchReplaceBar.vue"
 import VideoControls from "@/components/workspace/VideoControls.vue"
+import SubtitleOverlay from "@/components/workspace/SubtitleOverlay.vue"
 
 interface Props {
   project: Project
@@ -34,6 +36,13 @@ const projectRef = computed({
 })
 
 const {
+  pushSnapshot,
+  undo,
+  redo,
+  clearHistory,
+} = useUndoRedo()
+
+const {
   isDetecting,
   detectionProgress,
   runSilenceDetection,
@@ -42,7 +51,7 @@ const {
   runFullAnalysis,
   confirmEdit,
   rejectEdit,
-} = useAnalysis(projectRef)
+} = useAnalysis(projectRef, pushSnapshot)
 
 const {
   isExporting,
@@ -59,7 +68,7 @@ const {
   deleteSegment,
   deleteSilenceSegments,
   deleteSubtitleTrimEdits,
-} = useEdit(projectRef)
+} = useEdit(projectRef, pushSnapshot)
 
 const {
   selectedSegmentId: editSelectedSegmentId,
@@ -67,7 +76,8 @@ const {
   updateSegmentTime,
   updateSegmentText,
   toggleEditStatus,
-} = useSegmentEdit(projectRef as any, (val: Project) => emit("project-updated", val))
+  flushPendingUpdates,
+} = useSegmentEdit(projectRef as any, (val: Project) => emit("project-updated", val), pushSnapshot)
 
 const { showToast } = useToast()
 
@@ -105,6 +115,35 @@ watch(statusMessage, (msg) => {
       statusTimer = null
     }, 5000)
   }
+})
+
+// Auto-save state
+const isDirty = ref(false)
+const isSaving = ref(false)
+let saveTimer: ReturnType<typeof setTimeout> | null = null
+
+onEvent<void>(EVENT_PROJECT_DIRTY, () => {
+  isDirty.value = true
+})
+
+onEvent<void>(EVENT_PROJECT_SAVED, () => {
+  isDirty.value = false
+})
+
+watch(isDirty, (dirty) => {
+  if (!dirty || isSaving.value) return
+  if (saveTimer) clearTimeout(saveTimer)
+  saveTimer = setTimeout(async () => {
+    isSaving.value = true
+    try {
+      const res = await call<void>("save_project")
+      if (res.success) {
+        showToast("Auto-saved", "success", 1500)
+      }
+    } finally {
+      isSaving.value = false
+    }
+  }, 2000)
 })
 
 const segments = computed<Segment[]>(() => props.project.transcript?.segments ?? [])
@@ -190,6 +229,7 @@ onEvent<{ task_id: string; task_type?: string; result?: { project?: Project } }>
   },
 )
 watch(() => props.project.media?.path, loadVideoUrl)
+watch(() => props.project.project?.name, () => { clearHistory() })
 
 async function loadSilenceSettings() {
   const res = await call<Record<string, unknown>>("get_settings")
@@ -281,6 +321,7 @@ async function handleImportSrt() {
     return
   }
   statusMessage.value = "Importing SRT..."
+  if (projectRef.value) pushSnapshot(projectRef.value)
   const importRes = await call<Project>("import_srt", fileRes.data)
   if (importRes.success && importRes.data) {
     emit("project-updated", importRes.data)
@@ -317,11 +358,19 @@ async function handleRejectAllSuggestions() {
 }
 
 async function handleSaveProject() {
-  const res = await call("save_project")
-  if (res.success) {
-    showToast("Project saved", "success", 2000)
-  } else {
-    showToast("Save failed", "error", 3000)
+  if (isSaving.value) return
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
+  isSaving.value = true
+  try {
+    const res = await call("save_project")
+    if (res.success) {
+      isDirty.value = false
+      showToast("Project saved", "success", 2000)
+    } else {
+      showToast("Save failed", "error", 3000)
+    }
+  } finally {
+    isSaving.value = false
   }
 }
 
@@ -378,6 +427,7 @@ function handleSelectRange(start: number, end: number) {
 }
 
 async function handleAddSegment(start: number, end: number) {
+  if (projectRef.value) pushSnapshot(projectRef.value)
   const res = await call<Project>("add_segment", start, end, "", "subtitle")
   if (res.success && res.data) {
     emit("project-updated", res.data)
@@ -427,6 +477,36 @@ function handleGlobalKeydown(e: KeyboardEvent) {
   if (e.ctrlKey && e.key === "s") {
     e.preventDefault()
     handleSaveProject()
+    return
+  }
+  if (e.ctrlKey && e.key === "z" && !e.shiftKey) {
+    e.preventDefault()
+    handleUndo()
+    return
+  }
+  if (e.ctrlKey && (e.key === "y" || (e.key === "z" && e.shiftKey))) {
+    e.preventDefault()
+    handleRedo()
+  }
+}
+
+async function handleUndo() {
+  await flushPendingUpdates()
+  if (!projectRef.value) return
+  const restored = undo(projectRef.value)
+  if (restored) {
+    emit("project-updated", restored)
+    showToast("Undo", "success", 1500)
+  }
+}
+
+async function handleRedo() {
+  await flushPendingUpdates()
+  if (!projectRef.value) return
+  const restored = redo(projectRef.value)
+  if (restored) {
+    emit("project-updated", restored)
+    showToast("Redo", "success", 1500)
   }
 }
 
@@ -719,7 +799,7 @@ onUnmounted(() => {
       <!-- Left: Video player area -->
       <div class="flex w-2/5 min-w-[400px] flex-col border-r border-gray-200 bg-gray-900">
         <div class="flex flex-1 items-center justify-center p-2 overflow-hidden">
-          <div v-if="videoUrl" class="flex flex-col w-full h-full items-center justify-center">
+          <div v-if="videoUrl" class="relative flex flex-col w-full h-full items-center justify-center">
             <video
               ref="videoRef"
               :src="videoUrl"
@@ -730,6 +810,10 @@ onUnmounted(() => {
               @play="videoPaused = false"
               @pause="videoPaused = true"
               @click="handleTogglePlay"
+            />
+            <SubtitleOverlay
+              :segments="mergedSegments"
+              :video-ref="videoRef"
             />
           </div>
           <div v-else class="text-center text-gray-400">

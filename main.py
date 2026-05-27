@@ -28,11 +28,30 @@ from core.paths import migrate_if_needed
 from core.project_service import ProjectService
 from core.subtitle_service import parse_srt
 from core.task_manager import TaskManager
-from core.export_service import export_audio, export_srt, export_video
+from core.export_service import export_audio, export_srt, export_video, export_vtt
 from core.ffmpeg_presets import ENCODER_METADATA, get_fallback_codec
 from core.ffmpeg_service import _find_ffmpeg
 
 logger = get_logger()
+
+
+def _get_version() -> str:
+    """Get app version with packaging fallback."""
+    # Method 1: importlib.metadata (dev env / pip install)
+    try:
+        from importlib.metadata import version
+        return version("milo-cut")
+    except Exception:
+        pass
+    # Method 2: read pyproject.toml (PyInstaller/Nuitka packaging fallback)
+    try:
+        import tomllib
+        with open(Path(__file__).parent / "pyproject.toml", "rb") as f:
+            return tomllib.load(f)["project"]["version"]
+    except Exception:
+        pass
+    # Method 3: final fallback
+    return "unknown"
 
 
 class MiloCutApi(Bridge):
@@ -58,6 +77,9 @@ class MiloCutApi(Bridge):
         )
         self._task_manager.register_handler(
             TaskType.EXPORT_AUDIO, self._handle_export_audio
+        )
+        self._task_manager.register_handler(
+            TaskType.EXPORT_VTT, self._handle_export_vtt
         )
         self._task_manager.register_handler(
             TaskType.FILLER_DETECTION, self._handle_filler_detection
@@ -168,6 +190,27 @@ class MiloCutApi(Bridge):
 
         media_duration = project.media.duration if project.media else 0.0
         return export_srt(
+            segments=segments_data,
+            edits=edits_data,
+            output_path=output_path,
+            media_duration=media_duration,
+        )
+
+    def _handle_export_vtt(self, task, cancel_event):
+        """Export WebVTT as a background task."""
+        if self._project.current is None:
+            raise ValueError("No project open")
+        if self._project.current.media is None:
+            raise ValueError("No media in project")
+        project = self._project.current
+        segments_data = [s.model_dump() for s in project.transcript.segments]
+        edits_data = [e.model_dump() for e in project.edits]
+        output_path = task.payload.get("output_path", "")
+        if not output_path:
+            output_path = os.path.splitext(project.media.path)[0] + "_cut.vtt"
+
+        media_duration = project.media.duration if project.media else 0.0
+        return export_vtt(
             segments=segments_data,
             edits=edits_data,
             output_path=output_path,
@@ -298,7 +341,7 @@ class MiloCutApi(Bridge):
             "success": True,
             "data": {
                 "name": "Milo-Cut",
-                "version": "0.1.0",
+                "version": _get_version(),
                 "python": sys.version,
                 "platform": sys.platform,
             },
@@ -310,9 +353,10 @@ class MiloCutApi(Bridge):
         result = webview.windows[0].create_file_dialog(
             webview.FileDialog.OPEN,
             file_types=(
-                "Media files (*.mp4;*.mkv;*.avi;*.mov;*.webm;*.mp3;*.wav;*.aac;*.flac;*.ogg;*.m4a)",
+                "Media files (*.mp4;*.mkv;*.avi;*.mov;*.webm;*.mp3;*.wav;*.aac;*.flac;*.ogg;*.m4a;*.json)",
                 "Video files (*.mp4;*.mkv;*.avi;*.mov;*.webm)",
                 "Audio files (*.mp3;*.wav;*.aac;*.flac;*.ogg;*.m4a)",
+                "Project files (*.json)",
                 "All files (*.*)",
             ),
         )
@@ -360,6 +404,10 @@ class MiloCutApi(Bridge):
     def close_project(self) -> dict:
         self._media_server.stop()
         return self._project.close_project()
+
+    @expose
+    def relink_media(self, new_path: str) -> dict:
+        return self._project.relink_media(new_path)
 
     # ================================================================
     # Subtitle
@@ -597,33 +645,54 @@ class MiloCutApi(Bridge):
 
     @expose
     def detect_gpu(self) -> dict:
-        """Detect GPU availability and return supported hardware encoders."""
+        """Detect available encoders via ffmpeg -encoders for reliable detection."""
+        from core.ffmpeg_presets import ENCODER_METADATA
         encoders: list[str] = []
-        gpu_name = ""
         try:
+            from core.ffmpeg_service import _find_ffmpeg
+            ffmpeg = _find_ffmpeg()
             result = subprocess.run(
-                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                [ffmpeg, "-hide_banner", "-encoders"],
                 capture_output=True, text=True, timeout=5,
                 **_SUBPROCESS_KWARGS,
             )
-            if result.returncode == 0 and result.stdout.strip():
-                gpu_name = result.stdout.strip().split("\n")[0]
-                encoders.extend(["h264_nvenc", "hevc_nvenc", "av1_nvenc"])
-        except FileNotFoundError:
+            if result.returncode == 0:
+                registered = result.stdout
+                for codec_name in ENCODER_METADATA:
+                    # Check encoder is registered: line starts with whitespace + codec name
+                    if f" {codec_name} " in registered:
+                        encoders.append(codec_name)
+        except Exception:
             pass
-
-        # libsvtav1 is available on all platforms except some macOS builds
-        if sys.platform != "darwin":
-            encoders.append("libsvtav1")
 
         return {
             "success": True,
             "data": {
-                "nvidia": bool(gpu_name),
-                "gpu_name": gpu_name,
-                "encoders": encoders,
+                "encoders": sorted(set(encoders)),
             },
         }
+
+    @expose
+    def get_ffmpeg_info(self) -> dict:
+        """Return FFmpeg status for settings page."""
+        from core.ffmpeg_service import _find_ffmpeg, _find_ffprobe
+        info: dict = {"ffmpeg_path": "", "ffprobe_path": "", "version": ""}
+        try:
+            info["ffmpeg_path"] = _find_ffmpeg()
+            result = subprocess.run(
+                [info["ffmpeg_path"], "-version"],
+                capture_output=True, text=True, timeout=5,
+                **_SUBPROCESS_KWARGS,
+            )
+            if result.returncode == 0:
+                info["version"] = result.stdout.split("\n")[0]
+        except Exception:
+            pass
+        try:
+            info["ffprobe_path"] = _find_ffprobe()
+        except Exception:
+            pass
+        return {"success": True, "data": info}
 
     @expose
     def get_encoder_metadata(self) -> dict:

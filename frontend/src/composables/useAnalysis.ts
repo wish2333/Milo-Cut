@@ -13,7 +13,10 @@ const ANALYSIS_TASKS: TaskType[] = [
   "full_analysis",
 ]
 
-export function useAnalysis(project: Ref<Project | null>) {
+export function useAnalysis(
+  project: Ref<Project | null>,
+  onBeforeProjectUpdate?: (project: Project) => void,
+) {
   const { on } = useBridge()
   const { createTask, startTask, tasks, activeTask, isRunning } = useTask()
 
@@ -33,6 +36,7 @@ export function useAnalysis(project: Ref<Project | null>) {
   on(EVENT_TASK_COMPLETED, (data: { task_id: string; result?: { project?: Project } }) => {
     const task = tasks.value.find(t => t.id === data.task_id)
     if (task && ANALYSIS_TASKS.includes(task.type) && data.result?.project) {
+      if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value)
       project.value = data.result.project
     }
   })
@@ -64,6 +68,7 @@ export function useAnalysis(project: Ref<Project | null>) {
   async function confirmEdit(editId: string): Promise<boolean> {
     const res = await call<Project>("update_edit_decision", editId, "confirmed")
     if (res.success && res.data) {
+      if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value)
       project.value = res.data
       return true
     }
@@ -73,6 +78,7 @@ export function useAnalysis(project: Ref<Project | null>) {
   async function rejectEdit(editId: string): Promise<boolean> {
     const res = await call<Project>("update_edit_decision", editId, "rejected")
     if (res.success && res.data) {
+      if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value)
       project.value = res.data
       return true
     }

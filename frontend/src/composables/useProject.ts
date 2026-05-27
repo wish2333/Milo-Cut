@@ -1,4 +1,4 @@
-import { ref, computed } from "vue"
+import { ref, computed, watch } from "vue"
 import { call } from "@/bridge"
 import { useBridge } from "./useBridge"
 import { EVENT_PROJECT_SAVED, EVENT_PROJECT_DIRTY, EVENT_TASK_COMPLETED } from "@/utils/events"
@@ -10,6 +10,10 @@ export function useProject() {
   const project = ref<Project | null>(null)
   const isDirty = ref(false)
   const loading = ref(false)
+  const isSaving = ref(false)
+  let saveTimer: ReturnType<typeof setTimeout> | null = null
+  const pendingRelinkPath = ref<string | null>(null)
+  const pendingProjectPath = ref<string | null>(null)
 
   const segments = computed<Segment[]>(() => project.value?.transcript?.segments ?? [])
   const edits = computed<EditDecision[]>(() => project.value?.edits ?? [])
@@ -29,6 +33,20 @@ export function useProject() {
     if (data.task_type === "waveform_generation" && data.result?.project) {
       project.value = data.result.project
     }
+  })
+
+  // Auto-save: debounce 2s after isDirty becomes true
+  watch(isDirty, (dirty) => {
+    if (!dirty || isSaving.value) return
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = setTimeout(async () => {
+      isSaving.value = true
+      try {
+        await saveProject()
+      } finally {
+        isSaving.value = false
+      }
+    }, 2000)
   })
 
   async function triggerWaveformGeneration(): Promise<void> {
@@ -56,7 +74,7 @@ export function useProject() {
     }
   }
 
-  async function openProject(path: string): Promise<boolean> {
+  async function openProject(path: string): Promise<boolean | "MEDIA_NOT_FOUND"> {
     loading.value = true
     try {
       const res = await call<Project>("open_project", path)
@@ -65,10 +83,37 @@ export function useProject() {
         triggerWaveformGeneration()
         return true
       }
+      if (res.error === "MEDIA_NOT_FOUND" && res.data) {
+        pendingRelinkPath.value = (res.data as unknown as { path: string }).path
+        pendingProjectPath.value = path
+        return "MEDIA_NOT_FOUND"
+      }
       return false
     } finally {
       loading.value = false
     }
+  }
+
+  async function relinkMedia(newPath: string): Promise<boolean> {
+    loading.value = true
+    try {
+      const res = await call<Project>("relink_media", newPath)
+      if (res.success && res.data) {
+        project.value = res.data
+        pendingRelinkPath.value = null
+        pendingProjectPath.value = null
+        triggerWaveformGeneration()
+        return true
+      }
+      return false
+    } finally {
+      loading.value = false
+    }
+  }
+
+  function cancelRelink() {
+    pendingRelinkPath.value = null
+    pendingProjectPath.value = null
   }
 
   async function saveProject(): Promise<boolean> {
@@ -89,13 +134,18 @@ export function useProject() {
     project,
     isDirty,
     loading,
+    isSaving,
     segments,
     edits,
     mediaDuration,
     mediaInfo,
     waveformPath,
+    pendingRelinkPath,
+    pendingProjectPath,
     createProject,
     openProject,
+    relinkMedia,
+    cancelRelink,
     saveProject,
     closeProject,
   }

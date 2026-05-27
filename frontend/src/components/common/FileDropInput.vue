@@ -43,7 +43,7 @@ async function openFileDialog() {
       {{ isProcessing ? "处理中..." : "选择文件" }}
     </button>
     <p class="text-xs text-ink-muted-48">
-      支持 MP4, MKV, AVI, MOV, WebM, MP3, WAV, AAC, FLAC 等
+      支持 MP4, MKV, AVI, MOV, WebM, MP3, WAV, AAC, FLAC 等，也可拖入 .json 项目文件
     </p>
   </div>
 </template>

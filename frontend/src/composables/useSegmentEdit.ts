@@ -40,6 +40,7 @@ function replaceSegment(project: Project, segId: string, patch: Partial<Segment>
 export function useSegmentEdit(
   project: Ref<Project>,
   onProjectUpdate: (project: Project) => void,
+  onBeforeProjectUpdate?: (project: Project) => void,
 ): UseSegmentEditReturn {
   const selectedSegmentId = ref<string | null>(null)
   const selectedRange = ref<{ start: number; end: number } | null>(null)
@@ -84,6 +85,7 @@ export function useSegmentEdit(
     const seg = prev.transcript.segments.find(s => s.id === segmentId)
     if (!seg) return
 
+    if (onBeforeProjectUpdate) onBeforeProjectUpdate(prev)
     const optimistic = replaceSegment(prev, segmentId, { [field]: value })
     onProjectUpdate(optimistic)
 
@@ -111,6 +113,7 @@ export function useSegmentEdit(
   // -- Immediate text updates -------------------------------------------
 
   async function updateSegmentText(segmentId: string, text: string): Promise<boolean> {
+    if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value)
     const res = await call<Project>("update_segment_text", segmentId, text)
     if (res.success && res.data) {
       onProjectUpdate(res.data)
@@ -122,6 +125,7 @@ export function useSegmentEdit(
   // -- Toggle edit status -----------------------------------------------
 
   async function toggleEditStatus(segment: Segment, nextStatus?: string): Promise<void> {
+    if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value)
     const edits = project.value.edits
     const state = resolveSegmentState(edits, segment)
 

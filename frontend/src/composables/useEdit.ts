@@ -3,11 +3,20 @@ import { call } from "@/bridge"
 import type { Project } from "@/types/project"
 import type { EditSummary } from "@/types/edit"
 
-export function useEdit(project: Ref<Project | null>) {
+export function useEdit(
+  project: Ref<Project | null>,
+  onBeforeProjectUpdate?: (project: Project) => void,
+) {
+  function snapshot() {
+    if (onBeforeProjectUpdate && project.value) {
+      onBeforeProjectUpdate(project.value)
+    }
+  }
 
   async function updateSegmentText(segmentId: string, text: string): Promise<boolean> {
     const res = await call<Project>("update_segment_text", segmentId, text)
     if (res.success && res.data) {
+      snapshot()
       project.value = res.data
       return true
     }
@@ -17,6 +26,7 @@ export function useEdit(project: Ref<Project | null>) {
   async function updateSegmentTime(segmentId: string, field: "start" | "end", value: number): Promise<boolean> {
     const res = await call<Project>("update_segment", segmentId, { [field]: value })
     if (res.success && res.data) {
+      snapshot()
       project.value = res.data
       return true
     }
@@ -26,6 +36,7 @@ export function useEdit(project: Ref<Project | null>) {
   async function mergeSegments(segmentIds: string[]): Promise<boolean> {
     const res = await call<Project>("merge_segments", segmentIds)
     if (res.success && res.data) {
+      snapshot()
       project.value = res.data
       return true
     }
@@ -35,6 +46,7 @@ export function useEdit(project: Ref<Project | null>) {
   async function splitSegment(segmentId: string, position: number): Promise<boolean> {
     const res = await call<Project>("split_segment", segmentId, position)
     if (res.success && res.data) {
+      snapshot()
       project.value = res.data
       return true
     }
@@ -50,7 +62,7 @@ export function useEdit(project: Ref<Project | null>) {
       "search_replace", query, replacement, scope,
     )
     if (res.success && res.data) {
-      // Refresh project to get updated segments
+      snapshot()
       const projRes = await call<Project>("get_project")
       if (projRes.success && projRes.data) {
         project.value = projRes.data
@@ -63,6 +75,7 @@ export function useEdit(project: Ref<Project | null>) {
   async function markSegments(segmentIds: string[], action: "delete" | "keep"): Promise<boolean> {
     const res = await call<Project>("mark_segments", segmentIds, action)
     if (res.success && res.data) {
+      snapshot()
       project.value = res.data
       return true
     }
@@ -72,6 +85,7 @@ export function useEdit(project: Ref<Project | null>) {
   async function confirmAllSuggestions(): Promise<number | null> {
     const res = await call<{ confirmed_count: number }>("confirm_all_suggestions")
     if (res.success && res.data) {
+      snapshot()
       const projRes = await call<Project>("get_project")
       if (projRes.success && projRes.data) {
         project.value = projRes.data
@@ -84,6 +98,7 @@ export function useEdit(project: Ref<Project | null>) {
   async function rejectAllSuggestions(): Promise<number | null> {
     const res = await call<{ rejected_count: number }>("reject_all_suggestions")
     if (res.success && res.data) {
+      snapshot()
       const projRes = await call<Project>("get_project")
       if (projRes.success && projRes.data) {
         project.value = projRes.data
@@ -104,6 +119,7 @@ export function useEdit(project: Ref<Project | null>) {
   async function deleteSegment(segmentId: string): Promise<boolean> {
     const res = await call<Project>("delete_segment", segmentId)
     if (res.success && res.data) {
+      snapshot()
       project.value = res.data
       return true
     }
@@ -113,6 +129,7 @@ export function useEdit(project: Ref<Project | null>) {
   async function deleteSilenceSegments(): Promise<boolean> {
     const res = await call<Project>("delete_silence_segments")
     if (res.success && res.data) {
+      snapshot()
       project.value = res.data
       return true
     }
@@ -122,6 +139,7 @@ export function useEdit(project: Ref<Project | null>) {
   async function deleteSubtitleTrimEdits(): Promise<boolean> {
     const res = await call<Project>("delete_subtitle_trim_edits")
     if (res.success && res.data) {
+      snapshot()
       project.value = res.data
       return true
     }
@@ -140,6 +158,7 @@ export function useEdit(project: Ref<Project | null>) {
       project: Project
     }>("generate_subtitle_keep_ranges", padding)
     if (res.success && res.data) {
+      snapshot()
       project.value = res.data.project
       return {
         keep_ranges: res.data.keep_ranges,

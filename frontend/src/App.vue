@@ -4,6 +4,7 @@ import WelcomePage from "@/pages/WelcomePage.vue"
 import WorkspacePage from "@/pages/WorkspacePage.vue"
 import ExportPage from "@/pages/ExportPage.vue"
 import ToastContainer from "@/components/common/ToastContainer.vue"
+import RelinkMediaDialog from "@/components/workspace/RelinkMediaDialog.vue"
 import { waitForPyWebView, call, onEvent } from "./bridge"
 import { EVENT_TASK_COMPLETED } from "@/utils/events"
 import type { Project, MediaInfo } from "@/types/project"
@@ -13,6 +14,8 @@ const bridgeError = ref("")
 const project = ref<Project | null>(null)
 const showExportPage = ref(false)
 const isDragging = ref(false)
+const showRelinkDialog = ref(false)
+const relinkLostPath = ref("")
 let dragCounter = 0
 
 waitForPyWebView(10_000)
@@ -44,6 +47,11 @@ onEvent<{ task_id: string; task_type?: string; result?: { project?: Project } }>
 function onProjectCreated(data: Project) {
   project.value = data
   triggerWaveformGeneration()
+}
+
+function onRelinkNeeded(lostPath: string, _projectPath: string) {
+  relinkLostPath.value = lostPath
+  showRelinkDialog.value = true
 }
 
 function onProjectUpdated(data: Project) {
@@ -105,6 +113,10 @@ async function handleWindowDrop(e: DragEvent) {
     if (openRes.success && openRes.data) {
       project.value = openRes.data
       triggerWaveformGeneration()
+    } else if (openRes.error === "MEDIA_NOT_FOUND" && openRes.data) {
+      const data = openRes.data as unknown as { path: string }
+      relinkLostPath.value = data.path
+      showRelinkDialog.value = true
     }
   } else if (!project.value && isMedia) {
     const probeRes = await call<MediaInfo>("probe_media", filePath)
@@ -123,6 +135,21 @@ async function handleWindowDrop(e: DragEvent) {
   } else if (!project.value && isSrt) {
     // Can't import SRT without a project - ignore
   }
+}
+
+async function handleRelink(newPath: string) {
+  const res = await call<Project>("relink_media", newPath)
+  if (res.success && res.data) {
+    showRelinkDialog.value = false
+    relinkLostPath.value = ""
+    project.value = res.data
+    triggerWaveformGeneration()
+  }
+}
+
+function handleRelinkCancel() {
+  showRelinkDialog.value = false
+  relinkLostPath.value = ""
 }
 </script>
 
@@ -163,7 +190,11 @@ async function handleWindowDrop(e: DragEvent) {
       </div>
     </div>
 
-    <WelcomePage v-else-if="!project" @project-created="onProjectCreated" />
+    <WelcomePage
+      v-else-if="!project"
+      @project-created="onProjectCreated"
+      @relink-needed="onRelinkNeeded"
+    />
 
     <ExportPage
       v-else-if="showExportPage"
@@ -178,6 +209,13 @@ async function handleWindowDrop(e: DragEvent) {
       @project-updated="onProjectUpdated"
       @project-closed="onProjectClosed"
       @go-to-export="onGoToExport"
+    />
+
+    <RelinkMediaDialog
+      :visible="showRelinkDialog"
+      :lost-path="relinkLostPath"
+      @relink="handleRelink"
+      @cancel="handleRelinkCancel"
     />
 
     <ToastContainer />

@@ -18,4 +18,3 @@ if %errorlevel% neq 0 (
 )
 
 uv run dev.py %*
-pause

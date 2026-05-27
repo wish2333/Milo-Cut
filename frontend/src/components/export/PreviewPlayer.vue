@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch } from "vue"
 import { call } from "@/bridge"
-import type { EditDecision } from "@/types/project"
+import type { EditDecision, Segment } from "@/types/project"
 
 const props = defineProps<{
   mediaPath: string | null
   proxyPath: string | null
   edits: EditDecision[]
   duration: number
+  segments?: Segment[]
 }>()
 
 const emit = defineEmits<{
@@ -28,6 +29,19 @@ const deleteRanges = computed(() => {
     .filter(e => e.status === "confirmed" && e.action === "delete")
     .map(e => ({ start: e.start, end: e.end }))
     .sort((a, b) => a.start - b.start)
+})
+
+const currentSubtitleText = computed(() => {
+  const time = currentTime.value
+  const segs = props.segments
+  if (!segs || segs.length === 0) return ""
+  for (let i = 0; i < segs.length; i++) {
+    const s = segs[i]
+    if (s.type === "subtitle" && time >= s.start && time <= s.end) {
+      return s.text
+    }
+  }
+  return ""
 })
 
 async function loadVideoUrl() {
@@ -117,6 +131,7 @@ function onLoadedMetadata() {
   if (videoRef.value) {
     videoDuration.value = videoRef.value.duration
     videoRef.value.volume = volume.value
+    currentTime.value = videoRef.value.currentTime
   }
 }
 
@@ -129,8 +144,11 @@ function onPause() {
 }
 
 function onSeeked() {
-  if (videoRef.value && !videoRef.value.paused) {
-    checkSkip(videoRef.value.currentTime)
+  if (videoRef.value) {
+    if (!videoRef.value.paused) {
+      checkSkip(videoRef.value.currentTime)
+    }
+    currentTime.value = videoRef.value.currentTime
   }
 }
 
@@ -159,7 +177,7 @@ watch(() => [props.mediaPath, props.proxyPath], () => {
 <template>
   <div class="relative w-full h-full flex flex-col bg-black">
     <!-- Video element -->
-    <div class="flex-1 flex items-center justify-center overflow-hidden">
+    <div class="relative flex-1 flex items-center justify-center overflow-hidden">
       <video
         v-if="videoSrc"
         ref="videoRef"
@@ -171,9 +189,15 @@ watch(() => [props.mediaPath, props.proxyPath], () => {
         @pause="onPause"
         @seeked="onSeeked"
       />
-      <div v-else class="text-center">
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-16 w-16 mx-auto text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1"><path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-        <p class="mt-2 text-sm text-gray-400">无媒体文件</p>
+      <div
+        v-if="currentSubtitleText"
+        class="absolute bottom-4 left-1/2 -translate-x-1/2 px-4 py-2 bg-black/70 text-white text-sm rounded max-w-[80%] text-center pointer-events-none"
+      >
+        {{ currentSubtitleText }}
+      </div>
+      <div v-if="!videoSrc" class="text-center">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-16 w-16 mx-auto text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1"><path stroke-linecap="round" stroke-linejoin="round" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" /></svg>
+        <p class="mt-2 text-sm text-gray-400">仅音频预览</p>
       </div>
     </div>
 

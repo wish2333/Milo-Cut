@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from "vue"
-import type { Project } from "@/types/project"
+import type { Project, Segment } from "@/types/project"
+import type { EditSummary } from "@/types/edit"
 import EncodingSettings from "@/components/export/EncodingSettings.vue"
 import PreviewPlayer from "@/components/export/PreviewPlayer.vue"
+import EditSummaryModal from "@/components/workspace/EditSummaryModal.vue"
 import { call, onEvent } from "@/bridge"
 import { useExport } from "@/composables/useExport"
 import { useToast } from "@/composables/useToast"
@@ -24,8 +26,13 @@ const {
   exportProgress,
   confirmedEdits,
   estimatedSaving,
+  getExportSummary,
   createExportTask,
 } = useExport(computed(() => props.project))
+
+const showSummaryModal = ref(false)
+const exportSummary = ref<EditSummary | null>(null)
+const pendingExportAction = ref<(() => Promise<void>) | null>(null)
 
 const encodingSettings = ref({
   outputFormat: "mp4",
@@ -90,15 +97,44 @@ onUnmounted(() => {
   pendingExportTasks.clear()
 })
 
+async function interceptExport(action: () => Promise<void>) {
+  const summary = await getExportSummary()
+  if (summary && summary.delete_percent > 0) {
+    exportSummary.value = summary
+    pendingExportAction.value = action
+    showSummaryModal.value = true
+  } else {
+    await action()
+  }
+}
+
+function handleSummaryConfirm() {
+  showSummaryModal.value = false
+  const action = pendingExportAction.value
+  pendingExportAction.value = null
+  exportSummary.value = null
+  if (action) action()
+}
+
+function handleSummaryCancel() {
+  showSummaryModal.value = false
+  pendingExportAction.value = null
+  exportSummary.value = null
+}
+
 const subtitleCount = computed(() =>
   props.project.transcript?.segments?.filter(s => s.type === "subtitle").length ?? 0
+)
+
+const sortedSegments = computed<Segment[]>(() =>
+  [...(props.project.transcript?.segments ?? [])].sort((a, b) => a.start - b.start)
 )
 
 function handleEncodingSettingsUpdate(settings: typeof encodingSettings.value) {
   encodingSettings.value = settings
 }
 
-async function handleExportVideo() {
+async function executeExportVideo() {
   errorMessage.value = ""
   statusMessage.value = "正在导出视频..."
   await call("update_settings", {
@@ -121,7 +157,11 @@ async function handleExportVideo() {
   }
 }
 
-async function handleExportAudio() {
+function handleExportVideo() {
+  interceptExport(executeExportVideo)
+}
+
+async function executeExportAudio() {
   errorMessage.value = ""
   statusMessage.value = "正在导出音频..."
   await call("update_settings", {
@@ -138,6 +178,10 @@ async function handleExportAudio() {
   }
 }
 
+function handleExportAudio() {
+  interceptExport(executeExportAudio)
+}
+
 async function handleExportSrt() {
   errorMessage.value = ""
   statusMessage.value = "正在导出字幕..."
@@ -148,6 +192,19 @@ async function handleExportSrt() {
   if (!task) {
     statusMessage.value = ""
     showToast("字幕导出失败", "error")
+  }
+}
+
+async function handleExportVtt() {
+  errorMessage.value = ""
+  statusMessage.value = "正在导出 VTT..."
+  const task = await createExportTask("export_vtt")
+  if (task) {
+    pendingExportTasks.set(task, { type: "export_vtt", label: "VTT 导出" })
+  }
+  if (!task) {
+    statusMessage.value = ""
+    showToast("VTT 导出失败", "error")
   }
 }
 
@@ -274,6 +331,7 @@ function formatTimeShort(seconds: number): string {
           :proxy-path="props.project.media?.proxy_path ?? null"
           :edits="props.project.edits ?? []"
           :duration="props.project.media?.duration ?? 0"
+          :segments="sortedSegments"
         />
       </div>
 
@@ -307,6 +365,15 @@ function formatTimeShort(seconds: number): string {
           >
             <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
             导出 SRT
+          </button>
+
+          <button
+            class="w-full flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
+            :disabled="isExporting"
+            @click="handleExportVtt"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+            导出 VTT
           </button>
 
           <!-- Transition settings (applies to OTIO + FFmpeg export) -->
@@ -411,5 +478,13 @@ function formatTimeShort(seconds: number): string {
         </div>
       </div>
     </div>
+
+    <EditSummaryModal
+      v-if="exportSummary"
+      :visible="showSummaryModal"
+      :summary="exportSummary"
+      @confirm="handleSummaryConfirm"
+      @cancel="handleSummaryCancel"
+    />
   </div>
 </template>
