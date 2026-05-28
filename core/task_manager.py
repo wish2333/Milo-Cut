@@ -25,10 +25,10 @@ class TaskManager:
         self._tasks: dict[str, MiloTask] = {}
         self._cancel_events: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
-        self._handlers: dict[TaskType, Callable[[MiloTask, threading.Event], dict]] = {}
+        self._handlers: dict[TaskType, Callable[[MiloTask, threading.Event, Callable[[float, str], None]], dict]] = {}
 
     def register_handler(
-        self, task_type: TaskType, handler: Callable[[MiloTask, threading.Event], dict]
+        self, task_type: TaskType, handler: Callable[[MiloTask, threading.Event, Callable[[float, str], None]], dict]
     ) -> None:
         """Register a handler function for a task type."""
         self._handlers[task_type] = handler
@@ -126,7 +126,7 @@ class TaskManager:
     def _run_task(
         self,
         task_id: str,
-        handler: Callable[[MiloTask, threading.Event], dict],
+        handler: Callable[[MiloTask, threading.Event, Callable[[float, str], None]], dict],
         cancel_event: threading.Event,
     ) -> None:
         """Execute a task handler in a background thread."""
@@ -139,7 +139,7 @@ class TaskManager:
             def progress_cb(percent: float, message: str = "") -> None:
                 self._update_progress(task_id, percent, message)
 
-            result = handler(task, cancel_event)
+            result = handler(task, cancel_event, progress_cb)
 
             with self._lock:
                 current = self._tasks.get(task_id)

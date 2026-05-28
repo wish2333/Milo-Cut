@@ -34,8 +34,11 @@ from core.asr_scripts.common import (
 
 def parse_whisper_args() -> argparse.Namespace:
     """Parse whisper-specific arguments."""
-    base = parse_args()
-    parser = argparse.ArgumentParser(parents=[base._parser if hasattr(base, '_parser') else argparse.ArgumentParser()])
+    # First parse common args (--result-path)
+    common = parse_args()
+    
+    # Then parse whisper-specific args, ignoring unknown args from common parser
+    parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--media-path", required=True, help="Path to media file")
     parser.add_argument("--model-path", required=True, help="Path to downloaded model")
     parser.add_argument("--language", default="zh", help="Language code")
@@ -43,8 +46,16 @@ def parse_whisper_args() -> argparse.Namespace:
     parser.add_argument("--compute-type", default="int8", help="Compute type: int8, float16, float32")
     parser.add_argument("--word-timestamps", default="true", help="Enable word-level timestamps")
     parser.add_argument("--vad-filter", default="true", help="Enable Silero VAD filtering")
-    # Re-parse to get all args
-    return parser.parse_args()
+    parser.add_argument("--result-path", required=True, help="Path to write result JSON")
+    
+    # Parse known args, ignoring any unknown args
+    args, _ = parser.parse_known_args()
+    
+    # Copy result_path from common args if not set
+    if not args.result_path and hasattr(common, 'result_path'):
+        args.result_path = common.result_path
+    
+    return args
 
 
 def main() -> None:

@@ -47,15 +47,26 @@ PLUGIN_REGISTRY: dict[str, dict[str, Any]] = {
     "plugin-qwen": {
         "display_name": "Qwen3 ASR",
         "engine": "qwen3-asr",
-        "dependencies": ["transformers>=4.40.0", "torch>=2.0.0", "accelerate"],
+        "dependencies_cpu": ["transformers>=4.40.0", "torch>=2.0.0", "accelerate"],
+        "dependencies_gpu": [
+            "transformers>=4.40.0",
+            "torch>=2.0.0",
+            "accelerate",
+            "--extra-index-url",
+            "https://download.pytorch.org/whl/cu124",
+        ],
         "models": {
             "Qwen/Qwen3-ASR-0.6B": {
-                "display_name": "Qwen3 ASR 0.6B",
-                "size_bytes": 1_200_000_000,
+                "display_name": "Qwen3 ASR 0.6B (lightweight)",
+                "size_bytes": 1_880_000_000,
+            },
+            "Qwen/Qwen3-ASR-1.7B": {
+                "display_name": "Qwen3 ASR 1.7B (recommended)",
+                "size_bytes": 4_700_000_000,
             },
             "Qwen/Qwen3-ForcedAligner-0.6B": {
                 "display_name": "Qwen3 ForcedAligner 0.6B",
-                "size_bytes": 600_000_000,
+                "size_bytes": 1_840_000_000,
             },
         },
     },
@@ -184,7 +195,7 @@ class PluginManager:
     """Manages ASR plugin lifecycle: install, uninstall, model download, subprocess IPC."""
 
     def __init__(self, plugins_dir: Path | None = None) -> None:
-        self._plugins_dir = plugins_dir or get_plugin_data_dir() / "plugins"
+        self._plugins_dir = plugins_dir or get_plugin_data_dir()
         self._plugins_dir.mkdir(parents=True, exist_ok=True)
 
         self._registry_path = self._plugins_dir / "registry.json"
@@ -297,16 +308,18 @@ class PluginManager:
         if progress_cb:
             progress_cb(20.0, "Installing dependencies...")
 
-        # Install dependencies
-        deps = meta["dependencies"]
-        for i, dep in enumerate(deps):
-            pct = 20.0 + (60.0 * (i + 1) / len(deps))
+        # Install dependencies - support both old 'dependencies' and new 'dependencies_cpu'/'dependencies_gpu'
+        deps_key = "dependencies" if "dependencies" in meta else "dependencies_cpu"
+        deps = meta.get(deps_key, [])
+        
+        # For GPU support: pass entire list to uv pip install (handles --extra-index-url)
+        if deps:
+            pct = 50.0
             if progress_cb:
-                progress_cb(pct, f"Installing {dep}...")
-            self._run_uv(
-                [str(uv), "pip", "install", dep, "--python", str(plugin_python)],
-                env=env,
-            )
+                progress_cb(pct, f"Installing {len(deps)} packages...")
+            # Build full install command with all deps at once
+            cmd = [str(uv), "pip", "install"] + deps + ["--python", str(plugin_python)]
+            self._run_uv(cmd, env=env)
 
         if progress_cb:
             progress_cb(90.0, "Finalizing...")

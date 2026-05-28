@@ -9,6 +9,7 @@ import { useEdit } from "@/composables/useEdit"
 import { useSegmentEdit } from "@/composables/useSegmentEdit"
 import { useToast } from "@/composables/useToast"
 import { useUndoRedo } from "@/composables/useUndoRedo"
+import { usePluginManager } from "@/composables/usePluginManager"
 import { EVENT_TASK_COMPLETED, EVENT_PROJECT_DIRTY, EVENT_PROJECT_SAVED } from "@/utils/events"
 import ProgressBar from "@/components/common/ProgressBar.vue"
 import Timeline from "@/components/workspace/Timeline.vue"
@@ -82,6 +83,7 @@ const {
 } = useSegmentEdit(projectRef as any, (val: Project) => emit("project-updated", val), pushSnapshot)
 
 const { showToast } = useToast()
+const { ensureReady, installPlugin } = usePluginManager()
 
 const statusMessage = ref("")
 const errorMessage = ref("")
@@ -345,6 +347,35 @@ async function handleDetectSilence() {
 
 async function handleTranscribe() {
   errorMessage.value = ""
+  
+  // Check if ASR plugin is ready before transcribing
+  const engine = "faster-whisper"  // Default engine
+  const status = await ensureReady(engine)
+  
+  if (!status.ready) {
+    // Plugin not installed or model not downloaded - prompt install
+    const pluginId = status.pluginId
+    if (!pluginId) {
+      showToast("ASR plugin not found", "error", 3000)
+      return
+    }
+    
+    showToast("Installing ASR plugin, please wait...", "info", 5000)
+    
+    // Install plugin and download first available model
+    const modelId = status.missingModels[0] || ""
+    const installed = await installPlugin(pluginId, modelId, (progress) => {
+      statusMessage.value = progress.message || "Installing..."
+    })
+    
+    if (!installed) {
+      showToast("Failed to install ASR plugin", "error", 3000)
+      return
+    }
+    
+    showToast("ASR plugin installed successfully", "success", 2000)
+  }
+  
   await runTranscription()
 }
 

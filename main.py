@@ -102,7 +102,7 @@ class MiloCutApi(Bridge):
             TaskType.TRANSCRIPTION, self._handle_transcription
         )
 
-    def _handle_silence_detection(self, task, cancel_event):
+    def _handle_silence_detection(self, task, cancel_event, progress_cb):
         """Run silence detection on the project media and store results."""
         if self._project.current is None or self._project.current.media is None:
             raise ValueError("No media loaded")
@@ -124,7 +124,7 @@ class MiloCutApi(Bridge):
             raise RuntimeError(store_result.get("error", "Failed to store silence results"))
         return {"project": store_result["data"]}
 
-    def _handle_export_video(self, task, cancel_event):
+    def _handle_export_video(self, task, cancel_event, progress_cb):
         """Export cut video as a background task."""
         if self._project.current is None:
             raise ValueError("No project open")
@@ -183,7 +183,7 @@ class MiloCutApi(Bridge):
             fade_mode=fade_mode,
         )
 
-    def _handle_export_subtitle(self, task, cancel_event):
+    def _handle_export_subtitle(self, task, cancel_event, progress_cb):
         """Export synchronized SRT as a background task."""
         if self._project.current is None:
             raise ValueError("No project open")
@@ -204,7 +204,7 @@ class MiloCutApi(Bridge):
             media_duration=media_duration,
         )
 
-    def _handle_export_vtt(self, task, cancel_event):
+    def _handle_export_vtt(self, task, cancel_event, progress_cb):
         """Export WebVTT as a background task."""
         if self._project.current is None:
             raise ValueError("No project open")
@@ -225,7 +225,7 @@ class MiloCutApi(Bridge):
             media_duration=media_duration,
         )
 
-    def _handle_export_audio(self, task, cancel_event):
+    def _handle_export_audio(self, task, cancel_event, progress_cb):
         """Export cut audio as a background task."""
         if self._project.current is None:
             raise ValueError("No project open")
@@ -259,7 +259,7 @@ class MiloCutApi(Bridge):
             fade_mode=fade_mode,
         )
 
-    def _handle_filler_detection(self, task, cancel_event):
+    def _handle_filler_detection(self, task, cancel_event, progress_cb):
         """Run filler word detection and store results."""
         if self._project.current is None:
             raise ValueError("No project open")
@@ -272,7 +272,7 @@ class MiloCutApi(Bridge):
             raise RuntimeError(store.get("error", "Failed to store analysis results"))
         return {"project": store["data"], "results": results_dicts}
 
-    def _handle_error_detection(self, task, cancel_event):
+    def _handle_error_detection(self, task, cancel_event, progress_cb):
         """Run error trigger detection and store results."""
         if self._project.current is None:
             raise ValueError("No project open")
@@ -285,7 +285,7 @@ class MiloCutApi(Bridge):
             raise RuntimeError(store.get("error", "Failed to store analysis results"))
         return {"project": store["data"], "results": results_dicts}
 
-    def _handle_full_analysis(self, task, cancel_event):
+    def _handle_full_analysis(self, task, cancel_event, progress_cb):
         """Run full analysis (filler + error) and store results."""
         if self._project.current is None:
             raise ValueError("No project open")
@@ -298,7 +298,7 @@ class MiloCutApi(Bridge):
             raise RuntimeError(store.get("error", "Failed to store analysis results"))
         return {"project": store["data"], "results": results_dicts}
 
-    def _handle_waveform_generation(self, task, cancel_event):
+    def _handle_waveform_generation(self, task, cancel_event, progress_cb):
         """Generate waveform peak data for the project media."""
         if self._project.current is None:
             raise ValueError("No project open")
@@ -339,16 +339,13 @@ class MiloCutApi(Bridge):
         progress_cb(100.0, "Waveform generated")
         return {"project": self._project.current.model_dump() if self._project.current else None}
 
-    def _handle_plugin_install(self, task, cancel_event):
+    def _handle_plugin_install(self, task, cancel_event, progress_cb):
         """Install an ASR plugin and optionally download its model."""
         plugin_id = task.payload.get("plugin_id", "")
         model_id = task.payload.get("model_id", "")
 
         if not plugin_id:
             raise ValueError("plugin_id is required")
-
-        def progress_cb(percent: float, message: str = "") -> None:
-            self._task_manager._update_progress(task.id, percent, message)
 
         # Install plugin
         self._plugin_manager.install_plugin(plugin_id, progress_cb=progress_cb)
@@ -364,7 +361,7 @@ class MiloCutApi(Bridge):
             "status": "installed",
         }
 
-    def _handle_transcription(self, task, cancel_event):
+    def _handle_transcription(self, task, cancel_event, progress_cb):
         """Run ASR transcription as a background task."""
         from core.asr_service import transcribe_with_whisper
 
@@ -381,9 +378,6 @@ class MiloCutApi(Bridge):
         language = task.payload.get("language", settings.get("asr_language", "zh"))
         device = task.payload.get("device", settings.get("asr_device", "cpu"))
         compute_type = task.payload.get("compute_type", settings.get("asr_compute_type", "int8"))
-
-        def progress_cb(percent: float, message: str = "") -> None:
-            self._task_manager._update_progress(task.id, percent, message)
 
         if engine == "faster-whisper":
             from core.ffmpeg_service import _find_ffmpeg
@@ -815,6 +809,30 @@ class MiloCutApi(Bridge):
     @expose
     def get_settings(self) -> dict:
         return self._project.get_settings()
+
+    @expose
+    def get_plugin_data_dir(self) -> dict:
+        """Return the plugin data directory path."""
+        from core.paths import get_plugin_data_dir
+        path = get_plugin_data_dir()
+        return {"success": True, "data": {"path": str(path)}}
+
+    @expose
+    def open_data_directory(self) -> dict:
+        """Open the plugin data directory in the system file manager."""
+        import subprocess
+        from core.paths import get_plugin_data_dir
+        path = get_plugin_data_dir()
+        try:
+            if sys.platform == "win32":
+                subprocess.Popen(["explorer", str(path)])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(path)])
+            else:
+                subprocess.Popen(["xdg-open", str(path)])
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     @expose
     def update_settings(self, updates: dict) -> dict:

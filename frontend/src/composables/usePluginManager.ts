@@ -36,7 +36,7 @@ export function usePluginManager() {
     return []
   }
 
-  /** Install a plugin. Listens for progress events. */
+  /** Install a plugin. Listens for progress events and waits for completion. */
   async function installPlugin(
     pluginId: string,
     modelId?: string,
@@ -52,14 +52,46 @@ export function usePluginManager() {
         return false
       }
 
-      // Listen for progress events
-      if (onProgress) {
-        on<TaskProgress>("task:progress", (detail) => {
-          if (detail) onProgress(detail)
-        })
-      }
+      const taskId = res.data.task_id
 
-      return true
+      // Wait for task completion by polling task status
+      return await new Promise<boolean>((resolve) => {
+        // Listen for progress events
+        if (onProgress) {
+          on<TaskProgress>("task:progress", (detail) => {
+            if (detail && detail.task_id === taskId) onProgress(detail)
+          })
+        }
+
+        // Poll task status until completion
+        const pollInterval = setInterval(async () => {
+          try {
+            const taskRes = await call<{ status: string; error?: string }>("get_task", taskId)
+            if (taskRes.success && taskRes.data) {
+              const status = taskRes.data.status
+              if (status === "completed") {
+                clearInterval(pollInterval)
+                await listPlugins()
+                await listModels()
+                resolve(true)
+              } else if (status === "failed" || status === "cancelled") {
+                clearInterval(pollInterval)
+                error.value = taskRes.data.error || "Installation failed"
+                resolve(false)
+              }
+            }
+          } catch {
+            // Continue polling on transient errors
+          }
+        }, 500)
+
+        // Timeout after 5 minutes
+        setTimeout(() => {
+          clearInterval(pollInterval)
+          error.value = "Installation timed out"
+          resolve(false)
+        }, 300_000)
+      })
     } finally {
       loading.value = false
     }

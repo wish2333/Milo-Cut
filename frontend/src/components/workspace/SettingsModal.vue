@@ -46,6 +46,8 @@ onMounted(async () => {
   // Load plugins and models
   pluginList.value = await pluginManager.listPlugins()
   modelList.value = await pluginManager.listModels()
+  // Load plugin data directory
+  await loadPluginDataDir()
 })
 
 async function handleSave() {
@@ -168,6 +170,22 @@ async function handleDeleteModel(modelId: string) {
     statusMsg.value = pluginManager.error.value || "Delete failed"
   }
   setTimeout(() => { statusMsg.value = "" }, 3000)
+}
+
+async function handleOpenDataDirectory() {
+  const res = await call("open_data_directory")
+  if (!res.success) {
+    statusMsg.value = res.error || "Failed to open directory"
+    setTimeout(() => { statusMsg.value = "" }, 3000)
+  }
+}
+
+const pluginDataDir = ref("")
+async function loadPluginDataDir() {
+  const res = await call<{ path: string }>("get_plugin_data_dir")
+  if (res.success && res.data) {
+    pluginDataDir.value = res.data.path
+  }
 }
 </script>
 
@@ -378,6 +396,22 @@ async function handleDeleteModel(modelId: string) {
           </div>
 
           <p v-if="pluginList.length === 0" class="text-sm text-gray-500">No plugins available</p>
+
+          <!-- Data directory -->
+          <div class="mt-4 pt-3 border-t border-gray-200">
+            <div class="flex items-center justify-between">
+              <div>
+                <p class="text-sm text-gray-600">Data directory</p>
+                <p class="text-xs text-gray-400 mt-0.5 max-w-[350px] truncate">{{ pluginDataDir || 'Loading...' }}</p>
+              </div>
+              <button
+                class="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg transition-colors"
+                @click="handleOpenDataDirectory"
+              >
+                Open folder
+              </button>
+            </div>
+          </div>
         </section>
 
         <!-- ASR Settings Section -->
@@ -418,10 +452,10 @@ async function handleDeleteModel(modelId: string) {
               >
                 <option value="cpu">CPU</option>
                 <option value="cuda">CUDA (GPU)</option>
-                <option value="auto">Auto</option>
+                <option v-if="settings.asr_engine === 'faster-whisper'" value="auto">Auto</option>
               </select>
             </div>
-            <div class="flex items-center justify-between">
+            <div v-if="settings.asr_engine === 'faster-whisper'" class="flex items-center justify-between">
               <label class="text-sm text-gray-600">Compute type</label>
               <select
                 :value="settings.asr_compute_type"
