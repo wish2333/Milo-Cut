@@ -511,15 +511,97 @@ self._plugins_dir = plugins_dir or get_plugin_data_dir()
 
 ---
 
-### 待完成 (Sprint 2/3)
+### Sprint 1.6
 
-- [ ] Task 2.1: Qwen3-ASR 转写服务
-- [ ] Task 2.2: VAD 增强
-- [ ] Task 2.3: 重复句检测
-- [ ] Task 2.4: ASR 设置完善
-- [ ] Task 3.1: 原片/剪后切换
-- [ ] Task 3.2: 集成测试
-- [ ] Task 3.3: 版本号更新
+**目标**: 修复 GPU 安装失败、插件架构重构、UI 优化。
+
+**问题背景**:
+
+- GPU 安装始终拉取 CPU 版 PyTorch（PyPI 优先于 `--find-links`）
+- 单一 `plugin-qwen` 无法同时支持 CPU/GPU 两种 PyTorch
+- 镜像源选择和缓存清理需求
+- DaisyUI v5 checkbox 组件渲染异常
+
+**修改文件**:
+
+| 文件                                                  | 类型      | 说明                                                 |
+| ----------------------------------------------------- | --------- | ---------------------------------------------------- |
+| `core/plugin_manager.py`                              | 重构+新增 | 拆分插件、GPU检测、镜像配置、安装参数                |
+| `main.py`                                             | 重构+新增 | API 拆分、镜像列表、目录打开                         |
+| `frontend/src/components/workspace/SettingsModal.vue` | 重构      | Available Engines、PyTorch Install Options、模型去重 |
+| `frontend/src/composables/usePluginManager.ts`        | 修改      | installPlugin 参数扩展                               |
+| `frontend/src/pages/WorkspacePage.vue`                | 修改      | 移除 useGpu 逻辑                                     |
+| `frontend/src/types/task.ts`                          | 修改      | TaskProgress 新增 task_id                            |
+
+**实现细节**:
+
+1. **插件架构重构**:
+
+   - 拆分 `plugin-qwen` 为 `plugin-qwen-cpu` 和 `plugin-qwen-gpu` 两个独立插件
+   - CPU 插件: 标准 PyPI torch (CPU 版)
+   - GPU 插件: 相同依赖 + `pytorch_index` 字段指定 CUDA 轮子索引
+   - 共享模型文件（CPU/GPU 插件引用相同模型 ID）
+
+2. **GPU 安装修复**:
+
+   - 根本原因: `--find-links` 是 flat directory，uv 仍优先选择 PyPI CPU 轮子
+   - 解决方案: 改用 `--extra-index-url`，将 CUDA 索引作为正式索引源
+   - 新增 `pytorch_index` 字段定义插件的 PyTorch 索引 URL
+   - `install_plugin()` 根据 `pytorch_index` 自动添加 `--extra-index-url`
+
+3. **PYTORCH_MIRRORS 配置**:
+
+   ```python
+   PYTORCH_MIRRORS = {
+       "official": {"url": "https://download.pytorch.org/whl/cu124", ...},
+       "aliyun": {"url": "https://mirrors.aliyun.com/pytorch-wheels/cu124", ...},
+       "nju": {"url": "https://mirrors.nju.edu.cn/pytorch/whl/cu124", ...},
+   }
+   ```
+
+4. **GPU 检测函数**:
+
+   - `detect_gpu()` 通过 `nvidia-smi` 检测 GPU 状态
+   - 解析 `CUDA Version: X.X` 头部信息（不依赖 PyTorch）
+   - 返回 `has_nvidia_gpu`, `cuda_available`, `cuda_version`, `gpu_name`, `recommendation`
+   - 推荐逻辑: 有 CUDA → "gpu"，有 GPU 无 CUDA → "install_cuda"，无 GPU → "cpu"
+
+5. **API 层重构**:
+
+   - 重命名旧 `detect_gpu` → `detect_gpu_encoders`（FFmpeg 编码器检测）
+   - 新增 `detect_gpu` 调用 `plugin_manager.detect_gpu()`
+   - 新增 `list_mirrors` 暴露 PYTORCH_MIRRORS
+   - `install_plugin` 签名更新: 接受 `mirror` 和 `no_cache` 参数
+   - `open_data_directory` 使用 `os.startfile()` 替代 `subprocess.Popen(["explorer", ...])`
+
+6. **SettingsModal UI 重构**:
+
+   - **Available Engines 区域**: 独立显示所有 3 个插件，不受 ASR 引擎设置限制
+   - **PyTorch Install Options 区域**: 镜像源选择 + 清除缓存 checkbox，始终可见
+   - **GPU 选项**: 无 NVIDIA GPU 时禁用（opacity-50 + pointer-events-none）
+   - **CUDA 警告**: 有 GPU 无 CUDA 时显示下载链接
+   - **Installed/Downloaded/Available 列表**: 卸载/删除/下载按钮
+   - **模型去重**: 使用 Set<model_id> 避免 CPU/GPU 插件共享模型导致的重复
+
+7. **Checkbox 问题处理**:
+
+   - DaisyUI v5 的 `checkbox` class 导致 checkbox 不可见
+   - CSS 分析: `appearance: none` 隐藏原生 checkbox，`::before` 伪元素绘制自定义样式
+   - `--falsesize` CSS 变量可能未正确解析
+   - 最终方案: 使用原生 checkbox + Tailwind `accent-blue-600` 样式
+
+   ```html
+   <input type="checkbox" v-model="clearCache" class="w-4 h-4 mt-0.5 accent-blue-600" />
+   ```
+
+8. **TaskProgress 类型扩展**:
+
+   - 新增可选 `task_id` 字段，用于匹配进度事件
+
+**待验证**:
+
+- [ ] 用户卸载 `plugin-qwen-gpu` 并重新安装，验证 CUDA 版 PyTorch 是否正确拉取
+- [ ] 确认 `--extra-index-url` 方案在 uv 中正常工作
 
 ## Commit Messages
 
@@ -551,3 +633,48 @@ feat(asr): 插件化 ASR 引擎基础设施 -- PluginManager、faster-whisper、
 ```
 
 ### Sprint 1.5
+
+```
+fix(core,ui): 修复1.2.0关键缺陷及功能优化
+
+- 修复任务进度回调断裂，恢复长时间任务进度显示
+- 修复 ASR 子进程参数重复解析导致启动失败的问题
+- 修复前端未等待异步任务完成就返回成功的问题
+- 修复点击转写时未校验插件就绪状态的问题
+- 为静默异常块补充日志记录，防止错误信息丢失
+- 重构插件路径逻辑，区分开发与打包环境
+- 分离 PyTorch CPU/GPU 依赖，支持 GPU 加速安装
+- 新增 Qwen3-ASR-1.7B 模型并修正模型体积数据
+- 优化设置面板，按引擎动态显示对应配置项
+- 新增"打开数据目录"功能入口
+- 修复插件目录路径嵌套产生的错误
+```
+
+### Sprint 1.6
+
+```
+fix(core,ui): GPU安装失败修复、插件架构重构、UI优化
+
+- 拆分 plugin-qwen 为 plugin-qwen-cpu 和 plugin-qwen-gpu 两个独立插件
+- 修复 GPU 安装始终拉取 CPU 版 PyTorch 问题 (--find-links -> --extra-index-url)
+- 新增 PYTORCH_MIRRORS 配置 (official/aliyun/nju)
+- 新增 detect_gpu() 函数，通过 nvidia-smi 检测 GPU 状态
+- 重构 API 层: detect_gpu -> detect_gpu_encoders, 新增 detect_gpu/list_mirrors
+- install_plugin 新增 mirror/no_cache 参数支持
+- SettingsModal UI 重构: Available Engines 独立显示, PyTorch Install Options
+- 新增模型去重逻辑，避免 CPU/GPU 插件共享模型导致的重复
+- 修复 DaisyUI v5 checkbox 不可见问题，改用原生 checkbox + accent-blue-600
+- TaskProgress 新增可选 task_id 字段
+```
+
+---
+
+### 待完成 (Sprint 2/3)
+
+- [ ] Task 2.1: Qwen3-ASR 转写服务
+- [ ] Task 2.2: VAD 增强
+- [ ] Task 2.3: 重复句检测
+- [ ] Task 2.4: ASR 设置完善
+- [ ] Task 3.1: 原片/剪后切换
+- [ ] Task 3.2: 集成测试
+- [ ] Task 3.3: 版本号更新

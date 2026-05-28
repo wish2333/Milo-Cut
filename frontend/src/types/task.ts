@@ -17,6 +17,7 @@ export type TaskType =
   | "plugin_install"
 
 export interface TaskProgress {
+  task_id?: string
   percent: number
   message: string
 }

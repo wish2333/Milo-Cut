@@ -362,7 +362,7 @@ async function handleTranscribe() {
     
     showToast("Installing ASR plugin, please wait...", "info", 5000)
     
-    // Install plugin and download first available model
+    // Install plugin with default settings (official mirror, no cache clear)
     const modelId = status.missingModels[0] || ""
     const installed = await installPlugin(pluginId, modelId, (progress) => {
       statusMessage.value = progress.message || "Installing..."

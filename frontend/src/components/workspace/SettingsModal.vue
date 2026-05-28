@@ -23,16 +23,61 @@ const statusMsg = ref("")
 const pluginManager = usePluginManager()
 const pluginList = ref<PluginInfo[]>([])
 const modelList = ref<ModelInfo[]>([])
-const expandedPlugin = ref<string | null>(null)
 const installingPlugin = ref<string | null>(null)
 const installProgress = ref(0)
 const installMessage = ref("")
 
+// GPU detection
+const gpuInfo = ref<{
+  has_nvidia_gpu: boolean
+  cuda_available: boolean
+  cuda_version: string | null
+  gpu_name: string | null
+  recommendation: string
+  cuda_download_url: string | null
+} | null>(null)
+
+// Mirror source and cache options
+const selectedMirror = ref("official")
+const clearCache = ref(false)
+const availableMirrors = ref<Record<string, { name: string; note: string; stable: boolean }>>({})
+
+// Installed plugins and downloaded models (filtered views)
+const installedPlugins = ref<PluginInfo[]>([])
+const downloadedModels = ref<ModelInfo[]>([])
+const notDownloadedModels = ref<ModelInfo[]>([])
+
+async function detectGpu() {
+  const res = await call<{
+    has_nvidia_gpu: boolean
+    cuda_available: boolean
+    cuda_version: string | null
+    gpu_name: string | null
+    recommendation: string
+    cuda_download_url: string | null
+  }>("detect_gpu")
+  if (res.success && res.data) {
+    gpuInfo.value = res.data
+  }
+}
+
+function refreshInstalledLists() {
+  installedPlugins.value = pluginList.value.filter(p => p.status === "installed")
+  downloadedModels.value = modelList.value.filter(m => m.status === "downloaded")
+  // Deduplicate by model_id (CPU/GPU plugins share the same models)
+  const seen = new Set<string>()
+  notDownloadedModels.value = modelList.value.filter(m => {
+    if (m.status === "downloaded" || seen.has(m.model_id)) return false
+    seen.add(m.model_id)
+    return true
+  })
+}
+
 onMounted(async () => {
-  const [settingsRes, ffmpegRes, gpuRes] = await Promise.all([
+  const [settingsRes, ffmpegRes, encodersRes] = await Promise.all([
     call<AppSettings>("get_settings"),
     call<{ ffmpeg_path: string; ffprobe_path: string; version: string }>("get_ffmpeg_info"),
-    call<{ encoders: string[] }>("detect_gpu"),
+    call<{ encoders: string[] }>("detect_gpu_encoders"),
   ])
   if (settingsRes.success && settingsRes.data) {
     settings.value = settingsRes.data
@@ -40,14 +85,22 @@ onMounted(async () => {
   if (ffmpegRes.success && ffmpegRes.data) {
     ffmpegInfo.value = ffmpegRes.data
   }
-  if (gpuRes.success && gpuRes.data) {
-    gpuEncoders.value = gpuRes.data.encoders
+  if (encodersRes.success && encodersRes.data) {
+    gpuEncoders.value = encodersRes.data.encoders
   }
   // Load plugins and models
   pluginList.value = await pluginManager.listPlugins()
   modelList.value = await pluginManager.listModels()
+  refreshInstalledLists()
   // Load plugin data directory
   await loadPluginDataDir()
+  // Detect GPU capabilities
+  await detectGpu()
+  // Load available mirrors
+  const mirrorsRes = await call<Record<string, { name: string; note: string; stable: boolean }>>("list_mirrors")
+  if (mirrorsRes.success && mirrorsRes.data) {
+    availableMirrors.value = mirrorsRes.data
+  }
 })
 
 async function handleSave() {
@@ -96,10 +149,6 @@ function updateField<K extends keyof AppSettings>(key: K, value: AppSettings[K])
   }
 }
 
-function togglePluginExpand(pluginId: string) {
-  expandedPlugin.value = expandedPlugin.value === pluginId ? null : pluginId
-}
-
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B"
   const k = 1024
@@ -120,12 +169,15 @@ async function handleInstallPlugin(pluginId: string) {
       installProgress.value = progress.percent
       installMessage.value = progress.message
     },
+    selectedMirror.value,
+    clearCache.value,
   )
 
   if (success) {
     statusMsg.value = "Plugin installed successfully"
     pluginList.value = await pluginManager.listPlugins()
     modelList.value = await pluginManager.listModels()
+    refreshInstalledLists()
   } else {
     statusMsg.value = pluginManager.error.value || "Installation failed"
   }
@@ -140,23 +192,9 @@ async function handleUninstallPlugin(pluginId: string) {
     statusMsg.value = "Plugin uninstalled"
     pluginList.value = await pluginManager.listPlugins()
     modelList.value = await pluginManager.listModels()
+    refreshInstalledLists()
   } else {
     statusMsg.value = pluginManager.error.value || "Uninstall failed"
-  }
-  setTimeout(() => { statusMsg.value = "" }, 3000)
-}
-
-async function handleDownloadModel(modelId: string) {
-  statusMsg.value = `Downloading ${modelId}...`
-  const success = await pluginManager.downloadModel(modelId, (progress) => {
-    installProgress.value = progress.percent
-    installMessage.value = progress.message
-  })
-  if (success) {
-    statusMsg.value = "Model downloaded"
-    modelList.value = await pluginManager.listModels()
-  } else {
-    statusMsg.value = pluginManager.error.value || "Download failed"
   }
   setTimeout(() => { statusMsg.value = "" }, 3000)
 }
@@ -166,8 +204,24 @@ async function handleDeleteModel(modelId: string) {
   if (success) {
     statusMsg.value = "Model deleted"
     modelList.value = await pluginManager.listModels()
+    refreshInstalledLists()
   } else {
     statusMsg.value = pluginManager.error.value || "Delete failed"
+  }
+  setTimeout(() => { statusMsg.value = "" }, 3000)
+}
+
+async function handleDownloadModel(modelId: string) {
+  statusMsg.value = `Downloading model...`
+  const success = await pluginManager.downloadModel(modelId, (progress) => {
+    statusMsg.value = progress.message || "Downloading..."
+  })
+  if (success) {
+    statusMsg.value = "Model downloaded"
+    modelList.value = await pluginManager.listModels()
+    refreshInstalledLists()
+  } else {
+    statusMsg.value = pluginManager.error.value || "Download failed"
   }
   setTimeout(() => { statusMsg.value = "" }, 3000)
 }
@@ -294,103 +348,208 @@ async function loadPluginDataDir() {
             </div>
           </div>
 
-          <!-- Plugin list -->
-          <div class="space-y-2">
-            <div
-              v-for="plugin in pluginList"
-              :key="plugin.plugin_id"
-              class="border border-gray-200 rounded-lg overflow-hidden"
-            >
-              <div
-                class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-gray-50"
-                @click="togglePluginExpand(plugin.plugin_id)"
+          <!-- GPU Detection Status -->
+          <div v-if="gpuInfo" class="mb-3 p-3 rounded-lg text-sm space-y-1">
+            <!-- Has NVIDIA GPU + CUDA available -->
+            <div v-if="gpuInfo.has_nvidia_gpu && gpuInfo.cuda_available" class="text-green-700 bg-green-50 p-2 rounded">
+              <span class="font-medium">{{ gpuInfo.gpu_name }}</span> detected,
+              CUDA {{ gpuInfo.cuda_version }} available
+            </div>
+            <!-- Has NVIDIA GPU but no CUDA -->
+            <div v-else-if="gpuInfo.has_nvidia_gpu && !gpuInfo.cuda_available" class="text-yellow-700 bg-yellow-50 p-2 rounded space-y-1">
+              <div>
+                <span class="font-medium">{{ gpuInfo.gpu_name }}</span> detected, CUDA not installed
+              </div>
+              <a
+                v-if="gpuInfo.cuda_download_url"
+                :href="gpuInfo.cuda_download_url"
+                target="_blank"
+                class="text-blue-600 hover:underline text-xs"
               >
-                <div class="flex items-center gap-2">
-                  <span class="text-sm font-medium text-gray-800">{{ plugin.display_name }}</span>
-                  <span class="text-xs text-gray-500">{{ plugin.engine }}</span>
+                Download CUDA installer
+              </a>
+            </div>
+            <!-- No NVIDIA GPU -->
+            <div v-else class="text-gray-500 bg-gray-50 p-2 rounded">
+              No NVIDIA GPU detected. GPU acceleration requires an NVIDIA graphics card.
+            </div>
+          </div>
+
+          <!-- Available Engines (not yet installed) - independent of engine setting -->
+          <div class="mb-3">
+            <p class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Available Engines</p>
+            <div class="space-y-2">
+              <!-- Faster Whisper -->
+              <div
+                v-if="!pluginList.some(p => p.plugin_id === 'plugin-whisper' && p.status === 'installed')"
+                class="flex items-center justify-between p-2 rounded-lg border border-gray-200"
+              >
+                <div>
+                  <div class="text-sm font-medium text-gray-800">Faster Whisper ASR</div>
+                  <div class="text-xs text-gray-500">Lightweight, CPU-optimized</div>
                 </div>
-                <div class="flex items-center gap-2">
-                  <span
-                    class="px-2 py-0.5 text-xs rounded-full"
-                    :class="{
-                      'bg-green-100 text-green-800': plugin.status === 'installed',
-                      'bg-yellow-100 text-yellow-800': plugin.status === 'installing',
-                      'bg-gray-100 text-gray-600': plugin.status === 'not_installed',
-                      'bg-red-100 text-red-800': plugin.status === 'error',
-                    }"
-                  >
-                    {{ plugin.status === "installed" ? "Installed" : plugin.status === "installing" ? "Installing..." : plugin.status === "error" ? "Error" : "Not installed" }}
-                  </span>
-                  <svg
-                    class="w-4 h-4 text-gray-400 transition-transform"
-                    :class="{ 'rotate-180': expandedPlugin === plugin.plugin_id }"
-                    fill="none" stroke="currentColor" viewBox="0 0 24 24"
-                  >
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                  </svg>
-                </div>
+                <button
+                  class="px-3 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+                  :disabled="!!installingPlugin"
+                  @click.prevent="handleInstallPlugin('plugin-whisper')"
+                >
+                  Install
+                </button>
               </div>
 
-              <!-- Expanded content -->
-              <div v-if="expandedPlugin === plugin.plugin_id" class="px-3 py-2 border-t border-gray-100 bg-gray-50">
-                <!-- Action buttons -->
-                <div class="flex gap-2 mb-3">
-                  <button
-                    v-if="plugin.status !== 'installed'"
-                    class="px-3 py-1.5 text-sm bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50"
-                    :disabled="!!installingPlugin"
-                    @click.stop="handleInstallPlugin(plugin.plugin_id)"
-                  >
-                    Install
-                  </button>
-                  <button
-                    v-if="plugin.status === 'installed'"
-                    class="px-3 py-1.5 text-sm border border-red-300 text-red-600 rounded-lg hover:bg-red-50"
-                    @click.stop="handleUninstallPlugin(plugin.plugin_id)"
-                  >
-                    Uninstall
-                  </button>
+              <!-- Qwen3 CPU -->
+              <div
+                v-if="!pluginList.some(p => p.plugin_id === 'plugin-qwen-cpu' && p.status === 'installed')"
+                class="flex items-center justify-between p-2 rounded-lg border border-gray-200"
+              >
+                <div>
+                  <div class="text-sm font-medium text-gray-800">Qwen3 ASR (CPU)</div>
+                  <div class="text-xs text-gray-500">Works everywhere, no GPU required</div>
                 </div>
+                <button
+                  class="px-3 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+                  :disabled="!!installingPlugin"
+                  @click.prevent="handleInstallPlugin('plugin-qwen-cpu')"
+                >
+                  Install
+                </button>
+              </div>
 
-                <!-- Models for this plugin -->
-                <div class="space-y-1.5">
-                  <p class="text-xs font-medium text-gray-500 uppercase tracking-wide">Models</p>
-                  <div
-                    v-for="model in modelList.filter(m => m.plugin_id === plugin.plugin_id)"
-                    :key="model.model_id"
-                    class="flex items-center justify-between py-1"
-                  >
-                    <div>
-                      <span class="text-sm text-gray-700">{{ model.display_name }}</span>
-                      <span class="text-xs text-gray-400 ml-1">({{ formatBytes(model.size_bytes) }})</span>
-                    </div>
-                    <div class="flex items-center gap-2">
-                      <span
-                        class="px-2 py-0.5 text-xs rounded-full"
-                        :class="{
-                          'bg-green-100 text-green-800': model.status === 'downloaded',
-                          'bg-gray-100 text-gray-600': model.status === 'not_downloaded',
-                        }"
-                      >
-                        {{ model.status === "downloaded" ? "Downloaded" : "Not downloaded" }}
-                      </span>
-                      <button
-                        v-if="model.status !== 'downloaded'"
-                        class="px-2 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600"
-                        @click.stop="handleDownloadModel(model.model_id)"
-                      >
-                        Download
-                      </button>
-                      <button
-                        v-if="model.status === 'downloaded'"
-                        class="px-2 py-1 text-xs border border-red-300 text-red-600 rounded hover:bg-red-50"
-                        @click.stop="handleDeleteModel(model.model_id)"
-                      >
-                        Delete
-                      </button>
-                    </div>
+              <!-- Qwen3 GPU -->
+              <div
+                v-if="!pluginList.some(p => p.plugin_id === 'plugin-qwen-gpu' && p.status === 'installed')"
+                class="flex items-center justify-between p-2 rounded-lg border border-gray-200"
+                :class="!gpuInfo?.has_nvidia_gpu ? 'opacity-50' : ''"
+              >
+                <div>
+                  <div class="text-sm font-medium text-gray-800">Qwen3 ASR (GPU/CUDA 12.4)</div>
+                  <div class="text-xs text-gray-500">
+                    <span v-if="gpuInfo?.has_nvidia_gpu && gpuInfo?.cuda_available">{{ gpuInfo.gpu_name }}, CUDA {{ gpuInfo.cuda_version }}</span>
+                    <span v-else-if="gpuInfo?.has_nvidia_gpu">NVIDIA GPU detected, CUDA required</span>
+                    <span v-else>Requires NVIDIA GPU + CUDA driver</span>
                   </div>
                 </div>
+                <button
+                  class="px-3 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+                  :disabled="!gpuInfo?.has_nvidia_gpu || !!installingPlugin"
+                  @click.prevent="handleInstallPlugin('plugin-qwen-gpu')"
+                >
+                  Install
+                </button>
+              </div>
+            </div>
+            <p v-if="!gpuInfo?.has_nvidia_gpu" class="text-xs text-gray-400 mt-1">
+              No NVIDIA GPU detected. GPU version requires an NVIDIA graphics card.
+            </p>
+            <a
+              v-if="gpuInfo?.has_nvidia_gpu && !gpuInfo?.cuda_available && gpuInfo?.cuda_download_url"
+              :href="gpuInfo.cuda_download_url"
+              target="_blank"
+              class="text-xs text-blue-600 hover:underline mt-1 inline-block"
+            >
+              Download CUDA installer
+            </a>
+          </div>
+
+          <!-- PyTorch Install Options (always visible, user decides when installing) -->
+          <div class="mb-3 space-y-2 p-2 rounded-lg bg-gray-50">
+            <p class="text-xs font-medium text-gray-500">PyTorch Install Options</p>
+            <div>
+              <label class="text-xs text-gray-500">Mirror Source</label>
+              <select
+                v-model="selectedMirror"
+                class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg"
+              >
+                <option v-for="(mirror, key) in availableMirrors" :key="key" :value="key">
+                  {{ mirror.name }}
+                </option>
+              </select>
+              <p v-if="availableMirrors[selectedMirror]" class="text-xs text-gray-400">
+                {{ availableMirrors[selectedMirror].note }}
+              </p>
+              <p v-if="selectedMirror !== 'official'" class="text-xs text-yellow-600">
+                Domestic mirrors may lag behind on versions. Switch to official source if installation fails.
+              </p>
+            </div>
+            <label class="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                v-model="clearCache"
+                class="w-4 h-4 mt-0.5 accent-blue-600"
+              />
+              <div>
+                <span class="text-xs text-gray-700">Clear cache before install</span>
+                <p class="text-xs text-gray-400">Recommended when switching mirrors</p>
+              </div>
+            </label>
+          </div>
+
+          <!-- Installed Engines -->
+          <div v-if="installedPlugins.length > 0" class="mb-3">
+            <p class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Installed Engines</p>
+            <div class="space-y-1.5">
+              <div
+                v-for="plugin in installedPlugins"
+                :key="plugin.plugin_id"
+                class="flex items-center justify-between py-1.5 px-2 rounded-lg bg-gray-50"
+              >
+                <div class="flex items-center gap-2">
+                  <span class="text-sm text-gray-800">{{ plugin.display_name }}</span>
+                  <span class="text-xs text-gray-400">{{ plugin.engine }}</span>
+                </div>
+                <button
+                  class="px-2 py-1 text-xs border border-red-300 text-red-600 rounded hover:bg-red-50"
+                  @click="handleUninstallPlugin(plugin.plugin_id)"
+                >
+                  Uninstall
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Downloaded Models -->
+          <div v-if="downloadedModels.length > 0" class="mb-3">
+            <p class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Downloaded Models</p>
+            <div class="space-y-1.5">
+              <div
+                v-for="model in downloadedModels"
+                :key="model.model_id"
+                class="flex items-center justify-between py-1.5 px-2 rounded-lg bg-gray-50"
+              >
+                <div>
+                  <span class="text-sm text-gray-800">{{ model.display_name }}</span>
+                  <span class="text-xs text-gray-400 ml-1">({{ formatBytes(model.size_bytes) }})</span>
+                </div>
+                <button
+                  class="px-2 py-1 text-xs border border-red-300 text-red-600 rounded hover:bg-red-50"
+                  @click="handleDeleteModel(model.model_id)"
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Available Models (not yet downloaded) -->
+          <div v-if="notDownloadedModels.length > 0" class="mb-3">
+            <p class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Available Models</p>
+            <div class="space-y-1.5">
+              <div
+                v-for="model in notDownloadedModels"
+                :key="model.model_id"
+                class="flex items-center justify-between py-1.5 px-2 rounded-lg border border-gray-200"
+              >
+                <div>
+                  <span class="text-sm text-gray-800">{{ model.display_name }}</span>
+                  <span class="text-xs text-gray-400 ml-1">({{ formatBytes(model.size_bytes) }})</span>
+                </div>
+                <button
+                  class="px-2 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+                  :disabled="!!installingPlugin"
+                  @click="handleDownloadModel(model.model_id)"
+                >
+                  Download
+                </button>
               </div>
             </div>
           </div>

@@ -44,17 +44,10 @@ PLUGIN_REGISTRY: dict[str, dict[str, Any]] = {
             },
         },
     },
-    "plugin-qwen": {
-        "display_name": "Qwen3 ASR",
+    "plugin-qwen-cpu": {
+        "display_name": "Qwen3 ASR (CPU)",
         "engine": "qwen3-asr",
-        "dependencies_cpu": ["transformers>=4.40.0", "torch>=2.0.0", "accelerate"],
-        "dependencies_gpu": [
-            "transformers>=4.40.0",
-            "torch>=2.0.0",
-            "accelerate",
-            "--extra-index-url",
-            "https://download.pytorch.org/whl/cu124",
-        ],
+        "dependencies": ["transformers>=4.40.0", "torch>=2.0.0", "accelerate"],
         "models": {
             "Qwen/Qwen3-ASR-0.6B": {
                 "display_name": "Qwen3 ASR 0.6B (lightweight)",
@@ -69,6 +62,48 @@ PLUGIN_REGISTRY: dict[str, dict[str, Any]] = {
                 "size_bytes": 1_840_000_000,
             },
         },
+    },
+    "plugin-qwen-gpu": {
+        "display_name": "Qwen3 ASR (GPU)",
+        "engine": "qwen3-asr",
+        "dependencies": ["transformers>=4.40.0", "torch>=2.0.0", "accelerate"],
+        "pytorch_index": "https://download.pytorch.org/whl/cu124",
+        "models": {
+            "Qwen/Qwen3-ASR-0.6B": {
+                "display_name": "Qwen3 ASR 0.6B (lightweight)",
+                "size_bytes": 1_880_000_000,
+            },
+            "Qwen/Qwen3-ASR-1.7B": {
+                "display_name": "Qwen3 ASR 1.7B (recommended)",
+                "size_bytes": 4_700_000_000,
+            },
+            "Qwen/Qwen3-ForcedAligner-0.6B": {
+                "display_name": "Qwen3 ForcedAligner 0.6B",
+                "size_bytes": 1_840_000_000,
+            },
+        },
+    },
+}
+
+
+PYTORCH_MIRRORS: dict[str, dict[str, Any]] = {
+    "official": {
+        "name": "Official (Recommended)",
+        "url": "https://download.pytorch.org/whl/cu124",
+        "stable": True,
+        "note": "Most reliable, may be slow in China",
+    },
+    "aliyun": {
+        "name": "Alibaba Cloud",
+        "url": "https://mirrors.aliyun.com/pytorch-wheels/cu124",
+        "stable": True,
+        "note": "Stable but may lag behind official",
+    },
+    "nju": {
+        "name": "Nanjing University",
+        "url": "https://mirrors.nju.edu.cn/pytorch/whl/cu124",
+        "stable": False,
+        "note": "Newer but stability unknown",
     },
 }
 
@@ -186,6 +221,87 @@ def _detect_download_source() -> str:
     return "modelscope"
 
 
+def detect_gpu() -> dict[str, Any]:
+    """Detect GPU status for plugin installation recommendations.
+
+    Returns:
+        dict with keys:
+        - has_nvidia_gpu: Whether an NVIDIA GPU was detected
+        - cuda_available: Whether CUDA runtime is usable (via nvidia-smi)
+        - cuda_version: CUDA version string or None
+        - gpu_name: GPU model name or None
+        - recommendation: "gpu", "cpu", or "install_cuda"
+        - cuda_download_url: URL to download CUDA toolkit or None
+    """
+    result: dict[str, Any] = {
+        "has_nvidia_gpu": False,
+        "cuda_available": False,
+        "cuda_version": None,
+        "gpu_name": None,
+        "recommendation": "cpu",
+        "cuda_download_url": None,
+    }
+
+    # Try nvidia-smi (works even without PyTorch, detects CUDA from driver)
+    try:
+        proc = subprocess.run(
+            ["nvidia-smi"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            **_subprocess_kwargs(),
+        )
+        if proc.returncode == 0:
+            output = proc.stdout
+            # Parse GPU name
+            for line in output.split("\n"):
+                if "|" in line and "NVIDIA" in line and "GPU" in line:
+                    # e.g. "| NVIDIA GeForce RTX 4090 ... |"
+                    parts = line.split("|")
+                    for part in parts:
+                        part = part.strip()
+                        if "NVIDIA" in part and "GPU" in part:
+                            result["has_nvidia_gpu"] = True
+                            result["gpu_name"] = part.split("  ")[0].strip()
+                            break
+                    if result["has_nvidia_gpu"]:
+                        break
+            # Fallback: query GPU name directly
+            if not result["has_nvidia_gpu"]:
+                proc2 = subprocess.run(
+                    ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                    capture_output=True, text=True, timeout=5,
+                    **_subprocess_kwargs(),
+                )
+                if proc2.returncode == 0 and proc2.stdout.strip():
+                    result["has_nvidia_gpu"] = True
+                    result["gpu_name"] = proc2.stdout.strip().split("\n")[0]
+
+            # Parse CUDA version from nvidia-smi header
+            # e.g. "CUDA Version: 12.4"
+            for line in output.split("\n"):
+                if "CUDA Version" in line:
+                    import re
+                    match = re.search(r"CUDA Version:\s*([\d.]+)", line)
+                    if match:
+                        result["cuda_available"] = True
+                        result["cuda_version"] = match.group(1)
+                    break
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+
+    # Build recommendation
+    if result["cuda_available"]:
+        result["recommendation"] = "gpu"
+    elif result["has_nvidia_gpu"]:
+        result["recommendation"] = "install_cuda"
+        result["cuda_download_url"] = "https://developer.nvidia.com/cuda-downloads"
+    else:
+        result["recommendation"] = "cpu"
+
+    return result
+
+
 # ================================================================
 # PluginManager core class
 # ================================================================
@@ -276,8 +392,17 @@ class PluginManager:
         self,
         plugin_id: str,
         progress_cb: Callable[[float, str], None] | None = None,
+        mirror: str = "official",
+        no_cache: bool = False,
     ) -> None:
         """Install a plugin by creating a uv venv and installing dependencies.
+
+        Args:
+            plugin_id: Plugin to install.
+            progress_cb: Optional progress callback.
+            mirror: PyTorch mirror key (from PYTORCH_MIRRORS). Used when the
+                plugin has a ``pytorch_index`` field.
+            no_cache: If True, pass ``--no-cache`` to uv pip install.
 
         Raises:
             ValueError: If plugin_id is not in the registry.
@@ -308,17 +433,28 @@ class PluginManager:
         if progress_cb:
             progress_cb(20.0, "Installing dependencies...")
 
-        # Install dependencies - support both old 'dependencies' and new 'dependencies_cpu'/'dependencies_gpu'
-        deps_key = "dependencies" if "dependencies" in meta else "dependencies_cpu"
-        deps = meta.get(deps_key, [])
-        
-        # For GPU support: pass entire list to uv pip install (handles --extra-index-url)
+        # Resolve dependencies -- all plugins now use 'dependencies' key
+        deps: list[str] = list(meta.get("dependencies", []))
+
         if deps:
-            pct = 50.0
             if progress_cb:
-                progress_cb(pct, f"Installing {len(deps)} packages...")
-            # Build full install command with all deps at once
+                progress_cb(50.0, f"Installing {len(deps)} packages...")
+
             cmd = [str(uv), "pip", "install"] + deps + ["--python", str(plugin_python)]
+
+            # If the plugin defines a pytorch_index, use --extra-index-url with the
+            # resolved mirror URL so CUDA wheels are pulled correctly.
+            # NOTE: --find-links doesn't work here because uv still prefers PyPI
+            # (CPU) packages. --extra-index-url adds the mirror as a proper index.
+            pytorch_index = meta.get("pytorch_index")
+            if pytorch_index:
+                mirror_info = PYTORCH_MIRRORS.get(mirror)
+                extra_index_url = mirror_info["url"] if mirror_info else pytorch_index
+                cmd.extend(["--extra-index-url", extra_index_url])
+
+            if no_cache:
+                cmd.append("--no-cache")
+
             self._run_uv(cmd, env=env)
 
         if progress_cb:

@@ -41,12 +41,14 @@ export function usePluginManager() {
     pluginId: string,
     modelId?: string,
     onProgress?: (progress: TaskProgress) => void,
+    mirror?: string,
+    noCache?: boolean,
   ): Promise<boolean> {
     loading.value = true
     error.value = null
 
     try {
-      const res = await call<{ task_id: string }>("install_plugin", pluginId, modelId || "")
+      const res = await call<{ task_id: string }>("install_plugin", pluginId, modelId || "", mirror || "official", noCache || false)
       if (!res.success || !res.data) {
         error.value = res.error || "Failed to start installation"
         return false

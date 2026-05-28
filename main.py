@@ -343,12 +343,14 @@ class MiloCutApi(Bridge):
         """Install an ASR plugin and optionally download its model."""
         plugin_id = task.payload.get("plugin_id", "")
         model_id = task.payload.get("model_id", "")
+        mirror = task.payload.get("mirror", "official")
+        no_cache = task.payload.get("no_cache", False)
 
         if not plugin_id:
             raise ValueError("plugin_id is required")
 
         # Install plugin
-        self._plugin_manager.install_plugin(plugin_id, progress_cb=progress_cb)
+        self._plugin_manager.install_plugin(plugin_id, progress_cb=progress_cb, mirror=mirror, no_cache=no_cache)
 
         # Optionally download model
         if model_id:
@@ -708,13 +710,13 @@ class MiloCutApi(Bridge):
         return {"success": True, "data": self._plugin_manager.list_plugins()}
 
     @expose
-    def install_plugin(self, plugin_id: str, model_id: str = "") -> dict:
+    def install_plugin(self, plugin_id: str, model_id: str = "", mirror: str = "official", no_cache: bool = False) -> dict:
         """Start a background task to install a plugin and optionally download its model."""
         if plugin_id not in PLUGIN_REGISTRY:
             return {"success": False, "error": f"Unknown plugin: {plugin_id}"}
         task = self._task_manager.create_task(
             "plugin_install",
-            {"plugin_id": plugin_id, "model_id": model_id},
+            {"plugin_id": plugin_id, "model_id": model_id, "mirror": mirror, "no_cache": no_cache},
         )
         if not task["success"]:
             return task
@@ -820,16 +822,11 @@ class MiloCutApi(Bridge):
     @expose
     def open_data_directory(self) -> dict:
         """Open the plugin data directory in the system file manager."""
-        import subprocess
+        import os
         from core.paths import get_plugin_data_dir
         path = get_plugin_data_dir()
         try:
-            if sys.platform == "win32":
-                subprocess.Popen(["explorer", str(path)])
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", str(path)])
-            else:
-                subprocess.Popen(["xdg-open", str(path)])
+            os.startfile(str(path))
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -860,8 +857,8 @@ class MiloCutApi(Bridge):
         return {"success": True, "data": None}
 
     @expose
-    def detect_gpu(self) -> dict:
-        """Detect available encoders via ffmpeg -encoders for reliable detection."""
+    def detect_gpu_encoders(self) -> dict:
+        """Detect available FFmpeg encoders."""
         from core.ffmpeg_presets import ENCODER_METADATA
         encoders: list[str] = []
         try:
@@ -875,7 +872,6 @@ class MiloCutApi(Bridge):
             if result.returncode == 0:
                 registered = result.stdout
                 for codec_name in ENCODER_METADATA:
-                    # Check encoder is registered: line starts with whitespace + codec name
                     if f" {codec_name} " in registered:
                         encoders.append(codec_name)
         except Exception:
@@ -887,6 +883,22 @@ class MiloCutApi(Bridge):
                 "encoders": sorted(set(encoders)),
             },
         }
+
+    @expose
+    def detect_gpu(self) -> dict:
+        """Detect GPU status for plugin installation recommendations."""
+        from core.plugin_manager import detect_gpu
+        try:
+            result = detect_gpu()
+            return {"success": True, "data": result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    @expose
+    def list_mirrors(self) -> dict:
+        """List available PyTorch mirrors."""
+        from core.plugin_manager import PYTORCH_MIRRORS
+        return {"success": True, "data": PYTORCH_MIRRORS}
 
     @expose
     def get_ffmpeg_info(self) -> dict:
