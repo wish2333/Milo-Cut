@@ -34,7 +34,7 @@ PLUGIN_REGISTRY: dict[str, dict[str, Any]] = {
         "engine": "faster-whisper",
         "dependencies": ["faster-whisper>=1.0.0"],
         "models": {
-            "Systran/faster-whisper-large-v3-turbo": {
+            "Purfview/faster-whisper-large-v3-turbo": {
                 "display_name": "Large V3 Turbo (recommended)",
                 "size_bytes": 1_500_000_000,
             },
@@ -105,6 +105,36 @@ PYTORCH_MIRRORS: dict[str, dict[str, Any]] = {
         "stable": False,
         "note": "Newer but stability unknown",
     },
+}
+
+
+# ================================================================
+# Model download mirrors
+# ================================================================
+
+MODEL_MIRRORS: dict[str, dict[str, str]] = {
+    "huggingface": {
+        "id": "huggingface",
+        "display_name": "HuggingFace (Global)",
+        "endpoint": "https://huggingface.co",
+    },
+    "hf-mirror": {
+        "id": "hf-mirror",
+        "display_name": "HF-Mirror (China)",
+        "endpoint": "https://hf-mirror.com",
+    },
+    "modelscope": {
+        "id": "modelscope",
+        "display_name": "ModelScope (China)",
+        "endpoint": "",
+    },
+}
+
+# Mapping from HuggingFace model IDs to ModelScope equivalents.
+# Models not listed here are assumed to use the same ID on both platforms.
+MODELSCOPE_ID_MAP: dict[str, str] = {
+    "Purfview/faster-whisper-large-v3-turbo": "Purfview/faster-whisper-large-v3-turbo",
+    "Systran/faster-whisper-base": "Systran/faster-whisper-base",
 }
 
 
@@ -529,11 +559,18 @@ class PluginManager:
         self,
         model_id: str,
         progress_cb: Callable[[float, str], None] | None = None,
+        mirror: str | None = None,
     ) -> Path:
         """Ensure a model is downloaded. Returns the local path.
 
         Uses huggingface_hub for download with automatic source detection
         (HuggingFace / hf-mirror / ModelScope).
+
+        Args:
+            model_id: HuggingFace model ID.
+            progress_cb: Optional progress callback ``(percent, message)``.
+            mirror: Force a specific download mirror (e.g. "huggingface",
+                "hf-mirror", "modelscope"). ``None`` auto-detects.
 
         Raises:
             ValueError: If model_id is not in any plugin registry.
@@ -551,7 +588,7 @@ class PluginManager:
         if progress_cb:
             progress_cb(0.0, f"Downloading {model_meta['display_name']}...")
 
-        source = _detect_download_source()
+        source = mirror if mirror else _detect_download_source()
         logger.info("Downloading model {} from {}", model_id, source)
 
         local_path.mkdir(parents=True, exist_ok=True)
@@ -619,7 +656,10 @@ class PluginManager:
         """Download a model from ModelScope."""
         from modelscope import snapshot_download as ms_download
 
-        ms_download(model_id, local_dir=str(local_path))
+        # Translate HuggingFace model ID to ModelScope equivalent
+        ms_model_id = MODELSCOPE_ID_MAP.get(model_id, model_id)
+        logger.info("ModelScope: using model ID {} (mapped from {})", ms_model_id, model_id)
+        ms_download(ms_model_id, local_dir=str(local_path))
 
     # ------------------------------------------------------------
     # uv command execution

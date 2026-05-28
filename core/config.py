@@ -46,6 +46,7 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     "asr_language": "zh",
     "asr_device": "cpu",
     "asr_compute_type": "int8",
+    "asr_vad_filter": True,
     "duplicate_threshold": 0.85,
     "duplicate_min_length": 5,
 }

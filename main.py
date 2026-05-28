@@ -99,6 +99,9 @@ class MiloCutApi(Bridge):
             TaskType.PLUGIN_INSTALL, self._handle_plugin_install
         )
         self._task_manager.register_handler(
+            TaskType.MODEL_DOWNLOAD, self._handle_model_download
+        )
+        self._task_manager.register_handler(
             TaskType.TRANSCRIPTION, self._handle_transcription
         )
 
@@ -355,7 +358,7 @@ class MiloCutApi(Bridge):
         # Optionally download model
         if model_id:
             progress_cb(50.0, f"Downloading model {model_id}...")
-            self._plugin_manager.ensure_model(model_id, progress_cb=progress_cb)
+            self._plugin_manager.ensure_model(model_id, progress_cb=progress_cb, mirror=None)
 
         return {
             "plugin_id": plugin_id,
@@ -363,10 +366,23 @@ class MiloCutApi(Bridge):
             "status": "installed",
         }
 
+    def _handle_model_download(self, task, cancel_event, progress_cb):
+        """Download a model via the task system."""
+        model_id = task.payload.get("model_id", "")
+        mirror = task.payload.get("mirror", None)
+
+        if not model_id:
+            raise ValueError("model_id is required")
+
+        self._plugin_manager.ensure_model(model_id, progress_cb=progress_cb, mirror=mirror)
+
+        return {
+            "model_id": model_id,
+            "status": "downloaded",
+        }
+
     def _handle_transcription(self, task, cancel_event, progress_cb):
         """Run ASR transcription as a background task."""
-        from core.asr_service import transcribe_with_whisper
-
         if self._project.current is None:
             raise ValueError("No project open")
         if self._project.current.media is None:
@@ -376,14 +392,18 @@ class MiloCutApi(Bridge):
         settings = load_settings()
 
         engine = task.payload.get("engine", settings.get("asr_engine", "faster-whisper"))
-        model_size = task.payload.get("model_size", settings.get("asr_model_size", "large-v3-turbo"))
         language = task.payload.get("language", settings.get("asr_language", "zh"))
         device = task.payload.get("device", settings.get("asr_device", "cpu"))
-        compute_type = task.payload.get("compute_type", settings.get("asr_compute_type", "int8"))
 
         if engine == "faster-whisper":
+            from core.asr_service import transcribe_with_whisper
             from core.ffmpeg_service import _find_ffmpeg
+
+            model_size = task.payload.get("model_size", settings.get("asr_model_size", "large-v3-turbo"))
+            compute_type = task.payload.get("compute_type", settings.get("asr_compute_type", "int8"))
+            vad_filter = task.payload.get("vad_filter", settings.get("asr_vad_filter", True))
             ffmpeg = _find_ffmpeg()
+
             result = transcribe_with_whisper(
                 plugin_manager=self._plugin_manager,
                 media_path=media_path,
@@ -392,6 +412,23 @@ class MiloCutApi(Bridge):
                 language=language,
                 device=device,
                 compute_type=compute_type,
+                vad_filter=vad_filter,
+                progress_cb=progress_cb,
+                cancel_event=cancel_event,
+            )
+        elif engine == "qwen3-asr":
+            from core.asr_service import transcribe_with_qwen
+
+            asr_model_size = task.payload.get("asr_model_size", settings.get("asr_model_size", "0.6B"))
+            aligner_model_size = task.payload.get("aligner_model_size", settings.get("asr_aligner_model_size", "0.6B"))
+
+            result = transcribe_with_qwen(
+                plugin_manager=self._plugin_manager,
+                media_path=media_path,
+                asr_model_size=asr_model_size,
+                aligner_model_size=aligner_model_size,
+                language=language,
+                device=device,
                 progress_cb=progress_cb,
                 cancel_event=cancel_event,
             )
@@ -738,18 +775,29 @@ class MiloCutApi(Bridge):
         return {"success": True, "data": self._plugin_manager.list_models()}
 
     @expose
-    def download_model(self, model_id: str) -> dict:
+    def download_model(self, model_id: str, mirror: str | None = None) -> dict:
         """Download a model. Returns immediately; use task progress for updates."""
         try:
-            # Run download synchronously on a background thread via task system
-            # For now, use a simple task wrapper
             task = self._task_manager.create_task(
-                "plugin_install", {"plugin_id": "", "model_id": model_id}
+                "model_download", {"model_id": model_id, "mirror": mirror}
             )
             if not task["success"]:
                 return task
             self._task_manager.start_task(task["data"]["id"])
             return {"success": True, "data": {"task_id": task["data"]["id"]}}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    @expose
+    def list_model_mirrors(self) -> dict:
+        """Return available model download mirrors."""
+        try:
+            from core.plugin_manager import MODEL_MIRRORS
+            mirrors = [
+                {"id": k, "display_name": v["display_name"]}
+                for k, v in MODEL_MIRRORS.items()
+            ]
+            return {"success": True, "data": mirrors}
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 

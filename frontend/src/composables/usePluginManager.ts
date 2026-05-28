@@ -3,7 +3,7 @@
 import { ref } from "vue"
 import { call } from "@/bridge"
 import { useBridge } from "@/composables/useBridge"
-import type { PluginInfo, ModelInfo } from "@/types/project"
+import type { PluginInfo, ModelInfo, ModelMirror } from "@/types/project"
 import type { TaskProgress } from "@/types/task"
 
 export function usePluginManager() {
@@ -33,6 +33,15 @@ export function usePluginManager() {
       return res.data
     }
     error.value = res.error || "Failed to list models"
+    return []
+  }
+
+  /** Fetch available download mirrors for models. */
+  async function listModelMirrors(): Promise<ModelMirror[]> {
+    const res = await call<ModelMirror[]>("list_model_mirrors")
+    if (res.success && res.data) {
+      return res.data
+    }
     return []
   }
 
@@ -118,28 +127,61 @@ export function usePluginManager() {
     }
   }
 
-  /** Download a model. */
+  /** Download a model. Listens for progress events and waits for completion. */
   async function downloadModel(
     modelId: string,
     onProgress?: (progress: TaskProgress) => void,
+    mirror?: string,
   ): Promise<boolean> {
     loading.value = true
     error.value = null
 
     try {
-      const res = await call<{ task_id: string }>("download_model", modelId)
-      if (!res.success) {
+      const res = await call<{ task_id: string }>("download_model", modelId, mirror)
+      if (!res.success || !res.data) {
         error.value = res.error || "Failed to start download"
         return false
       }
 
-      if (onProgress) {
-        on<TaskProgress>("task:progress", (detail) => {
-          if (detail) onProgress(detail)
-        })
-      }
+      const taskId = res.data.task_id
 
-      return true
+      // Wait for task completion by polling task status
+      return await new Promise<boolean>((resolve) => {
+        // Listen for progress events
+        if (onProgress) {
+          on<TaskProgress>("task:progress", (detail) => {
+            if (detail && detail.task_id === taskId) onProgress(detail)
+          })
+        }
+
+        // Poll task status until completion
+        const pollInterval = setInterval(async () => {
+          try {
+            const taskRes = await call<{ status: string; error?: string }>("get_task", taskId)
+            if (taskRes.success && taskRes.data) {
+              const status = taskRes.data.status
+              if (status === "completed") {
+                clearInterval(pollInterval)
+                await listModels()
+                resolve(true)
+              } else if (status === "failed" || status === "cancelled") {
+                clearInterval(pollInterval)
+                error.value = taskRes.data.error || "Download failed"
+                resolve(false)
+              }
+            }
+          } catch {
+            // Continue polling on transient errors
+          }
+        }, 500)
+
+        // Timeout after 5 minutes
+        setTimeout(() => {
+          clearInterval(pollInterval)
+          error.value = "Download timed out"
+          resolve(false)
+        }, 300_000)
+      })
     } finally {
       loading.value = false
     }
@@ -221,6 +263,7 @@ export function usePluginManager() {
     error,
     listPlugins,
     listModels,
+    listModelMirrors,
     installPlugin,
     uninstallPlugin,
     downloadModel,

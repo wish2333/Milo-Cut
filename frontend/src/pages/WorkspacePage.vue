@@ -83,13 +83,14 @@ const {
 } = useSegmentEdit(projectRef as any, (val: Project) => emit("project-updated", val), pushSnapshot)
 
 const { showToast } = useToast()
-const { ensureReady, installPlugin } = usePluginManager()
+const { listPlugins, checkEngineReady } = usePluginManager()
 
 const statusMessage = ref("")
 const errorMessage = ref("")
 let statusTimer: ReturnType<typeof setTimeout> | null = null
 const showAnalysisDropdown = ref(false)
 const showSilenceSettings = ref(false)
+const showTranscribeSettings = ref(false)
 const videoUrl = ref("")
 const waveformUrl = ref("")
 const videoRef = ref<HTMLVideoElement | null>(null)
@@ -97,6 +98,25 @@ const currentTime = ref(0)
 const videoPaused = ref(true)
 const videoVolume = ref(0.75)
 const videoPlaybackRate = ref(1)
+
+// ASR Transcription settings (local overrides, synced from AppSettings)
+const asrSettings = ref({
+  engine: "faster-whisper" as "faster-whisper" | "qwen3-asr",
+  language: "zh",
+  device: "cpu" as "cpu" | "cuda" | "auto",
+  compute_type: "int8" as "int8" | "float16" | "float32",
+  vad_filter: true,
+})
+
+// Installed ASR engines (filtered from plugin list)
+interface InstalledEngine {
+  engine: string
+  displayName: string
+  pluginId: string
+  ready: boolean
+}
+const installedEngines = ref<InstalledEngine[]>([])
+const hasInstalledEngines = computed(() => installedEngines.value.length > 0)
 
 const silenceThreshold = ref(-30)
 const silenceMinDuration = ref(0.5)
@@ -219,6 +239,8 @@ onMounted(async () => {
   await loadVideoUrl()
   await resolveWaveformUrl()
   await loadSilenceSettings()
+  await loadAsrSettings()
+  await loadInstalledEngines()
 })
 
 watch(() => props.project.media?.waveform_path, () => {
@@ -248,6 +270,54 @@ async function loadSilenceSettings() {
     silenceSubtitlePadding.value = Number(res.data.silence_subtitle_padding ?? 0.0)
     trimSubtitlesOnOverlap.value = res.data.trim_subtitles_on_silence_overlap !== false
   }
+}
+
+async function loadAsrSettings() {
+  const res = await call<Record<string, unknown>>("get_settings")
+  if (res.success && res.data) {
+    asrSettings.value = {
+      engine: (res.data.asr_engine as "faster-whisper" | "qwen3-asr") || "faster-whisper",
+      language: (res.data.asr_language as string) || "zh",
+      device: (res.data.asr_device as "cpu" | "cuda" | "auto") || "cpu",
+      compute_type: (res.data.asr_compute_type as "int8" | "float16" | "float32") || "int8",
+      vad_filter: res.data.asr_vad_filter !== false,
+    }
+  }
+}
+
+async function loadInstalledEngines() {
+  const plugins = await listPlugins()
+  const engines: InstalledEngine[] = []
+
+  for (const p of plugins) {
+    if (p.status === "installed") {
+      const status = await checkEngineReady(p.engine)
+      engines.push({
+        engine: p.engine,
+        displayName: p.display_name,
+        pluginId: p.plugin_id,
+        ready: status.ready,
+      })
+    }
+  }
+
+  installedEngines.value = engines
+
+  // If current selected engine is not installed, switch to first available
+  if (engines.length > 0 && !engines.find(e => e.engine === asrSettings.value.engine)) {
+    asrSettings.value.engine = engines[0].engine as "faster-whisper" | "qwen3-asr"
+  }
+}
+
+async function saveAsrSettings() {
+  await call("update_settings", {
+    asr_engine: asrSettings.value.engine,
+    asr_language: asrSettings.value.language,
+    asr_device: asrSettings.value.device,
+    asr_compute_type: asrSettings.value.compute_type,
+    asr_vad_filter: asrSettings.value.vad_filter,
+  })
+  showTranscribeSettings.value = false
 }
 
 async function saveSilenceSettings() {
@@ -347,36 +417,37 @@ async function handleDetectSilence() {
 
 async function handleTranscribe() {
   errorMessage.value = ""
-  
-  // Check if ASR plugin is ready before transcribing
-  const engine = "faster-whisper"  // Default engine
-  const status = await ensureReady(engine)
-  
-  if (!status.ready) {
-    // Plugin not installed or model not downloaded - prompt install
-    const pluginId = status.pluginId
-    if (!pluginId) {
-      showToast("ASR plugin not found", "error", 3000)
-      return
-    }
-    
-    showToast("Installing ASR plugin, please wait...", "info", 5000)
-    
-    // Install plugin with default settings (official mirror, no cache clear)
-    const modelId = status.missingModels[0] || ""
-    const installed = await installPlugin(pluginId, modelId, (progress) => {
-      statusMessage.value = progress.message || "Installing..."
-    })
-    
-    if (!installed) {
-      showToast("Failed to install ASR plugin", "error", 3000)
-      return
-    }
-    
-    showToast("ASR plugin installed successfully", "success", 2000)
+
+  // Check if any ASR engine is installed
+  if (!hasInstalledEngines.value) {
+    showToast("No ASR engine installed. Please install an engine in Settings > AI Engine.", "error", 5000)
+    return
   }
-  
-  await runTranscription()
+
+  // Get selected engine
+  const engine = asrSettings.value.engine
+  const engineInfo = installedEngines.value.find(e => e.engine === engine)
+
+  if (!engineInfo) {
+    showToast("Selected ASR engine not found", "error", 3000)
+    return
+  }
+
+  // Check if engine is ready (plugin installed + model downloaded)
+  const status = await checkEngineReady(engine)
+  if (!status.ready) {
+    showToast(`ASR engine "${engineInfo.displayName}" is not ready. Please download the model in Settings > AI Engine.`, "error", 5000)
+    return
+  }
+
+  // Pass ASR settings as payload to transcription task
+  await runTranscription({
+    engine: asrSettings.value.engine,
+    language: asrSettings.value.language,
+    device: asrSettings.value.device,
+    compute_type: asrSettings.value.compute_type,
+    vad_filter: asrSettings.value.vad_filter,
+  })
 }
 
 async function handleRunAnalysis(type: string) {
@@ -605,14 +676,100 @@ onUnmounted(() => {
         <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
         Import SRT
       </button>
-      <button
-        class="inline-flex items-center gap-1.5 rounded-md bg-purple-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-purple-600 disabled:opacity-50 transition-colors"
-        :disabled="isDetecting || isExporting || isTranscribing"
-        @click="handleTranscribe"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
-        {{ isTranscribing ? 'Transcribing...' : 'Transcribe' }}
-      </button>
+      <div class="relative inline-flex items-center">
+        <button
+          class="inline-flex items-center gap-1.5 rounded-md rounded-r-none bg-purple-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-purple-600 disabled:opacity-50 transition-colors"
+          :disabled="isDetecting || isExporting || isTranscribing || !hasInstalledEngines"
+          @click="handleTranscribe"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
+          {{ isTranscribing ? 'Transcribing...' : 'Transcribe' }}
+        </button>
+        <button
+          class="inline-flex items-center rounded-md rounded-l-none bg-purple-600 px-1.5 py-1.5 text-xs text-white hover:bg-purple-700 disabled:opacity-50 transition-colors border-l border-purple-400"
+          :disabled="isDetecting || isExporting || isTranscribing"
+          title="Transcription settings"
+          @click="showTranscribeSettings = !showTranscribeSettings"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+        </button>
+        <div
+          v-if="showTranscribeSettings"
+          class="absolute top-full left-0 mt-1 w-72 rounded-md border border-gray-200 bg-white shadow-lg z-20 p-3"
+        >
+          <div class="text-xs font-medium text-gray-700 mb-2">Transcription Settings</div>
+
+          <!-- No engines installed warning -->
+          <div v-if="!hasInstalledEngines" class="text-xs text-amber-600 mb-2 p-2 bg-amber-50 rounded">
+            No ASR engine installed. Please install an engine in Settings > AI Engine.
+          </div>
+
+          <template v-else>
+            <!-- Engine selector -->
+            <label class="block mb-2">
+              <span class="text-xs text-gray-500">Engine</span>
+              <select
+                v-model="asrSettings.engine"
+                class="w-full mt-1 rounded border-gray-300 text-xs"
+              >
+                <option v-for="eng in installedEngines" :key="eng.engine" :value="eng.engine">
+                  {{ eng.displayName }} {{ eng.ready ? '' : '(model not downloaded)' }}
+                </option>
+              </select>
+            </label>
+
+            <!-- Language -->
+            <label class="block mb-2">
+              <span class="text-xs text-gray-500">Language</span>
+              <select v-model="asrSettings.language" class="w-full mt-1 rounded border-gray-300 text-xs">
+                <option value="zh">Chinese</option>
+                <option value="en">English</option>
+                <option value="ja">Japanese</option>
+                <option value="ko">Korean</option>
+                <option value="auto">Auto-detect</option>
+              </select>
+            </label>
+
+            <!-- Device -->
+            <label class="block mb-2">
+              <span class="text-xs text-gray-500">Device</span>
+              <select v-model="asrSettings.device" class="w-full mt-1 rounded border-gray-300 text-xs">
+                <option value="cpu">CPU</option>
+                <option value="cuda">CUDA (GPU)</option>
+                <option v-if="asrSettings.engine === 'faster-whisper'" value="auto">Auto</option>
+              </select>
+            </label>
+
+            <!-- Compute type (faster-whisper only) -->
+            <label v-if="asrSettings.engine === 'faster-whisper'" class="block mb-2">
+              <span class="text-xs text-gray-500">Compute Type</span>
+              <select v-model="asrSettings.compute_type" class="w-full mt-1 rounded border-gray-300 text-xs">
+                <option value="int8">INT8 (fastest)</option>
+                <option value="float16">FP16 (balanced)</option>
+                <option value="float32">FP32 (highest quality)</option>
+              </select>
+            </label>
+
+            <!-- VAD filter (faster-whisper only) -->
+            <label v-if="asrSettings.engine === 'faster-whisper'" class="flex items-center gap-2 mb-3 cursor-pointer">
+              <input
+                type="checkbox"
+                v-model="asrSettings.vad_filter"
+                class="w-4 h-4 accent-blue-600"
+              />
+              <span class="text-xs text-gray-500">VAD filter (reduce hallucinations)</span>
+            </label>
+
+            <!-- Save button -->
+            <button
+              class="w-full rounded bg-purple-500 px-2 py-1 text-xs text-white hover:bg-purple-600"
+              @click="saveAsrSettings"
+            >
+              Save as Default
+            </button>
+          </template>
+        </div>
+      </div>
       <div class="relative inline-flex items-center">
         <button
           class="inline-flex items-center gap-1.5 rounded-md rounded-r-none bg-blue-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600 disabled:opacity-50 transition-colors"

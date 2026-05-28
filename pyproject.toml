@@ -8,6 +8,8 @@ dependencies = [
     "loguru>=0.7",
     "pydantic>=2.0",
     "opentimelineio>=0.18.1",
+    "huggingface-hub>=0.20",
+    "modelscope>=1.10",
 ]
 
 [dependency-groups]

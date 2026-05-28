@@ -39,6 +39,7 @@ class TaskType(StrEnum):
     VAD_ANALYSIS = "vad_analysis"
     WAVEFORM_GENERATION = "waveform_generation"
     PLUGIN_INSTALL = "plugin_install"
+    MODEL_DOWNLOAD = "model_download"
 
 
 class EditStatus(StrEnum):
@@ -142,7 +143,7 @@ class TranscriptData(BaseModel, frozen=True):
 
 class AnalysisResult(BaseModel, frozen=True):
     id: str
-    type: Literal["filler", "error", "duplicate"]
+    type: Literal["filler", "error", "duplicate", "punctuation"]
     segment_ids: list[str] = Field(default_factory=list)
     confidence: float = 1.0
     detail: str = ""

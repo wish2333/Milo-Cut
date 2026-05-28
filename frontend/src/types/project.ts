@@ -77,7 +77,7 @@ export interface Project {
 
 export interface AnalysisResult {
   id: string
-  type: "filler" | "error" | "duplicate"
+  type: "filler" | "error" | "duplicate" | "punctuation"
   segment_ids: string[]
   confidence: number
   detail: string
@@ -104,4 +104,11 @@ export interface ModelInfo {
   size_bytes: number
   local_path: string
   status: "downloaded" | "downloading" | "not_downloaded"
+}
+
+
+
+export interface ModelMirror {
+  id: string
+  display_name: string
 }

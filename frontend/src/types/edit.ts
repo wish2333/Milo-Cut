@@ -48,6 +48,7 @@ export interface AppSettings {
   asr_language: string
   asr_device: "cpu" | "cuda" | "auto"
   asr_compute_type: "int8" | "float16" | "float32"
+  asr_vad_filter: boolean
   duplicate_threshold: number
   duplicate_min_length: number
 }

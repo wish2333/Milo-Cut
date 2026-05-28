@@ -603,6 +603,111 @@ self._plugins_dir = plugins_dir or get_plugin_data_dir()
 - [ ] 用户卸载 `plugin-qwen-gpu` 并重新安装，验证 CUDA 版 PyTorch 是否正确拉取
 - [ ] 确认 `--extra-index-url` 方案在 uv 中正常工作
 
+## Sprint 1.7: 模型下载系统修复 + UI 修复 (2026-05-29)
+
+### 问题背景
+
+用户反馈以下问题:
+
+1. 模型下载任务未走 TaskManager（Bug 1）
+2. 前端 `downloadModel()` 一次性调用后立即返回成功，未等待下载完成（Bug 2）
+3. Whisper 模型 ID 全部使用 `Systran/` 命名空间，turbo 模型应改用更活跃的 `Purfview/` 仓库（Bug 3 初始）
+4. Whisper base 模型下载 401 错误 -- `Purfview/faster-whisper-base` 在 HuggingFace 上不存在（Bug 3 修正）
+5. SettingsModal 只显示 General 页，tab 导航栏其他标签不可见
+6. 模型下载源下拉菜单背景透明
+7. Downloaded models 中 Qwen 模型重复显示（CPU/GPU 插件共享相同 model_id）
+8. `huggingface-hub` 和 `modelscope` 依赖未添加到 `pyproject.toml`
+
+### 已完成的修复
+
+#### 1. download_model() 走 TaskManager [CRITICAL]
+
+**文件**: `main.py`
+
+- `download_model()` 现在创建 `MiloTask(task_type="model_download")` 并通过 `TaskManager.start_task()` 执行
+- 注册 `MODEL_DOWNLOAD` 任务处理器 `_handle_model_download()`
+
+#### 2. 前端 downloadModel() 轮询等待完成 [CRITICAL]
+
+**文件**: `frontend/src/composables/usePluginManager.ts`
+
+- 重写 `downloadModel()` 为 Promise + setInterval 轮询（500ms 间隔）
+- 超时 5 分钟自动 reject
+- 轮询 `get_task()` 状态直到 `completed` 或 `failed`
+
+#### 3. Whisper 模型 ID 修正 [HIGH]
+
+**文件**: `core/plugin_manager.py`, `core/asr_service.py`
+
+- turbo 模型: `Systran/faster-whisper-large-v3-turbo` -> `Purfview/faster-whisper-large-v3-turbo`
+- base 模型: 修正为 `Systran/faster-whisper-base`（Purfview 的 base 模型在 HuggingFace 不存在，导致 401）
+- 同步更新 `PLUGIN_REGISTRY`、`MODELSCOPE_ID_MAP`、`_resolve_whisper_model()` 文档注释
+
+#### 4. 模型下载镜像选择系统 [HIGH]
+
+**新建内容**: `core/plugin_manager.py` 新增 MODEL_MIRRORS、MODELSCOPE_ID_MAP
+
+**修改文件**: `core/plugin_manager.py`, `main.py`, `frontend/src/types/project.ts`, `frontend/src/composables/usePluginManager.ts`, `frontend/src/components/workspace/SettingsModal.vue`
+
+- `MODEL_MIRRORS` 字典: huggingface / hf-mirror / modelscope 三源
+- `MODELSCOPE_ID_MAP`: HF model ID 到 ModelScope ID 的映射
+- `_detect_download_source()`: TCP 连接测试 huggingface.co:443 (3s) -> hf-mirror.com:443 (3s) -> fallback "modelscope"
+- `list_model_mirrors()` 桥接 API 暴露镜像列表
+- `download_model()` 接受 `mirror` 参数
+- `_download_from_hf()`: 通过 `huggingface-hub` 的 `snapshot_download()` 下载
+- `_download_from_modelscope()`: 通过 `modelscope` 的 `snapshot_download()` 下载
+- 前端 SettingsModal 新增镜像源下拉选择器
+
+#### 5. SettingsModal Tab 导航修复 [HIGH]
+
+**文件**: `frontend/src/components/workspace/SettingsModal.vue`
+
+- 根因: DaisyUI 5.5.19 `<input type="radio" class="tab">` 模式渲染异常
+- 修复: 替换为 Vue 控制的 button tabs -- `activeTab` ref + `v-if` 面板切换
+- 三个 tab: General / AI Engine / Export
+
+#### 6. 镜像下拉菜单背景修复 [MEDIUM]
+
+**文件**: `frontend/src/components/workspace/SettingsModal.vue`
+
+- 根因: DaisyUI 5 `select select-bordered` 组件背景透明
+- 修复: 改用 Tailwind 原生样式 `px-2 py-1.5 text-sm border border-gray-300 rounded-lg bg-white`
+
+#### 7. Qwen 模型去重 [MEDIUM]
+
+**文件**: `frontend/src/components/workspace/SettingsModal.vue`
+
+- 根因: `plugin-qwen-cpu` 和 `plugin-qwen-gpu` 共享相同 model_id，`refreshInstalledLists()` 只对 `notDownloadedModels` 去重，`downloadedModels` 未去重
+- 修复: `downloadedModels` 也使用 `Set<string>` 按 `model_id` 去重
+
+#### 8. pyproject.toml 依赖补充 [HIGH]
+
+**文件**: `pyproject.toml`
+
+- 新增 `huggingface-hub>=0.20`
+- 新增 `modelscope>=1.10`
+- 执行 `uv lock` 解析 62 个包
+
+#### 9. Lint 清理 [LOW]
+
+**文件**: `frontend/src/pages/WorkspacePage.vue`
+
+- 移除未使用的 `ensureReady` 和 `installPlugin` 导入
+
+### 修改文件汇总 (Sprint 1.7)
+
+| 文件                                                  | 类型 | 说明                                                         |
+| ----------------------------------------------------- | ---- | ------------------------------------------------------------ |
+| `core/plugin_manager.py`                              | 修改 | MODEL_MIRRORS, MODELSCOPE_ID_MAP, 模型 ID 修正, _download_from_hf/modelscope |
+| `core/asr_service.py`                                 | 修改 | _resolve_whisper_model() 文档注释更新                        |
+| `core/models.py`                                      | 已有 | TaskType.MODEL_DOWNLOAD (本次未新增，原已存在)               |
+| `main.py`                                             | 修改 | _handle_model_download 注册, download_model 走 TaskManager, list_model_mirrors API |
+| `frontend/src/types/project.ts`                       | 修改 | ModelMirror 类型定义                                         |
+| `frontend/src/composables/usePluginManager.ts`        | 修改 | downloadModel() 轮询重写, listModelMirrors()                 |
+| `frontend/src/components/workspace/SettingsModal.vue` | 重构 | Vue button tabs, Tailwind 原生镜像下拉, 模型去重             |
+| `frontend/src/pages/WorkspacePage.vue`                | 修改 | 移除未使用导入                                               |
+| `pyproject.toml`                                      | 修改 | 新增 huggingface-hub, modelscope 依赖                        |
+
 ## Commit Messages
 
 ### Sprint 1
@@ -667,14 +772,240 @@ fix(core,ui): GPU安装失败修复、插件架构重构、UI优化
 - TaskProgress 新增可选 task_id 字段
 ```
 
+### Sprint 1.7
+
+```
+fix(download,ui): 模型下载全链路修复 + SettingsModal tab 导航重写
+
+- download_model() 走 TaskManager 任务系统 (MODEL_DOWNLOAD)
+- downloadModel() 前端重写为 Promise + 轮询等待完成
+- Whisper turbo 改用 Purfview 仓库, base 修正为 Systran (Purfview 不存在)
+- 新增镜像选择系统: MODEL_MIRRORS + _detect_download_source() TCP 探测
+- 新增 list_model_mirrors API 和前端镜像下拉选择器
+- SettingsModal tab 改为 Vue button tabs 修复 DaisyUI 5 渲染异常
+- 镜像下拉改用 Tailwind 原生样式修复透明背景
+- downloadedModels 按 model_id 去重修复 Qwen 重复显示
+- pyproject.toml 补充 huggingface-hub 和 modelscope 依赖
+```
+
 ---
 
-### 待完成 (Sprint 2/3)
+## Sprint 2: Qwen3-ASR + VAD + 重复检测 (2026-05-28)
 
-- [ ] Task 2.1: Qwen3-ASR 转写服务
-- [ ] Task 2.2: VAD 增强
-- [ ] Task 2.3: 重复句检测
-- [ ] Task 2.4: ASR 设置完善
+### Task 2.1: Qwen3-ASR 转写服务
+
+**目标**: 实现 Qwen3-ASR 子进程推理脚本和主进程协调层。
+
+**新建文件**:
+- `core/asr_scripts/qwen_transcribe.py` (约280行)
+
+**修改文件**:
+- `core/asr_service.py` -- 新增 `transcribe_with_qwen()` 和 `_resolve_qwen_model()`
+
+**实现细节**:
+
+1. `qwen_transcribe.py` 子进程脚本:
+   - 智能音频切片 (`smart_slice_audio`):
+     - 累积音频到 ~280s（ACCUMULATE_THRESHOLD）后在最佳静音点切割
+     - 全程无静音点时强制 240s 均匀切割
+     - 切片间保留 0.5s 重叠区（SLICE_OVERLAP）防漏字
+   - 静音点检测 (`find_silence_points`): 基于能量的静音检测
+   - 最佳切割点选择 (`find_best_cut_point`): 在目标时间附近找最佳静音点
+   - 重叠区去重 (`deduplicate_overlap`): 利用有效内容区间剔除重复字词
+   - 逐片 ASR 推理 + 强制对齐
+   - 时间戳重映射到全局时间轴
+
+2. `transcribe_with_qwen()` 协调函数:
+   - 根据设备选择插件 (`plugin-qwen-cpu` 或 `plugin-qwen-gpu`)
+   - 确保 ASR 模型和 Aligner 模型都已下载
+   - 构建子进程参数并启动推理
+   - 等待完成并返回结果
+
+3. `_resolve_qwen_model()` 模型解析:
+   - 支持 "asr" 和 "aligner" 两种类型
+   - 支持简写 ("0.6B", "1.7B") 和完整模型 ID
+
+**进度报告**:
+- 0-5%: 音频分析和切片
+- 5-15%: 模型加载
+- 15-85%: 逐片转写
+- 85-100%: 结果整合和保存
+
+---
+
+### Task 2.2: VAD 增强
+
+**目标**: 为 faster-whisper 引擎添加 VAD 过滤开关。
+
+**修改文件**:
+- `frontend/src/components/workspace/SettingsModal.vue` -- 添加 VAD 过滤 checkbox
+- `frontend/src/types/edit.ts` -- 添加 `asr_vad_filter` 字段
+- `core/config.py` -- 添加 `asr_vad_filter` 默认值
+
+**实现细节**:
+
+1. SettingsModal.vue:
+   - 在 ASR Settings 区域添加 VAD filter checkbox
+   - 仅当引擎为 `faster-whisper` 时显示
+   - 使用原生 checkbox + `accent-blue-600` 样式
+   - 提示文本: "Reduce hallucinations in noisy audio"
+
+2. types/edit.ts:
+   - AppSettings 接口新增 `asr_vad_filter: boolean`
+
+3. config.py:
+   - 默认值 `asr_vad_filter: True`
+
+---
+
+### Task 2.3: 重复句检测
+
+**目标**: 实现基于 n-gram 余弦相似度的重复句检测。
+
+**修改文件**:
+- `core/analysis_service.py` -- 新增 `detect_duplicates()` 和辅助函数
+
+**实现细节**:
+
+1. 语言自适应 n-gram 提取 (`_get_ngrams`):
+   - 中文 (`zh-*`): 字符级 3-gram
+   - 英文/西文 (`en`, `de`, `fr` 等): 词级 2-gram
+   - 其他/未知: 字符级 3-gram（默认）
+
+2. 余弦相似度计算 (`_cosine_similarity`):
+   - 基于 Counter 的频率向量
+   - 计算点积和模长
+
+3. 重复检测 (`detect_duplicates`):
+   - 滑动窗口优化: 每段只与后续 50 段比较
+   - 时间窗口约束: 只比较 5 分钟内的段
+   - 复杂度 O(n * 50)，1000 段仅需 ~50000 次比较
+   - 返回 `AnalysisResult` 列表，type="duplicate"
+
+4. `run_full_analysis()` 更新:
+   - 整合 filler、error、duplicate 三种检测
+   - 从 settings 读取 `asr_language`、`duplicate_threshold`、`duplicate_min_length`
+
+---
+
+### Task 2.4: ASR 设置 UI
+
+**目标**: 完善设置面板的 ASR 相关配置。
+
+**修改文件**:
+- `frontend/src/components/workspace/SettingsModal.vue`
+- `frontend/src/types/edit.ts`
+
+**实现细节**:
+
+1. ASR Settings 区域:
+   - Default engine 下拉框 (faster-whisper / qwen3-asr)
+   - Language 下拉框 (zh / en / ja / ko / auto)
+   - Device 下拉框 (cpu / cuda / auto)
+   - Compute type 下拉框 (仅 faster-whisper): int8 / float16 / float32
+   - VAD filter checkbox (仅 faster-whisper)
+   - Duplicate threshold 数值输入框
+
+2. 动态显示逻辑:
+   - `compute_type` 仅对 faster-whisper 显示
+   - `device` 的 `auto` 选项仅对 faster-whisper 显示
+   - VAD filter 仅对 faster-whisper 显示
+
+---
+
+## Sprint 2 验证
+
+- [x] 后端 97 个测试全部通过
+- [x] 前端 `vue-tsc --noEmit && vite build` 构建成功
+- [x] `detect_duplicates()` 正确检测重复句
+- [x] `run_full_analysis()` 整合三种检测
+- [x] VAD filter 设置正确保存和加载
+- [x] ASR 设置 UI 正确渲染和交互
+- [x] Qwen3-ASR 输出格式标准化为字幕格式
+- [x] 标点符号检测功能正常工作
+- [x] 后端 97 个测试全部通过
+- [x] 前端构建成功
+
+---
+
+## Sprint 2 文件汇总
+
+### 新建文件
+- `core/asr_scripts/qwen_transcribe.py` -- Qwen3-ASR 子进程推理脚本 (~680行)
+
+### 修改文件
+| 文件 | 变更 |
+|------|------|
+| `core/asr_service.py` | +151 行: `transcribe_with_qwen()`, `_resolve_qwen_model()` |
+| `core/analysis_service.py` | +209 行: `detect_duplicates()`, `detect_punctuation()`, `_get_ngrams()`, `_cosine_similarity()`, `_compute_similarity()` |
+| `core/models.py` | +1 行: `AnalysisResult.type` 扩展为包含 "punctuation" |
+| `core/config.py` | +1 行: `asr_vad_filter` 默认值 |
+| `frontend/src/types/project.ts` | +1 行: `AnalysisResult.type` 扩展为包含 "punctuation" |
+| `frontend/src/types/edit.ts` | +1 行: `asr_vad_filter` 字段 |
+| `frontend/src/components/workspace/SettingsModal.vue` | +12 行: VAD filter checkbox |
+
+---
+
+## Sprint 2 补充: 转录按钮重新设计 + 后端修复 (2026-05-28)
+
+### 问题背景
+
+用户反馈转录按钮逻辑存在多个问题：
+1. 引擎硬编码为 "faster-whisper"，无法选择其他引擎
+2. 未安装引擎时自动安装，而非提示用户
+3. `_handle_transcription()` 不支持 qwen3-asr 引擎
+4. common.py 中存在未使用的重复代码
+
+### 修改内容
+
+**前端 - 转录按钮重新设计**:
+- `WorkspacePage.vue`: 
+  - 新增 `asrSettings` ref 存储本地 ASR 参数
+  - 新增 `installedEngines` ref 存储已安装引擎列表
+  - 新增 `loadAsrSettings()`, `loadInstalledEngines()`, `saveAsrSettings()` 函数
+  - 修改 `handleTranscribe()`: 检查已安装引擎、验证就绪状态、传递参数
+  - 转录按钮改为 split-button + 设置弹窗（类似 Detect Silence 模式）
+  - 弹窗包含: 引擎选择、语言、设备、计算类型、VAD 过滤、保存按钮
+  - 未安装引擎时显示提示而非自动安装
+
+**后端 - 支持 qwen3-asr 引擎**:
+- `main.py`:
+  - 修改 `_handle_transcription()` 添加 `elif engine == "qwen3-asr"` 分支
+  - 调用 `transcribe_with_qwen()` 传递 ASR/Aligner 模型参数
+  - 添加 `vad_filter` 参数传递给 `transcribe_with_whisper()`
+
+**代码清理**:
+- `common.py`: 移除未使用的 `split_into_subtitle_segments()` 函数（135行死代码）
+- `WorkspacePage.vue`: 移除未使用的 `ensureReady` 和 `installPlugin` 导入
+
+### 验证结果
+
+- 后端 97 个测试全部通过
+- 前端 `vue-tsc --noEmit && vite build` 构建成功
+- 转录按钮正确显示已安装引擎
+- 设置弹窗正确保存和加载参数
+- `_handle_transcription()` 支持 faster-whisper 和 qwen3-asr 两个引擎
+
+---
+
+### 📝 Commit Message
+
+```
+feat(asr): 新增 Qwen3-ASR 引擎、重复检测及 ASR 设置面板重构
+
+- 新增 Qwen3-ASR 子进程推理脚本，支持智能音频切片与重叠去重
+- 新增基于 n-gram 余弦相似度的重复句检测
+- 为 faster-whisper 引擎添加 VAD 过滤开关
+- 重构转录按钮为 split-button + 设置弹窗，支持多引擎选择
+- 完善 ASR 设置面板：引擎/语言/设备/计算类型/VAD/阈值配置
+- 清理 common.py 135 行死代码及未使用的导入
+```
+
+### 待完成 (Sprint 3)
+
 - [ ] Task 3.1: 原片/剪后切换
 - [ ] Task 3.2: 集成测试
 - [ ] Task 3.3: 版本号更新
+
+---
+
