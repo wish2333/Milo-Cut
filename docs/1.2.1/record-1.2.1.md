@@ -7,15 +7,21 @@
 1. [Overview](#overview)
 2. [Architecture Decisions](#architecture-decisions)
 3. [Sprint 1: 数据目录与模型管理](#sprint-1)
-4. [Files Modified Summary](#files-modified-summary)
-5. [Verification](#verification)
-6. [Statistics](#statistics)
+4. [Sprint 2: select_directory 桥接方法](#sprint-2)
+5. [Sprint 3: 打包环境修复 + 版本号升级](#sprint-3)
+6. [Files Modified Summary](#files-modified-summary)
+7. [Verification](#verification)
+8. [Statistics](#statistics)
 
 ---
 
 ## Overview
 
-1.2.1 版本聚焦于数据目录可配置性和模型管理优化，核心目标是支持便携模式、解耦模型目录、修复清理函数 Bug。按审计报告 `docs/1.2.1/audit-report-1.2.1.md` 执行。
+1.2.1 版本聚焦于数据目录可配置性、模型管理优化、打包环境修复和缺陷修复，核心目标：
+
+1. 支持便携模式、解耦模型目录、修复清理函数 Bug (按审计报告 `docs/1.2.1/audit-report-1.2.1.md` 执行)
+2. 修复模型目录浏览按钮缺失的桥接方法
+3. 抑制打包环境子进程控制台弹窗、修复导出页编码器检测、版本号升级
 
 ---
 
@@ -206,7 +212,93 @@
 
 ---
 
+<a id="sprint-2"></a>
+## Sprint 2: select_directory 桥接方法 (2026-05-30)
+
+### 背景
+
+Sprint 1 在 SettingsModal 中添加了模型目录浏览按钮，调用 `call("select_directory")`，但 `main.py` 中缺少对应的 `@expose` 方法，导致点击浏览按钮时 API 调用失败。
+
+### 修复
+
+**commit**: `2f3071b fix(main): 新增 select_directory 桥接方法修复模型目录浏览按钮`
+
+| 文件 | 修改 | 说明 |
+|------|------|------|
+| `main.py` | +16 | 新增 `select_directory` @expose 方法，打开文件夹选择对话框 |
+| `frontend/src/types/api.ts` | +1 | `BridgeMethod` 类型新增 `select_directory` |
+
+---
+
+<a id="sprint-3"></a>
+## Sprint 3: 打包环境修复 + 版本号升级 (2026-05-30)
+
+### 背景
+
+1. **控制台弹窗**: 打包后运行时，FFmpeg/FFprobe 等子进程会弹出控制台窗口。之前曾尝试 `STARTUPINFO/SW_HIDE` 但发现它会阻止 CTranslate2 加载模型而被移除。
+2. **导出页编码器丢失**: `EncodingSettings.vue` 调用了已不存在的方法 `detect_gpu`，实际后端方法名为 `detect_gpu_encoders`，导致导出页编码器列表只显示 CPU 编码器。
+3. **版本号**: 功能开发完成，版本号从 1.2.0 升至 1.2.1。
+
+### 修复
+
+**commit**: `e4cf132 fix: 打包子进程控制台弹窗修复 + 导出页编码器检测 + 版本升至 1.2.1`
+
+#### Task 1: 子进程控制台弹窗抑制
+
+**根因**: Windows 打包环境下 `subprocess.run()` 默认会创建新的控制台窗口。
+
+**方案**: 使用 `CREATE_NO_WINDOW` creation flag (而非之前的 `STARTUPINFO/SW_HIDE`)。经验证 `CREATE_NO_WINDOW` 不会影响 CTranslate2 模型加载。
+
+**修改文件**:
+
+| 文件 | 修改 | 说明 |
+|------|------|------|
+| `core/asr_scripts/qwen_transcribe.py` | +6, -4 | 模块级 `_SUBPROCESS_KWARGS` 常量，所有 `subprocess.run()` 调用注入 `**_SUBPROCESS_KWARGS` |
+| `core/export_service.py` | +2, -2 | `_extract_segment` 和 `_concat_segments` 注入 `**_SUBPROCESS_KWARGS` |
+| `core/plugin_manager.py` | +7, -2 | `_subprocess_kwargs()` 恢复 `CREATE_NO_WINDOW` 逻辑 + `taskkill` 调用注入 |
+
+**实现细节**:
+
+1. `qwen_transcribe.py` -- 模块级常量:
+   ```python
+   _SUBPROCESS_KWARGS: dict = (
+       {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+   )
+   ```
+   移除函数内局部 `import subprocess`，统一为顶层导入。
+
+2. `plugin_manager.py` -- `_subprocess_kwargs()`:
+   - 之前: 注释说 STARTUPINFO/SW_HIDE 已移除，接受控制台闪现
+   - 现在: 使用 `CREATE_NO_WINDOW` (不会阻止 CTranslate2)，并添加注释说明原因
+   - `taskkill` 进程终止调用也注入了 `**_subprocess_kwargs()`
+
+#### Task 2: 导出页编码器检测修复
+
+**根因**: `EncodingSettings.vue` line 150 调用 `call("detect_gpu")`，但后端实际方法名为 `detect_gpu_encoders`，导致调用失败，`hardwareEncoders` 始终为空数组，导出页只显示 CPU 编码器。
+
+**修改文件**:
+
+| 文件 | 修改 | 说明 |
+|------|------|------|
+| `frontend/src/components/export/EncodingSettings.vue` | +1, -1 | `detect_gpu` -> `detect_gpu_encoders` |
+
+#### Task 3: 版本号升级与文档
+
+**修改文件**:
+
+| 文件 | 修改 | 说明 |
+|------|------|------|
+| `pyproject.toml` | +1, -1 | `version = "1.2.1"` |
+| `frontend/package.json` | +1, -1 | `"version": "1.2.1"` |
+| `uv.lock` | +1, -1 | `version = "1.2.1"` |
+| `docs/1.2.0/record-1.2.0.md` | +83 | 添加 v1.2.0 merge message 和 release note |
+| `docs/1.2.0/audit-report-1.2.1.md` | 删除 | 审计报告已完成，移至 docs/1.2.1/ |
+
+---
+
 ## Files Modified Summary
+
+### Sprint 1: 数据目录与模型管理
 
 | 文件 | 修改类型 | 行数 | 说明 |
 |------|----------|------|------|
@@ -216,6 +308,27 @@
 | `main.py` | 修复+新增 | +8, -2 | 清理函数 Bug 修复、model_dir 接入 |
 | `frontend/src/types/edit.ts` | 新增 | +1 | `model_dir` 字段 |
 | `frontend/src/components/workspace/SettingsModal.vue` | 新增 | +41 | 模型目录设置 UI |
+
+### Sprint 2: select_directory 桥接方法
+
+| 文件 | 修改类型 | 行数 | 说明 |
+|------|----------|------|------|
+| `main.py` | 新增 | +16 | `select_directory` @expose 方法 |
+| `frontend/src/types/api.ts` | 新增 | +1 | BridgeMethod 类型补全 |
+
+### Sprint 3: 打包环境修复 + 版本号升级
+
+| 文件 | 修改类型 | 行数 | 说明 |
+|------|----------|------|------|
+| `core/asr_scripts/qwen_transcribe.py` | 修复 | +6, -4 | CREATE_NO_WINDOW 抑制控制台弹窗 |
+| `core/export_service.py` | 修复 | +2, -2 | 子进程注入 _SUBPROCESS_KWARGS |
+| `core/plugin_manager.py` | 修复 | +7, -2 | 恢复 _subprocess_kwargs() CREATE_NO_WINDOW |
+| `frontend/src/components/export/EncodingSettings.vue` | 修复 | +1, -1 | detect_gpu -> detect_gpu_encoders |
+| `pyproject.toml` | chore | +1, -1 | version 1.2.1 |
+| `frontend/package.json` | chore | +1, -1 | version 1.2.1 |
+| `uv.lock` | chore | +1, -1 | version 1.2.1 |
+| `docs/1.2.0/record-1.2.0.md` | docs | +83 | v1.2.0 merge message + release note |
+| `docs/1.2.0/audit-report-1.2.1.md` | 删除 | -654 | 审计报告已完成，移至 docs/1.2.1/ |
 
 ---
 
@@ -271,9 +384,10 @@ uv run python -c "from main import MiloCutApi; api = MiloCutApi(); print(api.cle
 
 | 指标 | 值 |
 |------|------|
-| 修改文件数 | 6 |
-| 新增行数 | 170 |
-| 删除行数 | 29 |
+| 修改文件数 | 16 |
+| 新增行数 | 570 |
+| 删除行数 | 42 |
+| 提交数 | 3 (`2d91c38`, `2f3071b`, `e4cf132`) |
 | 测试通过 | 131/131 |
 | 构建状态 | PASS |
 | 审查通过 | 4/4 (F1-F4) |
