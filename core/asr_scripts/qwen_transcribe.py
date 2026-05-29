@@ -23,11 +23,17 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
 from typing import Any
+
+# Suppress console window on Windows in packaged environment
+_SUBPROCESS_KWARGS: dict = (
+    {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+)
 
 # Import common utilities for subprocess IPC
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
@@ -111,7 +117,6 @@ def find_best_cut_point(silence_points: list[float], target_time: float, search_
 
 def smart_slice_audio(audio_path: str, temp_dir: str) -> list[dict[str, Any]]:
     """Slice long audio into manageable chunks for ASR."""
-    import subprocess
     import numpy as np
 
     probe_cmd = [
@@ -121,7 +126,7 @@ def smart_slice_audio(audio_path: str, temp_dir: str) -> list[dict[str, Any]]:
     ]
 
     try:
-        result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
+        result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True, **_SUBPROCESS_KWARGS)
         duration = float(json.loads(result.stdout)["format"]["duration"])
     except Exception as e:
         report("error", message=f"Failed to get audio duration: {e}")
@@ -138,7 +143,7 @@ def smart_slice_audio(audio_path: str, temp_dir: str) -> list[dict[str, Any]]:
     ]
 
     try:
-        subprocess.run(extract_cmd, capture_output=True, check=True)
+        subprocess.run(extract_cmd, capture_output=True, check=True, **_SUBPROCESS_KWARGS)
     except Exception as e:
         report("error", message=f"Failed to extract audio: {e}")
         sys.exit(1)
@@ -200,7 +205,7 @@ def smart_slice_audio(audio_path: str, temp_dir: str) -> list[dict[str, Any]]:
         ]
 
         try:
-            subprocess.run(extract_cmd, capture_output=True, check=True)
+            subprocess.run(extract_cmd, capture_output=True, check=True, **_SUBPROCESS_KWARGS)
         except Exception as e:
             report("error", message=f"Failed to extract slice {i}: {e}")
             sys.exit(1)

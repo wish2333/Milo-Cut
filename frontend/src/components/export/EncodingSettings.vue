@@ -147,7 +147,7 @@ onMounted(async () => {
   }
 
   try {
-    const res = await call<{ encoders: string[] }>("detect_gpu")
+    const res = await call<{ encoders: string[] }>("detect_gpu_encoders")
     if (res.success && res.data) {
       hardwareEncoders.value = res.data.encoders ?? []
     }

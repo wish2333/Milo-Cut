@@ -53,6 +53,7 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     "qwen_language": "auto",
     "duplicate_threshold": 0.85,
     "duplicate_min_length": 5,
+    "model_dir": "",
 }
 
 

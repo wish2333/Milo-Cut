@@ -57,4 +57,5 @@ export interface AppSettings {
   whisper_vad_min_silence_ms: number
   duplicate_threshold: number
   duplicate_min_length: number
+  model_dir: string
 }

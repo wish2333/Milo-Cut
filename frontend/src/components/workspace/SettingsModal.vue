@@ -175,6 +175,19 @@ async function handleBrowseFfprobe() {
   }
 }
 
+async function handleBrowseModelDir() {
+  const res = await call<string>("select_directory")
+  if (res.success && res.data && settings.value) {
+    settings.value = { ...settings.value, model_dir: res.data }
+  }
+}
+
+function handleResetModelDir() {
+  if (settings.value) {
+    settings.value = { ...settings.value, model_dir: "" }
+  }
+}
+
 async function handleDownloadFfmpeg() {
   statusMsg.value = "Downloading FFmpeg..."
   const res = await call<{ path: string }>("download_ffmpeg")
@@ -586,6 +599,34 @@ async function loadPluginDataDir() {
                 </button>
               </div>
             </div>
+
+            <!-- Model Directory -->
+            <div v-if="settings" class="space-y-1.5">
+              <p class="text-xs font-medium text-gray-500 uppercase tracking-wide">Model Directory</p>
+              <div class="flex gap-2">
+                <input
+                  type="text"
+                  :value="settings.model_dir"
+                  placeholder="默认: 插件目录/models"
+                  class="flex-1 px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  @input="updateField('model_dir', ($event.target as HTMLInputElement).value)"
+                />
+                <button
+                  class="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50"
+                  @click="handleBrowseModelDir"
+                >
+                  Browse
+                </button>
+                <button
+                  class="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 text-gray-500"
+                  @click="handleResetModelDir"
+                >
+                  Reset
+                </button>
+              </div>
+              <p class="text-xs text-gray-400">修改模型目录后需重启应用生效</p>
+            </div>
+
             <!-- Install progress -->
             <div v-if="installingPlugin" class="p-3 bg-blue-50 rounded-lg">
               <div class="flex items-center justify-between text-sm mb-1">

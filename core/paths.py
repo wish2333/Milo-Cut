@@ -1,6 +1,7 @@
 """Centralized application data paths.
 
 Migrated from ff-intelligent-neo core/paths.py, adapted for Milo-Cut.
+Portable mode and macOS .app Bundle escape support.
 """
 
 from __future__ import annotations
@@ -16,17 +17,40 @@ APP_NAME = "milo-cut"
 def get_app_dir() -> Path:
     """Return the application root directory.
 
-    - Frozen (PyInstaller): directory containing the executable.
+    - macOS .app Bundle: exe is inside Milo-Cut.app/Contents/MacOS/
+      Escapes to the directory containing the .app bundle.
+    - Windows/Linux frozen: directory containing the executable.
     - Development: project root (parent of this file's parent).
     """
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
+        exe_path = Path(sys.executable).resolve()
+        # macOS .app Bundle read-only escape
+        if "Contents/MacOS" in exe_path.parts:
+            return exe_path.parents[3]  # escape .app bundle, point to sibling dir
+        return exe_path.parent
     return Path(__file__).resolve().parent.parent
 
 
+def is_portable_mode() -> bool:
+    """Detect portable mode via marker file at data/.portable."""
+    return (get_app_dir() / "data" / ".portable").exists()
+
+
 def get_data_dir() -> Path:
-    """Return the data directory, creating it if needed."""
-    d = get_app_dir() / "data"
+    """Return the data directory, creating it if needed.
+
+    - Portable mode or development: app_dir/data/
+    - System mode (frozen, no .portable): platform standard paths
+    """
+    if is_portable_mode() or not getattr(sys, "frozen", False):
+        d = get_app_dir() / "data"
+    else:
+        if sys.platform == "win32":
+            d = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "MiloCut" / "data"
+        elif sys.platform == "darwin":
+            d = Path.home() / "Library" / "Application Support" / "MiloCut" / "data"
+        else:
+            d = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "milocut" / "data"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -58,29 +82,21 @@ def get_temp_dir() -> Path:
 
 
 def get_plugin_data_dir() -> Path:
-    """Return the plugin data directory based on environment.
+    """Return the plugin data directory.
 
-    - Development (not frozen): <project_root>/data/plugins/ (便于调试)
-    - Production (frozen): 跨平台标准路径 (打包环境保持现有逻辑)
-        - Windows: %LOCALAPPDATA%/MiloCut/
-        - macOS: ~/Library/Application Support/MiloCut/
-        - Linux: ~/.local/share/milocut/
+    Portable mode has highest priority: forces data/plugins/ regardless of frozen state.
     """
-    # Development environment: use project data directory
-    if not getattr(sys, "frozen", False):
+    if is_portable_mode() or not getattr(sys, "frozen", False):
         d = get_data_dir() / "plugins"
-        d.mkdir(parents=True, exist_ok=True)
-        return d
-
-    # Production environment: use cross-platform standard paths
-    if sys.platform == "win32":
-        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-        d = base / "MiloCut"
-    elif sys.platform == "darwin":
-        d = Path.home() / "Library" / "Application Support" / "MiloCut"
     else:
-        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-        d = base / "milocut"
+        if sys.platform == "win32":
+            base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+            d = base / "MiloCut"
+        elif sys.platform == "darwin":
+            d = Path.home() / "Library" / "Application Support" / "MiloCut"
+        else:
+            base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+            d = base / "milocut"
     d.mkdir(parents=True, exist_ok=True)
     return d
 

@@ -64,7 +64,11 @@ class MiloCutApi(Bridge):
         self._project = ProjectService()
         self._task_manager = TaskManager(self._emit)
         self._media_server = MediaServer()
-        self._plugin_manager = PluginManager()
+        settings = load_settings()
+        model_dir = settings.get("model_dir", "")
+        self._plugin_manager = PluginManager(
+            model_dir=Path(model_dir) if model_dir else None
+        )
         self._register_task_handlers()
 
     def _register_task_handlers(self) -> None:
@@ -557,6 +561,22 @@ class MiloCutApi(Bridge):
         webview.windows[0].create_file_dialog(webview.FileDialog.FOLDER, directory=path)
         return {"success": True}
 
+    @expose
+    def select_directory(self) -> dict:
+        """Open a folder picker dialog and return the selected path."""
+        import webview
+        result = webview.windows[0].create_file_dialog(webview.FileDialog.FOLDER)
+        if result:
+            # pywebview FOLDER dialog returns a tuple/list on Windows,
+            # but a string on macOS/Linux
+            if isinstance(result, (tuple, list)):
+                path = str(result[0]) if result else None
+            else:
+                path = str(result)
+            if path:
+                return {"success": True, "data": path}
+        return {"success": True, "data": None}
+
     # ================================================================
     # Project
     # ================================================================
@@ -939,8 +959,9 @@ class MiloCutApi(Bridge):
     @expose
     def cleanup_tasks_folder(self) -> dict:
         """Clean up old transcription task files (logs and results)."""
+        from core.paths import get_plugin_data_dir
         try:
-            tasks_dir = Path(get_data_dir()) / "plugins" / "tasks"
+            tasks_dir = Path(get_plugin_data_dir()) / "tasks"
             if not tasks_dir.exists():
                 return {"success": True, "data": {"deleted": 0, "message": "No tasks folder found"}}
 
@@ -957,6 +978,7 @@ class MiloCutApi(Bridge):
     @expose
     def cleanup_transcripts_folder(self) -> dict:
         """Delete all auto-saved transcription SRT files."""
+        from core.paths import get_data_dir
         try:
             transcripts_dir = get_data_dir() / "transcripts"
             if not transcripts_dir.exists():

@@ -11,6 +11,7 @@ export type BridgeMethod =
   | "select_files"
   | "select_file"
   | "open_folder"
+  | "select_directory"
   | "get_dropped_files"
   // Project
   | "create_project"
