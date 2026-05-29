@@ -1583,3 +1583,86 @@ feat(workspace): 原片/剪后切换预览 + PyInstaller hiddenimports 补全
 
 Sprint 4 将实现:
 - [ ] 待定
+
+---
+
+## Merge Message
+
+```
+feat: v1.2.0 -- AI 语音转写引擎 + 原片/剪后预览 + 重复检测
+
+核心特性:
+- uv 驱动的插件化 ASR 引擎隔离环境 (faster-whisper + Qwen3-ASR)
+- faster-whisper: CPU/CUDA 双模式, VAD 过滤, 4 个模型规格
+- Qwen3-ASR: 智能音频切片 + ForcedAligner 时间戳, 3 个模型规格
+- 模型下载系统: HuggingFace/hf-mirror/ModelScope 三源自动探测 + 手动切换
+- GPU 支持: nvidia-smi 检测, CPU/GPU 插件变体, PyTorch 镜像 (official/aliyun/nju)
+- 重复句检测: n-gram 余弦相似度, 语言自适应 (中文字符级/西文词级)
+- 原片/剪后切换预览: RAF 跳过循环, 进度条删除段标记, Shift+Space 快捷键
+- uv 可用性检测: 启动时单次检测, 设置页覆盖层引导, 转录按钮冻结
+- ASR 设置系统: 每引擎独立配置, 引擎前缀键持久化, split-button 弹窗
+- 清除字幕按钮 + 导出按钮条件放宽
+
+关键修复:
+- 任务进度回调断裂 -> 恢复所有长时间任务进度显示
+- 子进程参数解析缺陷 -> argparse parse_known_args 修复
+- CUDA_VISIBLE_DEVICES 空字符串导致 GPU 不可用
+- ForcedAlignItem 属性名 start/end -> start_time/end_time 兼容
+- 模型下载未走 TaskManager -> MODEL_DOWNLOAD 任务类型
+- Whisper turbo 模型 ID 修正 (Systran -> Purfview)
+- SettingsModal DaisyUI 5 tab 渲染异常 -> Vue button tabs
+- PyInstaller hiddenimports 补全 5 个缺失模块
+
+测试: 130 后端 (passed) + 105 前端 (passed) + 8 引擎 E2E 矩阵 (all PASS)
+新增 ~2,821 行 | 新建 7 文件 | 修改 18+ 文件
+```
+
+---
+
+## Release Note (v1.2.0)
+
+### AI 语音转写引擎
+
+Milo-Cut 1.2.0 引入了 AI 驱动的语音转写功能，支持两大 ASR 引擎:
+
+- **Faster Whisper** -- 基于 CTranslate2 的高效推理，支持 CPU 和 CUDA 加速，提供 tiny/base/small/medium/large-v3-turbo 五个模型规格，内置 VAD (Voice Activity Detection) 过滤减少噪声音频中的幻觉输出
+- **Qwen3-ASR** -- 阿里通义千问语音模型，通过 ForcedAligner 实现精准字词级时间戳对齐，支持 0.6B/1.7B/ForcedAligner 三个模型规格，智能音频切片 + 重叠区去重保证长音频转写连续性
+
+引擎运行在 uv 管理的独立虚拟环境中，与主程序完全隔离，按需安装、按需下载模型。
+
+### 模型下载与镜像
+
+- 自动探测网络环境，按优先级尝试 HuggingFace -> hf-mirror -> ModelScope
+- 支持手动切换下载源 (HuggingFace / hf-mirror / ModelScope)
+- GPU 用户可选择 PyTorch 官方/阿里云/南京大学镜像加速 CUDA 版本安装
+- 自动检测 NVIDIA GPU 状态，推荐合适的安装模式
+
+### 重复句检测
+
+新增基于 n-gram 余弦相似度的重复句检测功能:
+- 中文使用字符级 3-gram，西文使用词级 2-gram
+- 可配置相似度阈值和最短匹配长度
+- 检测结果与填充词、语误标记一同显示在分析面板中
+
+### 原片/剪后预览切换
+
+- 工作区和导出预览页均可切换原片/剪后模式
+- 剪后模式下视频播放自动跳过已确认删除的片段
+- 进度条以红色半透明标记显示删除区间
+- 支持 Shift+Space 快捷键快速切换
+
+### 其他改进
+
+- 转录前自动检查 uv 是否可用，不可用时显示安装引导
+- 设置页 AI Engine 面板管理插件安装、模型下载、ASR 参数
+- 每引擎独立保存参数 (语言、设备、精度、VAD 等)
+- 新增"清除字幕"按钮，一键清除所有导入/转写的字幕
+- 导出按钮条件放宽 -- 有字幕即可导出，无需确认编辑决策
+
+### 修复
+
+- 修复长时间任务进度不显示的问题
+- 修复 CUDA 模式下实际运行在 CPU 的问题
+- 修复 Qwen 引擎输出只有单个 segment 的问题
+- 修复设置页 tab 导航不可见的问题
+- 补全 PyInstaller 打包缺失的模块引用

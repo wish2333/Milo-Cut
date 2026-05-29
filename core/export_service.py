@@ -766,7 +766,7 @@ def _extract_segment(
     cmd = base + codec_args + [output_path]
     result = subprocess.run(
         cmd, capture_output=True, text=True, encoding="utf-8",
-        errors="replace", timeout=600,
+        errors="replace", timeout=600, **_SUBPROCESS_KWARGS,
     )
     if result.returncode != 0:
         raise RuntimeError(f"FFmpeg segment extraction failed: {result.stderr[-500:]}")
@@ -792,7 +792,7 @@ def _concat_segments(
     cmd.append(output_path)
     result = subprocess.run(
         cmd, capture_output=True, text=True, encoding="utf-8",
-        errors="replace", timeout=600,
+        errors="replace", timeout=600, **_SUBPROCESS_KWARGS,
     )
     if result.returncode != 0:
         raise RuntimeError(f"FFmpeg concat failed: {result.stderr[-500:]}")

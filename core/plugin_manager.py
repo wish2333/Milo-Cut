@@ -965,6 +965,7 @@ class PluginManager:
                         ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                         capture_output=True,
                         timeout=5,
+                        **_subprocess_kwargs(),
                     )
                 else:
                     os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
@@ -1015,9 +1016,11 @@ class PluginManager:
 def _subprocess_kwargs() -> dict[str, Any]:
     """Platform-specific subprocess arguments."""
     kwargs: dict[str, Any] = {}
-    # NOTE: STARTUPINFO/SW_HIDE was removed - it prevents CTranslate2
-    # from loading models in the subprocess. The console window will
-    # briefly flash but model loading works correctly.
+    if sys.platform == "win32":
+        # NOTE: Use CREATE_NO_WINDOW instead of STARTUPINFO/SW_HIDE.
+        # STARTUPINFO/SW_HIDE prevented CTranslate2 from loading models
+        # in the subprocess, but CREATE_NO_WINDOW works correctly.
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
     return kwargs
 
 
