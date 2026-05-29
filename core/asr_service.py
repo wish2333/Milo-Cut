@@ -29,6 +29,8 @@ def transcribe_with_whisper(
     compute_type: str = "int8",
     word_timestamps: bool = True,
     vad_filter: bool = True,
+    vad_threshold: float = 0.5,
+    vad_min_silence_ms: int = 500,
     progress_cb: Callable[[float, str], None] | None = None,
     cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
@@ -45,6 +47,8 @@ def transcribe_with_whisper(
         compute_type: Compute precision ("int8", "float16", "float32").
         word_timestamps: Enable word-level timestamps.
         vad_filter: Enable Silero VAD filtering.
+        vad_threshold: VAD probability threshold (lower = more sensitive).
+        vad_min_silence_ms: Minimum silence duration in ms for VAD segmentation.
         progress_cb: Callback for progress updates.
         cancel_event: Event to signal cancellation.
 
@@ -93,6 +97,8 @@ def transcribe_with_whisper(
         "--compute-type", compute_type,
         "--word-timestamps", str(word_timestamps).lower(),
         "--vad-filter", str(vad_filter).lower(),
+        "--vad-threshold", str(vad_threshold),
+        "--vad-min-silence-ms", str(vad_min_silence_ms),
     ]
 
     # Run in isolated subprocess
@@ -144,6 +150,7 @@ def transcribe_with_qwen(
     aligner_model_size: str = "0.6B",
     language: str = "zh",
     device: str = "cpu",
+    compute_type: str = "bfloat16",
     progress_cb: Callable[[float, str], None] | None = None,
     cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
@@ -157,6 +164,7 @@ def transcribe_with_qwen(
         aligner_model_size: Aligner model size key (e.g., "0.6B").
         language: Language code (e.g., "zh", "en").
         device: Inference device ("cpu", "cuda").
+        compute_type: Compute type for inference (e.g., "bfloat16", "float16", "int8").
         progress_cb: Callback for progress updates.
         cancel_event: Event to signal cancellation.
 
@@ -213,6 +221,7 @@ def transcribe_with_qwen(
         "--aligner-model-path", str(aligner_model_path),
         "--language", language,
         "--device", device,
+        "--compute-type", compute_type,
     ]
 
     # Run in isolated subprocess

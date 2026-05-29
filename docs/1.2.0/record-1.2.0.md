@@ -13,7 +13,8 @@
 7. [Sprint 1.7: 模型下载系统修复 + UI 修复](#sprint-17)
 8. [Sprint 2: Qwen3-ASR + VAD + 重复检测](#sprint-2)
 9. [Sprint 2.5: ASR GUI 设置系统完善](#sprint-25)
-10. [Files Modified Summary](#files-modified-summary)
+10. [Sprint 2.6: 转录流程修复 + UI 功能补充](#sprint-26)
+11. [Files Modified Summary](#files-modified-summary)
 11. [Verification](#verification)
 12. [Statistics](#statistics)
 13. [Next: Sprint 3](#next-sprint-3)
@@ -1107,6 +1108,63 @@ Sprint 2 的 CUDA 修复提交 (`82f9a3d`) 重构了 `qwen_transcribe.py` 的推
 - 将当前引擎的 `asrSettingsPerEngine[engine]` 写入 `settings.json`
 - 设置页打开时从 `settings.json` 读取，显示保存的值
 - 下次打开项目时 `loadAsrSettings()` 恢复保存的偏好
+
+---
+
+## Sprint 2.6: 转录流程修复 + UI 功能补充 (2026-05-29)
+
+### 问题背景
+
+Sprint 2.5 提交后用户实测发现多个运行时问题:
+
+1. 转录按钮点击后弹窗闪一下但不执行转录
+2. 转录完成后导出按钮仍然冻结
+3. Qwen 引擎 `compute_type` 参数未传递到 `transcribe_with_qwen()`
+4. Whisper 引擎 `vad_threshold` / `vad_min_silence_ms` 参数未传递到 `transcribe_with_whisper()`
+5. `_handle_transcription` 传整个 dict 给 `update_transcript(list[dict])` 导致 Pydantic 验证错误
+6. SRT 自动保存 `get_data_dir` 未导入
+7. 从 Whisper 切换到 Qwen GPU 时显示 CPU 默认值
+8. 设置页引擎下拉不区分 CPU/GPU 变体
+
+### 修复内容
+
+#### 1. 转录流程修复 (main.py + core/asr_service.py)
+
+- `transcribe_with_qwen()`: 新增 `compute_type: str = "bfloat16"` 参数 + 传递 `--compute-type` 给子进程
+- `transcribe_with_whisper()`: 新增 `vad_threshold: float = 0.5` 和 `vad_min_silence_ms: int = 500` 参数 + 传递 `--vad-threshold` / `--vad-min-silence-ms` 给子进程
+- `_handle_transcription()`: `update_transcript(transcript_data)` -> `update_transcript(transcript_data["segments"])` (传列表而非字典)
+- `_handle_transcription()`: 新增 `from core.paths import get_data_dir` 修复 SRT 自动保存 NameError
+
+#### 2. 转录按钮错误处理 (WorkspacePage.vue)
+
+- `handleTranscribe()`: 引擎查找优先用 `asrPluginId` 匹配
+- `saveAsrSettings()`: 返回 `Promise<boolean>`，失败时不关闭弹窗
+- `runTranscription()`: 检查返回值，失败时显示 toast
+
+#### 3. 删除所有字幕按钮 (WorkspacePage.vue + main.py + project_service.py)
+
+- `project_service.py`: 新增 `clear_subtitles()` 方法，删除所有 subtitle 类型段落 + 关联 edit decisions
+- `main.py`: 新增 `clear_subtitles` @expose 端点
+- `WorkspacePage.vue`: 红色 "Clear Subtitles" 按钮，带 `window.confirm()` 确认，无字幕时禁用
+
+#### 4. 导出按钮解冻 (WorkspacePage.vue)
+
+- 修改前: `:disabled="isExporting || confirmedEdits.length === 0"` (必须有 confirmed delete edits)
+- 修改后: `:disabled="isExporting || (confirmedEdits.length === 0 && subtitleCount === 0)"` (有字幕即可导出)
+
+#### 5. 引擎默认值修复 (WorkspacePage.vue)
+
+- `getEngineDefaults()`: 从 `installedEngines.value.find(e => e.engine === engine)` 改为直接读 `asrPluginId.value`
+- 修复 Whisper -> Qwen GPU 切换时显示 CPU 默认值的问题
+
+### 修改文件汇总
+
+| 文件 | 变更 |
+|------|------|
+| `core/asr_service.py` | +9 行: transcribe_with_qwen 新增 compute_type, transcribe_with_whisper 新增 vad_threshold/vad_min_silence_ms |
+| `core/project_service.py` | +25 行: clear_subtitles() 方法 |
+| `main.py` | +7 行: clear_subtitles 端点, get_data_dir 导入, update_transcript 参数修复 |
+| `frontend/src/pages/WorkspacePage.vue` | +78/-24 行: 转录错误处理, Clear Subtitles 按钮, 导出按钮条件修复, getEngineDefaults 修复 |
 
 ---
 

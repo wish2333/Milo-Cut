@@ -450,7 +450,7 @@ class MiloCutApi(Bridge):
             "language": result["data"].get("language", language),
             "segments": result["data"].get("segments", []),
         }
-        update_result = self._project.update_transcript(transcript_data)
+        update_result = self._project.update_transcript(transcript_data["segments"])
         if not update_result["success"]:
             raise RuntimeError(update_result.get("error", "Failed to update transcript"))
 
@@ -458,6 +458,7 @@ class MiloCutApi(Bridge):
         srt_path = None
         try:
             from core.export_service import export_srt
+            from core.paths import get_data_dir
             from datetime import datetime
             project_name = self._project.current.project.name if self._project.current.project else "transcript"
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -739,6 +740,10 @@ class MiloCutApi(Bridge):
     @expose
     def delete_silence_segments(self) -> dict:
         return self._project.delete_silence_segments()
+
+    @expose
+    def clear_subtitles(self) -> dict:
+        return self._project.clear_subtitles()
 
     @expose
     def delete_subtitle_trim_edits(self) -> dict:

@@ -447,9 +447,7 @@ watch(asrPluginId, (newPluginId) => {
 
 // Engine defaults by type
 function getEngineDefaults(engine: "faster-whisper" | "qwen3-asr") {
-  const eng = installedEngines.value.find(e => e.engine === engine)
-  const pluginId = eng?.pluginId ?? ''
-  const gpu = pluginId.length > 0 && !pluginId.includes('-cpu')
+  const gpu = asrPluginId.value.length > 0 && !asrPluginId.value.includes('-cpu')
   if (engine === 'qwen3-asr') {
     return { model_size: "Qwen/Qwen3-ASR-0.6B", language: "auto", device: gpu ? "cuda" as const : "cpu" as const, compute_type: gpu ? "bfloat16" : "float16", vad_filter: false, vad_threshold: 0.5, vad_min_silence_ms: 500 }
   }
@@ -472,7 +470,7 @@ watch(asrEngine, (newEngine) => {
   validateModelSize()
 })
 
-async function saveAsrSettings() {
+async function saveAsrSettings(): Promise<boolean> {
   const current = asrSettingsPerEngine.value[asrEngine.value]
   const payload: Record<string, unknown> = {
     asr_engine: asrEngine.value,
@@ -493,8 +491,10 @@ async function saveAsrSettings() {
     payload.whisper_vad_min_silence_ms = current.vad_min_silence_ms
   }
 
-  await call("update_settings", payload)
+  const res = await call("update_settings", payload)
+  if (!res.success) return false
   showTranscribeSettings.value = false
+  return true
 }
 
 async function saveSilenceSettings() {
@@ -592,6 +592,17 @@ async function handleDetectSilence() {
   await runSilenceDetection()
 }
 
+async function handleClearSubtitles() {
+  if (!window.confirm("Are you sure you want to delete all subtitles? This cannot be undone.")) return
+  errorMessage.value = ""
+  const res = await call<Project>("clear_subtitles")
+  if (res.success && res.data) {
+    emit("project-updated", res.data)
+  } else {
+    errorMessage.value = res.error ?? "Failed to clear subtitles"
+  }
+}
+
 async function handleTranscribe() {
   errorMessage.value = ""
 
@@ -601,9 +612,10 @@ async function handleTranscribe() {
     return
   }
 
-  // Get selected engine
+  // Get selected engine — use asrPluginId to find the exact variant (CPU vs GPU)
   const engine = asrEngine.value
-  const engineInfo = installedEngines.value.find(e => e.engine === engine)
+  const engineInfo = installedEngines.value.find(e => e.pluginId === asrPluginId.value)
+    ?? installedEngines.value.find(e => e.engine === engine)
 
   if (!engineInfo) {
     showToast("Selected ASR engine not found", "error", 3000)
@@ -618,21 +630,32 @@ async function handleTranscribe() {
   }
 
   // Persist current ASR settings to backend before transcription
-  await saveAsrSettings()
+  const settingsSaved = await saveAsrSettings()
+  if (!settingsSaved) {
+    showToast("Failed to save transcription settings", "error", 3000)
+    return
+  }
 
-  // Pass ASR settings as payload to transcription task
-  const settings = asrSettingsPerEngine.value[asrEngine.value]
-  await runTranscription({
-    engine: asrEngine.value,
-    model_size: settings.model_size,
-    asr_model_size: settings.model_size,
-    language: settings.language,
-    device: settings.device,
-    compute_type: settings.compute_type,
-    vad_filter: settings.vad_filter,
-    vad_threshold: settings.vad_threshold,
-    vad_min_silence_ms: settings.vad_min_silence_ms,
-  })
+  try {
+    // Pass ASR settings as payload to transcription task
+    const settings = asrSettingsPerEngine.value[asrEngine.value]
+    const started = await runTranscription({
+      engine: asrEngine.value,
+      model_size: settings.model_size,
+      asr_model_size: settings.model_size,
+      language: settings.language,
+      device: settings.device,
+      compute_type: settings.compute_type,
+      vad_filter: settings.vad_filter,
+      vad_threshold: settings.vad_threshold,
+      vad_min_silence_ms: settings.vad_min_silence_ms,
+    })
+    if (!started) {
+      showToast("Failed to start transcription task", "error", 3000)
+    }
+  } catch (err) {
+    showToast(`Transcription failed: ${err instanceof Error ? err.message : String(err)}`, "error", 5000)
+  }
 }
 
 async function handleRunAnalysis(type: string) {
@@ -1009,6 +1032,15 @@ onUnmounted(() => {
           </template>
         </div>
       </div>
+      <button
+        class="inline-flex items-center gap-1.5 rounded-md bg-red-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-600 disabled:opacity-50 transition-colors"
+        :disabled="isDetecting || isExporting || isTranscribing || subtitleCount === 0"
+        title="Delete all subtitle segments"
+        @click="handleClearSubtitles"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+        Clear Subtitles
+      </button>
       <div class="relative inline-flex items-center">
         <button
           class="inline-flex items-center gap-1.5 rounded-md rounded-r-none bg-blue-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600 disabled:opacity-50 transition-colors"
@@ -1206,7 +1238,7 @@ onUnmounted(() => {
 
       <button
         class="inline-flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50 transition-colors"
-        :disabled="isExporting || confirmedEdits.length === 0"
+        :disabled="isExporting || (confirmedEdits.length === 0 && subtitleCount === 0)"
         @click="emit('go-to-export')"
       >
         <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" /></svg>
