@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue"
-import type { Project, Segment, EditDecision } from "@/types/project"
+import type { Project, Segment, EditDecision, ModelInfo } from "@/types/project"
 import { formatTimeShort } from "@/utils/format"
 import { call, onEvent } from "@/bridge"
 import { useAnalysis } from "@/composables/useAnalysis"
@@ -83,7 +83,7 @@ const {
 } = useSegmentEdit(projectRef as any, (val: Project) => emit("project-updated", val), pushSnapshot)
 
 const { showToast } = useToast()
-const { listPlugins, checkEngineReady } = usePluginManager()
+const { listPlugins, checkEngineReady, listModels } = usePluginManager()
 
 const statusMessage = ref("")
 const errorMessage = ref("")
@@ -102,6 +102,7 @@ const videoPlaybackRate = ref(1)
 // ASR Transcription settings (local overrides, synced from AppSettings)
 const asrSettings = ref({
   engine: "faster-whisper" as "faster-whisper" | "qwen3-asr",
+  model_size: "large-v3-turbo" as string,
   language: "zh",
   device: "cpu" as "cpu" | "cuda" | "auto",
   compute_type: "int8" as "int8" | "float16" | "float32",
@@ -117,6 +118,15 @@ interface InstalledEngine {
 }
 const installedEngines = ref<InstalledEngine[]>([])
 const hasInstalledEngines = computed(() => installedEngines.value.length > 0)
+
+// Available ASR models (loaded from plugin manager)
+const modelList = ref<ModelInfo[]>([])
+const availableModels = computed(() => {
+  const engine = asrSettings.value.engine
+  return modelList.value
+    .filter(m => m.engine === engine && !m.model_id.includes("ForcedAligner"))
+    .filter((m, i, arr) => arr.findIndex(x => x.model_id === m.model_id) === i)
+})
 
 const silenceThreshold = ref(-30)
 const silenceMinDuration = ref(0.5)
@@ -241,6 +251,9 @@ onMounted(async () => {
   await loadSilenceSettings()
   await loadAsrSettings()
   await loadInstalledEngines()
+  modelList.value = await listModels()
+  // Validate loaded model_size against available models
+  validateModelSize()
 })
 
 watch(() => props.project.media?.waveform_path, () => {
@@ -277,6 +290,7 @@ async function loadAsrSettings() {
   if (res.success && res.data) {
     asrSettings.value = {
       engine: (res.data.asr_engine as "faster-whisper" | "qwen3-asr") || "faster-whisper",
+      model_size: (res.data.asr_model_size as string) || "large-v3-turbo",
       language: (res.data.asr_language as string) || "zh",
       device: (res.data.asr_device as "cpu" | "cuda" | "auto") || "cpu",
       compute_type: (res.data.asr_compute_type as "int8" | "float16" | "float32") || "int8",
@@ -309,9 +323,22 @@ async function loadInstalledEngines() {
   }
 }
 
+function validateModelSize() {
+  const models = availableModels.value
+  if (models.length > 0 && !models.find(m => m.model_id === asrSettings.value.model_size)) {
+    asrSettings.value.model_size = models[0].model_id
+  }
+}
+
+// Reset model_size when engine changes
+watch(() => asrSettings.value.engine, () => {
+  validateModelSize()
+})
+
 async function saveAsrSettings() {
   await call("update_settings", {
     asr_engine: asrSettings.value.engine,
+    asr_model_size: asrSettings.value.model_size,
     asr_language: asrSettings.value.language,
     asr_device: asrSettings.value.device,
     asr_compute_type: asrSettings.value.compute_type,
@@ -443,6 +470,8 @@ async function handleTranscribe() {
   // Pass ASR settings as payload to transcription task
   await runTranscription({
     engine: asrSettings.value.engine,
+    model_size: asrSettings.value.model_size,
+    asr_model_size: asrSettings.value.model_size,
     language: asrSettings.value.language,
     device: asrSettings.value.device,
     compute_type: asrSettings.value.compute_type,
@@ -714,6 +743,19 @@ onUnmounted(() => {
               >
                 <option v-for="eng in installedEngines" :key="eng.engine" :value="eng.engine">
                   {{ eng.displayName }} {{ eng.ready ? '' : '(model not downloaded)' }}
+                </option>
+              </select>
+            </label>
+
+            <!-- Model selector -->
+            <label class="block mb-2">
+              <span class="text-xs text-gray-500">Model</span>
+              <select
+                v-model="asrSettings.model_size"
+                class="w-full mt-1 rounded border-gray-300 text-xs"
+              >
+                <option v-for="m in availableModels" :key="m.model_id" :value="m.model_id">
+                  {{ m.display_name }} {{ m.status === 'downloaded' ? '' : '(not downloaded)' }}
                 </option>
               </select>
             </label>

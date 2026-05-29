@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue"
+import { ref, onMounted, computed } from "vue"
 import { call } from "@/bridge"
 import type { AppSettings } from "@/types/edit"
 import type { PluginInfo, ModelInfo, ModelMirror } from "@/types/project"
@@ -25,6 +25,18 @@ const pluginManager = usePluginManager()
 const pluginList = ref<PluginInfo[]>([])
 const modelList = ref<ModelInfo[]>([])
 const installingPlugin = ref<string | null>(null)
+
+// ASR models filtered by current engine, excluding ForcedAligner, deduplicated
+const asrModels = computed(() => {
+  if (!settings.value) return []
+  const engine = settings.value.asr_engine
+  const seen = new Set<string>()
+  return modelList.value.filter(m => {
+    if (m.engine !== engine || m.model_id.includes("ForcedAligner") || seen.has(m.model_id)) return false
+    seen.add(m.model_id)
+    return true
+  })
+})
 const installProgress = ref(0)
 const installMessage = ref("")
 
@@ -697,6 +709,18 @@ async function loadPluginDataDir() {
               >
                 <option value="faster-whisper">Faster Whisper</option>
                 <option value="qwen3-asr">Qwen3 ASR</option>
+              </select>
+            </div>
+            <div class="flex items-center justify-between">
+              <label class="text-sm text-gray-600">Model</label>
+              <select
+                :value="settings.asr_model_size"
+                class="px-2 py-1 text-sm border border-gray-300 rounded"
+                @change="updateField('asr_model_size', ($event.target as HTMLSelectElement).value)"
+              >
+                <option v-for="m in asrModels" :key="m.model_id" :value="m.model_id">
+                  {{ m.display_name }}
+                </option>
               </select>
             </div>
             <div class="flex items-center justify-between">

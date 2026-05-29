@@ -61,34 +61,50 @@ def parse_whisper_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_whisper_args()
 
-    # Start orphan process defense
-    start_stdin_watchdog()
-
     report("progress", percent=5.0, message="Loading faster-whisper model...")
 
+    model_path = args.model_path
+    device = args.device
+    compute_type = args.compute_type
+
+    # Suppress CUDA init when running on CPU only.
+    # Only set CUDA_VISIBLE_DEVICES for CPU mode -- setting it to ""
+    # when the var is not natively set would hide GPUs on Windows.
+    import os as _os
+    if device == "cpu":
+        _os.environ["CUDA_VISIBLE_DEVICES"] = ""
     try:
         from faster_whisper import WhisperModel
     except ImportError:
         report("error", message="faster-whisper is not installed in this environment")
         sys.exit(1)
 
-    model_path = args.model_path
-    device = args.device
-    compute_type = args.compute_type
+    model = None
+    load_error = None
 
-    # If model_path is a HuggingFace repo_id, the model will be downloaded
-    # If it's a local path, it will be loaded from disk
-    try:
-        model = WhisperModel(
-            model_path,
-            device=device,
-            compute_type=compute_type,
-        )
-    except Exception as exc:
-        report("error", message=f"Failed to load model: {exc}")
+    def _load_model(dev: str):
+        nonlocal model, load_error
+        try:
+            model = WhisperModel(model_path, device=dev, compute_type=compute_type)
+        except Exception as exc:
+            load_error = exc
+
+    _load_model(device)
+
+    if load_error:
+        report("error", message=f"Failed to load model: {load_error}")
         sys.exit(1)
 
-    report("progress", percent=15.0, message="Model loaded. Starting transcription...")
+    if model is None:
+        report("error", message="Failed to load model: unknown error")
+        sys.exit(1)
+
+    report("progress", percent=15.0, message=f"Model loaded on {device}. Starting transcription...")
+
+    # Start orphan process defense AFTER model loading.
+    # The stdin watchdog thread blocks on sys.stdin.read(1) which deadlocks
+    # with CTranslate2 native library loading when called before import.
+    start_stdin_watchdog()
 
     word_timestamps = args.word_timestamps.lower() == "true"
     vad_filter = args.vad_filter.lower() == "true"

@@ -210,12 +210,24 @@ def _clean_subprocess_env() -> dict[str, str]:
     - PYTHONPATH: PyInstaller modifies this for frozen modules
     - PYTHONHOME: PyInstaller sets this to the frozen Python prefix
     - LD_LIBRARY_PATH: may cause C extension symbol conflicts on Linux
+
+    Also sets variables to prevent ML libraries from polluting stdout,
+    which would corrupt the JSON IPC protocol (tqdm writes \\r-based
+    progress bars without \\n, causing pipe buffer deadlocks).
     """
     env = os.environ.copy()
     for key in ("PYTHONPATH", "PYTHONHOME"):
         env.pop(key, None)
     if sys.platform != "win32":
         env.pop("LD_LIBRARY_PATH", None)
+
+    # Prevent tqdm and ML libraries from writing progress bars to stdout.
+    # These libraries use \\r (not \\n) which corrupts our JSON-line IPC
+    # protocol and can cause pipe buffer deadlocks on Windows.
+    env["TQDM_DISABLE"] = "1"
+    env["TRANSFORMERS_VERBOSITY"] = "error"
+    env["CT2_VERBOSE"] = "0"  # suppress CTranslate2 info messages
+
     return env
 
 
@@ -536,6 +548,7 @@ class PluginManager:
                     "model_id": model_id,
                     "display_name": model_meta["display_name"],
                     "plugin_id": plugin_id,
+                    "engine": meta["engine"],
                     "size_bytes": model_meta["size_bytes"],
                     "local_path": str(local_path),
                     "status": "downloaded" if local_path.exists() else "not_downloaded",
@@ -926,12 +939,9 @@ class PluginManager:
 def _subprocess_kwargs() -> dict[str, Any]:
     """Platform-specific subprocess arguments."""
     kwargs: dict[str, Any] = {}
-    if sys.platform == "win32":
-        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-        si = subprocess.STARTUPINFO()
-        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        si.wShowWindow = 0  # SW_HIDE
-        kwargs["startupinfo"] = si
+    # NOTE: STARTUPINFO/SW_HIDE was removed - it prevents CTranslate2
+    # from loading models in the subprocess. The console window will
+    # briefly flash but model loading works correctly.
     return kwargs
 
 

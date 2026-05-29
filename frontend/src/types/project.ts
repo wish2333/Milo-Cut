@@ -101,6 +101,7 @@ export interface ModelInfo {
   model_id: string
   display_name: string
   plugin_id: string
+  engine: "faster-whisper" | "qwen3-asr"
   size_bytes: number
   local_path: string
   status: "downloaded" | "downloading" | "not_downloaded"
