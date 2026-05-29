@@ -80,6 +80,11 @@ hiddenimports = [
     "core.subtitle_service",
     "core.task_manager",
     "core.project_service",
+    "core.asr_service",
+    "core.plugin_manager",
+    "core.media_server",
+    "core.export_timeline",
+    "core.ffmpeg_presets",
 ]
 
 

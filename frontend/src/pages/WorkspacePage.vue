@@ -99,6 +99,64 @@ const videoPaused = ref(true)
 const videoVolume = ref(0.75)
 const videoPlaybackRate = ref(1)
 
+// Preview mode: "edited" skips delete ranges, "original" plays full video
+const previewMode = ref<"edited" | "original">("edited")
+let rafId: number | null = null
+
+const deleteRanges = computed(() => {
+  return edits.value
+    .filter(e => e.status === "confirmed" && e.action === "delete")
+    .map(e => ({ start: e.start, end: e.end }))
+    .sort((a, b) => a.start - b.start)
+})
+
+function checkSkip(time: number): boolean {
+  for (const range of deleteRanges.value) {
+    if (time >= range.start && time < range.end) {
+      videoRef.value!.currentTime = range.end
+      return true
+    }
+  }
+  return false
+}
+
+function animationLoop() {
+  if (videoRef.value && !videoRef.value.paused) {
+    const time = videoRef.value.currentTime
+    if (!checkSkip(time)) {
+      currentTime.value = time
+    }
+  }
+  rafId = requestAnimationFrame(animationLoop)
+}
+
+function handleVideoSeeked() {
+  if (videoRef.value) {
+    if (previewMode.value === "edited" && !videoRef.value.paused) {
+      checkSkip(videoRef.value.currentTime)
+    }
+    currentTime.value = videoRef.value.currentTime
+  }
+}
+
+function togglePreviewMode() {
+  previewMode.value = previewMode.value === "edited" ? "original" : "edited"
+}
+
+// RAF lifecycle: start/stop based on previewMode and play state
+watch([previewMode, videoPaused], ([mode, paused]) => {
+  if (mode === "edited" && !paused) {
+    if (rafId === null) {
+      rafId = requestAnimationFrame(animationLoop)
+    }
+  } else {
+    if (rafId !== null) {
+      cancelAnimationFrame(rafId)
+      rafId = null
+    }
+  }
+})
+
 // ASR Transcription settings - per-engine storage so switching preserves settings
 const asrSettingsPerEngine = ref<Record<string, {
   model_size: string
@@ -790,6 +848,11 @@ function isTextInput(el: EventTarget | null): boolean {
 function handleGlobalKeydown(e: KeyboardEvent) {
   if (isTextInput(e.target)) return
 
+  if (e.shiftKey && e.code === "Space") {
+    e.preventDefault()
+    previewMode.value = previewMode.value === "original" ? "edited" : "original"
+    return
+  }
   if (e.key === " ") {
     e.preventDefault()
     handleTogglePlay()
@@ -848,6 +911,10 @@ onUnmounted(() => {
   document.removeEventListener("keydown", handleGlobalKeydown)
   document.removeEventListener("mousedown", handleClickOutside)
   if (regenPollTimer) clearInterval(regenPollTimer)
+  if (rafId !== null) {
+    cancelAnimationFrame(rafId)
+    rafId = null
+  }
 })
 </script>
 
@@ -893,6 +960,18 @@ onUnmounted(() => {
       >
         <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
         Import SRT
+      </button>
+      <button
+        class="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors"
+        :class="previewMode === 'edited'
+          ? 'bg-teal-600 text-white hover:bg-teal-700'
+          : 'bg-gray-600 text-gray-200 hover:bg-gray-700'"
+        :disabled="isDetecting || isExporting"
+        title="Toggle original/edited preview (Shift+Space)"
+        @click="togglePreviewMode"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path stroke-linecap="round" stroke-linejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+        {{ previewMode === 'edited' ? 'Edited' : 'Original' }}
       </button>
       <div class="relative inline-flex items-center">
         <button
@@ -1287,6 +1366,7 @@ onUnmounted(() => {
               @timeupdate="handleTimeUpdate"
               @play="videoPaused = false"
               @pause="videoPaused = true"
+              @seeked="handleVideoSeeked"
               @click="handleTogglePlay"
             />
             <SubtitleOverlay
@@ -1307,6 +1387,8 @@ onUnmounted(() => {
           :paused="videoPaused"
           :volume="videoVolume"
           :playback-rate="videoPlaybackRate"
+          :delete-ranges="deleteRanges"
+          :preview-mode="previewMode"
           @update:current-time="handleSeekTo"
           @update:volume="handleVolumeChange"
           @update:playback-rate="handleRateChange"
