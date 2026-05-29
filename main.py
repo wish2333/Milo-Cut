@@ -1070,6 +1070,14 @@ class MiloCutApi(Bridge):
     @expose
     def check_uv_available(self) -> dict:
         """Check if uv package manager is available in PATH."""
+        if os.environ.get("MILO_FAKE_NO_UV"):
+            return {
+                "success": True,
+                "data": {
+                    "available": False,
+                    "path": None,
+                },
+            }
         uv_path = shutil.which("uv")
         return {
             "success": True,

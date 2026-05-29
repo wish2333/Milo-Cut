@@ -6,11 +6,13 @@ import ExportPage from "@/pages/ExportPage.vue"
 import ToastContainer from "@/components/common/ToastContainer.vue"
 import RelinkMediaDialog from "@/components/workspace/RelinkMediaDialog.vue"
 import { waitForPyWebView, call, onEvent } from "./bridge"
+import { useUvAvailability } from "@/composables/useUvAvailability"
 import { EVENT_TASK_COMPLETED } from "@/utils/events"
 import type { Project, MediaInfo } from "@/types/project"
 
 const ready = ref(false)
 const bridgeError = ref("")
+const { checkUvAvailable } = useUvAvailability()
 const project = ref<Project | null>(null)
 const showExportPage = ref(false)
 const isDragging = ref(false)
@@ -21,6 +23,7 @@ let dragCounter = 0
 waitForPyWebView(10_000)
   .then(() => {
     ready.value = true
+    checkUvAvailable()
   })
   .catch((err: unknown) => {
     bridgeError.value = err instanceof Error ? err.message : "Bridge init failed"

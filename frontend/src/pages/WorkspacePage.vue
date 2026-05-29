@@ -10,6 +10,7 @@ import { useSegmentEdit } from "@/composables/useSegmentEdit"
 import { useToast } from "@/composables/useToast"
 import { useUndoRedo } from "@/composables/useUndoRedo"
 import { usePluginManager } from "@/composables/usePluginManager"
+import { useUvAvailability } from "@/composables/useUvAvailability"
 import { EVENT_TASK_COMPLETED, EVENT_PROJECT_DIRTY, EVENT_PROJECT_SAVED } from "@/utils/events"
 import ProgressBar from "@/components/common/ProgressBar.vue"
 import Timeline from "@/components/workspace/Timeline.vue"
@@ -97,7 +98,7 @@ const videoRef = ref<HTMLVideoElement | null>(null)
 const currentTime = ref(0)
 const videoPaused = ref(true)
 const videoVolume = ref(0.75)
-const uvAvailable = ref<boolean | null>(null)
+const { uvAvailable } = useUvAvailability()
 const videoPlaybackRate = ref(1)
 
 // Preview mode: "edited" skips delete ranges, "original" plays full video
@@ -903,21 +904,9 @@ async function handleRedo() {
   }
 }
 
-async function checkUvAvailable() {
-  try {
-    const res = await call<{ available: boolean; path: string | null }>("check_uv_available")
-    if (res.success && res.data) {
-      uvAvailable.value = res.data.available
-    }
-  } catch {
-    uvAvailable.value = false
-  }
-}
-
 onMounted(() => {
   document.addEventListener("keydown", handleGlobalKeydown)
   document.addEventListener("mousedown", handleClickOutside)
-  checkUvAvailable()
 })
 
 onUnmounted(() => {

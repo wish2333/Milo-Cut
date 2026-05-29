@@ -4,6 +4,7 @@ import { call } from "@/bridge"
 import type { AppSettings } from "@/types/edit"
 import type { PluginInfo, ModelInfo, ModelMirror } from "@/types/project"
 import { usePluginManager } from "@/composables/usePluginManager"
+import { useUvAvailability } from "@/composables/useUvAvailability"
 
 defineProps<{
   visible: boolean
@@ -80,21 +81,8 @@ const installedPlugins = ref<PluginInfo[]>([])
 const downloadedModels = ref<ModelInfo[]>([])
 const notDownloadedModels = ref<ModelInfo[]>([])
 
-// UV availability check
-const uvAvailable = ref<boolean | null>(null)  // null = loading, true/false = checked
-const uvPath = ref<string | null>(null)
-
-async function checkUvAvailable() {
-  try {
-    const res = await call<{ available: boolean; path: string | null }>("check_uv_available")
-    if (res.success && res.data) {
-      uvAvailable.value = res.data.available
-      uvPath.value = res.data.path
-    }
-  } catch {
-    uvAvailable.value = false
-  }
-}
+// UV availability check (shared composable)
+const { uvAvailable, checkUvAvailable } = useUvAvailability()
 
 async function detectGpu() {
   const res = await call<{
@@ -157,8 +145,6 @@ onMounted(async () => {
   }
   // Load model download mirrors
   modelMirrors.value = await pluginManager.listModelMirrors()
-  // Check UV availability
-  await checkUvAvailable()
 })
 
 async function handleSave() {
@@ -577,7 +563,7 @@ async function loadPluginDataDir() {
                 <div>
                   <h3 class="text-sm font-medium text-amber-800">uv Not Found</h3>
                   <p class="text-xs text-amber-700 mt-1">
-                    ASR engine requires the uv package manager to create isolated environments. Please install uv first.
+                    ASR engine requires the uv package manager. Please install uv and restart the app, or click Re-check after installing.
                   </p>
                 </div>
               </div>
