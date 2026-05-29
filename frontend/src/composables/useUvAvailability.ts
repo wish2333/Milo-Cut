@@ -17,6 +17,18 @@ async function checkUvAvailable() {
   }
 }
 
+async function recheckUvAvailable() {
+  try {
+    const res = await call<{ available: boolean; path: string | null }>("check_uv_available", true)
+    if (res.success && res.data) {
+      uvAvailable.value = res.data.available
+      uvPath.value = res.data.path
+    }
+  } catch {
+    // keep current state on error
+  }
+}
+
 export function useUvAvailability() {
-  return { uvAvailable, uvPath, checkUvAvailable }
+  return { uvAvailable, uvPath, checkUvAvailable, recheckUvAvailable }
 }

@@ -82,7 +82,7 @@ const downloadedModels = ref<ModelInfo[]>([])
 const notDownloadedModels = ref<ModelInfo[]>([])
 
 // UV availability check (shared composable)
-const { uvAvailable, checkUvAvailable } = useUvAvailability()
+const { uvAvailable, recheckUvAvailable } = useUvAvailability()
 
 async function detectGpu() {
   const res = await call<{
@@ -580,7 +580,7 @@ async function loadPluginDataDir() {
                 </a>
                 <button
                   class="inline-flex items-center px-3 py-1.5 text-xs font-medium text-amber-700 bg-amber-100 rounded hover:bg-amber-200 transition-colors"
-                  @click="checkUvAvailable"
+                  @click="recheckUvAvailable"
                 >
                   Re-check
                 </button>
