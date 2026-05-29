@@ -1255,6 +1255,99 @@ Sprint 2.5 提交后用户实测发现多个运行时问题:
 
 ---
 
+## Sprint 3 补充: UV 可用性检测与引导 (2026-05-29)
+
+### 问题背景
+
+用户反馈 uv 二进制打包不可控且 macOS 有权限问题，改为运行时检测 uv 可用性，不可用时显示引导提示覆盖 ASR 引擎设置区域。
+
+### 实现内容
+
+#### 1. 后端 check_uv_available API
+
+**文件**: `main.py` (+13 行)
+
+- `import shutil` (stdlib)
+- `check_uv_available(force: bool = False)` @expose 方法
+- 使用 `shutil.which("uv")` 检测 PATH 中的 uv
+- 返回 `{"success": true, "data": {"available": bool, "path": str|null}}`
+- `MILO_FAKE_NO_UV=1` 环境变量伪装 uv 未安装（调试用）
+- `force=True` 时跳过环境变量伪装（重新检测按钮用）
+
+#### 2. 设置页 UV 引导覆盖层
+
+**文件**: `SettingsModal.vue` (+50 行)
+
+- AI Engine tab 顶部显示 amber 警告覆盖层
+- 标题: "uv Not Found"
+- 说明: "ASR engine requires the uv package manager. Please install uv and restart the app, or click Re-check after installing."
+- "Install uv" 按钮: 打开 `https://docs.astral.sh/uv/getting-started/installation/`
+- "Re-check" 按钮: 调用 `recheckUvAvailable()` (force=true)
+
+#### 3. 转录按钮冻结
+
+**文件**: `WorkspacePage.vue` (+18 行)
+
+- 转录按钮 `:disabled` 增加 `|| uvAvailable === false`
+- 转录按钮 `:title` 显示 "需要安装 uv"
+- 设置按钮同样冻结
+- 转录设置弹窗 uv 不可用时隐藏
+
+#### 4. 共享 Composable 重构
+
+**新建文件**: `frontend/src/composables/useUvAvailability.ts`
+
+- 模块级 `ref` 实现单例共享状态
+- `uvAvailable`: `ref<boolean | null>(null)`
+- `checkUvAvailable()`: 启动时检测（受 MILO_FAKE_NO_UV 控制）
+- `recheckUvAvailable()`: 重新检测（force=true，跳过伪装）
+
+**文件**: `App.vue` (+3 行)
+
+- `waitForPyWebView` 成功后调用 `checkUvAvailable()` 一次
+- 不再每次进入项目重新检测
+
+**文件**: `SettingsModal.vue` / `WorkspacePage.vue`
+
+- 移除本地 uv 状态和检测函数
+- 改用 `useUvAvailability()` 共享 composable
+
+#### 5. pywebview 回调竞态修复
+
+**文件**: `main.py`
+
+- `MILO_FAKE_NO_UV` 分支增加 `time.sleep(0.1)` 避免瞬间返回导致 pywebview `_returnValuesCallbacks` 竞态
+
+### 调试模式
+
+```powershell
+$env:MILO_FAKE_NO_UV="1"; uv run dev.py
+```
+
+- 启动后显示 "uv Not Found" 覆盖层，转录按钮冻结
+- 点击 "Re-check" 按钮真正检测 uv（忽略环境变量）
+
+### 提交记录
+
+| Commit | Message |
+|--------|---------|
+| `cd4f6ee` | `feat(ui): uv 可用性检测与引导 -- 设置页覆盖层 + 转录按钮冻结` |
+| `f537403` | `refactor(ui): uv check moved to shared composable -- check once at startup` |
+| `35f6689` | `fix(ui): add delay in MILO_FAKE_NO_UV to avoid pywebview callback race` |
+| `fb54c7a` | `feat(ui): re-check button bypasses MILO_FAKE_NO_UV for testing` |
+
+### 修改文件汇总
+
+| 文件 | 变更 |
+|------|------|
+| `main.py` | +14 行: check_uv_available @expose 方法 + MILO_FAKE_NO_UV + force 参数 |
+| `frontend/src/composables/useUvAvailability.ts` | 新建: 共享 composable (uvAvailable, checkUvAvailable, recheckUvAvailable) |
+| `frontend/src/App.vue` | +3 行: 启动时调用 checkUvAvailable |
+| `frontend/src/components/workspace/SettingsModal.vue` | +50/-22 行: UV 覆盖层 + 改用共享 composable |
+| `frontend/src/pages/WorkspacePage.vue` | +18/-15 行: 转录按钮冻结 + 改用共享 composable |
+
+---
+
 <a id="files-modified-summary"></a>
 ## Files Modified Summary
 
