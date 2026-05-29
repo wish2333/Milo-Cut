@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue"
+import { ref, onMounted, computed } from "vue"
 import { call } from "@/bridge"
 import type { AppSettings } from "@/types/edit"
+import type { PluginInfo, ModelInfo, ModelMirror } from "@/types/project"
+import { usePluginManager } from "@/composables/usePluginManager"
+import { useUvAvailability } from "@/composables/useUvAvailability"
 
 defineProps<{
   visible: boolean
@@ -16,12 +19,107 @@ const ffmpegInfo = ref<{ ffmpeg_path: string; ffprobe_path: string; version: str
 const gpuEncoders = ref<string[]>([])
 const saving = ref(false)
 const statusMsg = ref("")
+const activeTab = ref<"general" | "ai-engine" | "export">("general")
+
+// Plugin manager
+const pluginManager = usePluginManager()
+const pluginList = ref<PluginInfo[]>([])
+const modelList = ref<ModelInfo[]>([])
+const installingPlugin = ref<string | null>(null)
+
+// ASR models filtered by current engine, excluding ForcedAligner, deduplicated
+const asrModels = computed(() => {
+  if (!settings.value) return []
+  const engine = settings.value.asr_engine
+  const seen = new Set<string>()
+  return modelList.value.filter(m => {
+    if (m.engine !== engine || m.model_id.includes("ForcedAligner") || seen.has(m.model_id)) return false
+    seen.add(m.model_id)
+    return true
+  })
+})
+
+// Installed ASR engine plugins (CPU + GPU variants), deduplicated by plugin_id
+const installedAsrPlugins = computed(() => {
+  const seen = new Set<string>()
+  return installedPlugins.value.filter(p => {
+    if ((p.engine !== "faster-whisper" && p.engine !== "qwen3-asr") || seen.has(p.plugin_id)) return false
+    seen.add(p.plugin_id)
+    return true
+  })
+})
+
+// Whether the currently selected ASR plugin supports GPU
+const asrSupportsGpu = computed(() => {
+  const pid = settings.value?.asr_plugin_id ?? ''
+  return pid.length > 0 && !pid.includes('-cpu')
+})
+const installProgress = ref(0)
+const installMessage = ref("")
+
+// GPU detection
+const gpuInfo = ref<{
+  has_nvidia_gpu: boolean
+  cuda_available: boolean
+  cuda_version: string | null
+  gpu_name: string | null
+  recommendation: string
+  cuda_download_url: string | null
+} | null>(null)
+
+// Mirror source and cache options
+const selectedMirror = ref("official")
+const clearCache = ref(false)
+const availableMirrors = ref<Record<string, { name: string; note: string; stable: boolean }>>({})
+
+// Model download mirror
+const selectedModelMirror = ref<string | undefined>(undefined)
+const modelMirrors = ref<ModelMirror[]>([])
+
+// Installed plugins and downloaded models (filtered views)
+const installedPlugins = ref<PluginInfo[]>([])
+const downloadedModels = ref<ModelInfo[]>([])
+const notDownloadedModels = ref<ModelInfo[]>([])
+
+// UV availability check (shared composable)
+const { uvAvailable, recheckUvAvailable } = useUvAvailability()
+
+async function detectGpu() {
+  const res = await call<{
+    has_nvidia_gpu: boolean
+    cuda_available: boolean
+    cuda_version: string | null
+    gpu_name: string | null
+    recommendation: string
+    cuda_download_url: string | null
+  }>("detect_gpu")
+  if (res.success && res.data) {
+    gpuInfo.value = res.data
+  }
+}
+
+function refreshInstalledLists() {
+  installedPlugins.value = pluginList.value.filter(p => p.status === "installed")
+  // Deduplicate by model_id (CPU/GPU plugins share the same models)
+  const seen = new Set<string>()
+  downloadedModels.value = modelList.value.filter(m => {
+    if (m.status !== "downloaded" || seen.has(m.model_id)) return false
+    seen.add(m.model_id)
+    return true
+  })
+  const seenNotDownloaded = new Set<string>()
+  notDownloadedModels.value = modelList.value.filter(m => {
+    if (m.status === "downloaded" || seenNotDownloaded.has(m.model_id)) return false
+    seenNotDownloaded.add(m.model_id)
+    return true
+  })
+}
 
 onMounted(async () => {
-  const [settingsRes, ffmpegRes, gpuRes] = await Promise.all([
+  const [settingsRes, ffmpegRes, encodersRes] = await Promise.all([
     call<AppSettings>("get_settings"),
     call<{ ffmpeg_path: string; ffprobe_path: string; version: string }>("get_ffmpeg_info"),
-    call<{ encoders: string[] }>("detect_gpu"),
+    call<{ encoders: string[] }>("detect_gpu_encoders"),
   ])
   if (settingsRes.success && settingsRes.data) {
     settings.value = settingsRes.data
@@ -29,9 +127,24 @@ onMounted(async () => {
   if (ffmpegRes.success && ffmpegRes.data) {
     ffmpegInfo.value = ffmpegRes.data
   }
-  if (gpuRes.success && gpuRes.data) {
-    gpuEncoders.value = gpuRes.data.encoders
+  if (encodersRes.success && encodersRes.data) {
+    gpuEncoders.value = encodersRes.data.encoders
   }
+  // Load plugins and models
+  pluginList.value = await pluginManager.listPlugins()
+  modelList.value = await pluginManager.listModels()
+  refreshInstalledLists()
+  // Load plugin data directory
+  await loadPluginDataDir()
+  // Detect GPU capabilities
+  await detectGpu()
+  // Load available mirrors
+  const mirrorsRes = await call<Record<string, { name: string; note: string; stable: boolean }>>("list_mirrors")
+  if (mirrorsRes.success && mirrorsRes.data) {
+    availableMirrors.value = mirrorsRes.data
+  }
+  // Load model download mirrors
+  modelMirrors.value = await pluginManager.listModelMirrors()
 })
 
 async function handleSave() {
@@ -79,6 +192,159 @@ function updateField<K extends keyof AppSettings>(key: K, value: AppSettings[K])
     settings.value = { ...settings.value, [key]: value }
   }
 }
+
+// Handle engine plugin change: derive engine type, reset device/compute defaults
+function handleEnginePluginChange(pluginId: string) {
+  if (!settings.value) return
+  const plugin = installedAsrPlugins.value.find(p => p.plugin_id === pluginId)
+  if (!plugin) return
+  const gpu = !pluginId.includes('-cpu')
+  const engine = plugin.engine
+  const defaults: Partial<AppSettings> = {
+    asr_plugin_id: pluginId,
+    asr_engine: engine,
+    asr_device: gpu ? 'cuda' : 'cpu',
+    asr_language: engine === 'qwen3-asr' ? 'auto' : 'zh',
+  }
+  if (engine === 'qwen3-asr') {
+    defaults.qwen_compute_type = gpu ? 'bfloat16' : 'float16'
+  } else {
+    defaults.whisper_compute_type = 'int8_float16'
+  }
+  settings.value = { ...settings.value, ...defaults }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return "0 B"
+  const k = 1024
+  const sizes = ["B", "KB", "MB", "GB"]
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`
+}
+
+async function handleInstallPlugin(pluginId: string) {
+  installingPlugin.value = pluginId
+  installProgress.value = 0
+  installMessage.value = "Starting installation..."
+
+  const success = await pluginManager.installPlugin(
+    pluginId,
+    undefined,
+    (progress) => {
+      installProgress.value = progress.percent
+      installMessage.value = progress.message
+    },
+    selectedMirror.value,
+    clearCache.value,
+  )
+
+  if (success) {
+    statusMsg.value = "Plugin installed successfully"
+    pluginList.value = await pluginManager.listPlugins()
+    modelList.value = await pluginManager.listModels()
+    refreshInstalledLists()
+  } else {
+    statusMsg.value = pluginManager.error.value || "Installation failed"
+  }
+
+  installingPlugin.value = null
+  setTimeout(() => { statusMsg.value = "" }, 3000)
+}
+
+async function handleUninstallPlugin(pluginId: string) {
+  const success = await pluginManager.uninstallPlugin(pluginId)
+  if (success) {
+    statusMsg.value = "Plugin uninstalled"
+    pluginList.value = await pluginManager.listPlugins()
+    modelList.value = await pluginManager.listModels()
+    refreshInstalledLists()
+  } else {
+    statusMsg.value = pluginManager.error.value || "Uninstall failed"
+  }
+  setTimeout(() => { statusMsg.value = "" }, 3000)
+}
+
+async function handleDeleteModel(modelId: string) {
+  const success = await pluginManager.deleteModel(modelId)
+  if (success) {
+    statusMsg.value = "Model deleted"
+    modelList.value = await pluginManager.listModels()
+    refreshInstalledLists()
+  } else {
+    statusMsg.value = pluginManager.error.value || "Delete failed"
+  }
+  setTimeout(() => { statusMsg.value = "" }, 3000)
+}
+
+async function handleDownloadModel(modelId: string) {
+  statusMsg.value = `Downloading model...`
+  const success = await pluginManager.downloadModel(modelId, (progress) => {
+    statusMsg.value = progress.message || "Downloading..."
+  }, selectedModelMirror.value)
+  if (success) {
+    statusMsg.value = "Model downloaded"
+    modelList.value = await pluginManager.listModels()
+    refreshInstalledLists()
+  } else {
+    statusMsg.value = pluginManager.error.value || "Download failed"
+  }
+  setTimeout(() => { statusMsg.value = "" }, 3000)
+}
+
+async function handleOpenDataDirectory() {
+  const res = await call("open_data_directory")
+  if (!res.success) {
+    statusMsg.value = res.error || "Failed to open directory"
+    setTimeout(() => { statusMsg.value = "" }, 3000)
+  }
+}
+
+const cleaningUp = ref(false)
+async function handleCleanupTasks() {
+  if (cleaningUp.value) return
+  if (!window.confirm('Are you sure you want to clean up task files? This will delete all log and result files.')) return
+  cleaningUp.value = true
+  statusMsg.value = "Cleaning up task files..."
+  try {
+    const res = await call<{ deleted: number; size_freed: number }>("cleanup_tasks_folder")
+    if (res.success && res.data) {
+      const sizeMB = (res.data.size_freed / 1024 / 1024).toFixed(1)
+      statusMsg.value = `Cleaned up ${res.data.deleted} task files (${sizeMB} MB freed)`
+    } else {
+      statusMsg.value = res.error || "Cleanup failed"
+    }
+  } finally {
+    cleaningUp.value = false
+    setTimeout(() => { statusMsg.value = "" }, 5000)
+  }
+}
+
+async function handleCleanupTranscripts() {
+  if (cleaningUp.value) return
+  if (!window.confirm('Are you sure you want to clean up silence detection data?')) return
+  cleaningUp.value = true
+  statusMsg.value = "Cleaning up transcript files..."
+  try {
+    const res = await call<{ deleted: number; size_freed: number }>("cleanup_transcripts_folder")
+    if (res.success && res.data) {
+      const sizeMB = (res.data.size_freed / 1024 / 1024).toFixed(1)
+      statusMsg.value = `Cleaned up ${res.data.deleted} transcript files (${sizeMB} MB freed)`
+    } else {
+      statusMsg.value = res.error || "Cleanup failed"
+    }
+  } finally {
+    cleaningUp.value = false
+    setTimeout(() => { statusMsg.value = "" }, 5000)
+  }
+}
+
+const pluginDataDir = ref("")
+async function loadPluginDataDir() {
+  const res = await call<{ path: string }>("get_plugin_data_dir")
+  if (res.success && res.data) {
+    pluginDataDir.value = res.data.path
+  }
+}
 </script>
 
 <template>
@@ -92,7 +358,30 @@ function updateField<K extends keyof AppSettings>(key: K, value: AppSettings[K])
         <h2 class="text-lg font-semibold text-gray-800">Settings</h2>
       </div>
 
-      <div class="flex-1 overflow-y-auto px-6 py-4 space-y-6">
+      <div class="flex-1 overflow-y-auto px-6 py-4">
+        <!-- Tab Navigation -->
+        <div role="tablist" class="flex gap-1 border-b border-gray-200 mb-4">
+          <button
+            v-for="tab in [
+              { id: 'general' as const, label: 'General' },
+              { id: 'ai-engine' as const, label: 'AI Engine' },
+              { id: 'export' as const, label: 'Export' },
+            ]"
+            :key="tab.id"
+            role="tab"
+            :aria-selected="activeTab === tab.id"
+            class="px-4 py-2 text-sm font-medium transition-colors -mb-px border-b-2"
+            :class="activeTab === tab.id
+              ? 'border-blue-500 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'"
+            @click="activeTab = tab.id"
+          >
+            {{ tab.label }}
+          </button>
+        </div>
+
+        <!-- Tab 1: General -->
+        <div v-if="activeTab === 'general'" class="space-y-6">
         <!-- FFmpeg Section -->
         <section>
           <h3 class="text-sm font-semibold text-gray-700 mb-3">FFmpeg</h3>
@@ -153,6 +442,7 @@ function updateField<K extends keyof AppSettings>(key: K, value: AppSettings[K])
           </div>
         </section>
 
+
         <!-- GPU / Encoders Section -->
         <section>
           <h3 class="text-sm font-semibold text-gray-700 mb-3">Hardware Encoders</h3>
@@ -168,9 +458,9 @@ function updateField<K extends keyof AppSettings>(key: K, value: AppSettings[K])
           <p v-else class="text-sm text-gray-500">No encoders detected</p>
         </section>
 
-        <!-- Silence Detection Section -->
-        <section>
-          <h3 class="text-sm font-semibold text-gray-700 mb-3">Silence Detection</h3>
+            <!-- Silence Detection Section -->
+            <section>
+              <h3 class="text-sm font-semibold text-gray-700 mb-3">Silence Detection</h3>
           <div v-if="settings" class="space-y-3">
             <div class="flex items-center justify-between">
               <label class="text-sm text-gray-600">Threshold (dB)</label>
@@ -225,11 +515,453 @@ function updateField<K extends keyof AppSettings>(key: K, value: AppSettings[K])
               />
             </div>
           </div>
-        </section>
+            </section>
 
-        <!-- Export Section -->
-        <section>
-          <h3 class="text-sm font-semibold text-gray-700 mb-3">Export</h3>
+            <!-- Data Directory & Cleanup -->
+            <section class="pt-3 border-t border-gray-200">
+          <div class="mt-4 pt-3 border-t border-gray-200">
+            <div class="flex items-center justify-between">
+              <div>
+                <p class="text-sm text-gray-600">Data directory</p>
+                <p class="text-xs text-gray-400 mt-0.5 max-w-[350px] truncate">{{ pluginDataDir || 'Loading...' }}</p>
+              </div>
+              <button
+                class="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg transition-colors"
+                @click="handleOpenDataDirectory"
+              >
+                Open folder
+              </button>
+            </div>
+            <div class="flex gap-2 mt-3">
+              <button
+                class="px-3 py-1.5 text-xs bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 rounded-lg transition-colors disabled:opacity-50"
+                :disabled="cleaningUp"
+                @click="handleCleanupTasks"
+              >
+                {{ cleaningUp ? 'Cleaning...' : 'Cleanup task files' }}
+              </button>
+              <button
+                class="px-3 py-1.5 text-xs bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 rounded-lg transition-colors disabled:opacity-50"
+                :disabled="cleaningUp"
+                @click="handleCleanupTranscripts"
+              >
+                {{ cleaningUp ? 'Cleaning...' : 'Cleanup transcripts' }}
+              </button>
+            </div>
+          </div>
+            </section>
+          </div>
+
+          <!-- Tab 2: AI Engine -->
+          <div v-if="activeTab === 'ai-engine'" class="space-y-4">
+            <!-- UV not available overlay -->
+            <div v-if="uvAvailable === false" class="relative rounded-lg border border-amber-200 bg-amber-50 p-4 space-y-3">
+              <div class="flex items-start gap-3">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-amber-500 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                </svg>
+                <div>
+                  <h3 class="text-sm font-medium text-amber-800">uv Not Found</h3>
+                  <p class="text-xs text-amber-700 mt-1">
+                    ASR engine requires the uv package manager. Please install uv and restart the app, or click Re-check after installing.
+                  </p>
+                </div>
+              </div>
+              <div class="flex gap-2">
+                <a
+                  href="https://docs.astral.sh/uv/getting-started/installation/"
+                  target="_blank"
+                  class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-amber-600 rounded hover:bg-amber-700 transition-colors"
+                >
+                  Install uv
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                  </svg>
+                </a>
+                <button
+                  class="inline-flex items-center px-3 py-1.5 text-xs font-medium text-amber-700 bg-amber-100 rounded hover:bg-amber-200 transition-colors"
+                  @click="recheckUvAvailable"
+                >
+                  Re-check
+                </button>
+              </div>
+            </div>
+            <!-- Install progress -->
+            <div v-if="installingPlugin" class="p-3 bg-blue-50 rounded-lg">
+              <div class="flex items-center justify-between text-sm mb-1">
+                <span class="text-blue-700">{{ installMessage }}</span>
+                <span class="text-blue-600">{{ Math.round(installProgress) }}%</span>
+              </div>
+              <div class="w-full bg-blue-200 rounded-full h-2">
+                <div
+                  class="bg-blue-500 h-2 rounded-full transition-all duration-300"
+                  :style="{ width: `${installProgress}%` }"
+                />
+              </div>
+            </div>
+
+            <!-- GPU Detection Status -->
+            <div v-if="gpuInfo" class="p-3 rounded-lg text-sm space-y-1">
+              <!-- Has NVIDIA GPU + CUDA available -->
+              <div v-if="gpuInfo.has_nvidia_gpu && gpuInfo.cuda_available" class="text-green-700 bg-green-50 p-2 rounded">
+                <span class="font-medium">{{ gpuInfo.gpu_name }}</span> detected,
+                CUDA {{ gpuInfo.cuda_version }} available
+              </div>
+              <!-- Has NVIDIA GPU but no CUDA -->
+              <div v-else-if="gpuInfo.has_nvidia_gpu && !gpuInfo.cuda_available" class="text-yellow-700 bg-yellow-50 p-2 rounded space-y-1">
+                <div>
+                  <span class="font-medium">{{ gpuInfo.gpu_name }}</span> detected, CUDA not installed
+                </div>
+                <a
+                  v-if="gpuInfo.cuda_download_url"
+                  :href="gpuInfo.cuda_download_url"
+                  target="_blank"
+                  class="text-blue-600 hover:underline text-xs"
+                >
+                  Download CUDA installer
+                </a>
+              </div>
+              <!-- No NVIDIA GPU -->
+              <div v-else class="text-gray-500 bg-gray-50 p-2 rounded">
+                No NVIDIA GPU detected. GPU acceleration requires an NVIDIA graphics card.
+              </div>
+            </div>
+
+            <!-- Available Engines (not yet installed) -->
+            <div>
+              <p class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Available Engines</p>
+              <div class="space-y-2">
+                <!-- Faster Whisper -->
+                <div
+                  v-if="!pluginList.some(p => p.plugin_id === 'plugin-whisper' && p.status === 'installed')"
+                  class="flex items-center justify-between p-2 rounded-lg border border-gray-200"
+                >
+                  <div>
+                    <div class="text-sm font-medium text-gray-800">Faster Whisper ASR</div>
+                    <div class="text-xs text-gray-500">Lightweight, CPU-optimized</div>
+                  </div>
+                  <button
+                    class="px-3 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+                    :disabled="!!installingPlugin"
+                    @click.prevent="handleInstallPlugin('plugin-whisper')"
+                  >
+                    Install
+                  </button>
+                </div>
+
+                <!-- Qwen3 CPU -->
+                <div
+                  v-if="!pluginList.some(p => p.plugin_id === 'plugin-qwen-cpu' && p.status === 'installed')"
+                  class="flex items-center justify-between p-2 rounded-lg border border-gray-200"
+                >
+                  <div>
+                    <div class="text-sm font-medium text-gray-800">Qwen3 ASR (CPU)</div>
+                    <div class="text-xs text-gray-500">Works everywhere, no GPU required</div>
+                  </div>
+                  <button
+                    class="px-3 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+                    :disabled="!!installingPlugin"
+                    @click.prevent="handleInstallPlugin('plugin-qwen-cpu')"
+                  >
+                    Install
+                  </button>
+                </div>
+
+                <!-- Qwen3 GPU -->
+                <div
+                  v-if="!pluginList.some(p => p.plugin_id === 'plugin-qwen-gpu' && p.status === 'installed')"
+                  class="flex items-center justify-between p-2 rounded-lg border border-gray-200"
+                  :class="!gpuInfo?.has_nvidia_gpu ? 'opacity-50' : ''"
+                >
+                  <div>
+                    <div class="text-sm font-medium text-gray-800">Qwen3 ASR (GPU/CUDA 12.4)</div>
+                    <div class="text-xs text-gray-500">
+                      <span v-if="gpuInfo?.has_nvidia_gpu && gpuInfo?.cuda_available">{{ gpuInfo.gpu_name }}, CUDA {{ gpuInfo.cuda_version }}</span>
+                      <span v-else-if="gpuInfo?.has_nvidia_gpu">NVIDIA GPU detected, CUDA required</span>
+                      <span v-else>Requires NVIDIA GPU + CUDA driver</span>
+                    </div>
+                  </div>
+                  <button
+                    class="px-3 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+                    :disabled="!gpuInfo?.has_nvidia_gpu || !!installingPlugin"
+                    @click.prevent="handleInstallPlugin('plugin-qwen-gpu')"
+                  >
+                    Install
+                  </button>
+                </div>
+              </div>
+              <p v-if="!gpuInfo?.has_nvidia_gpu" class="text-xs text-gray-400 mt-1">
+                No NVIDIA GPU detected. GPU version requires an NVIDIA graphics card.
+              </p>
+              <a
+                v-if="gpuInfo?.has_nvidia_gpu && !gpuInfo?.cuda_available && gpuInfo?.cuda_download_url"
+                :href="gpuInfo.cuda_download_url"
+                target="_blank"
+                class="text-xs text-blue-600 hover:underline mt-1 inline-block"
+              >
+                Download CUDA installer
+              </a>
+            </div>
+
+            <!-- PyTorch Install Options -->
+            <div class="space-y-2 p-2 rounded-lg bg-gray-50">
+              <p class="text-xs font-medium text-gray-500">PyTorch Install Options</p>
+              <div>
+                <label class="text-xs text-gray-500">Mirror Source</label>
+                <select
+                  v-model="selectedMirror"
+                  class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg"
+                >
+                  <option v-for="(mirror, key) in availableMirrors" :key="key" :value="key">
+                    {{ mirror.name }}
+                  </option>
+                </select>
+                <p v-if="availableMirrors[selectedMirror]" class="text-xs text-gray-400">
+                  {{ availableMirrors[selectedMirror].note }}
+                </p>
+                <p v-if="selectedMirror !== 'official'" class="text-xs text-yellow-600">
+                  Domestic mirrors may lag behind on versions. Switch to official source if installation fails.
+                </p>
+              </div>
+              <label class="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  v-model="clearCache"
+                  class="w-4 h-4 mt-0.5 accent-blue-600"
+                />
+                <div>
+                  <span class="text-xs text-gray-700">Clear cache before install</span>
+                  <p class="text-xs text-gray-400">Recommended when switching mirrors</p>
+                </div>
+              </label>
+            </div>
+
+            <!-- Installed Engines -->
+            <div v-if="installedPlugins.length > 0">
+              <p class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Installed Engines</p>
+              <div class="space-y-1.5">
+                <div
+                  v-for="plugin in installedPlugins"
+                  :key="plugin.plugin_id"
+                  class="flex items-center justify-between py-1.5 px-2 rounded-lg bg-gray-50"
+                >
+                  <div class="flex items-center gap-2">
+                    <span class="text-sm text-gray-800">{{ plugin.display_name }}</span>
+                    <span class="text-xs text-gray-400">{{ plugin.engine }}</span>
+                  </div>
+                  <button
+                    class="px-2 py-1 text-xs border border-red-300 text-red-600 rounded hover:bg-red-50"
+                    @click="handleUninstallPlugin(plugin.plugin_id)"
+                  >
+                    Uninstall
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Downloaded Models -->
+            <div v-if="downloadedModels.length > 0">
+              <p class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Downloaded Models</p>
+              <div class="space-y-1.5">
+                <div
+                  v-for="model in downloadedModels"
+                  :key="model.model_id"
+                  class="flex items-center justify-between py-1.5 px-2 rounded-lg bg-gray-50"
+                >
+                  <div>
+                    <span class="text-sm text-gray-800">{{ model.display_name }}</span>
+                    <span class="text-xs text-gray-400 ml-1">({{ formatBytes(model.size_bytes) }})</span>
+                  </div>
+                  <button
+                    class="px-2 py-1 text-xs border border-red-300 text-red-600 rounded hover:bg-red-50"
+                    @click="handleDeleteModel(model.model_id)"
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Model Download Source -->
+            <div>
+              <label class="text-xs font-medium text-gray-500 uppercase tracking-wide">Download Source</label>
+              <select
+                v-model="selectedModelMirror"
+                class="mt-1 w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg bg-white"
+              >
+                <option :value="undefined">Auto Detect</option>
+                <option v-for="m in modelMirrors" :key="m.id" :value="m.id">{{ m.display_name }}</option>
+              </select>
+              <p class="mt-1 text-xs text-gray-400">Select a mirror if auto-detection fails</p>
+            </div>
+
+            <!-- Available Models (not yet downloaded) -->
+            <div v-if="notDownloadedModels.length > 0">
+              <p class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Available Models</p>
+              <div class="space-y-1.5">
+                <div
+                  v-for="model in notDownloadedModels"
+                  :key="model.model_id"
+                  class="flex items-center justify-between py-1.5 px-2 rounded-lg border border-gray-200"
+                >
+                  <div>
+                    <span class="text-sm text-gray-800">{{ model.display_name }}</span>
+                    <span class="text-xs text-gray-400 ml-1">({{ formatBytes(model.size_bytes) }})</span>
+                  </div>
+                  <button
+                    class="px-2 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+                    :disabled="!!installingPlugin"
+                    @click="handleDownloadModel(model.model_id)"
+                  >
+                    Download
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <p v-if="pluginList.length === 0" class="text-sm text-gray-500">No plugins available</p>
+          </div>
+
+          <!-- Tab 3: Export -->
+          <div v-if="activeTab === 'export'" class="space-y-6">
+            <!-- ASR Settings Section -->
+            <section v-if="settings">
+              <h3 class="text-sm font-semibold text-gray-700 mb-3">ASR Settings</h3>
+          <div class="space-y-3">
+            <div class="flex items-center justify-between">
+              <label class="text-sm text-gray-600">Default engine</label>
+              <select
+                :value="settings.asr_plugin_id || settings.asr_engine"
+                class="px-2 py-1 text-sm border border-gray-300 rounded"
+                @change="handleEnginePluginChange(($event.target as HTMLSelectElement).value)"
+              >
+                <option v-for="p in installedAsrPlugins" :key="p.plugin_id" :value="p.plugin_id">
+                  {{ p.display_name }}
+                </option>
+                <option v-if="installedAsrPlugins.length === 0" value="faster-whisper">Faster Whisper</option>
+                <option v-if="installedAsrPlugins.length === 0" value="qwen3-asr">Qwen3 ASR</option>
+              </select>
+            </div>
+            <div class="flex items-center justify-between">
+              <label class="text-sm text-gray-600">Model</label>
+              <select
+                :value="settings.asr_model_size"
+                class="px-2 py-1 text-sm border border-gray-300 rounded"
+                @change="updateField('asr_model_size', ($event.target as HTMLSelectElement).value)"
+              >
+                <option v-for="m in asrModels" :key="m.model_id" :value="m.model_id">
+                  {{ m.display_name }}
+                </option>
+              </select>
+            </div>
+            <div class="flex items-center justify-between">
+              <label class="text-sm text-gray-600">Language</label>
+              <select
+                :value="settings.asr_language"
+                class="px-2 py-1 text-sm border border-gray-300 rounded"
+                @change="updateField('asr_language', ($event.target as HTMLSelectElement).value)"
+              >
+                <option value="zh">Chinese</option>
+                <option value="en">English</option>
+                <option value="ja">Japanese</option>
+                <option value="ko">Korean</option>
+                <option value="auto">Auto-detect</option>
+              </select>
+            </div>
+            <div class="flex items-center justify-between">
+              <label class="text-sm text-gray-600">Device</label>
+              <select
+                :value="settings.asr_device"
+                class="px-2 py-1 text-sm border border-gray-300 rounded"
+                @change="updateField('asr_device', ($event.target as HTMLSelectElement).value as 'cpu' | 'cuda' | 'auto')"
+              >
+                <option value="cpu">CPU</option>
+                <option v-if="asrSupportsGpu" value="cuda">CUDA (GPU)</option>
+                <option v-if="settings.asr_engine === 'faster-whisper'" value="auto">Auto</option>
+              </select>
+              <span v-if="!asrSupportsGpu" class="text-xs text-gray-400 ml-2">GPU not available for this plugin</span>
+            </div>
+            <div class="flex items-center justify-between">
+              <label class="text-sm text-gray-600">Compute type</label>
+              <select
+                :value="settings.asr_engine === 'faster-whisper' ? settings.whisper_compute_type : settings.qwen_compute_type"
+                class="px-2 py-1 text-sm border border-gray-300 rounded"
+                @change="updateField(settings.asr_engine === 'faster-whisper' ? 'whisper_compute_type' : 'qwen_compute_type', ($event.target as HTMLSelectElement).value as 'int8' | 'int8_float16' | 'float16' | 'float32' | 'bfloat16')"
+              >
+                <template v-if="settings.asr_engine === 'faster-whisper'">
+                  <option value="int8">INT8 (fastest)</option>
+                  <option value="int8_float16">INT8 FP16 (balanced)</option>
+                  <option value="float16">FP16</option>
+                  <option value="float32">FP32 (highest quality)</option>
+                </template>
+                <template v-else>
+                  <option value="bfloat16">BF16 (recommended)</option>
+                  <option value="float16">FP16</option>
+                  <option value="float32">FP32</option>
+                </template>
+              </select>
+            </div>
+            <div v-if="settings.asr_engine === 'faster-whisper'" class="flex items-center justify-between">
+              <label class="text-sm text-gray-600">VAD filter</label>
+              <div class="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  :checked="settings.asr_vad_filter"
+                  class="w-4 h-4 mt-0.5 accent-blue-600"
+                  @change="updateField('asr_vad_filter', ($event.target as HTMLInputElement).checked)"
+                />
+                <span class="text-xs text-gray-500">Reduce hallucinations in noisy audio</span>
+              </div>
+            </div>
+            <!-- VAD sliders (visible when vad_filter is on and engine is faster-whisper) -->
+            <template v-if="settings.asr_engine === 'faster-whisper' && settings.asr_vad_filter">
+              <label class="block mb-2">
+                <span class="text-xs text-gray-500">
+                  VAD Threshold: {{ (settings.whisper_vad_threshold ?? 0.5).toFixed(2) }}
+                </span>
+                <input
+                  type="range"
+                  :value="settings.whisper_vad_threshold ?? 0.5"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  class="w-full mt-1"
+                  @input="updateField('whisper_vad_threshold', parseFloat(($event.target as HTMLInputElement).value))"
+                />
+              </label>
+              <label class="block mb-3">
+                <span class="text-xs text-gray-500">
+                  Min Silence (ms): {{ settings.whisper_vad_min_silence_ms ?? 500 }}
+                </span>
+                <input
+                  type="range"
+                  :value="settings.whisper_vad_min_silence_ms ?? 500"
+                  min="100"
+                  max="2000"
+                  step="50"
+                  class="w-full mt-1"
+                  @input="updateField('whisper_vad_min_silence_ms', parseInt(($event.target as HTMLInputElement).value))"
+                />
+              </label>
+            </template>
+            <div class="flex items-center justify-between">
+              <label class="text-sm text-gray-600">Duplicate threshold</label>
+              <input
+                type="number"
+                :value="settings.duplicate_threshold"
+                step="0.05"
+                min="0.5"
+                max="1.0"
+                class="w-24 px-2 py-1 text-sm border border-gray-300 rounded text-right"
+                @input="updateField('duplicate_threshold', Number(($event.target as HTMLInputElement).value))"
+              />
+            </div>
+          </div>
+            </section>
+
+            <!-- Export Settings Section -->
+            <section>
+              <h3 class="text-sm font-semibold text-gray-700 mb-3">Export</h3>
           <div v-if="settings" class="space-y-3">
             <div class="flex items-center justify-between">
               <label class="text-sm text-gray-600">Video codec</label>
@@ -346,7 +1078,8 @@ function updateField<K extends keyof AppSettings>(key: K, value: AppSettings[K])
               </select>
             </div>
           </div>
-        </section>
+            </section>
+          </div>
       </div>
 
       <div class="px-6 py-4 border-t border-gray-100 flex items-center justify-between">

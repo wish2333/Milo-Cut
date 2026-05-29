@@ -640,6 +640,31 @@ class ProjectService:
         logger.info("Deleted segment {}", segment_id)
         return {"success": True, "data": updated.model_dump()}
 
+    def clear_subtitles(self) -> dict:
+        """Remove all subtitle-type segments and their associated edit decisions."""
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        segments = self._current.transcript.segments
+        subtitle_ids = {s.id for s in segments if s.type == SegmentType.SUBTITLE}
+
+        if not subtitle_ids:
+            return {"success": True, "data": self._current.model_dump()}
+
+        remaining_segs = [s for s in segments if s.type != SegmentType.SUBTITLE]
+        remaining_edits = [
+            e for e in self._current.edits
+            if e.target_id not in subtitle_ids and e.source != "subtitle"
+        ]
+
+        updated = self._current.model_copy(update={
+            "transcript": self._current.transcript.model_copy(update={"segments": remaining_segs}),
+            "edits": remaining_edits,
+        })
+        self._current = updated
+        logger.info("Cleared {} subtitle segments", len(subtitle_ids))
+        return {"success": True, "data": updated.model_dump()}
+
     def delete_silence_segments(self) -> dict:
         """Remove all silence-type segments and their associated edit decisions."""
         if self._current is None:

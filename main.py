@@ -10,6 +10,7 @@ import os
 import pathlib
 from pathlib import Path
 import subprocess
+import shutil
 
 from pywebvue import App, Bridge, expose
 
@@ -25,6 +26,7 @@ from core.logging import get_logger, setup_frontend_sink, setup_logging
 from core.media_server import MediaServer
 from core.models import TaskType
 from core.paths import migrate_if_needed
+from core.plugin_manager import PluginManager, PLUGIN_REGISTRY
 from core.project_service import ProjectService
 from core.subtitle_service import parse_srt
 from core.task_manager import TaskManager
@@ -62,6 +64,7 @@ class MiloCutApi(Bridge):
         self._project = ProjectService()
         self._task_manager = TaskManager(self._emit)
         self._media_server = MediaServer()
+        self._plugin_manager = PluginManager()
         self._register_task_handlers()
 
     def _register_task_handlers(self) -> None:
@@ -93,8 +96,17 @@ class MiloCutApi(Bridge):
         self._task_manager.register_handler(
             TaskType.WAVEFORM_GENERATION, self._handle_waveform_generation
         )
+        self._task_manager.register_handler(
+            TaskType.PLUGIN_INSTALL, self._handle_plugin_install
+        )
+        self._task_manager.register_handler(
+            TaskType.MODEL_DOWNLOAD, self._handle_model_download
+        )
+        self._task_manager.register_handler(
+            TaskType.TRANSCRIPTION, self._handle_transcription
+        )
 
-    def _handle_silence_detection(self, task, cancel_event):
+    def _handle_silence_detection(self, task, cancel_event, progress_cb):
         """Run silence detection on the project media and store results."""
         if self._project.current is None or self._project.current.media is None:
             raise ValueError("No media loaded")
@@ -116,7 +128,7 @@ class MiloCutApi(Bridge):
             raise RuntimeError(store_result.get("error", "Failed to store silence results"))
         return {"project": store_result["data"]}
 
-    def _handle_export_video(self, task, cancel_event):
+    def _handle_export_video(self, task, cancel_event, progress_cb):
         """Export cut video as a background task."""
         if self._project.current is None:
             raise ValueError("No project open")
@@ -175,7 +187,7 @@ class MiloCutApi(Bridge):
             fade_mode=fade_mode,
         )
 
-    def _handle_export_subtitle(self, task, cancel_event):
+    def _handle_export_subtitle(self, task, cancel_event, progress_cb):
         """Export synchronized SRT as a background task."""
         if self._project.current is None:
             raise ValueError("No project open")
@@ -196,7 +208,7 @@ class MiloCutApi(Bridge):
             media_duration=media_duration,
         )
 
-    def _handle_export_vtt(self, task, cancel_event):
+    def _handle_export_vtt(self, task, cancel_event, progress_cb):
         """Export WebVTT as a background task."""
         if self._project.current is None:
             raise ValueError("No project open")
@@ -217,7 +229,7 @@ class MiloCutApi(Bridge):
             media_duration=media_duration,
         )
 
-    def _handle_export_audio(self, task, cancel_event):
+    def _handle_export_audio(self, task, cancel_event, progress_cb):
         """Export cut audio as a background task."""
         if self._project.current is None:
             raise ValueError("No project open")
@@ -251,7 +263,7 @@ class MiloCutApi(Bridge):
             fade_mode=fade_mode,
         )
 
-    def _handle_filler_detection(self, task, cancel_event):
+    def _handle_filler_detection(self, task, cancel_event, progress_cb):
         """Run filler word detection and store results."""
         if self._project.current is None:
             raise ValueError("No project open")
@@ -264,7 +276,7 @@ class MiloCutApi(Bridge):
             raise RuntimeError(store.get("error", "Failed to store analysis results"))
         return {"project": store["data"], "results": results_dicts}
 
-    def _handle_error_detection(self, task, cancel_event):
+    def _handle_error_detection(self, task, cancel_event, progress_cb):
         """Run error trigger detection and store results."""
         if self._project.current is None:
             raise ValueError("No project open")
@@ -277,7 +289,7 @@ class MiloCutApi(Bridge):
             raise RuntimeError(store.get("error", "Failed to store analysis results"))
         return {"project": store["data"], "results": results_dicts}
 
-    def _handle_full_analysis(self, task, cancel_event):
+    def _handle_full_analysis(self, task, cancel_event, progress_cb):
         """Run full analysis (filler + error) and store results."""
         if self._project.current is None:
             raise ValueError("No project open")
@@ -290,7 +302,7 @@ class MiloCutApi(Bridge):
             raise RuntimeError(store.get("error", "Failed to store analysis results"))
         return {"project": store["data"], "results": results_dicts}
 
-    def _handle_waveform_generation(self, task, cancel_event):
+    def _handle_waveform_generation(self, task, cancel_event, progress_cb):
         """Generate waveform peak data for the project media."""
         if self._project.current is None:
             raise ValueError("No project open")
@@ -305,7 +317,7 @@ class MiloCutApi(Bridge):
         if self._project._current_path:
             waveform_path = str(self._project._current_path.parent / "waveform.json")
         else:
-            from core.paths import get_projects_dir
+            from core.paths import get_data_dir, get_projects_dir
             name = self._project.current.project.name
             waveform_path = str(get_projects_dir() / name / "waveform.json")
 
@@ -330,6 +342,170 @@ class MiloCutApi(Bridge):
 
         progress_cb(100.0, "Waveform generated")
         return {"project": self._project.current.model_dump() if self._project.current else None}
+
+    def _handle_plugin_install(self, task, cancel_event, progress_cb):
+        """Install an ASR plugin and optionally download its model."""
+        plugin_id = task.payload.get("plugin_id", "")
+        model_id = task.payload.get("model_id", "")
+        mirror = task.payload.get("mirror", "official")
+        no_cache = task.payload.get("no_cache", False)
+
+        if not plugin_id:
+            raise ValueError("plugin_id is required")
+
+        # Install plugin
+        self._plugin_manager.install_plugin(plugin_id, progress_cb=progress_cb, mirror=mirror, no_cache=no_cache)
+
+        # Optionally download model
+        if model_id:
+            progress_cb(50.0, f"Downloading model {model_id}...")
+            self._plugin_manager.ensure_model(model_id, progress_cb=progress_cb, mirror=None)
+
+        return {
+            "plugin_id": plugin_id,
+            "model_id": model_id,
+            "status": "installed",
+        }
+
+    def _handle_model_download(self, task, cancel_event, progress_cb):
+        """Download a model via the task system."""
+        model_id = task.payload.get("model_id", "")
+        mirror = task.payload.get("mirror", None)
+
+        if not model_id:
+            raise ValueError("model_id is required")
+
+        self._plugin_manager.ensure_model(model_id, progress_cb=progress_cb, mirror=mirror)
+
+        return {
+            "model_id": model_id,
+            "status": "downloaded",
+        }
+
+    def _handle_transcription(self, task, cancel_event, progress_cb):
+        """Run ASR transcription as a background task."""
+        if self._project.current is None:
+            raise ValueError("No project open")
+        if self._project.current.media is None:
+            raise ValueError("No media in project")
+
+        media_path = self._project.current.media.path
+        settings = load_settings()
+
+        engine = task.payload.get("engine", settings.get("asr_engine", "faster-whisper"))
+        language = task.payload.get("language", settings.get("asr_language", "zh"))
+        device = task.payload.get("device", settings.get("asr_device", "cpu"))
+
+        if engine == "faster-whisper":
+            from core.asr_service import transcribe_with_whisper
+            from core.ffmpeg_service import _find_ffmpeg
+
+            model_size = task.payload.get("model_size", settings.get("asr_model_size", "large-v3-turbo"))
+            compute_type = task.payload.get("compute_type", settings.get("whisper_compute_type", "int8_float16"))
+            vad_filter = task.payload.get("vad_filter", settings.get("asr_vad_filter", True))
+            vad_threshold = settings.get("whisper_vad_threshold", 0.5)
+            vad_min_silence_ms = settings.get("whisper_vad_min_silence_ms", 500)
+            ffmpeg = _find_ffmpeg()
+
+            result = transcribe_with_whisper(
+                plugin_manager=self._plugin_manager,
+                media_path=media_path,
+                ffmpeg_path=ffmpeg,
+                model_size=model_size,
+                language=language,
+                device=device,
+                compute_type=compute_type,
+                vad_filter=vad_filter,
+                vad_threshold=vad_threshold,
+                vad_min_silence_ms=vad_min_silence_ms,
+                progress_cb=progress_cb,
+                cancel_event=cancel_event,
+            )
+        elif engine == "qwen3-asr":
+            from core.asr_service import transcribe_with_qwen
+
+            asr_model_size = task.payload.get("asr_model_size", settings.get("asr_model_size", "0.6B"))
+            aligner_model_size = task.payload.get("aligner_model_size", settings.get("asr_aligner_model_size", "0.6B"))
+            compute_type = settings.get("qwen_compute_type", "bfloat16")
+
+            result = transcribe_with_qwen(
+                plugin_manager=self._plugin_manager,
+                media_path=media_path,
+                asr_model_size=asr_model_size,
+                aligner_model_size=aligner_model_size,
+                language=language,
+                device=device,
+                compute_type=compute_type,
+                progress_cb=progress_cb,
+                cancel_event=cancel_event,
+            )
+        else:
+            raise ValueError(f"Unsupported ASR engine: {engine}")
+
+        if not result["success"]:
+            raise RuntimeError(result["error"])
+
+        # Update project transcript with ASR results
+        transcript_data = {
+            "engine": engine,
+            "language": result["data"].get("language", language),
+            "segments": result["data"].get("segments", []),
+        }
+        update_result = self._project.update_transcript(transcript_data["segments"])
+        if not update_result["success"]:
+            raise RuntimeError(update_result.get("error", "Failed to update transcript"))
+
+        # Auto-save SRT to project directory
+        srt_path = None
+        try:
+            from core.export_service import export_srt
+            from core.paths import get_data_dir
+            from datetime import datetime
+            project_name = self._project.current.project.name if self._project.current.project else "transcript"
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            srt_filename = f"{project_name}_{timestamp}.srt"
+            srt_dir = Path(get_data_dir()) / "transcripts"
+            srt_dir.mkdir(parents=True, exist_ok=True)
+            srt_path = str(srt_dir / srt_filename)
+
+            segments_for_export = []
+            for seg in result["data"].get("segments", []):
+                segments_for_export.append({
+                    "id": seg.get("id", ""),
+                    "start": seg.get("start", 0),
+                    "end": seg.get("end", 0),
+                    "text": seg.get("text", ""),
+                    "type": "subtitle",
+                })
+
+            srt_result = export_srt(
+                segments=segments_for_export,
+                edits=[],
+                output_path=srt_path,
+                media_duration=self._project.current.media.duration if self._project.current.media else 0,
+            )
+            if srt_result.get("success"):
+                logger.info("Auto-saved transcription SRT to {}", srt_path)
+            else:
+                logger.warning("Failed to auto-save SRT: {}", srt_result.get("error"))
+                srt_path = None
+        except Exception as e:
+            logger.warning("Failed to auto-save SRT: {}", e)
+            srt_path = None
+
+        # Import the auto-saved SRT back into the project
+        if srt_path:
+            try:
+                self.import_srt(srt_path)
+            except Exception as e:
+                logger.warning("Failed to import auto-saved SRT: {}", e)
+
+        return {
+            "project": update_result["data"],
+            "segment_count": len(result["data"].get("segments", [])),
+            "word_count": result["data"].get("word_count", 0),
+            "srt_path": srt_path,
+        }
 
     # ================================================================
     # System
@@ -567,6 +743,10 @@ class MiloCutApi(Bridge):
         return self._project.delete_silence_segments()
 
     @expose
+    def clear_subtitles(self) -> dict:
+        return self._project.clear_subtitles()
+
+    @expose
     def delete_subtitle_trim_edits(self) -> dict:
         return self._project.delete_subtitle_trim_edits()
 
@@ -614,9 +794,187 @@ class MiloCutApi(Bridge):
     def get_recent_projects(self) -> dict:
         return self._project.get_recent_projects()
 
+    # ================================================================
+    # Plugin Management
+    # ================================================================
+
+    @expose
+    def list_plugins(self) -> dict:
+        """Return all registered plugins with their installation status."""
+        return {"success": True, "data": self._plugin_manager.list_plugins()}
+
+    @expose
+    def install_plugin(self, plugin_id: str, model_id: str = "", mirror: str = "official", no_cache: bool = False) -> dict:
+        """Start a background task to install a plugin and optionally download its model."""
+        if plugin_id not in PLUGIN_REGISTRY:
+            return {"success": False, "error": f"Unknown plugin: {plugin_id}"}
+        task = self._task_manager.create_task(
+            "plugin_install",
+            {"plugin_id": plugin_id, "model_id": model_id, "mirror": mirror, "no_cache": no_cache},
+        )
+        if not task["success"]:
+            return task
+        self._task_manager.start_task(task["data"]["id"])
+        return {"success": True, "data": {"task_id": task["data"]["id"]}}
+
+    @expose
+    def uninstall_plugin(self, plugin_id: str) -> dict:
+        """Uninstall a plugin by removing its venv and registry entry."""
+        try:
+            self._plugin_manager.uninstall_plugin(plugin_id)
+            return {"success": True}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    @expose
+    def list_models(self) -> dict:
+        """Return all registered models with their download status."""
+        return {"success": True, "data": self._plugin_manager.list_models()}
+
+    @expose
+    def download_model(self, model_id: str, mirror: str | None = None) -> dict:
+        """Download a model. Returns immediately; use task progress for updates."""
+        try:
+            task = self._task_manager.create_task(
+                "model_download", {"model_id": model_id, "mirror": mirror}
+            )
+            if not task["success"]:
+                return task
+            self._task_manager.start_task(task["data"]["id"])
+            return {"success": True, "data": {"task_id": task["data"]["id"]}}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    @expose
+    def list_model_mirrors(self) -> dict:
+        """Return available model download mirrors."""
+        try:
+            from core.plugin_manager import MODEL_MIRRORS
+            mirrors = [
+                {"id": k, "display_name": v["display_name"]}
+                for k, v in MODEL_MIRRORS.items()
+            ]
+            return {"success": True, "data": mirrors}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    @expose
+    def delete_model(self, model_id: str) -> dict:
+        """Delete a downloaded model."""
+        try:
+            self._plugin_manager.delete_model(model_id)
+            return {"success": True}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    @expose
+    def check_plugin_status(self, engine: str) -> dict:
+        """Check if an ASR engine is ready (plugin installed + model downloaded)."""
+        # Find the plugin for this engine
+        plugin_id = None
+        for pid, meta in PLUGIN_REGISTRY.items():
+            if meta["engine"] == engine:
+                plugin_id = pid
+                break
+
+        if plugin_id is None:
+            return {"success": False, "error": f"Unknown engine: {engine}"}
+
+        installed = self._plugin_manager.is_installed(plugin_id)
+        models = PLUGIN_REGISTRY[plugin_id]["models"]
+        downloaded_models = {
+            mid: self._plugin_manager.is_model_downloaded(mid)
+            for mid in models
+        }
+
+        return {
+            "success": True,
+            "data": {
+                "engine": engine,
+                "plugin_id": plugin_id,
+                "installed": installed,
+                "models": downloaded_models,
+                "ready": installed and any(downloaded_models.values()),
+            },
+        }
+
+    @expose
+    def get_asr_log(self, task_id: str) -> dict:
+        """Return the log content for an ASR task."""
+        return {"success": True, "data": self._plugin_manager.get_asr_log(task_id)}
+
+    @expose
+    def list_asr_logs(self) -> dict:
+        """Return ASR log file list sorted by modification time (newest first)."""
+        return {"success": True, "data": self._plugin_manager.list_asr_logs()}
+
+    @expose
+    def get_asr_task_state(self, task_id: str) -> dict:
+        """Return the current state of a subprocess ASR task."""
+        return {"success": True, "data": self._plugin_manager.get_subprocess_state(task_id)}
+
     @expose
     def get_settings(self) -> dict:
         return self._project.get_settings()
+
+    @expose
+    def get_plugin_data_dir(self) -> dict:
+        """Return the plugin data directory path."""
+        from core.paths import get_plugin_data_dir
+        path = get_plugin_data_dir()
+        return {"success": True, "data": {"path": str(path)}}
+
+    @expose
+    def open_data_directory(self) -> dict:
+        """Open the plugin data directory in the system file manager."""
+        import os
+        from core.paths import get_plugin_data_dir
+        path = get_plugin_data_dir()
+        try:
+            os.startfile(str(path))
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    @expose
+    def cleanup_tasks_folder(self) -> dict:
+        """Clean up old transcription task files (logs and results)."""
+        try:
+            tasks_dir = Path(get_data_dir()) / "plugins" / "tasks"
+            if not tasks_dir.exists():
+                return {"success": True, "data": {"deleted": 0, "message": "No tasks folder found"}}
+
+            deleted = 0
+            for f in tasks_dir.iterdir():
+                if f.is_file() and (f.suffix in (".log", ".json")):
+                    f.unlink()
+                    deleted += 1
+
+            return {"success": True, "data": {"deleted": deleted, "message": f"Cleaned up {deleted} task files"}}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    @expose
+    def cleanup_transcripts_folder(self) -> dict:
+        """Delete all auto-saved transcription SRT files."""
+        try:
+            transcripts_dir = get_data_dir() / "transcripts"
+            if not transcripts_dir.exists():
+                return {"success": True, "data": {"deleted": 0, "size_freed": 0}}
+
+            deleted = 0
+            size_freed = 0
+            for f in transcripts_dir.iterdir():
+                if f.is_file() and f.suffix == ".srt":
+                    size_freed += f.stat().st_size
+                    f.unlink()
+                    deleted += 1
+
+            logger.info("Cleaned up transcripts folder: {} files, {} bytes freed", deleted, size_freed)
+            return {"success": True, "data": {"deleted": deleted, "size_freed": size_freed}}
+        except Exception as e:
+            logger.exception("cleanup_transcripts_folder failed")
+            return {"success": False, "error": str(e)}
 
     @expose
     def update_settings(self, updates: dict) -> dict:
@@ -644,8 +1002,8 @@ class MiloCutApi(Bridge):
         return {"success": True, "data": None}
 
     @expose
-    def detect_gpu(self) -> dict:
-        """Detect available encoders via ffmpeg -encoders for reliable detection."""
+    def detect_gpu_encoders(self) -> dict:
+        """Detect available FFmpeg encoders."""
         from core.ffmpeg_presets import ENCODER_METADATA
         encoders: list[str] = []
         try:
@@ -659,7 +1017,6 @@ class MiloCutApi(Bridge):
             if result.returncode == 0:
                 registered = result.stdout
                 for codec_name in ENCODER_METADATA:
-                    # Check encoder is registered: line starts with whitespace + codec name
                     if f" {codec_name} " in registered:
                         encoders.append(codec_name)
         except Exception:
@@ -671,6 +1028,22 @@ class MiloCutApi(Bridge):
                 "encoders": sorted(set(encoders)),
             },
         }
+
+    @expose
+    def detect_gpu(self) -> dict:
+        """Detect GPU status for plugin installation recommendations."""
+        from core.plugin_manager import detect_gpu
+        try:
+            result = detect_gpu()
+            return {"success": True, "data": result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    @expose
+    def list_mirrors(self) -> dict:
+        """List available PyTorch mirrors."""
+        from core.plugin_manager import PYTORCH_MIRRORS
+        return {"success": True, "data": PYTORCH_MIRRORS}
 
     @expose
     def get_ffmpeg_info(self) -> dict:
@@ -693,6 +1066,27 @@ class MiloCutApi(Bridge):
         except Exception:
             pass
         return {"success": True, "data": info}
+
+    @expose
+    def check_uv_available(self, force: bool = False) -> dict:
+        """Check if uv package manager is available in PATH."""
+        if not force and os.environ.get("MILO_FAKE_NO_UV"):
+            import time; time.sleep(0.1)  # avoid pywebview callback race
+            return {
+                "success": True,
+                "data": {
+                    "available": False,
+                    "path": None,
+                },
+            }
+        uv_path = shutil.which("uv")
+        return {
+            "success": True,
+            "data": {
+                "available": uv_path is not None,
+                "path": uv_path,
+            },
+        }
 
     @expose
     def get_encoder_metadata(self) -> dict:

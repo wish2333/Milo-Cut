@@ -1,6 +1,6 @@
 [project]
 name = "milo-cut"
-version = "1.1.0"
+version = "1.2.0"
 description = "AI-powered video preprocessing tool for oral presentation videos"
 requires-python = ">=3.11"
 dependencies = [
@@ -8,6 +8,8 @@ dependencies = [
     "loguru>=0.7",
     "pydantic>=2.0",
     "opentimelineio>=0.18.1",
+    "huggingface-hub>=0.20",
+    "modelscope>=1.10",
 ]
 
 [dependency-groups]

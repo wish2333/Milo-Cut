@@ -11,6 +11,7 @@ const ANALYSIS_TASKS: TaskType[] = [
   "filler_detection",
   "error_detection",
   "full_analysis",
+  "transcription",
 ]
 
 export function useAnalysis(
@@ -65,6 +66,12 @@ export function useAnalysis(
     return await startTask(task.id)
   }
 
+  async function runTranscription(payload?: Record<string, unknown>): Promise<boolean> {
+    const task = await createTask("transcription", payload)
+    if (!task) return false
+    return await startTask(task.id)
+  }
+
   async function confirmEdit(editId: string): Promise<boolean> {
     const res = await call<Project>("update_edit_decision", editId, "confirmed")
     if (res.success && res.data) {
@@ -100,10 +107,12 @@ export function useAnalysis(
   return {
     isDetecting,
     detectionProgress,
+    activeTask,
     runSilenceDetection,
     runFillerDetection,
     runErrorDetection,
     runFullAnalysis,
+    runTranscription,
     confirmEdit,
     rejectEdit,
     confirmAllEdits,

@@ -230,7 +230,16 @@ a = Analysis(
     datas=[
 {datas_line}
     ],
-    hiddenimports=["pywebvue", "pywebvue.app", "pywebvue.bridge"],
+    hiddenimports=[
+        "pywebvue",
+        "pywebvue.app",
+        "pywebvue.bridge",
+        "core.asr_service",
+        "core.plugin_manager",
+        "core.media_server",
+        "core.export_timeline",
+        "core.ffmpeg_presets",
+    ],
     hookspath=[],
     hooksconfig={{}},
     runtime_hooks=[],

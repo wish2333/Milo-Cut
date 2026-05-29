@@ -57,6 +57,34 @@ def get_temp_dir() -> Path:
     return d
 
 
+def get_plugin_data_dir() -> Path:
+    """Return the plugin data directory based on environment.
+
+    - Development (not frozen): <project_root>/data/plugins/ (便于调试)
+    - Production (frozen): 跨平台标准路径 (打包环境保持现有逻辑)
+        - Windows: %LOCALAPPDATA%/MiloCut/
+        - macOS: ~/Library/Application Support/MiloCut/
+        - Linux: ~/.local/share/milocut/
+    """
+    # Development environment: use project data directory
+    if not getattr(sys, "frozen", False):
+        d = get_data_dir() / "plugins"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    # Production environment: use cross-platform standard paths
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        d = base / "MiloCut"
+    elif sys.platform == "darwin":
+        d = Path.home() / "Library" / "Application Support" / "MiloCut"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+        d = base / "milocut"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def _old_appdata_dir() -> Path | None:
     """Check for legacy data in APPDATA / XDG_CONFIG_HOME."""
     if sys.platform == "win32":

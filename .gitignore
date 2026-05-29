@@ -227,6 +227,7 @@ frontend_dist/
 
 # Claude
 settings.local.json
+.omo
 
 # Project
 project.json

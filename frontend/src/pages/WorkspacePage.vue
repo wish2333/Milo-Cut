@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue"
-import type { Project, Segment, EditDecision } from "@/types/project"
+import type { Project, Segment, EditDecision, ModelInfo } from "@/types/project"
 import { formatTimeShort } from "@/utils/format"
 import { call, onEvent } from "@/bridge"
 import { useAnalysis } from "@/composables/useAnalysis"
@@ -9,6 +9,8 @@ import { useEdit } from "@/composables/useEdit"
 import { useSegmentEdit } from "@/composables/useSegmentEdit"
 import { useToast } from "@/composables/useToast"
 import { useUndoRedo } from "@/composables/useUndoRedo"
+import { usePluginManager } from "@/composables/usePluginManager"
+import { useUvAvailability } from "@/composables/useUvAvailability"
 import { EVENT_TASK_COMPLETED, EVENT_PROJECT_DIRTY, EVENT_PROJECT_SAVED } from "@/utils/events"
 import ProgressBar from "@/components/common/ProgressBar.vue"
 import Timeline from "@/components/workspace/Timeline.vue"
@@ -45,10 +47,12 @@ const {
 const {
   isDetecting,
   detectionProgress,
+  activeTask,
   runSilenceDetection,
   runFillerDetection,
   runErrorDetection,
   runFullAnalysis,
+  runTranscription,
   confirmEdit,
   rejectEdit,
 } = useAnalysis(projectRef, pushSnapshot)
@@ -80,19 +84,161 @@ const {
 } = useSegmentEdit(projectRef as any, (val: Project) => emit("project-updated", val), pushSnapshot)
 
 const { showToast } = useToast()
+const { listPlugins, checkEngineReady, listModels } = usePluginManager()
 
 const statusMessage = ref("")
 const errorMessage = ref("")
 let statusTimer: ReturnType<typeof setTimeout> | null = null
 const showAnalysisDropdown = ref(false)
 const showSilenceSettings = ref(false)
+const showTranscribeSettings = ref(false)
 const videoUrl = ref("")
 const waveformUrl = ref("")
 const videoRef = ref<HTMLVideoElement | null>(null)
 const currentTime = ref(0)
 const videoPaused = ref(true)
 const videoVolume = ref(0.75)
+const { uvAvailable } = useUvAvailability()
 const videoPlaybackRate = ref(1)
+
+// Preview mode: "edited" skips delete ranges, "original" plays full video
+const previewMode = ref<"edited" | "original">("edited")
+let rafId: number | null = null
+
+const deleteRanges = computed(() => {
+  return edits.value
+    .filter(e => e.status === "confirmed" && e.action === "delete")
+    .map(e => ({ start: e.start, end: e.end }))
+    .sort((a, b) => a.start - b.start)
+})
+
+function checkSkip(time: number): boolean {
+  for (const range of deleteRanges.value) {
+    if (time >= range.start && time < range.end) {
+      videoRef.value!.currentTime = range.end
+      return true
+    }
+  }
+  return false
+}
+
+function animationLoop() {
+  if (videoRef.value && !videoRef.value.paused) {
+    const time = videoRef.value.currentTime
+    if (!checkSkip(time)) {
+      currentTime.value = time
+    }
+  }
+  rafId = requestAnimationFrame(animationLoop)
+}
+
+function handleVideoSeeked() {
+  if (videoRef.value) {
+    if (previewMode.value === "edited" && !videoRef.value.paused) {
+      checkSkip(videoRef.value.currentTime)
+    }
+    currentTime.value = videoRef.value.currentTime
+  }
+}
+
+function togglePreviewMode() {
+  previewMode.value = previewMode.value === "edited" ? "original" : "edited"
+}
+
+// RAF lifecycle: start/stop based on previewMode and play state
+watch([previewMode, videoPaused], ([mode, paused]) => {
+  if (mode === "edited" && !paused) {
+    if (rafId === null) {
+      rafId = requestAnimationFrame(animationLoop)
+    }
+  } else {
+    if (rafId !== null) {
+      cancelAnimationFrame(rafId)
+      rafId = null
+    }
+  }
+})
+
+// ASR Transcription settings - per-engine storage so switching preserves settings
+const asrSettingsPerEngine = ref<Record<string, {
+  model_size: string
+  language: string
+  device: "cpu" | "cuda" | "auto"
+  compute_type: string
+  vad_filter: boolean
+  vad_threshold: number
+  vad_min_silence_ms: number
+}>>({
+  "faster-whisper": {
+    model_size: "large-v3-turbo",
+    language: "zh",
+    device: "cuda" as "cpu" | "cuda" | "auto",
+    compute_type: "int8_float16",
+    vad_filter: true,
+    vad_threshold: 0.5,
+    vad_min_silence_ms: 500,
+  },
+  "qwen3-asr": {
+    model_size: "Qwen/Qwen3-ASR-0.6B",
+    language: "auto",
+    device: "cuda" as "cpu" | "cuda" | "auto",
+    compute_type: "bfloat16",
+    vad_filter: false,
+    vad_threshold: 0.5,
+    vad_min_silence_ms: 500,
+  },
+})
+
+// Compute type options per engine
+const computeTypeOptions = computed(() => {
+  if (asrEngine.value === 'faster-whisper') {
+    return [
+      { value: 'int8', label: 'INT8 (fastest)' },
+      { value: 'int8_float16', label: 'INT8 FP16 (balanced)' },
+      { value: 'float16', label: 'FP16' },
+      { value: 'float32', label: 'FP32 (highest quality)' },
+    ]
+  }
+  return [
+    { value: 'bfloat16', label: 'BF16 (recommended)' },
+    { value: 'float16', label: 'FP16' },
+    { value: 'float32', label: 'FP32' },
+  ]
+})
+
+// Current engine's pluginId for device filtering - use asrPluginId directly
+// since it tracks the exact selected variant (CPU vs GPU)
+const currentEnginePluginId = computed(() => {
+  return asrPluginId.value
+})
+
+// Whether current engine supports GPU (CUDA)
+const supportsGpu = computed(() => {
+  const pid = currentEnginePluginId.value
+  // CPU-only plugins have "-cpu" suffix in pluginId
+  return pid.length > 0 && !pid.includes('-cpu')
+})
+
+const asrEngine = ref<"faster-whisper" | "qwen3-asr">("faster-whisper")
+const asrPluginId = ref("")  // Tracks which specific plugin variant is selected (CPU vs GPU)
+
+// Installed ASR engines (filtered from plugin list)
+interface InstalledEngine {
+  engine: string
+  displayName: string
+  pluginId: string
+  ready: boolean
+}
+const installedEngines = ref<InstalledEngine[]>([])
+const hasInstalledEngines = computed(() => installedEngines.value.length > 0)
+
+// Available ASR models (loaded from plugin manager)
+const modelList = ref<ModelInfo[]>([])
+const availableModels = computed(() => {
+  return modelList.value
+    .filter(m => m.engine === asrEngine.value && !m.model_id.includes("ForcedAligner"))
+    .filter((m, i, arr) => arr.findIndex(x => x.model_id === m.model_id) === i)
+})
 
 const silenceThreshold = ref(-30)
 const silenceMinDuration = ref(0.5)
@@ -157,6 +303,10 @@ const mergedSegments = computed<Segment[]>(() => {
 
 const silenceCount = computed(() => segments.value.filter(s => s.type === "silence").length)
 const subtitleCount = computed(() => segments.value.filter(s => s.type === "subtitle").length)
+const isTranscribing = computed(() => {
+  const t = activeTask.value
+  return t !== null && t.type === "transcription" && t.status === "running"
+})
 
 async function loadVideoUrl() {
   const mediaPath = props.project.media?.path
@@ -211,6 +361,11 @@ onMounted(async () => {
   await loadVideoUrl()
   await resolveWaveformUrl()
   await loadSilenceSettings()
+  await loadInstalledEngines()  // Must run BEFORE loadAsrSettings to populate installedEngines
+  await loadAsrSettings()
+  modelList.value = await listModels()
+  // Validate loaded model_size against available models
+  validateModelSize()
 })
 
 watch(() => props.project.media?.waveform_path, () => {
@@ -240,6 +395,166 @@ async function loadSilenceSettings() {
     silenceSubtitlePadding.value = Number(res.data.silence_subtitle_padding ?? 0.0)
     trimSubtitlesOnOverlap.value = res.data.trim_subtitles_on_silence_overlap !== false
   }
+}
+
+async function loadAsrSettings() {
+  const res = await call<Record<string, unknown>>("get_settings")
+  if (res.success && res.data) {
+    const engine = (res.data.asr_engine as "faster-whisper" | "qwen3-asr") || "faster-whisper"
+    asrEngine.value = engine
+
+    // Restore pluginId from saved settings, or auto-select first matching engine
+    const savedPluginId = res.data.asr_plugin_id as string
+    if (savedPluginId && installedEngines.value.find(e => e.pluginId === savedPluginId)) {
+      asrPluginId.value = savedPluginId
+    } else {
+      // Auto-select first installed engine for this engine type
+      const firstEng = installedEngines.value.find(e => e.engine === engine)
+      if (firstEng) asrPluginId.value = firstEng.pluginId
+    }
+
+    // Shared settings
+    const vadFilter = res.data.asr_vad_filter !== false
+
+    // Determine per-engine device based on plugin capabilities
+    const whisperPluginId = installedEngines.value.find(e => e.engine === "faster-whisper")?.pluginId ?? ""
+    const qwenPluginId = installedEngines.value.find(e => e.engine === "qwen3-asr")?.pluginId ?? ""
+    const whisperSupportsGpu = whisperPluginId.length > 0 && !whisperPluginId.includes("-cpu")
+    const qwenSupportsGpu = qwenPluginId.length > 0 && !qwenPluginId.includes("-cpu")
+
+    // Load faster-whisper settings (engine-prefixed keys from config.py)
+    const whisperModelSize = (res.data.asr_model_size as string) || "large-v3-turbo"
+    const whisperDevice = (res.data.asr_device as "cpu" | "cuda" | "auto") || (whisperSupportsGpu ? "cuda" : "cpu")
+    asrSettingsPerEngine.value["faster-whisper"] = {
+      model_size: whisperModelSize,
+      language: (res.data.asr_language as string) || "zh",
+      device: whisperDevice,
+      compute_type: (res.data.whisper_compute_type as string) || "int8_float16",
+      vad_filter: vadFilter,
+      vad_threshold: Number(res.data.whisper_vad_threshold ?? 0.5),
+      vad_min_silence_ms: Number(res.data.whisper_vad_min_silence_ms ?? 500),
+    }
+
+    // Load qwen3-asr settings
+    const qwenModelSize = (res.data.asr_model_size as string) || "Qwen/Qwen3-ASR-0.6B"
+    const qwenDevice = qwenSupportsGpu ? "cuda" : "cpu"
+    asrSettingsPerEngine.value["qwen3-asr"] = {
+      model_size: qwenModelSize,
+      language: (res.data.qwen_language as string) || "auto",
+      device: qwenDevice,
+      compute_type: (res.data.qwen_compute_type as string) || (qwenSupportsGpu ? "bfloat16" : "float16"),
+      vad_filter: false,
+      vad_threshold: 0.5,
+      vad_min_silence_ms: 500,
+    }
+  }
+}
+
+async function loadInstalledEngines() {
+  const plugins = await listPlugins()
+  const engines: InstalledEngine[] = []
+
+  for (const p of plugins) {
+    if (p.status === "installed") {
+      const status = await checkEngineReady(p.engine)
+      engines.push({
+        engine: p.engine,
+        displayName: p.display_name,
+        pluginId: p.plugin_id,
+        ready: status.ready,
+      })
+    }
+  }
+
+  installedEngines.value = engines
+
+  // If current selected engine is not installed, switch to first available
+  if (engines.length > 0 && !engines.find(e => e.engine === asrEngine.value)) {
+    asrEngine.value = engines[0].engine as "faster-whisper" | "qwen3-asr"
+  }
+}
+
+function validateModelSize() {
+  const models = availableModels.value
+  const current = asrSettingsPerEngine.value[asrEngine.value]
+  if (current && models.length > 0 && !models.find(m => m.model_id === current.model_size)) {
+    asrSettingsPerEngine.value[asrEngine.value].model_size = models[0].model_id
+  }
+}
+
+// Derive engine from selected pluginId, and update device/compute when plugin changes
+watch(asrPluginId, (newPluginId) => {
+  if (!newPluginId) return
+  const eng = installedEngines.value.find(e => e.pluginId === newPluginId)
+  if (eng) {
+    const prevEngine = asrEngine.value
+    asrEngine.value = eng.engine as "faster-whisper" | "qwen3-asr"
+    // If engine type didn't change (e.g. CPU->GPU within same engine),
+    // watch(asrEngine) won't fire, so we must update device/compute here
+    if (prevEngine === eng.engine) {
+      const gpu = !newPluginId.includes('-cpu')
+      const settings = asrSettingsPerEngine.value[eng.engine]
+      if (settings) {
+        settings.device = gpu ? 'cuda' : 'cpu'
+        if (eng.engine === 'qwen3-asr') {
+          settings.compute_type = gpu ? 'bfloat16' : 'float16'
+        }
+        // faster-whisper keeps int8_float16 for both CPU and GPU
+      }
+    }
+  }
+})
+
+// Engine defaults by type
+function getEngineDefaults(engine: "faster-whisper" | "qwen3-asr") {
+  const gpu = asrPluginId.value.length > 0 && !asrPluginId.value.includes('-cpu')
+  if (engine === 'qwen3-asr') {
+    return { model_size: "Qwen/Qwen3-ASR-0.6B", language: "auto", device: gpu ? "cuda" as const : "cpu" as const, compute_type: gpu ? "bfloat16" : "float16", vad_filter: false, vad_threshold: 0.5, vad_min_silence_ms: 500 }
+  }
+  return { model_size: "large-v3-turbo", language: "zh", device: gpu ? "cuda" as const : "cpu" as const, compute_type: "int8_float16", vad_filter: true, vad_threshold: 0.5, vad_min_silence_ms: 500 }
+}
+
+// When engine changes, only create defaults if not yet populated.
+// Device/compute are always updated based on selected plugin's GPU capability.
+// User preferences (model_size, language, vad_*) are preserved from loadAsrSettings().
+watch(asrEngine, (newEngine) => {
+  const defaults = getEngineDefaults(newEngine)
+  const existing = asrSettingsPerEngine.value[newEngine]
+  if (!existing) {
+    asrSettingsPerEngine.value[newEngine] = { ...defaults }
+  } else {
+    // Only update device/compute based on plugin capability (these are plugin-dependent, not user preference)
+    existing.device = defaults.device
+    existing.compute_type = defaults.compute_type
+  }
+  validateModelSize()
+})
+
+async function saveAsrSettings(): Promise<boolean> {
+  const current = asrSettingsPerEngine.value[asrEngine.value]
+  const payload: Record<string, unknown> = {
+    asr_engine: asrEngine.value,
+    asr_plugin_id: asrPluginId.value,
+    asr_model_size: current.model_size,
+    asr_language: current.language,
+    asr_device: current.device,
+    asr_vad_filter: current.vad_filter,
+  }
+
+  // Engine-prefixed keys for settings persistence
+  if (asrEngine.value === "qwen3-asr") {
+    payload.qwen_compute_type = current.compute_type
+    payload.qwen_language = current.language
+  } else {
+    payload.whisper_compute_type = current.compute_type
+    payload.whisper_vad_threshold = current.vad_threshold
+    payload.whisper_vad_min_silence_ms = current.vad_min_silence_ms
+  }
+
+  const res = await call("update_settings", payload)
+  if (!res.success) return false
+  showTranscribeSettings.value = false
+  return true
 }
 
 async function saveSilenceSettings() {
@@ -335,6 +650,72 @@ async function handleImportSrt() {
 async function handleDetectSilence() {
   errorMessage.value = ""
   await runSilenceDetection()
+}
+
+async function handleClearSubtitles() {
+  if (!window.confirm("Are you sure you want to delete all subtitles? This cannot be undone.")) return
+  errorMessage.value = ""
+  const res = await call<Project>("clear_subtitles")
+  if (res.success && res.data) {
+    emit("project-updated", res.data)
+  } else {
+    errorMessage.value = res.error ?? "Failed to clear subtitles"
+  }
+}
+
+async function handleTranscribe() {
+  errorMessage.value = ""
+
+  // Check if any ASR engine is installed
+  if (!hasInstalledEngines.value) {
+    showToast("No ASR engine installed. Please install an engine in Settings > AI Engine.", "error", 5000)
+    return
+  }
+
+  // Get selected engine — use asrPluginId to find the exact variant (CPU vs GPU)
+  const engine = asrEngine.value
+  const engineInfo = installedEngines.value.find(e => e.pluginId === asrPluginId.value)
+    ?? installedEngines.value.find(e => e.engine === engine)
+
+  if (!engineInfo) {
+    showToast("Selected ASR engine not found", "error", 3000)
+    return
+  }
+
+  // Check if engine is ready (plugin installed + model downloaded)
+  const status = await checkEngineReady(engine)
+  if (!status.ready) {
+    showToast(`ASR engine "${engineInfo.displayName}" is not ready. Please download the model in Settings > AI Engine.`, "error", 5000)
+    return
+  }
+
+  // Persist current ASR settings to backend before transcription
+  const settingsSaved = await saveAsrSettings()
+  if (!settingsSaved) {
+    showToast("Failed to save transcription settings", "error", 3000)
+    return
+  }
+
+  try {
+    // Pass ASR settings as payload to transcription task
+    const settings = asrSettingsPerEngine.value[asrEngine.value]
+    const started = await runTranscription({
+      engine: asrEngine.value,
+      model_size: settings.model_size,
+      asr_model_size: settings.model_size,
+      language: settings.language,
+      device: settings.device,
+      compute_type: settings.compute_type,
+      vad_filter: settings.vad_filter,
+      vad_threshold: settings.vad_threshold,
+      vad_min_silence_ms: settings.vad_min_silence_ms,
+    })
+    if (!started) {
+      showToast("Failed to start transcription task", "error", 3000)
+    }
+  } catch (err) {
+    showToast(`Transcription failed: ${err instanceof Error ? err.message : String(err)}`, "error", 5000)
+  }
 }
 
 async function handleRunAnalysis(type: string) {
@@ -469,6 +850,11 @@ function isTextInput(el: EventTarget | null): boolean {
 function handleGlobalKeydown(e: KeyboardEvent) {
   if (isTextInput(e.target)) return
 
+  if (e.shiftKey && e.code === "Space") {
+    e.preventDefault()
+    previewMode.value = previewMode.value === "original" ? "edited" : "original"
+    return
+  }
   if (e.key === " ") {
     e.preventDefault()
     handleTogglePlay()
@@ -487,6 +873,14 @@ function handleGlobalKeydown(e: KeyboardEvent) {
   if (e.ctrlKey && (e.key === "y" || (e.key === "z" && e.shiftKey))) {
     e.preventDefault()
     handleRedo()
+  }
+}
+
+function handleClickOutside(e: MouseEvent) {
+  const target = e.target as HTMLElement
+  // Close transcribe settings popup when clicking outside
+  if (showTranscribeSettings.value && !target.closest(".relative.inline-flex.items-center")) {
+    showTranscribeSettings.value = false
   }
 }
 
@@ -512,11 +906,17 @@ async function handleRedo() {
 
 onMounted(() => {
   document.addEventListener("keydown", handleGlobalKeydown)
+  document.addEventListener("mousedown", handleClickOutside)
 })
 
 onUnmounted(() => {
   document.removeEventListener("keydown", handleGlobalKeydown)
+  document.removeEventListener("mousedown", handleClickOutside)
   if (regenPollTimer) clearInterval(regenPollTimer)
+  if (rafId !== null) {
+    cancelAnimationFrame(rafId)
+    rafId = null
+  }
 })
 </script>
 
@@ -562,6 +962,166 @@ onUnmounted(() => {
       >
         <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
         Import SRT
+      </button>
+      <button
+        class="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors"
+        :class="previewMode === 'edited'
+          ? 'bg-teal-600 text-white hover:bg-teal-700'
+          : 'bg-gray-600 text-gray-200 hover:bg-gray-700'"
+        :disabled="isDetecting || isExporting"
+        title="Toggle original/edited preview (Shift+Space)"
+        @click="togglePreviewMode"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path stroke-linecap="round" stroke-linejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+        {{ previewMode === 'edited' ? 'Edited' : 'Original' }}
+      </button>
+      <div class="relative inline-flex items-center">
+        <button
+          class="inline-flex items-center gap-1.5 rounded-md rounded-r-none bg-purple-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-purple-600 disabled:opacity-50 transition-colors"
+          :disabled="isDetecting || isExporting || isTranscribing || !hasInstalledEngines || uvAvailable === false"
+          :title="uvAvailable === false ? '需要安装 uv' : undefined"
+          @click="handleTranscribe"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
+          {{ isTranscribing ? 'Transcribing...' : 'Transcribe' }}
+        </button>
+        <button
+          class="inline-flex items-center rounded-md rounded-l-none bg-purple-600 px-1.5 py-1.5 text-xs text-white hover:bg-purple-700 disabled:opacity-50 transition-colors border-l border-purple-400"
+          :disabled="isDetecting || isExporting || isTranscribing || uvAvailable === false"
+          :title="uvAvailable === false ? '需要安装 uv' : 'Transcription settings'"
+          @click="showTranscribeSettings = !showTranscribeSettings"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+        </button>
+        <div
+          v-if="showTranscribeSettings && uvAvailable !== false"
+          class="absolute top-full left-0 mt-1 w-72 rounded-md border border-gray-200 bg-white shadow-lg z-20 p-3"
+        >
+          <div class="text-xs font-medium text-gray-700 mb-2">Transcription Settings</div>
+
+          <!-- No engines installed warning -->
+          <div v-if="!hasInstalledEngines" class="text-xs text-amber-600 mb-2 p-2 bg-amber-50 rounded">
+            No ASR engine installed. Please install an engine in Settings > AI Engine.
+          </div>
+
+          <template v-else>
+            <!-- Engine selector -->
+            <label class="block mb-2">
+              <span class="text-xs text-gray-500">Engine</span>
+              <select
+                v-model="asrPluginId"
+                class="w-full mt-1 rounded border-gray-300 text-xs"
+              >
+                <option v-for="eng in installedEngines" :key="eng.pluginId" :value="eng.pluginId">
+                  {{ eng.displayName }} {{ eng.ready ? '' : '(model not downloaded)' }}
+                </option>
+              </select>
+            </label>
+
+            <!-- Model selector -->
+            <label class="block mb-2">
+              <span class="text-xs text-gray-500">Model</span>
+              <select
+                v-model="asrSettingsPerEngine[asrEngine].model_size"
+                class="w-full mt-1 rounded border-gray-300 text-xs"
+              >
+                <option v-for="m in availableModels" :key="m.model_id" :value="m.model_id">
+                  {{ m.display_name }} {{ m.status === 'downloaded' ? '' : '(not downloaded)' }}
+                </option>
+              </select>
+            </label>
+
+            <!-- Language -->
+            <label class="block mb-2">
+              <span class="text-xs text-gray-500">Language</span>
+              <select v-model="asrSettingsPerEngine[asrEngine].language" class="w-full mt-1 rounded border-gray-300 text-xs">
+                <option value="auto">Auto-detect</option>
+                <option value="zh">Chinese</option>
+                <option value="en">English</option>
+                <option value="ja">Japanese</option>
+                <option value="ko">Korean</option>
+              </select>
+            </label>
+
+            <!-- Device -->
+            <label class="block mb-2">
+              <span class="text-xs text-gray-500">Device</span>
+              <select v-model="asrSettingsPerEngine[asrEngine].device" class="w-full mt-1 rounded border-gray-300 text-xs">
+                <option value="cpu">CPU</option>
+                <option v-if="supportsGpu" value="cuda">CUDA (GPU)</option>
+                <option v-if="asrEngine === 'faster-whisper'" value="auto">Auto</option>
+              </select>
+              <span v-if="!supportsGpu" class="text-xs text-gray-400 mt-0.5 block">GPU not available for this engine plugin</span>
+            </label>
+
+            <!-- Compute type -->
+            <label class="block mb-2">
+              <span class="text-xs text-gray-500">Compute Type</span>
+              <select v-model="asrSettingsPerEngine[asrEngine].compute_type" class="w-full mt-1 rounded border-gray-300 text-xs">
+                <option v-for="opt in computeTypeOptions" :key="opt.value" :value="opt.value">
+                  {{ opt.label }}
+                </option>
+              </select>
+            </label>
+
+            <!-- VAD filter -->
+            <label class="flex items-center gap-2 mb-2 cursor-pointer">
+              <input
+                type="checkbox"
+                v-model="asrSettingsPerEngine[asrEngine].vad_filter"
+                class="w-4 h-4 accent-blue-600"
+              />
+              <span class="text-xs text-gray-500">VAD filter (reduce hallucinations)</span>
+            </label>
+
+            <!-- VAD sliders (visible when vad_filter is on) -->
+            <template v-if="asrSettingsPerEngine[asrEngine].vad_filter">
+              <label class="block mb-2">
+                <span class="text-xs text-gray-500">
+                  VAD Threshold: {{ asrSettingsPerEngine[asrEngine].vad_threshold.toFixed(2) }}
+                </span>
+                <input
+                  type="range"
+                  v-model.number="asrSettingsPerEngine[asrEngine].vad_threshold"
+                  min="0.0"
+                  max="1.0"
+                  step="0.05"
+                  class="w-full mt-1"
+                />
+              </label>
+              <label class="block mb-3">
+                <span class="text-xs text-gray-500">
+                  Min Silence (ms): {{ asrSettingsPerEngine[asrEngine].vad_min_silence_ms }}
+                </span>
+                <input
+                  type="range"
+                  v-model.number="asrSettingsPerEngine[asrEngine].vad_min_silence_ms"
+                  min="100"
+                  max="2000"
+                  step="50"
+                  class="w-full mt-1"
+                />
+              </label>
+            </template>
+
+            <!-- Save button -->
+            <button
+              class="w-full rounded bg-purple-500 px-2 py-1 text-xs text-white hover:bg-purple-600"
+              @click="saveAsrSettings"
+            >
+              Save as Default
+            </button>
+          </template>
+        </div>
+      </div>
+      <button
+        class="inline-flex items-center gap-1.5 rounded-md bg-red-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-600 disabled:opacity-50 transition-colors"
+        :disabled="isDetecting || isExporting || isTranscribing || subtitleCount === 0"
+        title="Delete all subtitle segments"
+        @click="handleClearSubtitles"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+        Clear Subtitles
       </button>
       <div class="relative inline-flex items-center">
         <button
@@ -760,7 +1320,7 @@ onUnmounted(() => {
 
       <button
         class="inline-flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50 transition-colors"
-        :disabled="isExporting || confirmedEdits.length === 0"
+        :disabled="isExporting || (confirmedEdits.length === 0 && subtitleCount === 0)"
         @click="emit('go-to-export')"
       >
         <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" /></svg>
@@ -809,6 +1369,7 @@ onUnmounted(() => {
               @timeupdate="handleTimeUpdate"
               @play="videoPaused = false"
               @pause="videoPaused = true"
+              @seeked="handleVideoSeeked"
               @click="handleTogglePlay"
             />
             <SubtitleOverlay
@@ -829,6 +1390,8 @@ onUnmounted(() => {
           :paused="videoPaused"
           :volume="videoVolume"
           :playback-rate="videoPlaybackRate"
+          :delete-ranges="deleteRanges"
+          :preview-mode="previewMode"
           @update:current-time="handleSeekTo"
           @update:volume="handleVolumeChange"
           @update:playback-rate="handleRateChange"

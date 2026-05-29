@@ -3,6 +3,8 @@ import { ref, computed, onMounted, onBeforeUnmount, watch } from "vue"
 import { call } from "@/bridge"
 import type { EditDecision, Segment } from "@/types/project"
 
+type PreviewMode = "edited" | "original"
+
 const props = defineProps<{
   mediaPath: string | null
   proxyPath: string | null
@@ -22,6 +24,7 @@ const videoDuration = ref(0)
 const videoSrc = ref("")
 const volume = ref(0.75)
 const isMuted = ref(false)
+const previewMode = ref<PreviewMode>("edited")
 let rafId: number | null = null
 
 const deleteRanges = computed(() => {
@@ -100,6 +103,29 @@ function seekToPosition(e: MouseEvent) {
   videoRef.value.currentTime = ratio * videoDuration.value
 }
 
+function startRaf() {
+  if (rafId === null) {
+    rafId = requestAnimationFrame(animationLoop)
+  }
+}
+
+function stopRaf() {
+  if (rafId !== null) {
+    cancelAnimationFrame(rafId)
+    rafId = null
+  }
+}
+
+function togglePreviewMode() {
+  if (previewMode.value === "edited") {
+    previewMode.value = "original"
+    stopRaf()
+  } else {
+    previewMode.value = "edited"
+    startRaf()
+  }
+}
+
 function checkSkip(time: number): boolean {
   for (const range of deleteRanges.value) {
     if (time >= range.start && time < range.end) {
@@ -113,7 +139,12 @@ function checkSkip(time: number): boolean {
 function animationLoop() {
   if (videoRef.value && !videoRef.value.paused) {
     const time = videoRef.value.currentTime
-    if (!checkSkip(time)) {
+    if (previewMode.value === "edited") {
+      if (!checkSkip(time)) {
+        currentTime.value = time
+        emit("time-update", time)
+      }
+    } else {
       currentTime.value = time
       emit("time-update", time)
     }
@@ -145,7 +176,7 @@ function onPause() {
 
 function onSeeked() {
   if (videoRef.value) {
-    if (!videoRef.value.paused) {
+    if (!videoRef.value.paused && previewMode.value === "edited") {
       checkSkip(videoRef.value.currentTime)
     }
     currentTime.value = videoRef.value.currentTime
@@ -153,14 +184,12 @@ function onSeeked() {
 }
 
 onMounted(() => {
-  rafId = requestAnimationFrame(animationLoop)
+  startRaf()
   loadVideoUrl()
 })
 
 onBeforeUnmount(() => {
-  if (rafId !== null) {
-    cancelAnimationFrame(rafId)
-  }
+  stopRaf()
   if (videoRef.value) {
     videoRef.value.pause()
     videoRef.value.removeAttribute("src")
@@ -239,6 +268,15 @@ watch(() => [props.mediaPath, props.proxyPath], () => {
         </span>
 
         <div class="flex-1" />
+
+        <!-- Preview mode toggle -->
+        <button
+          class="px-2 py-0.5 text-xs rounded transition-colors"
+          :class="previewMode === 'edited' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'"
+          @click="togglePreviewMode"
+        >
+          {{ previewMode === "edited" ? "已编辑" : "原始" }}
+        </button>
 
         <!-- Volume control -->
         <button

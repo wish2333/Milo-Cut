@@ -27,8 +27,8 @@ def _get_settings_ffmpeg_path() -> str | None:
         path = settings.get("ffmpeg_path", "")
         if path and Path(path).is_file():
             return path
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to read ffmpeg_path from settings: {}", e)
     return None
 
 
@@ -40,8 +40,8 @@ def _get_settings_ffprobe_path() -> str | None:
         path = settings.get("ffprobe_path", "")
         if path and Path(path).is_file():
             return path
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to read ffprobe_path from settings: {}", e)
     return None
 
 
@@ -63,8 +63,8 @@ def _find_ffprobe() -> str:
         import static_ffmpeg
         paths = static_ffmpeg.utils.get_or_fetch_platform_executables_else_raise()
         return paths[1]  # ffprobe is second
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("static_ffmpeg fallback for ffprobe failed: {}", e)
     raise FileNotFoundError("ffprobe not found. Configure path in Settings or install FFmpeg.")
 
 
@@ -86,8 +86,8 @@ def _find_ffmpeg() -> str:
         import static_ffmpeg
         paths = static_ffmpeg.utils.get_or_fetch_platform_executables_else_raise()
         return paths[0]  # ffmpeg is first
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("static_ffmpeg fallback for ffmpeg failed: {}", e)
     raise FileNotFoundError("ffmpeg not found. Configure path in Settings or install FFmpeg.")
 
 

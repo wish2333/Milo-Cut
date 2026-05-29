@@ -166,7 +166,8 @@ def check_encoder_availability(ffmpeg: str, codec: str) -> bool:
             **_SUBPROCESS_KWARGS,
         )
         return codec in result.stdout
-    except Exception:
+    except Exception as e:
+        logger.debug("Failed to check encoder availability for {}: {}", codec, e)
         return False
 
 

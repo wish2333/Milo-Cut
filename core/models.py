@@ -38,6 +38,8 @@ class TaskType(StrEnum):
     TRANSCRIPTION = "transcription"
     VAD_ANALYSIS = "vad_analysis"
     WAVEFORM_GENERATION = "waveform_generation"
+    PLUGIN_INSTALL = "plugin_install"
+    MODEL_DOWNLOAD = "model_download"
 
 
 class EditStatus(StrEnum):
@@ -141,10 +143,38 @@ class TranscriptData(BaseModel, frozen=True):
 
 class AnalysisResult(BaseModel, frozen=True):
     id: str
-    type: Literal["filler", "error"]
+    type: Literal["filler", "error", "duplicate", "punctuation"]
     segment_ids: list[str] = Field(default_factory=list)
     confidence: float = 1.0
     detail: str = ""
+
+
+# ================================================================
+# Plugin / Model info
+# ================================================================
+
+
+class PluginInfo(BaseModel, frozen=True):
+    """Information about an installed ASR plugin."""
+
+    plugin_id: str
+    display_name: str
+    engine: Literal["faster-whisper", "qwen3-asr"]
+    version: str = "1.0.0"
+    status: Literal["installed", "installing", "not_installed", "error"] = "not_installed"
+    installed_at: str = ""
+    venv_path: str = ""
+
+
+class ModelInfo(BaseModel, frozen=True):
+    """Information about a downloaded ML model."""
+
+    model_id: str
+    display_name: str
+    plugin_id: str
+    size_bytes: int = 0
+    local_path: str = ""
+    status: Literal["downloaded", "downloading", "not_downloaded"] = "not_downloaded"
 
 
 class AnalysisData(BaseModel, frozen=True):

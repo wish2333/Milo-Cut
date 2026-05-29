@@ -14,8 +14,10 @@ export type TaskType =
   | "transcription"
   | "vad_analysis"
   | "waveform_generation"
+  | "plugin_install"
 
 export interface TaskProgress {
+  task_id?: string
   percent: number
   message: string
 }
