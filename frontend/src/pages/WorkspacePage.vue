@@ -97,6 +97,7 @@ const videoRef = ref<HTMLVideoElement | null>(null)
 const currentTime = ref(0)
 const videoPaused = ref(true)
 const videoVolume = ref(0.75)
+const uvAvailable = ref<boolean | null>(null)
 const videoPlaybackRate = ref(1)
 
 // Preview mode: "edited" skips delete ranges, "original" plays full video
@@ -902,9 +903,21 @@ async function handleRedo() {
   }
 }
 
+async function checkUvAvailable() {
+  try {
+    const res = await call<{ available: boolean; path: string | null }>("check_uv_available")
+    if (res.success && res.data) {
+      uvAvailable.value = res.data.available
+    }
+  } catch {
+    uvAvailable.value = false
+  }
+}
+
 onMounted(() => {
   document.addEventListener("keydown", handleGlobalKeydown)
   document.addEventListener("mousedown", handleClickOutside)
+  checkUvAvailable()
 })
 
 onUnmounted(() => {
@@ -976,7 +989,8 @@ onUnmounted(() => {
       <div class="relative inline-flex items-center">
         <button
           class="inline-flex items-center gap-1.5 rounded-md rounded-r-none bg-purple-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-purple-600 disabled:opacity-50 transition-colors"
-          :disabled="isDetecting || isExporting || isTranscribing || !hasInstalledEngines"
+          :disabled="isDetecting || isExporting || isTranscribing || !hasInstalledEngines || uvAvailable === false"
+          :title="uvAvailable === false ? '需要安装 uv' : undefined"
           @click="handleTranscribe"
         >
           <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
@@ -984,14 +998,14 @@ onUnmounted(() => {
         </button>
         <button
           class="inline-flex items-center rounded-md rounded-l-none bg-purple-600 px-1.5 py-1.5 text-xs text-white hover:bg-purple-700 disabled:opacity-50 transition-colors border-l border-purple-400"
-          :disabled="isDetecting || isExporting || isTranscribing"
-          title="Transcription settings"
+          :disabled="isDetecting || isExporting || isTranscribing || uvAvailable === false"
+          :title="uvAvailable === false ? '需要安装 uv' : 'Transcription settings'"
           @click="showTranscribeSettings = !showTranscribeSettings"
         >
           <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
         </button>
         <div
-          v-if="showTranscribeSettings"
+          v-if="showTranscribeSettings && uvAvailable !== false"
           class="absolute top-full left-0 mt-1 w-72 rounded-md border border-gray-200 bg-white shadow-lg z-20 p-3"
         >
           <div class="text-xs font-medium text-gray-700 mb-2">Transcription Settings</div>

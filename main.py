@@ -10,6 +10,7 @@ import os
 import pathlib
 from pathlib import Path
 import subprocess
+import shutil
 
 from pywebvue import App, Bridge, expose
 
@@ -1065,6 +1066,18 @@ class MiloCutApi(Bridge):
         except Exception:
             pass
         return {"success": True, "data": info}
+
+    @expose
+    def check_uv_available(self) -> dict:
+        """Check if uv package manager is available in PATH."""
+        uv_path = shutil.which("uv")
+        return {
+            "success": True,
+            "data": {
+                "available": uv_path is not None,
+                "path": uv_path,
+            },
+        }
 
     @expose
     def get_encoder_metadata(self) -> dict:

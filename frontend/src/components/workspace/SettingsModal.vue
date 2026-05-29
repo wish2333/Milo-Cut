@@ -80,6 +80,22 @@ const installedPlugins = ref<PluginInfo[]>([])
 const downloadedModels = ref<ModelInfo[]>([])
 const notDownloadedModels = ref<ModelInfo[]>([])
 
+// UV availability check
+const uvAvailable = ref<boolean | null>(null)  // null = loading, true/false = checked
+const uvPath = ref<string | null>(null)
+
+async function checkUvAvailable() {
+  try {
+    const res = await call<{ available: boolean; path: string | null }>("check_uv_available")
+    if (res.success && res.data) {
+      uvAvailable.value = res.data.available
+      uvPath.value = res.data.path
+    }
+  } catch {
+    uvAvailable.value = false
+  }
+}
+
 async function detectGpu() {
   const res = await call<{
     has_nvidia_gpu: boolean
@@ -141,6 +157,8 @@ onMounted(async () => {
   }
   // Load model download mirrors
   modelMirrors.value = await pluginManager.listModelMirrors()
+  // Check UV availability
+  await checkUvAvailable()
 })
 
 async function handleSave() {
@@ -550,6 +568,38 @@ async function loadPluginDataDir() {
 
           <!-- Tab 2: AI Engine -->
           <div v-if="activeTab === 'ai-engine'" class="space-y-4">
+            <!-- UV not available overlay -->
+            <div v-if="uvAvailable === false" class="relative rounded-lg border border-amber-200 bg-amber-50 p-4 space-y-3">
+              <div class="flex items-start gap-3">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-amber-500 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                </svg>
+                <div>
+                  <h3 class="text-sm font-medium text-amber-800">uv Not Found</h3>
+                  <p class="text-xs text-amber-700 mt-1">
+                    ASR engine requires the uv package manager to create isolated environments. Please install uv first.
+                  </p>
+                </div>
+              </div>
+              <div class="flex gap-2">
+                <a
+                  href="https://docs.astral.sh/uv/getting-started/installation/"
+                  target="_blank"
+                  class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-amber-600 rounded hover:bg-amber-700 transition-colors"
+                >
+                  Install uv
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                  </svg>
+                </a>
+                <button
+                  class="inline-flex items-center px-3 py-1.5 text-xs font-medium text-amber-700 bg-amber-100 rounded hover:bg-amber-200 transition-colors"
+                  @click="checkUvAvailable"
+                >
+                  Re-check
+                </button>
+              </div>
+            </div>
             <!-- Install progress -->
             <div v-if="installingPlugin" class="p-3 bg-blue-50 rounded-lg">
               <div class="flex items-center justify-between text-sm mb-1">
