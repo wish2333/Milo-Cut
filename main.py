@@ -561,6 +561,22 @@ class MiloCutApi(Bridge):
         webview.windows[0].create_file_dialog(webview.FileDialog.FOLDER, directory=path)
         return {"success": True}
 
+    @expose
+    def select_directory(self) -> dict:
+        """Open a folder picker dialog and return the selected path."""
+        import webview
+        result = webview.windows[0].create_file_dialog(webview.FileDialog.FOLDER)
+        if result:
+            # pywebview FOLDER dialog returns a tuple/list on Windows,
+            # but a string on macOS/Linux
+            if isinstance(result, (tuple, list)):
+                path = str(result[0]) if result else None
+            else:
+                path = str(result)
+            if path:
+                return {"success": True, "data": path}
+        return {"success": True, "data": None}
+
     # ================================================================
     # Project
     # ================================================================
