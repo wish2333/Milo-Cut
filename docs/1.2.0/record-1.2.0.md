@@ -12,10 +12,11 @@
 6. [Sprint 1.6: GPU安装修复与插件架构重构](#sprint-16)
 7. [Sprint 1.7: 模型下载系统修复 + UI 修复](#sprint-17)
 8. [Sprint 2: Qwen3-ASR + VAD + 重复检测](#sprint-2)
-9. [Files Modified Summary](#files-modified-summary)
-10. [Verification](#verification)
-11. [Statistics](#statistics)
-12. [Next: Sprint 3](#next-sprint-3)
+9. [Sprint 2.5: ASR GUI 设置系统完善](#sprint-25)
+10. [Files Modified Summary](#files-modified-summary)
+11. [Verification](#verification)
+12. [Statistics](#statistics)
+13. [Next: Sprint 3](#next-sprint-3)
 
 ---
 
@@ -953,6 +954,159 @@ Sprint 2 的 CUDA 修复提交 (`82f9a3d`) 重构了 `qwen_transcribe.py` 的推
 - `qwen-asr` 是 Sprint 2 引入的核心包，提供 `Qwen3ASRModel` 类，内含 ASR 推理 + 强制对齐功能
 - `transformers` 保留，因为 `qwen-asr` 大概率以它为传递依赖，显式声明确保最低版本
 - `numpy` 无需添加，是 `torch` 的传递依赖
+
+---
+
+## Sprint 2.5: ASR GUI 设置系统完善 (2026-05-29)
+
+### 问题背景
+
+用户反馈 ASR GUI 存在多个问题，按审计报告 `audit-report-1.2.0-2.md` 分 3 轮修复。
+
+### 第一轮: 审计报告 8 项修复 (Plan: asr-gui-fixes-1.2.0)
+
+#### 1. config.py 引擎前缀默认值
+
+- 新增 `whisper_compute_type: "int8_float16"`, `qwen_compute_type: "bfloat16"`
+- 新增 `whisper_vad_threshold: 0.5`, `whisper_vad_min_silence_ms: 500`
+- 新增 `qwen_language: "auto"`
+
+#### 2. qwen_transcribe.py bfloat16 默认 + --compute-type
+
+- `DTYPE_MAP` 字典: `bfloat16` -> `torch.bfloat16`, `float16` -> `torch.float16`, `float32` -> `torch.float32`
+- 默认精度从 `float32` 改为 `bfloat16`
+- 新增 `--compute-type` CLI 参数
+- 自动语言检测: `--language auto` 时不传 `language` 参数给模型
+
+#### 3. whisper_transcribe.py VAD 参数透传
+
+- 新增 `--vad-threshold` (默认 0.5) 和 `--vad-min-silence-ms` (默认 500) CLI 参数
+- 构建 `vad_parameters` 字典传入 `model.transcribe()`
+- 自动语言检测: `--language auto` 时不传 `language` 参数
+
+#### 4. WorkspacePage.vue 每引擎设置 + 设备过滤 + VAD 滑块
+
+- `asrSettingsPerEngine` ref: 按引擎类型存储设置 (faster-whisper / qwen3-asr)
+- `computeTypeOptions` computed: 按引擎类型返回不同精度选项
+- `loadAsrSettings()`: 从 settings.json 加载每引擎设置，无记录时用硬编码兜底
+- `saveAsrSettings()`: 保存当前引擎设置到 settings.json (引擎前缀键)
+- 设备过滤: GPU 插件显示 CUDA 选项，CPU 插件仅显示 CPU
+- VAD 滑块: threshold (0-1, step 0.05), min_silence_ms (100-2000, step 50)
+- Auto-detect 语言选项
+
+#### 5. main.py SRT 导入 + cleanup_tasks_folder 去重
+
+- `import_srt()` 方法: 调用 `subtitle_service.parse()` + 更新项目 TranscriptData
+- `_handle_transcription()`: SRT 自动保存后调用 `self.import_srt(srt_path)`
+- `cleanup_tasks_folder()`: 删除重复定义，保留单一方法
+- 引擎前缀设置读取: `whisper_compute_type`, `qwen_compute_type` 等
+
+#### 6. SettingsModal.vue 清理确认对话框
+
+- `window.confirm()` 对话框: 卸载插件、删除模型前确认
+
+#### 7. 测试重写 (test_asr_gui_e2e.py)
+
+- 12 个行为测试，使用 `pathlib.read_text()` 替代 grep 子进程
+- 测试 `_DEFAULT_SETTINGS` 包含所有引擎前缀键
+- 测试 `load_settings()` 返回合并字典
+- 测试 `save_settings()` + `load_settings()` 往返保持引擎前缀键
+- 测试 `_handle_transcription` 读取引擎前缀键
+- 测试 `qwen_transcribe.py` 有 `--compute-type` 参数
+- 测试 `whisper_transcribe.py` 有 `--vad-threshold` 和 `--vad-min-silence-ms` 参数
+
+### 第二轮: 回归修复 (Plan: asr-gui-regression-fixes)
+
+#### 1. SettingsModal.vue ASR 设置修复
+
+- 引擎前缀键: `asr_compute_type` -> `whisper_compute_type` / `qwen_compute_type`
+- 新增 `int8_float16` 精度选项
+- 新增 VAD threshold 和 min_silence_ms 滑块 (仅 faster-whisper)
+
+#### 2. WorkspacePage.vue 引擎切换 + 设置持久化
+
+- `watch(asrEngine)`: 不再硬编码 `device: "cpu"`，根据插件 GPU 能力决定
+- `loadAsrSettings()`: 加载 BOTH 引擎的设置
+- `handleTranscribe()`: 转录前先调用 `saveAsrSettings()` 持久化
+
+#### 3. 测试重写为行为验证
+
+- 12 个测试全部改为运行时行为验证
+- 使用 `pathlib.read_text()` 读取文件内容验证
+
+### 第三轮: CPU/GPU 引擎变体选择修复 (Plan: asr-engine-selection-fix)
+
+#### 1. asrPluginId 引入
+
+- `asrPluginId` ref: 跟踪选中的插件变体 (CPU vs GPU)
+- 引擎下拉框使用 `eng.pluginId` 作为 `:value`
+- `watch(asrPluginId)`: 从 pluginId 派生 `asrEngine`
+
+#### 2. currentEnginePluginId 修复
+
+- 修改前: 按 `asrEngine` 搜索 `installedEngines`，返回第一个匹配 (总是 CPU 变体)
+- 修改后: 直接返回 `asrPluginId.value`
+
+#### 3. 初始化顺序修复
+
+- 修改前: `loadAsrSettings()` (line 304) 在 `loadInstalledEngines()` (line 305) 之前
+- 修改后: `loadInstalledEngines()` 先执行，确保 `installedEngines` 有数据
+
+#### 4. SettingsModal CPU/GPU 区分
+
+- `installedAsrPlugins` computed: 过滤已安装 ASR 插件，按 plugin_id 去重
+- `asrSupportsGpu` computed: 检查选中插件 ID 不含 `-cpu`
+- 引擎下拉框: 显示插件 display_name (如 "Faster Whisper (CUDA)", "Qwen3 ASR (CPU)")
+- `handleEnginePluginChange()`: 切换插件时自动设置 device/compute_type/language 默认值
+- 设备下拉框: `v-if="asrSupportsGpu"` 条件显示 CUDA 选项
+
+#### 5. watch(asrEngine) 用户偏好保留
+
+- 修改前: 每次切换引擎强制重置为硬编码默认值
+- 修改后: 仅在 `asrSettingsPerEngine[newEngine]` 不存在时创建默认值
+- device/compute_type 始终由插件 GPU 能力决定 (非用户偏好)
+
+#### 6. watch(asrPluginId) 同引擎插件切换
+
+- CPU->GPU 或 GPU->CPU 切换时，自动更新 device 和 compute_type
+- qwen3-asr: GPU -> bfloat16, CPU -> float16
+- faster-whisper: 保持 int8_float16
+
+### 修改文件汇总
+
+| 文件                                                  | 变更                                                         |
+| ----------------------------------------------------- | ------------------------------------------------------------ |
+| `core/config.py`                                      | +6 行: 引擎前缀默认值 (whisper_compute_type, qwen_compute_type, VAD 参数) |
+| `core/asr_scripts/qwen_transcribe.py`                 | +9 行: --compute-type 参数, DTYPE_MAP, 自动语言             |
+| `core/asr_scripts/whisper_transcribe.py`              | +19 行: --vad-threshold, --vad-min-silence-ms 参数, vad_parameters |
+| `main.py`                                             | +95 行: import_srt 方法, 引擎前缀设置读取, SRT 自动保存     |
+| `frontend/src/types/edit.ts`                          | +6 行: asr_plugin_id, whisper_compute_type, qwen_compute_type, VAD 参数 |
+| `frontend/src/components/workspace/SettingsModal.vue` | +159 行: installedAsrPlugins, asrSupportsGpu, handleEnginePluginChange, 引擎下拉重构, VAD 滑块, 设备过滤 |
+| `frontend/src/pages/WorkspacePage.vue`                | +226 行: asrPluginId, asrSettingsPerEngine, loadAsrSettings, saveAsrSettings, getEngineDefaults, watch(asrPluginId), watch(asrEngine), 引擎下拉重构, VAD 滑块, 设备过滤 |
+| `tests/test_asr_gui_e2e.py`                           | 重写: 12 个行为测试                                           |
+
+### 设计决策
+
+#### 设置分层
+
+| 层级          | 说明                          | 生命周期     |
+| ------------- | ----------------------------- | ------------ |
+| 硬编码默认值  | `getEngineDefaults()` 兜底    | 代码常量     |
+| settings.json | 用户保存的偏好                | 跨会话持久化 |
+| asrSettingsPerEngine | 当前会话内存状态        | 当前会话     |
+
+#### 设置分类
+
+| 类型         | 说明                          | 切换引擎行为     |
+| ------------ | ----------------------------- | ---------------- |
+| 用户偏好     | model_size, language, vad_*   | 保留             |
+| 插件依赖     | device, compute_type          | 由插件能力决定   |
+
+#### "Save as Default" 行为
+
+- 将当前引擎的 `asrSettingsPerEngine[engine]` 写入 `settings.json`
+- 设置页打开时从 `settings.json` 读取，显示保存的值
+- 下次打开项目时 `loadAsrSettings()` 恢复保存的偏好
 
 ---
 

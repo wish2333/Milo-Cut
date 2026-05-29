@@ -37,6 +37,22 @@ const asrModels = computed(() => {
     return true
   })
 })
+
+// Installed ASR engine plugins (CPU + GPU variants), deduplicated by plugin_id
+const installedAsrPlugins = computed(() => {
+  const seen = new Set<string>()
+  return installedPlugins.value.filter(p => {
+    if ((p.engine !== "faster-whisper" && p.engine !== "qwen3-asr") || seen.has(p.plugin_id)) return false
+    seen.add(p.plugin_id)
+    return true
+  })
+})
+
+// Whether the currently selected ASR plugin supports GPU
+const asrSupportsGpu = computed(() => {
+  const pid = settings.value?.asr_plugin_id ?? ''
+  return pid.length > 0 && !pid.includes('-cpu')
+})
 const installProgress = ref(0)
 const installMessage = ref("")
 
@@ -173,6 +189,27 @@ function updateField<K extends keyof AppSettings>(key: K, value: AppSettings[K])
   }
 }
 
+// Handle engine plugin change: derive engine type, reset device/compute defaults
+function handleEnginePluginChange(pluginId: string) {
+  if (!settings.value) return
+  const plugin = installedAsrPlugins.value.find(p => p.plugin_id === pluginId)
+  if (!plugin) return
+  const gpu = !pluginId.includes('-cpu')
+  const engine = plugin.engine
+  const defaults: Partial<AppSettings> = {
+    asr_plugin_id: pluginId,
+    asr_engine: engine,
+    asr_device: gpu ? 'cuda' : 'cpu',
+    asr_language: engine === 'qwen3-asr' ? 'auto' : 'zh',
+  }
+  if (engine === 'qwen3-asr') {
+    defaults.qwen_compute_type = gpu ? 'bfloat16' : 'float16'
+  } else {
+    defaults.whisper_compute_type = 'int8_float16'
+  }
+  settings.value = { ...settings.value, ...defaults }
+}
+
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B"
   const k = 1024
@@ -255,6 +292,45 @@ async function handleOpenDataDirectory() {
   if (!res.success) {
     statusMsg.value = res.error || "Failed to open directory"
     setTimeout(() => { statusMsg.value = "" }, 3000)
+  }
+}
+
+const cleaningUp = ref(false)
+async function handleCleanupTasks() {
+  if (cleaningUp.value) return
+  if (!window.confirm('Are you sure you want to clean up task files? This will delete all log and result files.')) return
+  cleaningUp.value = true
+  statusMsg.value = "Cleaning up task files..."
+  try {
+    const res = await call<{ deleted: number; size_freed: number }>("cleanup_tasks_folder")
+    if (res.success && res.data) {
+      const sizeMB = (res.data.size_freed / 1024 / 1024).toFixed(1)
+      statusMsg.value = `Cleaned up ${res.data.deleted} task files (${sizeMB} MB freed)`
+    } else {
+      statusMsg.value = res.error || "Cleanup failed"
+    }
+  } finally {
+    cleaningUp.value = false
+    setTimeout(() => { statusMsg.value = "" }, 5000)
+  }
+}
+
+async function handleCleanupTranscripts() {
+  if (cleaningUp.value) return
+  if (!window.confirm('Are you sure you want to clean up silence detection data?')) return
+  cleaningUp.value = true
+  statusMsg.value = "Cleaning up transcript files..."
+  try {
+    const res = await call<{ deleted: number; size_freed: number }>("cleanup_transcripts_folder")
+    if (res.success && res.data) {
+      const sizeMB = (res.data.size_freed / 1024 / 1024).toFixed(1)
+      statusMsg.value = `Cleaned up ${res.data.deleted} transcript files (${sizeMB} MB freed)`
+    } else {
+      statusMsg.value = res.error || "Cleanup failed"
+    }
+  } finally {
+    cleaningUp.value = false
+    setTimeout(() => { statusMsg.value = "" }, 5000)
   }
 }
 
@@ -437,7 +513,7 @@ async function loadPluginDataDir() {
           </div>
             </section>
 
-            <!-- Data Directory -->
+            <!-- Data Directory & Cleanup -->
             <section class="pt-3 border-t border-gray-200">
           <div class="mt-4 pt-3 border-t border-gray-200">
             <div class="flex items-center justify-between">
@@ -450,6 +526,22 @@ async function loadPluginDataDir() {
                 @click="handleOpenDataDirectory"
               >
                 Open folder
+              </button>
+            </div>
+            <div class="flex gap-2 mt-3">
+              <button
+                class="px-3 py-1.5 text-xs bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 rounded-lg transition-colors disabled:opacity-50"
+                :disabled="cleaningUp"
+                @click="handleCleanupTasks"
+              >
+                {{ cleaningUp ? 'Cleaning...' : 'Cleanup task files' }}
+              </button>
+              <button
+                class="px-3 py-1.5 text-xs bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 rounded-lg transition-colors disabled:opacity-50"
+                :disabled="cleaningUp"
+                @click="handleCleanupTranscripts"
+              >
+                {{ cleaningUp ? 'Cleaning...' : 'Cleanup transcripts' }}
               </button>
             </div>
           </div>
@@ -703,12 +795,15 @@ async function loadPluginDataDir() {
             <div class="flex items-center justify-between">
               <label class="text-sm text-gray-600">Default engine</label>
               <select
-                :value="settings.asr_engine"
+                :value="settings.asr_plugin_id || settings.asr_engine"
                 class="px-2 py-1 text-sm border border-gray-300 rounded"
-                @change="updateField('asr_engine', ($event.target as HTMLSelectElement).value as 'faster-whisper' | 'qwen3-asr')"
+                @change="handleEnginePluginChange(($event.target as HTMLSelectElement).value)"
               >
-                <option value="faster-whisper">Faster Whisper</option>
-                <option value="qwen3-asr">Qwen3 ASR</option>
+                <option v-for="p in installedAsrPlugins" :key="p.plugin_id" :value="p.plugin_id">
+                  {{ p.display_name }}
+                </option>
+                <option v-if="installedAsrPlugins.length === 0" value="faster-whisper">Faster Whisper</option>
+                <option v-if="installedAsrPlugins.length === 0" value="qwen3-asr">Qwen3 ASR</option>
               </select>
             </div>
             <div class="flex items-center justify-between">
@@ -745,20 +840,29 @@ async function loadPluginDataDir() {
                 @change="updateField('asr_device', ($event.target as HTMLSelectElement).value as 'cpu' | 'cuda' | 'auto')"
               >
                 <option value="cpu">CPU</option>
-                <option value="cuda">CUDA (GPU)</option>
+                <option v-if="asrSupportsGpu" value="cuda">CUDA (GPU)</option>
                 <option v-if="settings.asr_engine === 'faster-whisper'" value="auto">Auto</option>
               </select>
+              <span v-if="!asrSupportsGpu" class="text-xs text-gray-400 ml-2">GPU not available for this plugin</span>
             </div>
-            <div v-if="settings.asr_engine === 'faster-whisper'" class="flex items-center justify-between">
+            <div class="flex items-center justify-between">
               <label class="text-sm text-gray-600">Compute type</label>
               <select
-                :value="settings.asr_compute_type"
+                :value="settings.asr_engine === 'faster-whisper' ? settings.whisper_compute_type : settings.qwen_compute_type"
                 class="px-2 py-1 text-sm border border-gray-300 rounded"
-                @change="updateField('asr_compute_type', ($event.target as HTMLSelectElement).value as 'int8' | 'float16' | 'float32')"
+                @change="updateField(settings.asr_engine === 'faster-whisper' ? 'whisper_compute_type' : 'qwen_compute_type', ($event.target as HTMLSelectElement).value as 'int8' | 'int8_float16' | 'float16' | 'float32' | 'bfloat16')"
               >
-                <option value="int8">INT8 (fastest, lower quality)</option>
-                <option value="float16">FP16 (balanced)</option>
-                <option value="float32">FP32 (highest quality)</option>
+                <template v-if="settings.asr_engine === 'faster-whisper'">
+                  <option value="int8">INT8 (fastest)</option>
+                  <option value="int8_float16">INT8 FP16 (balanced)</option>
+                  <option value="float16">FP16</option>
+                  <option value="float32">FP32 (highest quality)</option>
+                </template>
+                <template v-else>
+                  <option value="bfloat16">BF16 (recommended)</option>
+                  <option value="float16">FP16</option>
+                  <option value="float32">FP32</option>
+                </template>
               </select>
             </div>
             <div v-if="settings.asr_engine === 'faster-whisper'" class="flex items-center justify-between">
@@ -773,6 +877,37 @@ async function loadPluginDataDir() {
                 <span class="text-xs text-gray-500">Reduce hallucinations in noisy audio</span>
               </div>
             </div>
+            <!-- VAD sliders (visible when vad_filter is on and engine is faster-whisper) -->
+            <template v-if="settings.asr_engine === 'faster-whisper' && settings.asr_vad_filter">
+              <label class="block mb-2">
+                <span class="text-xs text-gray-500">
+                  VAD Threshold: {{ (settings.whisper_vad_threshold ?? 0.5).toFixed(2) }}
+                </span>
+                <input
+                  type="range"
+                  :value="settings.whisper_vad_threshold ?? 0.5"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  class="w-full mt-1"
+                  @input="updateField('whisper_vad_threshold', parseFloat(($event.target as HTMLInputElement).value))"
+                />
+              </label>
+              <label class="block mb-3">
+                <span class="text-xs text-gray-500">
+                  Min Silence (ms): {{ settings.whisper_vad_min_silence_ms ?? 500 }}
+                </span>
+                <input
+                  type="range"
+                  :value="settings.whisper_vad_min_silence_ms ?? 500"
+                  min="100"
+                  max="2000"
+                  step="50"
+                  class="w-full mt-1"
+                  @input="updateField('whisper_vad_min_silence_ms', parseInt(($event.target as HTMLInputElement).value))"
+                />
+              </label>
+            </template>
             <div class="flex items-center justify-between">
               <label class="text-sm text-gray-600">Duplicate threshold</label>
               <input

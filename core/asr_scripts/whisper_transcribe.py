@@ -46,6 +46,8 @@ def parse_whisper_args() -> argparse.Namespace:
     parser.add_argument("--compute-type", default="int8", help="Compute type: int8, float16, float32")
     parser.add_argument("--word-timestamps", default="true", help="Enable word-level timestamps")
     parser.add_argument("--vad-filter", default="true", help="Enable Silero VAD filtering")
+    parser.add_argument("--vad-threshold", type=float, default=0.5, help="VAD onset threshold (0.0-1.0)")
+    parser.add_argument("--vad-min-silence-ms", type=int, default=500, help="Minimum silence duration in ms for VAD")
     parser.add_argument("--result-path", required=True, help="Path to write result JSON")
     
     # Parse known args, ignoring any unknown args
@@ -108,7 +110,19 @@ def main() -> None:
 
     word_timestamps = args.word_timestamps.lower() == "true"
     vad_filter = args.vad_filter.lower() == "true"
-    language = args.language if args.language else None
+
+    # Language auto-detect: treat "auto", "", "None" as None (omit from call)
+    lang_param = args.language
+    if args.language in ("auto", "", "None"):
+        lang_param = None
+
+    # Build VAD parameters when VAD filter is enabled
+    vad_params = None
+    if vad_filter:
+        vad_params = {
+            "vad_onset": float(args.vad_threshold),
+            "vad_min_silence_duration_ms": int(args.vad_min_silence_ms),
+        }
 
     # Run transcription
     report("progress", percent=20.0, message="Transcribing audio...")
@@ -116,9 +130,10 @@ def main() -> None:
     try:
         segments_iter, info = model.transcribe(
             args.media_path,
-            language=language,
+            language=lang_param,
             word_timestamps=word_timestamps,
             vad_filter=vad_filter,
+            vad_parameters=vad_params,
         )
     except Exception as exc:
         report("error", message=f"Transcription failed: {exc}")

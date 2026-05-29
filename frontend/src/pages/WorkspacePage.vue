@@ -104,26 +104,63 @@ const asrSettingsPerEngine = ref<Record<string, {
   model_size: string
   language: string
   device: "cpu" | "cuda" | "auto"
-  compute_type: "int8" | "float16" | "float32"
+  compute_type: string
   vad_filter: boolean
+  vad_threshold: number
+  vad_min_silence_ms: number
 }>>({
   "faster-whisper": {
     model_size: "large-v3-turbo",
     language: "zh",
-    device: "cpu",
-    compute_type: "int8",
+    device: "cuda" as "cpu" | "cuda" | "auto",
+    compute_type: "int8_float16",
     vad_filter: true,
+    vad_threshold: 0.5,
+    vad_min_silence_ms: 500,
   },
   "qwen3-asr": {
     model_size: "Qwen/Qwen3-ASR-0.6B",
-    language: "zh",
-    device: "cpu",
-    compute_type: "int8",
+    language: "auto",
+    device: "cuda" as "cpu" | "cuda" | "auto",
+    compute_type: "bfloat16",
     vad_filter: false,
+    vad_threshold: 0.5,
+    vad_min_silence_ms: 500,
   },
 })
 
+// Compute type options per engine
+const computeTypeOptions = computed(() => {
+  if (asrEngine.value === 'faster-whisper') {
+    return [
+      { value: 'int8', label: 'INT8 (fastest)' },
+      { value: 'int8_float16', label: 'INT8 FP16 (balanced)' },
+      { value: 'float16', label: 'FP16' },
+      { value: 'float32', label: 'FP32 (highest quality)' },
+    ]
+  }
+  return [
+    { value: 'bfloat16', label: 'BF16 (recommended)' },
+    { value: 'float16', label: 'FP16' },
+    { value: 'float32', label: 'FP32' },
+  ]
+})
+
+// Current engine's pluginId for device filtering - use asrPluginId directly
+// since it tracks the exact selected variant (CPU vs GPU)
+const currentEnginePluginId = computed(() => {
+  return asrPluginId.value
+})
+
+// Whether current engine supports GPU (CUDA)
+const supportsGpu = computed(() => {
+  const pid = currentEnginePluginId.value
+  // CPU-only plugins have "-cpu" suffix in pluginId
+  return pid.length > 0 && !pid.includes('-cpu')
+})
+
 const asrEngine = ref<"faster-whisper" | "qwen3-asr">("faster-whisper")
+const asrPluginId = ref("")  // Tracks which specific plugin variant is selected (CPU vs GPU)
 
 // Installed ASR engines (filtered from plugin list)
 interface InstalledEngine {
@@ -264,8 +301,8 @@ onMounted(async () => {
   await loadVideoUrl()
   await resolveWaveformUrl()
   await loadSilenceSettings()
+  await loadInstalledEngines()  // Must run BEFORE loadAsrSettings to populate installedEngines
   await loadAsrSettings()
-  await loadInstalledEngines()
   modelList.value = await listModels()
   // Validate loaded model_size against available models
   validateModelSize()
@@ -305,12 +342,50 @@ async function loadAsrSettings() {
   if (res.success && res.data) {
     const engine = (res.data.asr_engine as "faster-whisper" | "qwen3-asr") || "faster-whisper"
     asrEngine.value = engine
-    asrSettingsPerEngine.value[engine] = {
-      model_size: (res.data.asr_model_size as string) || (engine === "qwen3-asr" ? "Qwen/Qwen3-ASR-0.6B" : "large-v3-turbo"),
+
+    // Restore pluginId from saved settings, or auto-select first matching engine
+    const savedPluginId = res.data.asr_plugin_id as string
+    if (savedPluginId && installedEngines.value.find(e => e.pluginId === savedPluginId)) {
+      asrPluginId.value = savedPluginId
+    } else {
+      // Auto-select first installed engine for this engine type
+      const firstEng = installedEngines.value.find(e => e.engine === engine)
+      if (firstEng) asrPluginId.value = firstEng.pluginId
+    }
+
+    // Shared settings
+    const vadFilter = res.data.asr_vad_filter !== false
+
+    // Determine per-engine device based on plugin capabilities
+    const whisperPluginId = installedEngines.value.find(e => e.engine === "faster-whisper")?.pluginId ?? ""
+    const qwenPluginId = installedEngines.value.find(e => e.engine === "qwen3-asr")?.pluginId ?? ""
+    const whisperSupportsGpu = whisperPluginId.length > 0 && !whisperPluginId.includes("-cpu")
+    const qwenSupportsGpu = qwenPluginId.length > 0 && !qwenPluginId.includes("-cpu")
+
+    // Load faster-whisper settings (engine-prefixed keys from config.py)
+    const whisperModelSize = (res.data.asr_model_size as string) || "large-v3-turbo"
+    const whisperDevice = (res.data.asr_device as "cpu" | "cuda" | "auto") || (whisperSupportsGpu ? "cuda" : "cpu")
+    asrSettingsPerEngine.value["faster-whisper"] = {
+      model_size: whisperModelSize,
       language: (res.data.asr_language as string) || "zh",
-      device: (res.data.asr_device as "cpu" | "cuda" | "auto") || "cpu",
-      compute_type: (res.data.asr_compute_type as "int8" | "float16" | "float32") || "int8",
-      vad_filter: res.data.asr_vad_filter !== false,
+      device: whisperDevice,
+      compute_type: (res.data.whisper_compute_type as string) || "int8_float16",
+      vad_filter: vadFilter,
+      vad_threshold: Number(res.data.whisper_vad_threshold ?? 0.5),
+      vad_min_silence_ms: Number(res.data.whisper_vad_min_silence_ms ?? 500),
+    }
+
+    // Load qwen3-asr settings
+    const qwenModelSize = (res.data.asr_model_size as string) || "Qwen/Qwen3-ASR-0.6B"
+    const qwenDevice = qwenSupportsGpu ? "cuda" : "cpu"
+    asrSettingsPerEngine.value["qwen3-asr"] = {
+      model_size: qwenModelSize,
+      language: (res.data.qwen_language as string) || "auto",
+      device: qwenDevice,
+      compute_type: (res.data.qwen_compute_type as string) || (qwenSupportsGpu ? "bfloat16" : "float16"),
+      vad_filter: false,
+      vad_threshold: 0.5,
+      vad_min_silence_ms: 500,
     }
   }
 }
@@ -347,27 +422,78 @@ function validateModelSize() {
   }
 }
 
-// When engine changes, ensure defaults exist and validate model
+// Derive engine from selected pluginId, and update device/compute when plugin changes
+watch(asrPluginId, (newPluginId) => {
+  if (!newPluginId) return
+  const eng = installedEngines.value.find(e => e.pluginId === newPluginId)
+  if (eng) {
+    const prevEngine = asrEngine.value
+    asrEngine.value = eng.engine as "faster-whisper" | "qwen3-asr"
+    // If engine type didn't change (e.g. CPU->GPU within same engine),
+    // watch(asrEngine) won't fire, so we must update device/compute here
+    if (prevEngine === eng.engine) {
+      const gpu = !newPluginId.includes('-cpu')
+      const settings = asrSettingsPerEngine.value[eng.engine]
+      if (settings) {
+        settings.device = gpu ? 'cuda' : 'cpu'
+        if (eng.engine === 'qwen3-asr') {
+          settings.compute_type = gpu ? 'bfloat16' : 'float16'
+        }
+        // faster-whisper keeps int8_float16 for both CPU and GPU
+      }
+    }
+  }
+})
+
+// Engine defaults by type
+function getEngineDefaults(engine: "faster-whisper" | "qwen3-asr") {
+  const eng = installedEngines.value.find(e => e.engine === engine)
+  const pluginId = eng?.pluginId ?? ''
+  const gpu = pluginId.length > 0 && !pluginId.includes('-cpu')
+  if (engine === 'qwen3-asr') {
+    return { model_size: "Qwen/Qwen3-ASR-0.6B", language: "auto", device: gpu ? "cuda" as const : "cpu" as const, compute_type: gpu ? "bfloat16" : "float16", vad_filter: false, vad_threshold: 0.5, vad_min_silence_ms: 500 }
+  }
+  return { model_size: "large-v3-turbo", language: "zh", device: gpu ? "cuda" as const : "cpu" as const, compute_type: "int8_float16", vad_filter: true, vad_threshold: 0.5, vad_min_silence_ms: 500 }
+}
+
+// When engine changes, only create defaults if not yet populated.
+// Device/compute are always updated based on selected plugin's GPU capability.
+// User preferences (model_size, language, vad_*) are preserved from loadAsrSettings().
 watch(asrEngine, (newEngine) => {
-  if (!asrSettingsPerEngine.value[newEngine]) {
-    // Set sensible defaults for engine not yet visited
-    asrSettingsPerEngine.value[newEngine] = newEngine === 'qwen3-asr'
-      ? { model_size: "Qwen/Qwen3-ASR-0.6B", language: "zh", device: "cuda", compute_type: "int8", vad_filter: false }
-      : { model_size: "large-v3-turbo", language: "zh", device: "cpu", compute_type: "int8", vad_filter: true }
+  const defaults = getEngineDefaults(newEngine)
+  const existing = asrSettingsPerEngine.value[newEngine]
+  if (!existing) {
+    asrSettingsPerEngine.value[newEngine] = { ...defaults }
+  } else {
+    // Only update device/compute based on plugin capability (these are plugin-dependent, not user preference)
+    existing.device = defaults.device
+    existing.compute_type = defaults.compute_type
   }
   validateModelSize()
 })
 
 async function saveAsrSettings() {
   const current = asrSettingsPerEngine.value[asrEngine.value]
-  await call("update_settings", {
+  const payload: Record<string, unknown> = {
     asr_engine: asrEngine.value,
+    asr_plugin_id: asrPluginId.value,
     asr_model_size: current.model_size,
     asr_language: current.language,
     asr_device: current.device,
-    asr_compute_type: current.compute_type,
     asr_vad_filter: current.vad_filter,
-  })
+  }
+
+  // Engine-prefixed keys for settings persistence
+  if (asrEngine.value === "qwen3-asr") {
+    payload.qwen_compute_type = current.compute_type
+    payload.qwen_language = current.language
+  } else {
+    payload.whisper_compute_type = current.compute_type
+    payload.whisper_vad_threshold = current.vad_threshold
+    payload.whisper_vad_min_silence_ms = current.vad_min_silence_ms
+  }
+
+  await call("update_settings", payload)
   showTranscribeSettings.value = false
 }
 
@@ -491,6 +617,9 @@ async function handleTranscribe() {
     return
   }
 
+  // Persist current ASR settings to backend before transcription
+  await saveAsrSettings()
+
   // Pass ASR settings as payload to transcription task
   const settings = asrSettingsPerEngine.value[asrEngine.value]
   await runTranscription({
@@ -501,6 +630,8 @@ async function handleTranscribe() {
     device: settings.device,
     compute_type: settings.compute_type,
     vad_filter: settings.vad_filter,
+    vad_threshold: settings.vad_threshold,
+    vad_min_silence_ms: settings.vad_min_silence_ms,
   })
 }
 
@@ -773,10 +904,10 @@ onUnmounted(() => {
             <label class="block mb-2">
               <span class="text-xs text-gray-500">Engine</span>
               <select
-                v-model="asrEngine"
+                v-model="asrPluginId"
                 class="w-full mt-1 rounded border-gray-300 text-xs"
               >
-                <option v-for="eng in installedEngines" :key="eng.engine" :value="eng.engine">
+                <option v-for="eng in installedEngines" :key="eng.pluginId" :value="eng.pluginId">
                   {{ eng.displayName }} {{ eng.ready ? '' : '(model not downloaded)' }}
                 </option>
               </select>
@@ -799,11 +930,11 @@ onUnmounted(() => {
             <label class="block mb-2">
               <span class="text-xs text-gray-500">Language</span>
               <select v-model="asrSettingsPerEngine[asrEngine].language" class="w-full mt-1 rounded border-gray-300 text-xs">
+                <option value="auto">Auto-detect</option>
                 <option value="zh">Chinese</option>
                 <option value="en">English</option>
                 <option value="ja">Japanese</option>
                 <option value="ko">Korean</option>
-                <option value="auto">Auto-detect</option>
               </select>
             </label>
 
@@ -812,23 +943,24 @@ onUnmounted(() => {
               <span class="text-xs text-gray-500">Device</span>
               <select v-model="asrSettingsPerEngine[asrEngine].device" class="w-full mt-1 rounded border-gray-300 text-xs">
                 <option value="cpu">CPU</option>
-                <option value="cuda">CUDA (GPU)</option>
+                <option v-if="supportsGpu" value="cuda">CUDA (GPU)</option>
                 <option v-if="asrEngine === 'faster-whisper'" value="auto">Auto</option>
               </select>
+              <span v-if="!supportsGpu" class="text-xs text-gray-400 mt-0.5 block">GPU not available for this engine plugin</span>
             </label>
 
-            <!-- Compute type (faster-whisper only) -->
-            <label v-if="asrEngine === 'faster-whisper'" class="block mb-2">
+            <!-- Compute type -->
+            <label class="block mb-2">
               <span class="text-xs text-gray-500">Compute Type</span>
               <select v-model="asrSettingsPerEngine[asrEngine].compute_type" class="w-full mt-1 rounded border-gray-300 text-xs">
-                <option value="int8">INT8 (fastest)</option>
-                <option value="float16">FP16 (balanced)</option>
-                <option value="float32">FP32 (highest quality)</option>
+                <option v-for="opt in computeTypeOptions" :key="opt.value" :value="opt.value">
+                  {{ opt.label }}
+                </option>
               </select>
             </label>
 
-            <!-- VAD filter (faster-whisper only) -->
-            <label v-if="asrEngine === 'faster-whisper'" class="flex items-center gap-2 mb-3 cursor-pointer">
+            <!-- VAD filter -->
+            <label class="flex items-center gap-2 mb-2 cursor-pointer">
               <input
                 type="checkbox"
                 v-model="asrSettingsPerEngine[asrEngine].vad_filter"
@@ -836,6 +968,36 @@ onUnmounted(() => {
               />
               <span class="text-xs text-gray-500">VAD filter (reduce hallucinations)</span>
             </label>
+
+            <!-- VAD sliders (visible when vad_filter is on) -->
+            <template v-if="asrSettingsPerEngine[asrEngine].vad_filter">
+              <label class="block mb-2">
+                <span class="text-xs text-gray-500">
+                  VAD Threshold: {{ asrSettingsPerEngine[asrEngine].vad_threshold.toFixed(2) }}
+                </span>
+                <input
+                  type="range"
+                  v-model.number="asrSettingsPerEngine[asrEngine].vad_threshold"
+                  min="0.0"
+                  max="1.0"
+                  step="0.05"
+                  class="w-full mt-1"
+                />
+              </label>
+              <label class="block mb-3">
+                <span class="text-xs text-gray-500">
+                  Min Silence (ms): {{ asrSettingsPerEngine[asrEngine].vad_min_silence_ms }}
+                </span>
+                <input
+                  type="range"
+                  v-model.number="asrSettingsPerEngine[asrEngine].vad_min_silence_ms"
+                  min="100"
+                  max="2000"
+                  step="50"
+                  class="w-full mt-1"
+                />
+              </label>
+            </template>
 
             <!-- Save button -->
             <button

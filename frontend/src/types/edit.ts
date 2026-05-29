@@ -44,11 +44,17 @@ export interface AppSettings {
   export_ffmpeg_fade_mode: string
   // ASR / AI
   asr_engine: "faster-whisper" | "qwen3-asr"
+  asr_plugin_id: string
   asr_model_size: string
   asr_language: string
   asr_device: "cpu" | "cuda" | "auto"
   asr_compute_type: "int8" | "float16" | "float32"
   asr_vad_filter: boolean
+  // Engine-prefixed keys (flat dict, not nested)
+  whisper_compute_type: "int8" | "int8_float16" | "float16" | "float32"
+  qwen_compute_type: "bfloat16" | "float16" | "float32"
+  whisper_vad_threshold: number
+  whisper_vad_min_silence_ms: number
   duplicate_threshold: number
   duplicate_min_length: number
 }

@@ -316,7 +316,7 @@ class MiloCutApi(Bridge):
         if self._project._current_path:
             waveform_path = str(self._project._current_path.parent / "waveform.json")
         else:
-            from core.paths import get_projects_dir
+            from core.paths import get_data_dir, get_projects_dir
             name = self._project.current.project.name
             waveform_path = str(get_projects_dir() / name / "waveform.json")
 
@@ -400,8 +400,10 @@ class MiloCutApi(Bridge):
             from core.ffmpeg_service import _find_ffmpeg
 
             model_size = task.payload.get("model_size", settings.get("asr_model_size", "large-v3-turbo"))
-            compute_type = task.payload.get("compute_type", settings.get("asr_compute_type", "int8"))
+            compute_type = task.payload.get("compute_type", settings.get("whisper_compute_type", "int8_float16"))
             vad_filter = task.payload.get("vad_filter", settings.get("asr_vad_filter", True))
+            vad_threshold = settings.get("whisper_vad_threshold", 0.5)
+            vad_min_silence_ms = settings.get("whisper_vad_min_silence_ms", 500)
             ffmpeg = _find_ffmpeg()
 
             result = transcribe_with_whisper(
@@ -413,6 +415,8 @@ class MiloCutApi(Bridge):
                 device=device,
                 compute_type=compute_type,
                 vad_filter=vad_filter,
+                vad_threshold=vad_threshold,
+                vad_min_silence_ms=vad_min_silence_ms,
                 progress_cb=progress_cb,
                 cancel_event=cancel_event,
             )
@@ -421,6 +425,7 @@ class MiloCutApi(Bridge):
 
             asr_model_size = task.payload.get("asr_model_size", settings.get("asr_model_size", "0.6B"))
             aligner_model_size = task.payload.get("aligner_model_size", settings.get("asr_aligner_model_size", "0.6B"))
+            compute_type = settings.get("qwen_compute_type", "bfloat16")
 
             result = transcribe_with_qwen(
                 plugin_manager=self._plugin_manager,
@@ -429,6 +434,7 @@ class MiloCutApi(Bridge):
                 aligner_model_size=aligner_model_size,
                 language=language,
                 device=device,
+                compute_type=compute_type,
                 progress_cb=progress_cb,
                 cancel_event=cancel_event,
             )
@@ -448,10 +454,55 @@ class MiloCutApi(Bridge):
         if not update_result["success"]:
             raise RuntimeError(update_result.get("error", "Failed to update transcript"))
 
+        # Auto-save SRT to project directory
+        srt_path = None
+        try:
+            from core.export_service import export_srt
+            from datetime import datetime
+            project_name = self._project.current.project.name if self._project.current.project else "transcript"
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            srt_filename = f"{project_name}_{timestamp}.srt"
+            srt_dir = Path(get_data_dir()) / "transcripts"
+            srt_dir.mkdir(parents=True, exist_ok=True)
+            srt_path = str(srt_dir / srt_filename)
+
+            segments_for_export = []
+            for seg in result["data"].get("segments", []):
+                segments_for_export.append({
+                    "id": seg.get("id", ""),
+                    "start": seg.get("start", 0),
+                    "end": seg.get("end", 0),
+                    "text": seg.get("text", ""),
+                    "type": "subtitle",
+                })
+
+            srt_result = export_srt(
+                segments=segments_for_export,
+                edits=[],
+                output_path=srt_path,
+                media_duration=self._project.current.media.duration if self._project.current.media else 0,
+            )
+            if srt_result.get("success"):
+                logger.info("Auto-saved transcription SRT to {}", srt_path)
+            else:
+                logger.warning("Failed to auto-save SRT: {}", srt_result.get("error"))
+                srt_path = None
+        except Exception as e:
+            logger.warning("Failed to auto-save SRT: {}", e)
+            srt_path = None
+
+        # Import the auto-saved SRT back into the project
+        if srt_path:
+            try:
+                self.import_srt(srt_path)
+            except Exception as e:
+                logger.warning("Failed to import auto-saved SRT: {}", e)
+
         return {
             "project": update_result["data"],
             "segment_count": len(result["data"].get("segments", [])),
             "word_count": result["data"].get("word_count", 0),
+            "srt_path": srt_path,
         }
 
     # ================================================================
@@ -877,6 +928,46 @@ class MiloCutApi(Bridge):
             os.startfile(str(path))
             return {"success": True}
         except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    @expose
+    def cleanup_tasks_folder(self) -> dict:
+        """Clean up old transcription task files (logs and results)."""
+        try:
+            tasks_dir = Path(get_data_dir()) / "plugins" / "tasks"
+            if not tasks_dir.exists():
+                return {"success": True, "data": {"deleted": 0, "message": "No tasks folder found"}}
+
+            deleted = 0
+            for f in tasks_dir.iterdir():
+                if f.is_file() and (f.suffix in (".log", ".json")):
+                    f.unlink()
+                    deleted += 1
+
+            return {"success": True, "data": {"deleted": deleted, "message": f"Cleaned up {deleted} task files"}}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    @expose
+    def cleanup_transcripts_folder(self) -> dict:
+        """Delete all auto-saved transcription SRT files."""
+        try:
+            transcripts_dir = get_data_dir() / "transcripts"
+            if not transcripts_dir.exists():
+                return {"success": True, "data": {"deleted": 0, "size_freed": 0}}
+
+            deleted = 0
+            size_freed = 0
+            for f in transcripts_dir.iterdir():
+                if f.is_file() and f.suffix == ".srt":
+                    size_freed += f.stat().st_size
+                    f.unlink()
+                    deleted += 1
+
+            logger.info("Cleaned up transcripts folder: {} files, {} bytes freed", deleted, size_freed)
+            return {"success": True, "data": {"deleted": deleted, "size_freed": size_freed}}
+        except Exception as e:
+            logger.exception("cleanup_transcripts_folder failed")
             return {"success": False, "error": str(e)}
 
     @expose

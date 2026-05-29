@@ -55,6 +55,7 @@ def parse_qwen_args() -> argparse.Namespace:
     parser.add_argument("--aligner-model-path", default="", help="Path to Qwen3-ForcedAligner model (optional)")
     parser.add_argument("--language", default="zh", help="Language code")
     parser.add_argument("--device", default="cpu", help="Device: cpu, cuda")
+    parser.add_argument("--compute-type", default="bfloat16", help="Compute type: bfloat16, float16, float32")
     parser.add_argument("--result-path", required=True, help="Path to write result JSON")
 
     args, _ = parser.parse_known_args()
@@ -375,7 +376,10 @@ def main() -> None:
         report("progress", percent=12.0, message="Loading Qwen3-ASR model...")
 
         dev = args.device
-        dtype = torch.float32 if dev == "cpu" else torch.float16
+        DTYPE_MAP = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
+        dtype = DTYPE_MAP.get(args.compute_type, torch.bfloat16)
+        if dev == "cpu":
+            dtype = torch.float32
         device_map = "cpu" if dev == "cpu" else "auto"
 
         aligner_kwargs = {}
@@ -421,6 +425,9 @@ def main() -> None:
             "ro": "Romanian", "hu": "Hungarian", "mk": "Macedonian",
         }
         language = lang_map.get(args.language, args.language)
+        # Auto-detect: pass None to model.transcribe() for automatic language detection
+        if args.language in ("auto", "", "None", None):
+            language = None
 
         # Process each slice
         all_segments = []
