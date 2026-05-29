@@ -1071,6 +1071,7 @@ class MiloCutApi(Bridge):
     def check_uv_available(self) -> dict:
         """Check if uv package manager is available in PATH."""
         if os.environ.get("MILO_FAKE_NO_UV"):
+            import time; time.sleep(0.1)  # avoid pywebview callback race
             return {
                 "success": True,
                 "data": {
