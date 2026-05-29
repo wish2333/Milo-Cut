@@ -923,6 +923,39 @@ end = getattr(ts, "end_time", getattr(ts, "end", None))
 
 ---
 
+## Sprint 2 补充: Qwen 引擎依赖遗漏修复 (2026-05-29)
+
+### 问题背景
+
+Sprint 2 的 CUDA 修复提交 (`82f9a3d`) 重构了 `qwen_transcribe.py` 的推理管线，用统一的 `qwen_asr.Qwen3ASRModel` 替换了原来的 `transformers.AutoModelForSpeechSeq2Seq` + `qwen3_forced_aligner.Qwen3ForcedAligner` + `librosa` 三件套，但 `PLUGIN_REGISTRY` 的依赖声明没有同步更新，导致用户安装 Qwen 插件后运行时 `ImportError`。
+
+### 根因
+
+`core/plugin_manager.py` 中 `plugin-qwen-cpu` 和 `plugin-qwen-gpu` 的 `dependencies` 列表仅声明了 `["transformers>=4.40.0", "torch>=2.0.0", "accelerate"]`，缺少 Sprint 2 新引入的核心依赖 `qwen-asr`（提供 `Qwen3ASRModel` 类）。
+
+### 修复内容
+
+**文件**: `core/plugin_manager.py`
+
+- `plugin-qwen-cpu` dependencies: 新增 `"qwen-asr"`
+- `plugin-qwen-gpu` dependencies: 新增 `"qwen-asr"`
+
+```python
+# 修改前
+"dependencies": ["transformers>=4.40.0", "torch>=2.0.0", "accelerate"],
+
+# 修改后
+"dependencies": ["qwen-asr", "transformers>=4.40.0", "torch>=2.0.0", "accelerate"],
+```
+
+### 说明
+
+- `qwen-asr` 是 Sprint 2 引入的核心包，提供 `Qwen3ASRModel` 类，内含 ASR 推理 + 强制对齐功能
+- `transformers` 保留，因为 `qwen-asr` 大概率以它为传递依赖，显式声明确保最低版本
+- `numpy` 无需添加，是 `torch` 的传递依赖
+
+---
+
 <a id="files-modified-summary"></a>
 ## Files Modified Summary
 
@@ -1115,102 +1148,6 @@ feat(asr): 新增 Qwen3-ASR 引擎、重复检测及 ASR 设置面板重构
 - 完善 ASR 设置面板：引擎/语言/设备/计算类型/VAD/阈值配置
 - 清理 common.py 135 行死代码及未使用的导入
 ```
-
----
-
-## Sprint 2 补充: CUDA 修复与 ForcedAligner 时间戳修复 (2026-05-29)
-
-### 问题背景
-
-Sprint 2 遗留两个关键问题:
-
-1. **CUDA 不可用** -- Qwen 和 Whisper 引擎在 `--device cuda` 时实际运行在 CPU 上
-2. **Qwen 输出只有 1 个 segment** -- ForcedAligner 返回全零时间戳，所有文本合并为单段
-
-### 根因分析
-
-#### CUDA_VISIBLE_DEVICES 误设为空字符串
-
-`whisper_transcribe.py` 和 `qwen_transcribe.py` 中存在以下代码:
-
-```python
-# 修改前 -- BUG
-os.environ["CUDA_VISIBLE_DEVICES"] = os.environ.get("CUDA_VISIBLE_DEVICES", "")
-```
-
-**问题**: Windows 系统正常情况下不设置 `CUDA_VISIBLE_DEVICES` 环境变量。`os.environ.get("CUDA_VISIBLE_DEVICES", "")` 返回空字符串 `""`，然后将 `CUDA_VISIBLE_DEVICES` 设为 `""`，导致 PyTorch 看不到任何 GPU。
-
-**修复**: 仅在 CPU 模式下设置该环境变量:
-
-```python
-# 修改后
-if device == "cpu":
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""
-```
-
-#### ForcedAlignItem 属性名错误
-
-`qwen_transcribe.py` 中读取时间戳的代码:
-
-```python
-# 修改前 -- BUG
-start = getattr(ts, "start", None)    # 返回 None
-end = getattr(ts, "end", None)        # 返回 None
-```
-
-**问题**: `ForcedAlignItem` 的属性名是 `start_time` 和 `end_time`，不是 `start` 和 `end`。`getattr` 返回默认值 `None`，导致条件 `start is not None and end is not None` 为 False，所有词被过滤掉。
-
-**修复**: 兼容两种属性名:
-
-```python
-# 修改后
-start = getattr(ts, "start_time", getattr(ts, "start", None))
-end = getattr(ts, "end_time", getattr(ts, "end", None))
-```
-
-### 修复效果
-
-#### Whisper CUDA 验证
-
-| 设备 | 耗时  | 加速比 |
-| ---- | ----- | ------ |
-| CPU  | 8.6s  | 1.0x   |
-| CUDA | 2.6s  | 3.3x   |
-
-#### Qwen GPU E2E 测试结果
-
-| 模型               | 设备 | 耗时   | Segment 数 | SRT 质量    |
-| ------------------ | ---- | ------ | ---------- | ----------- |
-| Qwen3-ASR-0.6B     | CUDA | 36.4s  | 34 segs    | 时间戳正确  |
-| Qwen3-ASR-1.7B     | CUDA | 40.3s  | 34 segs    | 时间戳正确  |
-
-#### 全引擎 E2E 测试矩阵
-
-| 引擎             | 模型                          | 设备 | Segment 数 | 状态 |
-| ---------------- | ----------------------------- | ---- | ---------- | ---- |
-| faster-whisper   | Systran/faster-whisper-base   | CPU  | 37         | PASS |
-| faster-whisper   | Systran/faster-whisper-base   | CUDA | 37         | PASS |
-| faster-whisper   | Purfview/faster-whisper-large-v3-turbo | CPU  | 17         | PASS |
-| faster-whisper   | Purfview/faster-whisper-large-v3-turbo | CUDA | 17         | PASS |
-| qwen3-asr        | Qwen/Qwen3-ASR-0.6B          | CPU  | 34         | PASS |
-| qwen3-asr        | Qwen/Qwen3-ASR-0.6B          | CUDA | 34         | PASS |
-| qwen3-asr        | Qwen/Qwen3-ASR-1.7B          | CPU  | 34         | PASS |
-| qwen3-asr        | Qwen/Qwen3-ASR-1.7B          | CUDA | 34         | PASS |
-
-### 修改文件
-
-| 文件                              | 变更                                              |
-| --------------------------------- | ------------------------------------------------- |
-| `core/asr_scripts/whisper_transcribe.py` | 修复 CUDA_VISIBLE_DEVICES: 仅 CPU 模式设置空值  |
-| `core/asr_scripts/qwen_transcribe.py`    | 修复 CUDA_VISIBLE_DEVICES + ForcedAlignItem 属性名 |
-| `tests/test_e2e_srt.py`          | 新建: 全引擎 E2E SRT 生成测试脚本                  |
-| `tests/test_transcription.py`    | 新建: 转录功能单元测试脚本                          |
-
-### 关键发现
-
-1. **Windows 环境变量陷阱**: `os.environ.get("CUDA_VISIBLE_DEVICES", "")` 在 Windows 上返回空字符串而非 None，导致 GPU 被隐藏
-2. **qwen-asr 包 API 差异**: `ForcedAlignItem` 使用 `start_time`/`end_time` 而非 `start`/`end`
-3. **CTranslate2 int8 + CUDA**: faster-whisper 的 int8 compute_type 在 CUDA 上正常工作（3.3x 加速）
 
 ---
 

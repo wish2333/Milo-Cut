@@ -47,7 +47,7 @@ PLUGIN_REGISTRY: dict[str, dict[str, Any]] = {
     "plugin-qwen-cpu": {
         "display_name": "Qwen3 ASR (CPU)",
         "engine": "qwen3-asr",
-        "dependencies": ["transformers>=4.40.0", "torch>=2.0.0", "accelerate"],
+        "dependencies": ["qwen-asr", "transformers>=4.40.0", "torch>=2.0.0", "accelerate"],
         "models": {
             "Qwen/Qwen3-ASR-0.6B": {
                 "display_name": "Qwen3 ASR 0.6B (lightweight)",
@@ -66,7 +66,7 @@ PLUGIN_REGISTRY: dict[str, dict[str, Any]] = {
     "plugin-qwen-gpu": {
         "display_name": "Qwen3 ASR (GPU)",
         "engine": "qwen3-asr",
-        "dependencies": ["transformers>=4.40.0", "torch>=2.0.0", "accelerate"],
+        "dependencies": ["qwen-asr", "transformers>=4.40.0", "torch>=2.0.0", "accelerate"],
         "pytorch_index": "https://download.pytorch.org/whl/cu124",
         "models": {
             "Qwen/Qwen3-ASR-0.6B": {

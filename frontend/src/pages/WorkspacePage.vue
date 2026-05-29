@@ -99,15 +99,31 @@ const videoPaused = ref(true)
 const videoVolume = ref(0.75)
 const videoPlaybackRate = ref(1)
 
-// ASR Transcription settings (local overrides, synced from AppSettings)
-const asrSettings = ref({
-  engine: "faster-whisper" as "faster-whisper" | "qwen3-asr",
-  model_size: "large-v3-turbo" as string,
-  language: "zh",
-  device: "cpu" as "cpu" | "cuda" | "auto",
-  compute_type: "int8" as "int8" | "float16" | "float32",
-  vad_filter: true,
+// ASR Transcription settings - per-engine storage so switching preserves settings
+const asrSettingsPerEngine = ref<Record<string, {
+  model_size: string
+  language: string
+  device: "cpu" | "cuda" | "auto"
+  compute_type: "int8" | "float16" | "float32"
+  vad_filter: boolean
+}>>({
+  "faster-whisper": {
+    model_size: "large-v3-turbo",
+    language: "zh",
+    device: "cpu",
+    compute_type: "int8",
+    vad_filter: true,
+  },
+  "qwen3-asr": {
+    model_size: "Qwen/Qwen3-ASR-0.6B",
+    language: "zh",
+    device: "cpu",
+    compute_type: "int8",
+    vad_filter: false,
+  },
 })
+
+const asrEngine = ref<"faster-whisper" | "qwen3-asr">("faster-whisper")
 
 // Installed ASR engines (filtered from plugin list)
 interface InstalledEngine {
@@ -122,9 +138,8 @@ const hasInstalledEngines = computed(() => installedEngines.value.length > 0)
 // Available ASR models (loaded from plugin manager)
 const modelList = ref<ModelInfo[]>([])
 const availableModels = computed(() => {
-  const engine = asrSettings.value.engine
   return modelList.value
-    .filter(m => m.engine === engine && !m.model_id.includes("ForcedAligner"))
+    .filter(m => m.engine === asrEngine.value && !m.model_id.includes("ForcedAligner"))
     .filter((m, i, arr) => arr.findIndex(x => x.model_id === m.model_id) === i)
 })
 
@@ -288,9 +303,10 @@ async function loadSilenceSettings() {
 async function loadAsrSettings() {
   const res = await call<Record<string, unknown>>("get_settings")
   if (res.success && res.data) {
-    asrSettings.value = {
-      engine: (res.data.asr_engine as "faster-whisper" | "qwen3-asr") || "faster-whisper",
-      model_size: (res.data.asr_model_size as string) || "large-v3-turbo",
+    const engine = (res.data.asr_engine as "faster-whisper" | "qwen3-asr") || "faster-whisper"
+    asrEngine.value = engine
+    asrSettingsPerEngine.value[engine] = {
+      model_size: (res.data.asr_model_size as string) || (engine === "qwen3-asr" ? "Qwen/Qwen3-ASR-0.6B" : "large-v3-turbo"),
       language: (res.data.asr_language as string) || "zh",
       device: (res.data.asr_device as "cpu" | "cuda" | "auto") || "cpu",
       compute_type: (res.data.asr_compute_type as "int8" | "float16" | "float32") || "int8",
@@ -318,31 +334,39 @@ async function loadInstalledEngines() {
   installedEngines.value = engines
 
   // If current selected engine is not installed, switch to first available
-  if (engines.length > 0 && !engines.find(e => e.engine === asrSettings.value.engine)) {
-    asrSettings.value.engine = engines[0].engine as "faster-whisper" | "qwen3-asr"
+  if (engines.length > 0 && !engines.find(e => e.engine === asrEngine.value)) {
+    asrEngine.value = engines[0].engine as "faster-whisper" | "qwen3-asr"
   }
 }
 
 function validateModelSize() {
   const models = availableModels.value
-  if (models.length > 0 && !models.find(m => m.model_id === asrSettings.value.model_size)) {
-    asrSettings.value.model_size = models[0].model_id
+  const current = asrSettingsPerEngine.value[asrEngine.value]
+  if (current && models.length > 0 && !models.find(m => m.model_id === current.model_size)) {
+    asrSettingsPerEngine.value[asrEngine.value].model_size = models[0].model_id
   }
 }
 
-// Reset model_size when engine changes
-watch(() => asrSettings.value.engine, () => {
+// When engine changes, ensure defaults exist and validate model
+watch(asrEngine, (newEngine) => {
+  if (!asrSettingsPerEngine.value[newEngine]) {
+    // Set sensible defaults for engine not yet visited
+    asrSettingsPerEngine.value[newEngine] = newEngine === 'qwen3-asr'
+      ? { model_size: "Qwen/Qwen3-ASR-0.6B", language: "zh", device: "cuda", compute_type: "int8", vad_filter: false }
+      : { model_size: "large-v3-turbo", language: "zh", device: "cpu", compute_type: "int8", vad_filter: true }
+  }
   validateModelSize()
 })
 
 async function saveAsrSettings() {
+  const current = asrSettingsPerEngine.value[asrEngine.value]
   await call("update_settings", {
-    asr_engine: asrSettings.value.engine,
-    asr_model_size: asrSettings.value.model_size,
-    asr_language: asrSettings.value.language,
-    asr_device: asrSettings.value.device,
-    asr_compute_type: asrSettings.value.compute_type,
-    asr_vad_filter: asrSettings.value.vad_filter,
+    asr_engine: asrEngine.value,
+    asr_model_size: current.model_size,
+    asr_language: current.language,
+    asr_device: current.device,
+    asr_compute_type: current.compute_type,
+    asr_vad_filter: current.vad_filter,
   })
   showTranscribeSettings.value = false
 }
@@ -452,7 +476,7 @@ async function handleTranscribe() {
   }
 
   // Get selected engine
-  const engine = asrSettings.value.engine
+  const engine = asrEngine.value
   const engineInfo = installedEngines.value.find(e => e.engine === engine)
 
   if (!engineInfo) {
@@ -468,14 +492,15 @@ async function handleTranscribe() {
   }
 
   // Pass ASR settings as payload to transcription task
+  const settings = asrSettingsPerEngine.value[asrEngine.value]
   await runTranscription({
-    engine: asrSettings.value.engine,
-    model_size: asrSettings.value.model_size,
-    asr_model_size: asrSettings.value.model_size,
-    language: asrSettings.value.language,
-    device: asrSettings.value.device,
-    compute_type: asrSettings.value.compute_type,
-    vad_filter: asrSettings.value.vad_filter,
+    engine: asrEngine.value,
+    model_size: settings.model_size,
+    asr_model_size: settings.model_size,
+    language: settings.language,
+    device: settings.device,
+    compute_type: settings.compute_type,
+    vad_filter: settings.vad_filter,
   })
 }
 
@@ -632,6 +657,14 @@ function handleGlobalKeydown(e: KeyboardEvent) {
   }
 }
 
+function handleClickOutside(e: MouseEvent) {
+  const target = e.target as HTMLElement
+  // Close transcribe settings popup when clicking outside
+  if (showTranscribeSettings.value && !target.closest(".relative.inline-flex.items-center")) {
+    showTranscribeSettings.value = false
+  }
+}
+
 async function handleUndo() {
   await flushPendingUpdates()
   if (!projectRef.value) return
@@ -654,10 +687,12 @@ async function handleRedo() {
 
 onMounted(() => {
   document.addEventListener("keydown", handleGlobalKeydown)
+  document.addEventListener("mousedown", handleClickOutside)
 })
 
 onUnmounted(() => {
   document.removeEventListener("keydown", handleGlobalKeydown)
+  document.removeEventListener("mousedown", handleClickOutside)
   if (regenPollTimer) clearInterval(regenPollTimer)
 })
 </script>
@@ -738,7 +773,7 @@ onUnmounted(() => {
             <label class="block mb-2">
               <span class="text-xs text-gray-500">Engine</span>
               <select
-                v-model="asrSettings.engine"
+                v-model="asrEngine"
                 class="w-full mt-1 rounded border-gray-300 text-xs"
               >
                 <option v-for="eng in installedEngines" :key="eng.engine" :value="eng.engine">
@@ -751,7 +786,7 @@ onUnmounted(() => {
             <label class="block mb-2">
               <span class="text-xs text-gray-500">Model</span>
               <select
-                v-model="asrSettings.model_size"
+                v-model="asrSettingsPerEngine[asrEngine].model_size"
                 class="w-full mt-1 rounded border-gray-300 text-xs"
               >
                 <option v-for="m in availableModels" :key="m.model_id" :value="m.model_id">
@@ -763,7 +798,7 @@ onUnmounted(() => {
             <!-- Language -->
             <label class="block mb-2">
               <span class="text-xs text-gray-500">Language</span>
-              <select v-model="asrSettings.language" class="w-full mt-1 rounded border-gray-300 text-xs">
+              <select v-model="asrSettingsPerEngine[asrEngine].language" class="w-full mt-1 rounded border-gray-300 text-xs">
                 <option value="zh">Chinese</option>
                 <option value="en">English</option>
                 <option value="ja">Japanese</option>
@@ -775,17 +810,17 @@ onUnmounted(() => {
             <!-- Device -->
             <label class="block mb-2">
               <span class="text-xs text-gray-500">Device</span>
-              <select v-model="asrSettings.device" class="w-full mt-1 rounded border-gray-300 text-xs">
+              <select v-model="asrSettingsPerEngine[asrEngine].device" class="w-full mt-1 rounded border-gray-300 text-xs">
                 <option value="cpu">CPU</option>
                 <option value="cuda">CUDA (GPU)</option>
-                <option v-if="asrSettings.engine === 'faster-whisper'" value="auto">Auto</option>
+                <option v-if="asrEngine === 'faster-whisper'" value="auto">Auto</option>
               </select>
             </label>
 
             <!-- Compute type (faster-whisper only) -->
-            <label v-if="asrSettings.engine === 'faster-whisper'" class="block mb-2">
+            <label v-if="asrEngine === 'faster-whisper'" class="block mb-2">
               <span class="text-xs text-gray-500">Compute Type</span>
-              <select v-model="asrSettings.compute_type" class="w-full mt-1 rounded border-gray-300 text-xs">
+              <select v-model="asrSettingsPerEngine[asrEngine].compute_type" class="w-full mt-1 rounded border-gray-300 text-xs">
                 <option value="int8">INT8 (fastest)</option>
                 <option value="float16">FP16 (balanced)</option>
                 <option value="float32">FP32 (highest quality)</option>
@@ -793,10 +828,10 @@ onUnmounted(() => {
             </label>
 
             <!-- VAD filter (faster-whisper only) -->
-            <label v-if="asrSettings.engine === 'faster-whisper'" class="flex items-center gap-2 mb-3 cursor-pointer">
+            <label v-if="asrEngine === 'faster-whisper'" class="flex items-center gap-2 mb-3 cursor-pointer">
               <input
                 type="checkbox"
-                v-model="asrSettings.vad_filter"
+                v-model="asrSettingsPerEngine[asrEngine].vad_filter"
                 class="w-4 h-4 accent-blue-600"
               />
               <span class="text-xs text-gray-500">VAD filter (reduce hallucinations)</span>
