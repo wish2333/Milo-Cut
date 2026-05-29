@@ -352,9 +352,33 @@ def detect_gpu() -> dict[str, Any]:
 class PluginManager:
     """Manages ASR plugin lifecycle: install, uninstall, model download, subprocess IPC."""
 
-    def __init__(self, plugins_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        plugins_dir: Path | None = None,
+        model_dir: Path | None = None,
+    ) -> None:
         self._plugins_dir = plugins_dir or get_plugin_data_dir()
         self._plugins_dir.mkdir(parents=True, exist_ok=True)
+
+        # Model directory is decoupled from plugins_dir.
+        # registry.json, tasks/, venv/ stay in plugins_dir; only models/ moves here.
+        # Custom model_dir must be defensive -- a bad path must not crash startup.
+        default_model_dir = self._plugins_dir / "models"
+        if model_dir:
+            try:
+                self._model_dir = Path(model_dir)
+                self._model_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                logger.warning(
+                    "Custom model_dir {} is invalid ({}), falling back to default",
+                    model_dir,
+                    e,
+                )
+                self._model_dir = default_model_dir
+                self._model_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            self._model_dir = default_model_dir
+            self._model_dir.mkdir(parents=True, exist_ok=True)
 
         self._registry_path = self._plugins_dir / "registry.json"
         self._tasks_dir = self._plugins_dir / "tasks"
@@ -556,17 +580,69 @@ class PluginManager:
         return result
 
     def is_model_downloaded(self, model_id: str) -> bool:
-        """Check if a model is downloaded locally."""
-        return self._get_model_path(model_id).exists()
+        """Check if a model is downloaded and structurally valid."""
+        return self.validate_model(model_id)["valid"]
 
     def get_model_path(self, model_id: str) -> Path:
         """Return the local path for a model. Does not trigger download."""
         return self._get_model_path(model_id)
 
+    def validate_model(self, model_id: str) -> dict[str, Any]:
+        """Validate that a downloaded model directory is structurally correct.
+
+        Checks:
+        1. Directory name contains '--' separator (safe_name format).
+        2. Directory exists on disk.
+        3. Required files are present based on engine type.
+
+        Returns:
+            {"valid": bool, "errors": list[str]}
+        """
+        errors: list[str] = []
+
+        # -- directory name format --
+        safe_name = model_id.replace("/", "--")
+        if "--" not in safe_name:
+            errors.append(f"Model id '{model_id}' does not contain a valid separator")
+
+        model_path = self._model_dir / safe_name
+
+        if not model_path.exists():
+            errors.append(f"Model directory does not exist: {model_path}")
+            return {"valid": False, "errors": errors}
+
+        if not model_path.is_dir():
+            errors.append(f"Model path is not a directory: {model_path}")
+            return {"valid": False, "errors": errors}
+
+        # -- determine engine type from PLUGIN_REGISTRY --
+        engine: str | None = None
+        for _plugin_id, plugin_info in PLUGIN_REGISTRY.items():
+            if model_id in plugin_info.get("models", {}):
+                engine = plugin_info.get("engine")
+                break
+
+        # -- required files per engine --
+        if engine == "faster-whisper":
+            required = ["model.bin", "config.json"]
+        elif engine == "qwen3-asr":
+            required = ["model.safetensors", "config.json"]
+        else:
+            # Unknown engine -- only check that the directory is non-empty
+            if not any(model_path.iterdir()):
+                errors.append(f"Model directory is empty: {model_path}")
+            return {"valid": len(errors) == 0, "errors": errors}
+
+        for fname in required:
+            if not (model_path / fname).exists():
+                errors.append(f"Missing required file: {fname}")
+
+        return {"valid": len(errors) == 0, "errors": errors}
+
     def _get_model_path(self, model_id: str) -> Path:
         """Compute the local model storage path."""
         safe_name = model_id.replace("/", "--")
-        return self._plugins_dir / "models" / safe_name
+        return self._model_dir / safe_name
 
     def ensure_model(
         self,
