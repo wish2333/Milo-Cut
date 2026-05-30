@@ -10,6 +10,8 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
+from collections.abc import Callable
 from pathlib import Path
 
 _SUBPROCESS_KWARGS: dict = (
@@ -294,3 +296,45 @@ def generate_waveform(
     except Exception as e:
         logger.exception("generate_waveform failed")
         return {"success": False, "error": str(e)}
+
+
+def generate_proxy(
+    media_path: str,
+    output_path: str,
+    resolution: str = "720p",
+    progress_cb: Callable[[float, str], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> str:
+    """Generate proxy file at specified resolution.
+
+    Args:
+        media_path: Path to source video
+        output_path: Path for proxy output
+        resolution: Target resolution (e.g., "720p", "480p")
+        progress_cb: Optional progress callback(percent, message)
+        cancel_event: Optional cancellation event
+
+    Returns:
+        Path to generated proxy file
+    """
+    ffmpeg = _find_ffmpeg()
+
+    # Parse resolution
+    height = int(resolution.replace("p", ""))
+
+    cmd = [
+        ffmpeg, "-y",
+        "-i", media_path,
+        "-vf", f"scale=-2:{height}",
+        "-c:v", "libx264", "-crf", "28",
+        "-preset", "ultrafast",
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart",
+        output_path,
+    ]
+
+    logger.info("Generating proxy: {} -> {} ({})", media_path, output_path, resolution)
+    subprocess.run(cmd, check=True, **_SUBPROCESS_KWARGS)
+    logger.info("Proxy generated: {}", output_path)
+
+    return output_path

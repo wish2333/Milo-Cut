@@ -138,6 +138,9 @@ class MiloCutApi(Bridge):
         self._task_manager.register_handler(
             TaskType.TRANSCRIPTION, self._handle_transcription
         )
+        self._task_manager.register_handler(
+            TaskType.PROXY_GENERATION, self._handle_proxy_generation
+        )
 
     def _handle_silence_detection(self, task, cancel_event, progress_cb):
         """Run silence detection on the project media and store results."""
@@ -556,6 +559,24 @@ class MiloCutApi(Bridge):
             "word_count": result["data"].get("word_count", 0),
             "srt_path": srt_path,
         }
+
+    def _handle_proxy_generation(self, task, cancel_event, progress_cb):
+        """Handle proxy generation task."""
+        if self._project.current is None:
+            raise ValueError("No project open")
+        if self._project.current.media is None:
+            raise ValueError("No media in project")
+
+        media_path = self._project.current.media.path
+        resolution = task.payload.get("resolution", "720p")
+
+        # Generate output path alongside original
+        base, ext = os.path.splitext(media_path)
+        output_path = f"{base}_proxy{ext}"
+
+        from core.ffmpeg_service import generate_proxy
+
+        return generate_proxy(media_path, output_path, resolution, progress_cb, cancel_event)
 
     # ================================================================
     # System

@@ -475,43 +475,36 @@ def _build_video_trim_filter(
     *,
     has_video: bool = True,
 ) -> str:
-    """Build FFmpeg filter_complex for single-pass video+audio trimming.
+    """Build FFmpeg filter_complex using select/aselect expressions.
 
-    Uses split/asplit to duplicate streams, then trim/atrim per keep range,
-    and finally concat.  Each filter is simple (no complex expressions),
-    avoiding memory issues with large keep_range counts.
+    O(1) memory complexity regardless of keep_ranges count.
+    Single-pass re-encoding maintains quality.
     """
-    n = len(keep_ranges)
-    parts: list[str] = []
+    if not keep_ranges:
+        return ""
 
+    # Build time range expressions
+    video_clauses = []
+    audio_clauses = []
+    for s, e in keep_ranges:
+        clause = f"between(t,{s:.6f},{e:.6f})"
+        video_clauses.append(clause)
+        audio_clauses.append(clause)
+
+    v_expr = "+".join(video_clauses)
+    a_expr = "+".join(audio_clauses)
+
+    parts = []
     if has_video:
-        if n == 1:
-            s, e = keep_ranges[0]
-            parts.append(f"[0:v]trim=start={s:.6f}:end={e:.6f},setpts=PTS-STARTPTS[v0]")
-            parts.append(f"[0:a]atrim=start={s:.6f}:end={e:.6f},asetpts=PTS-STARTPTS[a0]")
-            parts.append("[v0][a0]concat=n=1:v=1:a=1[outv][outa]")
-        else:
-            v_splits = "".join(f"[sv{i}]" for i in range(n))
-            a_splits = "".join(f"[sa{i}]" for i in range(n))
-            parts.append(f"[0:v]split={n}{v_splits}")
-            parts.append(f"[0:a]asplit={n}{a_splits}")
-            for i, (s, e) in enumerate(keep_ranges):
-                parts.append(f"[sv{i}]trim=start={s:.6f}:end={e:.6f},setpts=PTS-STARTPTS[v{i}]")
-                parts.append(f"[sa{i}]atrim=start={s:.6f}:end={e:.6f},asetpts=PTS-STARTPTS[a{i}]")
-            # concat expects interleaved: [v0][a0][v1][a1]...
-            interleaved = "".join(f"[v{i}][a{i}]" for i in range(n))
-            parts.append(f"{interleaved}concat=n={n}:v=1:a=1[outv][outa]")
+        # Video: N/(FRAME_RATE*TB) creates contiguous timestamp axis
+        # FRAME_RATE = nominal fps, TB = timebase (FFmpeg internal variables)
+        parts.append(f"[0:v]select='{v_expr}',setpts=N/(FRAME_RATE*TB)[outv]")
+        # Audio: N/(SR*TB) creates contiguous audio timestamps
+        # SR = sample rate, TB = timebase (avoids aresample memory explosion)
+        parts.append(f"[0:a]aselect='{a_expr}',asetpts=N/(SR*TB)[outa]")
     else:
-        if n == 1:
-            s, e = keep_ranges[0]
-            parts.append(f"[0:a]atrim=start={s:.6f}:end={e:.6f},asetpts=PTS-STARTPTS[out]")
-        else:
-            a_splits = "".join(f"[s{i}]" for i in range(n))
-            parts.append(f"[0:a]asplit={n}{a_splits}")
-            for i, (s, e) in enumerate(keep_ranges):
-                parts.append(f"[s{i}]atrim=start={s:.6f}:end={e:.6f},asetpts=PTS-STARTPTS[a{i}]")
-            a_inputs = "".join(f"[a{i}]" for i in range(n))
-            parts.append(f"{a_inputs}concat=n={n}:v=0:a=1[out]")
+        # Audio only
+        parts.append(f"[0:a]aselect='{a_expr}',asetpts=N/(SR*TB)[outa]")
 
     return ";".join(parts)
 
