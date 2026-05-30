@@ -555,7 +555,6 @@ async function loadPluginDataDir() {
               <input
                 type="checkbox"
                 :checked="settings.auto_generate_proxy"
-                class="checkbox checkbox-sm"
                 @change="updateField('auto_generate_proxy', ($event.target as HTMLInputElement).checked)"
               />
             </div>

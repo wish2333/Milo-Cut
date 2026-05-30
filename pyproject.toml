@@ -1,6 +1,6 @@
 [project]
 name = "milo-cut"
-version = "1.2.2"
+version = "1.3.0"
 description = "AI-powered video preprocessing tool for oral presentation videos"
 requires-python = ">=3.11"
 dependencies = [

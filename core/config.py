@@ -56,7 +56,7 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     "model_dir": "",
     # Proxy
     "proxy_resolution": "720p",
-    "proxy_auto_generate": True,
+    "proxy_auto_generate": False,
 }
 
 
