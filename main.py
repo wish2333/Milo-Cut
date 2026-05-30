@@ -57,6 +57,7 @@ from core.models import TaskType
 from core.paths import migrate_if_needed
 from core.plugin_manager import PluginManager, PLUGIN_REGISTRY
 from core.project_service import ProjectService
+from core.proxy_manager import ProxyManager
 from core.subtitle_service import parse_srt
 from core.task_manager import TaskManager
 from core.export_service import export_audio, export_srt, export_video, export_vtt
@@ -99,6 +100,7 @@ class MiloCutApi(Bridge):
             model_dir=Path(model_dir) if model_dir else None
         )
         self._register_task_handlers()
+        self._proxy_manager = ProxyManager(self._task_manager)
 
     def _register_task_handlers(self) -> None:
         """Register handlers for each task type."""
@@ -574,9 +576,13 @@ class MiloCutApi(Bridge):
         base, ext = os.path.splitext(media_path)
         output_path = f"{base}_proxy{ext}"
 
-        from core.ffmpeg_service import generate_proxy
+        try:
+            from core.ffmpeg_service import generate_proxy
 
-        return generate_proxy(media_path, output_path, resolution, progress_cb, cancel_event)
+            result = generate_proxy(media_path, output_path, resolution, progress_cb, cancel_event)
+            return result
+        finally:
+            self._proxy_manager.on_proxy_complete(media_path)
 
     # ================================================================
     # System
@@ -786,6 +792,15 @@ class MiloCutApi(Bridge):
     @expose
     def list_tasks(self) -> dict:
         return self._task_manager.list_tasks()
+
+    @expose
+    def request_proxy(self, media_path: str, priority: str = "normal") -> dict:
+        """Request proxy generation for a media file.
+
+        Lazy generation: only creates a task on first request.
+        Deduplicates requests for the same media path.
+        """
+        return self._proxy_manager.request_proxy(media_path, priority)
 
     # ================================================================
     # Project State

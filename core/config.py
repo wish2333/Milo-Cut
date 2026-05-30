@@ -54,6 +54,9 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     "duplicate_threshold": 0.85,
     "duplicate_min_length": 5,
     "model_dir": "",
+    # Proxy
+    "proxy_resolution": "720p",
+    "proxy_auto_generate": True,
 }
 
 
