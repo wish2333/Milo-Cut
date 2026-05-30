@@ -13,7 +13,9 @@ import sys
 from pathlib import Path
 
 _SUBPROCESS_KWARGS: dict = (
-    {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+    {"creationflags": subprocess.CREATE_NO_WINDOW}
+    if sys.platform == "win32"
+    else {"start_new_session": True}
 )
 
 from loguru import logger

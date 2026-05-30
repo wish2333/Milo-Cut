@@ -15,8 +15,37 @@ import shutil
 from pywebvue import App, Bridge, expose
 
 _SUBPROCESS_KWARGS: dict = (
-    {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+    {"creationflags": subprocess.CREATE_NO_WINDOW}
+    if sys.platform == "win32"
+    else {"start_new_session": True}
 )
+
+
+def _fix_macos_path() -> None:
+    """Inject shell PATH into the macOS .app bundle environment.
+
+    When launched as a .app, macOS does not load ~/.zshrc or ~/.bash_profile,
+    so tools like ffmpeg and uv are not on PATH. This reads the user's shell
+    profile and injects the resulting PATH into os.environ.
+    """
+    if sys.platform != "darwin" or not getattr(sys, "frozen", False):
+        return
+
+    import subprocess as _sp
+
+    shell = os.environ.get("SHELL", "/bin/zsh")
+    try:
+        result = _sp.run(
+            [shell, "-l", "-c", "echo $PATH"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            os.environ["PATH"] = result.stdout.strip()
+    except Exception:
+        pass
+
+
+_fix_macos_path()
 
 from core.analysis_service import detect_errors, detect_fillers, run_full_analysis
 from core.config import load_settings
@@ -399,8 +428,25 @@ class MiloCutApi(Bridge):
         engine = task.payload.get("engine", settings.get("asr_engine", "faster-whisper"))
         language = task.payload.get("language", settings.get("asr_language", "zh"))
         device = task.payload.get("device", settings.get("asr_device", "cpu"))
+        plugin_id = task.payload.get("plugin_id", settings.get("asr_plugin_id", ""))
 
-        if engine == "faster-whisper":
+        # MLX transcription (Apple Silicon)
+        if plugin_id == "plugin-qwen-mlx":
+            from core.asr_service import transcribe_with_mlx
+
+            asr_model_size = task.payload.get("asr_model_size", settings.get("asr_model_size", "0.6B"))
+            aligner_model_size = task.payload.get("aligner_model_size", settings.get("asr_aligner_model_size", "0.6B"))
+
+            result = transcribe_with_mlx(
+                plugin_manager=self._plugin_manager,
+                media_path=media_path,
+                asr_model_size=asr_model_size,
+                aligner_model_size=aligner_model_size,
+                language=language,
+                progress_cb=progress_cb,
+                cancel_event=cancel_event,
+            )
+        elif engine == "faster-whisper":
             from core.asr_service import transcribe_with_whisper
             from core.ffmpeg_service import _find_ffmpeg
 
@@ -947,11 +993,16 @@ class MiloCutApi(Bridge):
     @expose
     def open_data_directory(self) -> dict:
         """Open the plugin data directory in the system file manager."""
-        import os
+        import subprocess as _sp
         from core.paths import get_plugin_data_dir
         path = get_plugin_data_dir()
         try:
-            os.startfile(str(path))
+            if sys.platform == "win32":
+                os.startfile(str(path))
+            elif sys.platform == "darwin":
+                _sp.run(["open", str(path)])
+            else:
+                _sp.run(["xdg-open", str(path)])
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -1173,4 +1224,4 @@ if __name__ == "__main__":
         min_size=(1024, 700),
         frontend_dir="frontend_dist",
     )
-    app.run(debug=True)
+    app.run(debug=not getattr(sys, "frozen", False))

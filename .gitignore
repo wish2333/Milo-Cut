@@ -235,3 +235,6 @@ project.json
 
 # Test Files
 /test/
+
+# MacOS
+.DS_Store

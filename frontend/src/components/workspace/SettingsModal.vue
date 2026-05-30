@@ -49,8 +49,11 @@ const installedAsrPlugins = computed(() => {
   })
 })
 
-// Whether the currently selected ASR plugin supports GPU
+// Whether the currently selected ASR plugin supports GPU — macOS has no NVIDIA CUDA
+const isDarwin = navigator.platform.toLowerCase().includes('mac')
+const isMlxPlugin = computed(() => (settings.value?.asr_plugin_id ?? '').includes('-mlx'))
 const asrSupportsGpu = computed(() => {
+  if (isDarwin || isMlxPlugin.value) return false
   const pid = settings.value?.asr_plugin_id ?? ''
   return pid.length > 0 && !pid.includes('-cpu')
 })
@@ -211,18 +214,18 @@ function handleEnginePluginChange(pluginId: string) {
   if (!settings.value) return
   const plugin = installedAsrPlugins.value.find(p => p.plugin_id === pluginId)
   if (!plugin) return
-  const gpu = !pluginId.includes('-cpu')
+  const gpu = !isDarwin && !pluginId.includes('-cpu')
   const engine = plugin.engine
   const defaults: Partial<AppSettings> = {
     asr_plugin_id: pluginId,
     asr_engine: engine,
-    asr_device: gpu ? 'cuda' : 'cpu',
+    asr_device: gpu ? 'cuda' : (isDarwin && engine === 'faster-whisper') ? 'auto' : (isDarwin && engine === 'qwen3-asr') ? 'mps' : 'cpu',
     asr_language: engine === 'qwen3-asr' ? 'auto' : 'zh',
   }
   if (engine === 'qwen3-asr') {
-    defaults.qwen_compute_type = gpu ? 'bfloat16' : 'float16'
+    defaults.qwen_compute_type = gpu ? 'bfloat16' : 'float32'
   } else {
-    defaults.whisper_compute_type = 'int8_float16'
+    defaults.whisper_compute_type = gpu ? 'int8_float16' : 'int8'
   }
   settings.value = { ...settings.value, ...defaults }
 }
@@ -708,9 +711,9 @@ async function loadPluginDataDir() {
                   </button>
                 </div>
 
-                <!-- Qwen3 GPU -->
+                <!-- Qwen3 GPU (non-macOS only) -->
                 <div
-                  v-if="!pluginList.some(p => p.plugin_id === 'plugin-qwen-gpu' && p.status === 'installed')"
+                  v-if="!isDarwin && !pluginList.some(p => p.plugin_id === 'plugin-qwen-gpu' && p.status === 'installed')"
                   class="flex items-center justify-between p-2 rounded-lg border border-gray-200"
                   :class="!gpuInfo?.has_nvidia_gpu ? 'opacity-50' : ''"
                 >
@@ -726,6 +729,24 @@ async function loadPluginDataDir() {
                     class="px-3 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
                     :disabled="!gpuInfo?.has_nvidia_gpu || !!installingPlugin"
                     @click.prevent="handleInstallPlugin('plugin-qwen-gpu')"
+                  >
+                    Install
+                  </button>
+                </div>
+
+                <!-- Qwen3 MLX (macOS only) -->
+                <div
+                  v-if="isDarwin && !pluginList.some(p => p.plugin_id === 'plugin-qwen-mlx' && p.status === 'installed')"
+                  class="flex items-center justify-between p-2 rounded-lg border border-gray-200"
+                >
+                  <div>
+                    <div class="text-sm font-medium text-gray-800">Qwen3 ASR (Apple Silicon)</div>
+                    <div class="text-xs text-gray-500">Metal-accelerated via MLX, no PyTorch needed</div>
+                  </div>
+                  <button
+                    class="px-3 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+                    :disabled="!!installingPlugin"
+                    @click.prevent="handleInstallPlugin('plugin-qwen-mlx')"
                   >
                     Install
                   </button>
@@ -909,20 +930,24 @@ async function loadPluginDataDir() {
                 <option value="auto">Auto-detect</option>
               </select>
             </div>
-            <div class="flex items-center justify-between">
+            <div v-if="!isMlxPlugin" class="flex items-center justify-between">
               <label class="text-sm text-gray-600">Device</label>
               <select
                 :value="settings.asr_device"
                 class="px-2 py-1 text-sm border border-gray-300 rounded"
-                @change="updateField('asr_device', ($event.target as HTMLSelectElement).value as 'cpu' | 'cuda' | 'auto')"
+                @change="updateField('asr_device', ($event.target as HTMLSelectElement).value as 'cpu' | 'cuda' | 'auto' | 'mps')"
               >
-                <option value="cpu">CPU</option>
+                <option v-if="!isDarwin" value="cpu">CPU</option>
                 <option v-if="asrSupportsGpu" value="cuda">CUDA (GPU)</option>
                 <option v-if="settings.asr_engine === 'faster-whisper'" value="auto">Auto</option>
+                <option v-if="isDarwin && settings.asr_engine === 'qwen3-asr'" value="mps">MPS</option>
               </select>
-              <span v-if="!asrSupportsGpu" class="text-xs text-gray-400 ml-2">GPU not available for this plugin</span>
+              <span v-if="isDarwin && settings.asr_engine === 'faster-whisper'" class="text-xs text-gray-400 ml-2">MPS (Metal Performance Shaders)</span>
+              <span v-else-if="isDarwin && settings.asr_engine === 'qwen3-asr'" class="text-xs text-gray-400 ml-2">Metal Performance Shaders (Apple GPU)</span>
+              <span v-else-if="!asrSupportsGpu" class="text-xs text-gray-400 ml-2">GPU not available for this plugin</span>
             </div>
-            <div class="flex items-center justify-between">
+            <div v-else class="text-xs text-gray-400">Apple Silicon (Metal)</div>
+            <div v-if="!isMlxPlugin" class="flex items-center justify-between">
               <label class="text-sm text-gray-600">Compute type</label>
               <select
                 :value="settings.asr_engine === 'faster-whisper' ? settings.whisper_compute_type : settings.qwen_compute_type"
@@ -931,12 +956,12 @@ async function loadPluginDataDir() {
               >
                 <template v-if="settings.asr_engine === 'faster-whisper'">
                   <option value="int8">INT8 (fastest)</option>
-                  <option value="int8_float16">INT8 FP16 (balanced)</option>
-                  <option value="float16">FP16</option>
+                  <option v-if="!isDarwin" value="int8_float16">INT8 FP16 (balanced)</option>
+                  <option v-if="!isDarwin" value="float16">FP16</option>
                   <option value="float32">FP32 (highest quality)</option>
                 </template>
                 <template v-else>
-                  <option value="bfloat16">BF16 (recommended)</option>
+                  <option v-if="!isDarwin" value="bfloat16">BF16 (recommended)</option>
                   <option value="float16">FP16</option>
                   <option value="float32">FP32</option>
                 </template>
