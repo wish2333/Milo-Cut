@@ -166,8 +166,8 @@ if sys.platform == "darwin":
         info_plist={
             "CFBundleName": "Milo Cut",
             "CFBundleDisplayName": "Milo Cut",
-            "CFBundleVersion": "1.2.1",
-            "CFBundleShortVersionString": "1.2.1",
+            "CFBundleVersion": "1.2.2",
+            "CFBundleShortVersionString": "1.2.2",
             "NSHighResolutionCapable": True,
             "LSMinimumSystemVersion": "10.13",
         },
