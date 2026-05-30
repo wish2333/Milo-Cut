@@ -380,6 +380,57 @@ uv run python -c "from main import MiloCutApi; api = MiloCutApi(); print(api.cle
 
 ---
 
+## Merge Message
+
+```
+feat: v1.2.1 -- 数据目录可配置 + 模型管理优化 + 打包环境修复
+
+核心特性:
+- 便携模式: data/.portable 标记文件检测, exe同目录数据存储
+- macOS .app Bundle 路径逃逸: 检测 Contents/MacOS 并跳出只读 Bundle
+- 模型目录解耦: PluginManager 显式分离 plugins_dir 与 model_dir, 用户可自定义模型存储位置
+- 外部模型验证: validate_model() 检查目录名格式 + 必要文件存在性
+- 设置页模型目录 UI: 路径选择器 + 重置按钮, 重启生效提示
+
+关键修复:
+- cleanup_tasks_folder NameError -> 改用 get_plugin_data_dir() 局部导入
+- cleanup_tasks_folder 生产模式路径脱节 -> 统一 get_plugin_data_dir()/tasks
+- 打包子进程控制台弹窗 -> CREATE_NO_WINDOW 替代 STARTUPINFO/SW_HIDE (兼容 CTranslate2)
+- 导出页编码器检测失败 -> detect_gpu -> detect_gpu_encoders 方法名修正
+- 模型目录浏览按钮无响应 -> 新增 select_directory 桥接方法
+
+测试: 131 后端 (passed) + 前端构建 (PASS)
+修改 16 文件 | 新增 ~570 行 | 删除 ~42 行
+```
+
+---
+
+## Release Note (v1.2.1)
+
+### 数据目录可配置
+
+Milo-Cut 1.2.1 引入了灵活的数据目录管理，支持便携模式和系统目录模式:
+
+- **便携模式**: 在 exe 同目录的 `data/` 下放置空文件 `.portable` 即可激活，所有数据 (项目、设置、插件、模型) 均保存在 exe 同目录，适合 U 盘携带使用
+- **系统目录模式**: 默认将数据写入平台标准路径 (Windows `%LOCALAPPDATA%/MiloCut/`、macOS `~/Library/Application Support/MiloCut/`、Linux `~/.local/share/milocut/`)
+- **macOS .app Bundle**: 自动检测并逃逸只读 Bundle 目录，将数据写到 `.app` 同级目录
+
+### 模型目录管理优化
+
+- 模型目录与插件目录显式解耦，用户可在设置页 AI Engine 标签页自定义模型存储位置
+- 支持复用已下载的模型文件，避免重复下载
+- 新增外部模型验证，检查目录名格式和必要文件完整性 (Whisper: `model.bin` + `config.json`，Qwen: `model.safetensors` + `config.json`)
+- 自定义模型路径失效时自动降级回默认路径，防止启动闪退
+
+### 修复
+
+- 修复打包后 FFmpeg/FFprobe 子进程弹出控制台窗口的问题 (使用 `CREATE_NO_WINDOW` 替代旧的 `STARTUPINFO/SW_HIDE` 方案)
+- 修复导出页编码器列表只显示 CPU 编码器的问题 (方法名 `detect_gpu` -> `detect_gpu_encoders`)
+- 修复设置页清理按钮 `NameError` 和清理路径与实际写入路径脱节的问题
+- 修复模型目录浏览按钮点击无响应的问题 (新增 `select_directory` 桥接方法)
+
+---
+
 ## Statistics
 
 | 指标 | 值 |
