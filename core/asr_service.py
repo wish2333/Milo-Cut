@@ -10,6 +10,7 @@ Main-process side coordination for ASR workflows:
 from __future__ import annotations
 
 import json
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Callable
@@ -17,6 +18,13 @@ from typing import Any, Callable
 from loguru import logger
 
 from core.plugin_manager import PluginManager, PLUGIN_REGISTRY
+
+
+def _asr_script(name: str) -> Path:
+    """Resolve an ASR subprocess script path, handling macOS .app bundles."""
+    if getattr(sys, "frozen", False) and sys.platform == "darwin":
+        return Path(sys._MEIPASS) / "core" / "asr_scripts" / name
+    return Path(__file__).parent / "asr_scripts" / name
 
 
 def transcribe_with_whisper(
@@ -84,7 +92,7 @@ def transcribe_with_whisper(
         progress_cb(10.0, "Preparing transcription...")
 
     # Locate the subprocess script
-    script_path = Path(__file__).parent / "asr_scripts" / "whisper_transcribe.py"
+    script_path = _asr_script("whisper_transcribe.py")
     if not script_path.exists():
         raise RuntimeError(f"Transcription script not found: {script_path}")
 
@@ -176,7 +184,7 @@ def transcribe_with_qwen(
         RuntimeError: If transcription fails.
     """
     # Determine plugin ID based on device
-    plugin_id = "plugin-qwen-gpu" if device == "cuda" else "plugin-qwen-cpu"
+    plugin_id = "plugin-qwen-gpu" if device == "cuda" else "plugin-qwen-cpu"  # mps uses CPU plugin too
     plugin_meta = PLUGIN_REGISTRY.get(plugin_id, {})
 
     # Resolve model IDs
@@ -210,7 +218,7 @@ def transcribe_with_qwen(
         progress_cb(10.0, "Preparing transcription...")
 
     # Locate the subprocess script
-    script_path = Path(__file__).parent / "asr_scripts" / "qwen_transcribe.py"
+    script_path = _asr_script("qwen_transcribe.py")
     if not script_path.exists():
         raise RuntimeError(f"Transcription script not found: {script_path}")
 
@@ -316,3 +324,96 @@ def _resolve_qwen_model(model_type: str, model_size: str) -> str | None:
             return model_id
 
     return None
+
+
+def transcribe_with_mlx(
+    plugin_manager: PluginManager,
+    media_path: str,
+    asr_model_size: str = "0.6B",
+    aligner_model_size: str = "0.6B",
+    language: str = "zh",
+    progress_cb: Callable[[float, str], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> dict[str, Any]:
+    """Run Qwen3-ASR transcription using MLX (Apple Silicon).
+
+    No device or compute_type parameters -- MLX always uses Metal GPU.
+
+    Returns:
+        dict with transcription results.
+
+    Raises:
+        ValueError: If plugin is not installed or model not found.
+        RuntimeError: If transcription fails.
+    """
+    plugin_id = "plugin-qwen-mlx"
+
+    asr_model_id = _resolve_qwen_model("asr", asr_model_size)
+    aligner_model_id = _resolve_qwen_model("aligner", aligner_model_size)
+
+    if asr_model_id is None:
+        raise ValueError(f"Unknown Qwen3-ASR model size: {asr_model_size}")
+
+    if not plugin_manager.is_installed(plugin_id):
+        raise ValueError(
+            "Qwen3-ASR MLX plugin is not installed. "
+            "Please install it from Settings > AI Engine."
+        )
+
+    if progress_cb:
+        progress_cb(2.0, "Checking ASR model availability...")
+    asr_model_path = plugin_manager.ensure_model(asr_model_id, progress_cb=progress_cb)
+
+    aligner_model_path = ""
+    if aligner_model_id:
+        if progress_cb:
+            progress_cb(5.0, "Checking aligner model availability...")
+        aligner_model_path = str(plugin_manager.ensure_model(aligner_model_id, progress_cb=progress_cb))
+
+    if progress_cb:
+        progress_cb(10.0, "Preparing transcription...")
+
+    script_path = _asr_script("mlx_transcribe.py")
+    if not script_path.exists():
+        raise RuntimeError(f"Transcription script not found: {script_path}")
+
+    args = [
+        "--media-path", str(media_path),
+        "--asr-model-path", str(asr_model_path),
+        "--aligner-model-path", aligner_model_path,
+        "--language", language,
+    ]
+
+    if progress_cb:
+        progress_cb(15.0, "Starting transcription subprocess...")
+
+    task = plugin_manager.run_in_plugin(
+        plugin_id=plugin_id,
+        script_path=script_path,
+        args=args,
+        progress_cb=progress_cb,
+        cancel_event=cancel_event,
+    )
+
+    while task.state.value in ("pending", "running"):
+        if cancel_event and cancel_event.is_set():
+            break
+        threading.Event().wait(0.5)
+
+    if task.state.value == "cancelled":
+        return {"success": False, "error": "Transcription cancelled"}
+    if task.state.value == "failed":
+        return {"success": False, "error": task.error or "Transcription failed"}
+    if task.state.value != "completed":
+        return {"success": False, "error": f"Unexpected state: {task.state.value}"}
+
+    result_path = Path(task.result_path)
+    if not result_path.exists():
+        return {"success": False, "error": f"Result file not found: {result_path}"}
+
+    try:
+        result_data = json.loads(result_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"success": False, "error": f"Failed to read result: {exc}"}
+
+    return {"success": True, "data": result_data}

@@ -9,7 +9,7 @@ PyWebVue build script - auto-detect platform and build accordingly.
 Usage
 ============================================================
 
-    uv run build.py              Desktop build (onedir)
+    uv run build.py              Desktop build (onedir; macOS: .app bundle)
     uv run build.py --onefile    Desktop build (single executable)
     uv run build.py --android    Android APK build (macOS / Linux)
     uv run build.py --clean      Remove all build artifacts
@@ -116,7 +116,11 @@ def _clean() -> None:
 # ========== desktop: onedir ==========
 
 def _build_onedir() -> None:
-    """Build desktop app as a directory (uses app.spec directly)."""
+    """Build desktop app as a directory (uses app.spec directly).
+
+    On macOS, app.spec includes a BUNDLE target that also produces
+    a .app bundle alongside the directory output.
+    """
     uv = _find_cmd("uv")
     if uv is None:
         _error("uv not found.")
@@ -135,7 +139,17 @@ def _build_onedir() -> None:
     if result.returncode != 0:
         _error("PyInstaller build failed")
 
-    _info(f"Build complete -> {PROJECT_ROOT / 'dist' / 'app'}")
+    # Report output location(s)
+    dist = PROJECT_ROOT / "dist"
+    if sys.platform == "darwin":
+        app_bundle = dist / "Milo Cut.app"
+        if app_bundle.exists():
+            _info(f"Build complete -> {app_bundle}")
+        else:
+            _warn(f".app bundle not found at {app_bundle}")
+            _info(f"Build complete -> {dist / 'milo-cut'}")
+    else:
+        _info(f"Build complete -> {dist / 'milo-cut'}")
 
 
 # ========== desktop: onefile ==========
@@ -204,6 +218,12 @@ def _generate_onefile_spec() -> str:
             datas_line += f'\n        (r"{_otio_manifest}", "opentimelineio/adapters"),'
     except ImportError:
         pass
+
+    # ASR subprocess scripts (macOS .app bundle needs them as datas)
+    if sys.platform == "darwin":
+        _asr_scripts = project_root / "core" / "asr_scripts"
+        if _asr_scripts.is_dir():
+            datas_line += f'\n        (r"{_asr_scripts}", "core/asr_scripts"),'
 
     icon_line = f'    icon=r"{icon}",' if icon else "    icon=None,"
 
@@ -392,7 +412,7 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 examples:
-    uv run build.py              Desktop build (onedir)
+    uv run build.py              Desktop build (onedir; macOS: .app bundle)
     uv run build.py --onefile    Desktop build (single exe)
     uv run build.py --android    Android APK (macOS / Linux)
     uv run build.py --clean      Remove build artifacts

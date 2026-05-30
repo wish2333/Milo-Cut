@@ -46,6 +46,12 @@ APP_NAME = "milo-cut"
 _frontend_dist = project_root / "frontend_dist"
 datas = [(str(_frontend_dist), "frontend_dist")]
 
+# ASR subprocess scripts (macOS .app bundle needs them as datas)
+if sys.platform == "darwin":
+    _asr_scripts = project_root / "core" / "asr_scripts"
+    if _asr_scripts.is_dir():
+        datas.append((str(_asr_scripts), "core/asr_scripts"))
+
 # opentimelineio plugin manifest (JSON data files not auto-collected by PyInstaller)
 try:
     import opentimelineio
@@ -149,3 +155,20 @@ coll = COLLECT(
     upx_exclude=[],
     name=APP_NAME,
 )
+
+# macOS .app bundle
+if sys.platform == "darwin":
+    BUNDLE(
+        coll,
+        name="Milo Cut.app",
+        icon=ICON,
+        bundle_identifier="com.milocut.app",
+        info_plist={
+            "CFBundleName": "Milo Cut",
+            "CFBundleDisplayName": "Milo Cut",
+            "CFBundleVersion": "1.2.1",
+            "CFBundleShortVersionString": "1.2.1",
+            "NSHighResolutionCapable": True,
+            "LSMinimumSystemVersion": "10.13",
+        },
+    )

@@ -47,7 +47,7 @@ export interface AppSettings {
   asr_plugin_id: string
   asr_model_size: string
   asr_language: string
-  asr_device: "cpu" | "cuda" | "auto"
+  asr_device: "cpu" | "cuda" | "auto" | "mps"
   asr_compute_type: "int8" | "float16" | "float32"
   asr_vad_filter: boolean
   // Engine-prefixed keys (flat dict, not nested)

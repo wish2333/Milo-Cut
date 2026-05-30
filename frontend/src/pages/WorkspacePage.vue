@@ -163,7 +163,7 @@ watch([previewMode, videoPaused], ([mode, paused]) => {
 const asrSettingsPerEngine = ref<Record<string, {
   model_size: string
   language: string
-  device: "cpu" | "cuda" | "auto"
+  device: "cpu" | "cuda" | "auto" | "mps"
   compute_type: string
   vad_filter: boolean
   vad_threshold: number
@@ -172,7 +172,7 @@ const asrSettingsPerEngine = ref<Record<string, {
   "faster-whisper": {
     model_size: "large-v3-turbo",
     language: "zh",
-    device: "cuda" as "cpu" | "cuda" | "auto",
+    device: "cuda" as "cpu" | "cuda" | "auto" | "mps",
     compute_type: "int8_float16",
     vad_filter: true,
     vad_threshold: 0.5,
@@ -181,7 +181,7 @@ const asrSettingsPerEngine = ref<Record<string, {
   "qwen3-asr": {
     model_size: "Qwen/Qwen3-ASR-0.6B",
     language: "auto",
-    device: "cuda" as "cpu" | "cuda" | "auto",
+    device: "cuda" as "cpu" | "cuda" | "auto" | "mps",
     compute_type: "bfloat16",
     vad_filter: false,
     vad_threshold: 0.5,
@@ -189,14 +189,26 @@ const asrSettingsPerEngine = ref<Record<string, {
   },
 })
 
-// Compute type options per engine
+// Compute type options per engine (MLX: none; macOS CPU: no int8_float16/float16/bfloat16)
 const computeTypeOptions = computed(() => {
+  if (isMlx.value) return []
   if (asrEngine.value === 'faster-whisper') {
-    return [
+    const gpuOptions = [
       { value: 'int8', label: 'INT8 (fastest)' },
       { value: 'int8_float16', label: 'INT8 FP16 (balanced)' },
       { value: 'float16', label: 'FP16' },
       { value: 'float32', label: 'FP32 (highest quality)' },
+    ]
+    const cpuOptions = [
+      { value: 'int8', label: 'INT8 (fastest)' },
+      { value: 'float32', label: 'FP32 (highest quality)' },
+    ]
+    return (supportsGpu.value || asrSettingsPerEngine.value[asrEngine.value]?.device === 'auto') ? gpuOptions : cpuOptions
+  }
+  if (isDarwin) {
+    return [
+      { value: 'float16', label: 'FP16' },
+      { value: 'float32', label: 'FP32' },
     ]
   }
   return [
@@ -212,8 +224,11 @@ const currentEnginePluginId = computed(() => {
   return asrPluginId.value
 })
 
-// Whether current engine supports GPU (CUDA)
+// Whether current engine supports GPU (CUDA) — macOS has no NVIDIA CUDA
+const isDarwin = navigator.platform.toLowerCase().includes('mac')
+const isMlx = computed(() => asrPluginId.value.includes('-mlx'))
 const supportsGpu = computed(() => {
+  if (isDarwin) return false
   const pid = currentEnginePluginId.value
   // CPU-only plugins have "-cpu" suffix in pluginId
   return pid.length > 0 && !pid.includes('-cpu')
@@ -419,17 +434,17 @@ async function loadAsrSettings() {
     // Determine per-engine device based on plugin capabilities
     const whisperPluginId = installedEngines.value.find(e => e.engine === "faster-whisper")?.pluginId ?? ""
     const qwenPluginId = installedEngines.value.find(e => e.engine === "qwen3-asr")?.pluginId ?? ""
-    const whisperSupportsGpu = whisperPluginId.length > 0 && !whisperPluginId.includes("-cpu")
-    const qwenSupportsGpu = qwenPluginId.length > 0 && !qwenPluginId.includes("-cpu")
+    const whisperSupportsGpu = !isDarwin && whisperPluginId.length > 0 && !whisperPluginId.includes("-cpu")
+    const qwenSupportsGpu = !isDarwin && qwenPluginId.length > 0 && !qwenPluginId.includes("-cpu")
 
     // Load faster-whisper settings (engine-prefixed keys from config.py)
     const whisperModelSize = (res.data.asr_model_size as string) || "large-v3-turbo"
-    const whisperDevice = (res.data.asr_device as "cpu" | "cuda" | "auto") || (whisperSupportsGpu ? "cuda" : "cpu")
+    const whisperDevice = (res.data.asr_device as "cpu" | "cuda" | "auto" | "mps") || (whisperSupportsGpu ? "cuda" : isDarwin ? "auto" : "cpu")
     asrSettingsPerEngine.value["faster-whisper"] = {
       model_size: whisperModelSize,
       language: (res.data.asr_language as string) || "zh",
       device: whisperDevice,
-      compute_type: (res.data.whisper_compute_type as string) || "int8_float16",
+      compute_type: (res.data.whisper_compute_type as string) || (whisperSupportsGpu ? "int8_float16" : "int8"),
       vad_filter: vadFilter,
       vad_threshold: Number(res.data.whisper_vad_threshold ?? 0.5),
       vad_min_silence_ms: Number(res.data.whisper_vad_min_silence_ms ?? 500),
@@ -437,7 +452,7 @@ async function loadAsrSettings() {
 
     // Load qwen3-asr settings
     const qwenModelSize = (res.data.asr_model_size as string) || "Qwen/Qwen3-ASR-0.6B"
-    const qwenDevice = qwenSupportsGpu ? "cuda" : "cpu"
+    const qwenDevice = qwenSupportsGpu ? "cuda" : isDarwin ? "mps" : "cpu"
     asrSettingsPerEngine.value["qwen3-asr"] = {
       model_size: qwenModelSize,
       language: (res.data.qwen_language as string) || "auto",
@@ -492,7 +507,7 @@ watch(asrPluginId, (newPluginId) => {
     // If engine type didn't change (e.g. CPU->GPU within same engine),
     // watch(asrEngine) won't fire, so we must update device/compute here
     if (prevEngine === eng.engine) {
-      const gpu = !newPluginId.includes('-cpu')
+      const gpu = !isDarwin && !newPluginId.includes('-cpu')
       const settings = asrSettingsPerEngine.value[eng.engine]
       if (settings) {
         settings.device = gpu ? 'cuda' : 'cpu'
@@ -507,11 +522,11 @@ watch(asrPluginId, (newPluginId) => {
 
 // Engine defaults by type
 function getEngineDefaults(engine: "faster-whisper" | "qwen3-asr") {
-  const gpu = asrPluginId.value.length > 0 && !asrPluginId.value.includes('-cpu')
+  const gpu = !isDarwin && asrPluginId.value.length > 0 && !asrPluginId.value.includes('-cpu')
   if (engine === 'qwen3-asr') {
-    return { model_size: "Qwen/Qwen3-ASR-0.6B", language: "auto", device: gpu ? "cuda" as const : "cpu" as const, compute_type: gpu ? "bfloat16" : "float16", vad_filter: false, vad_threshold: 0.5, vad_min_silence_ms: 500 }
+    return { model_size: "Qwen/Qwen3-ASR-0.6B", language: "auto", device: gpu ? "cuda" as const : isDarwin ? "mps" as const : "cpu" as const, compute_type: gpu ? "bfloat16" as const : isDarwin ? "float16" as const : "float16" as const, vad_filter: false, vad_threshold: 0.5, vad_min_silence_ms: 500 }
   }
-  return { model_size: "large-v3-turbo", language: "zh", device: gpu ? "cuda" as const : "cpu" as const, compute_type: "int8_float16", vad_filter: true, vad_threshold: 0.5, vad_min_silence_ms: 500 }
+  return { model_size: "large-v3-turbo", language: "zh", device: gpu ? "cuda" as const : isDarwin ? "auto" as const : "cpu" as const, compute_type: gpu ? "int8_float16" as const : "int8" as const, vad_filter: true, vad_threshold: 0.5, vad_min_silence_ms: 500 }
 }
 
 // When engine changes, only create defaults if not yet populated.
@@ -701,6 +716,7 @@ async function handleTranscribe() {
     const settings = asrSettingsPerEngine.value[asrEngine.value]
     const started = await runTranscription({
       engine: asrEngine.value,
+      plugin_id: asrPluginId.value,
       model_size: settings.model_size,
       asr_model_size: settings.model_size,
       language: settings.language,
@@ -1043,19 +1059,23 @@ onUnmounted(() => {
               </select>
             </label>
 
-            <!-- Device -->
-            <label class="block mb-2">
+            <!-- Device (hidden for MLX -- always uses Apple Silicon) -->
+            <label v-if="!isMlx" class="block mb-2">
               <span class="text-xs text-gray-500">Device</span>
               <select v-model="asrSettingsPerEngine[asrEngine].device" class="w-full mt-1 rounded border-gray-300 text-xs">
-                <option value="cpu">CPU</option>
+                <option v-if="!isDarwin" value="cpu">CPU</option>
                 <option v-if="supportsGpu" value="cuda">CUDA (GPU)</option>
                 <option v-if="asrEngine === 'faster-whisper'" value="auto">Auto</option>
+                <option v-if="isDarwin && asrEngine === 'qwen3-asr'" value="mps">MPS</option>
               </select>
-              <span v-if="!supportsGpu" class="text-xs text-gray-400 mt-0.5 block">GPU not available for this engine plugin</span>
+              <span v-if="isDarwin && asrEngine === 'faster-whisper'" class="text-xs text-gray-400 mt-0.5 block">MPS (Metal Performance Shaders)</span>
+              <span v-else-if="isDarwin && asrEngine === 'qwen3-asr'" class="text-xs text-gray-400 mt-0.5 block">Metal Performance Shaders (Apple GPU)</span>
+              <span v-else-if="!supportsGpu" class="text-xs text-gray-400 mt-0.5 block">GPU not available for this engine plugin</span>
             </label>
+            <div v-else class="text-xs text-gray-400 mb-2">Apple Silicon (Metal)</div>
 
-            <!-- Compute type -->
-            <label class="block mb-2">
+            <!-- Compute type (hidden for MLX) -->
+            <label v-if="!isMlx && computeTypeOptions.length > 0" class="block mb-2">
               <span class="text-xs text-gray-500">Compute Type</span>
               <select v-model="asrSettingsPerEngine[asrEngine].compute_type" class="w-full mt-1 rounded border-gray-300 text-xs">
                 <option v-for="opt in computeTypeOptions" :key="opt.value" :value="opt.value">

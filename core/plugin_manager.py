@@ -83,6 +83,25 @@ PLUGIN_REGISTRY: dict[str, dict[str, Any]] = {
             },
         },
     },
+    "plugin-qwen-mlx": {
+        "display_name": "Qwen3 ASR (Apple Silicon)",
+        "engine": "qwen3-asr",
+        "dependencies": ["mlx-qwen3-asr[aligner]"],
+        "models": {
+            "Qwen/Qwen3-ASR-0.6B": {
+                "display_name": "Qwen3 ASR 0.6B (lightweight)",
+                "size_bytes": 1_880_000_000,
+            },
+            "Qwen/Qwen3-ASR-1.7B": {
+                "display_name": "Qwen3 ASR 1.7B (recommended)",
+                "size_bytes": 4_700_000_000,
+            },
+            "Qwen/Qwen3-ForcedAligner-0.6B": {
+                "display_name": "Qwen3 ForcedAligner 0.6B",
+                "size_bytes": 1_840_000_000,
+            },
+        },
+    },
 }
 
 
@@ -416,9 +435,22 @@ class PluginManager:
     # ------------------------------------------------------------
 
     def list_plugins(self) -> list[dict[str, Any]]:
-        """Return all registered plugins with their installation status."""
+        """Return all registered plugins with their installation status.
+
+        Platform filtering:
+        - macOS: show MLX variant, hide GPU variant
+        - non-macOS: hide MLX variant
+        """
         result: list[dict[str, Any]] = []
         for plugin_id, meta in PLUGIN_REGISTRY.items():
+            # Platform filtering
+            is_mlx = plugin_id == "plugin-qwen-mlx"
+            is_gpu = plugin_id == "plugin-qwen-gpu"
+            if is_mlx and sys.platform != "darwin":
+                continue
+            if is_gpu and sys.platform == "darwin":
+                continue
+
             entry = self._registry.get(plugin_id, {})
             result.append({
                 "plugin_id": plugin_id,
@@ -1021,6 +1053,8 @@ def _subprocess_kwargs() -> dict[str, Any]:
         # STARTUPINFO/SW_HIDE prevented CTranslate2 from loading models
         # in the subprocess, but CREATE_NO_WINDOW works correctly.
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    else:
+        kwargs["start_new_session"] = True
     return kwargs
 
 
