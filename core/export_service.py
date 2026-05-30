@@ -130,11 +130,11 @@ def export_video(
         if cancel_event and cancel_event.is_set():
             return {"success": False, "error": "Cancelled"}
 
-        if progress_callback:
-            progress_callback(20.0, "Exporting video...")
-
         quality_args = get_quality_args(video_codec, crf)
         pix_fmt = select_pixel_format(media_info)
+
+        # Compute expected output duration for progress calculation
+        output_duration_ms = sum(e - s for s, e in keep_ranges) * 1000.0
 
         cmd = [
             ffmpeg, "-hide_banner", "-y",
@@ -147,6 +147,7 @@ def export_video(
             "-c:a", audio_codec,
             "-b:a", audio_bitrate,
             "-pix_fmt", pix_fmt,
+            "-progress", "pipe:1",
         ]
         # Add scale filter if resolution is not original
         if resolution and resolution != "original":
@@ -156,19 +157,11 @@ def export_video(
             cmd.extend(["-movflags", "+faststart"])
         cmd.append(output_path)
         logger.info("export_video: filter_complex length={}, written to {}", len(filter_complex), filter_path)
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=600,
-            **_SUBPROCESS_KWARGS,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"FFmpeg video export failed: {result.stderr[-500:]}")
+        _run_ffmpeg_with_progress(cmd, output_duration_ms, progress_callback)
 
         _cleanup_files([filter_path])
 
         file_size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
-        if progress_callback:
-            progress_callback(100.0, "Export complete")
 
         logger.info("Exported video to {} ({} bytes)", output_path, file_size)
         return {"success": True, "data": {"path": output_path, "size": file_size}}
@@ -217,9 +210,6 @@ def export_audio(
         if not keep_ranges:
             return {"success": False, "error": "Nothing to export after applying all cuts"}
 
-        if progress_callback:
-            progress_callback(10.0, "Exporting audio...")
-
         if fade_duration > 0 and len(keep_ranges) > 1:
             if fade_mode == "separate":
                 filter_complex = _build_audio_fade_filter(keep_ranges, fade_dur=fade_duration)
@@ -234,27 +224,23 @@ def export_audio(
         with open(filter_path, "w", encoding="utf-8") as f:
             f.write(filter_complex)
 
+        # Compute expected output duration for progress calculation
+        output_duration_ms = sum(e - s for s, e in keep_ranges) * 1000.0
+
         cmd = [
             ffmpeg, "-hide_banner", "-y",
             "-i", media_path,
             "-filter_complex_script", filter_path,
             "-map", "[out]",
             "-c:a", "aac",
+            "-progress", "pipe:1",
             output_path,
         ]
         logger.info("export_audio: filter_complex length={}, written to {}", len(filter_complex), filter_path)
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=600,
-            **_SUBPROCESS_KWARGS,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"FFmpeg audio export failed: {result.stderr[-500:]}")
+        _run_ffmpeg_with_progress(cmd, output_duration_ms, progress_callback)
 
         file_size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
         _cleanup_files([filter_path])
-        if progress_callback:
-            progress_callback(100.0, "Export complete")
 
         logger.info("Exported audio to {} ({} bytes)", output_path, file_size)
         return {"success": True, "data": {"path": output_path, "size": file_size}}
@@ -813,6 +799,97 @@ def _format_vtt_time(seconds: float) -> str:
     secs = int(seconds % 60)
     millis = int(round((seconds % 1) * 1000)) % 1000
     return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
+
+
+def _parse_ffmpeg_progress(
+    process: subprocess.Popen,
+    total_duration_ms: float,
+    progress_cb: Callable[[float, str], None] | None = None,
+) -> None:
+    """Parse FFmpeg -progress pipe:1 output for real-time progress.
+
+    Reads stdout line by line, extracting ``out_time_ms`` (microseconds)
+    and converting to a percentage of *total_duration_ms*.
+
+    Args:
+        process: FFmpeg subprocess with ``stdout=subprocess.PIPE``.
+        total_duration_ms: Expected output duration in milliseconds.
+        progress_cb: Optional callback(percent, message) where percent is 0.0-100.0.
+    """
+    if not progress_cb or total_duration_ms <= 0:
+        if process.stdout:
+            process.stdout.close()
+        return
+
+    last_percent = -1.0
+    for line in iter(process.stdout.readline, ""):
+        line = line.strip()
+        if line.startswith("out_time_ms="):
+            try:
+                out_time_us = int(line.split("=", 1)[1])
+                out_time_ms = out_time_us / 1000.0
+                percent = min(100.0, (out_time_ms / total_duration_ms) * 100.0)
+                # Only emit when percentage actually changes (integer part)
+                if int(percent) != int(last_percent):
+                    progress_cb(percent, f"Exporting... {percent:.1f}%")
+                    last_percent = percent
+            except (ValueError, ZeroDivisionError):
+                pass
+        elif line == "progress=end":
+            progress_cb(100.0, "Export complete")
+    process.stdout.close()
+
+
+def _run_ffmpeg_with_progress(
+    cmd: list[str],
+    total_duration_ms: float,
+    progress_cb: Callable[[float, str], None] | None = None,
+    timeout: int = 600,
+) -> subprocess.Popen:
+    """Run an FFmpeg command with real-time progress parsing.
+
+    Launches FFmpeg via ``subprocess.Popen`` with ``-progress pipe:1``,
+    parses ``out_time_ms`` from stdout for progress updates, and waits
+    for completion.
+
+    Args:
+        cmd: Full FFmpeg command (must include ``-progress pipe:1``).
+        total_duration_ms: Expected output duration in milliseconds.
+        progress_cb: Optional callback(percent, message).
+        timeout: Maximum seconds to wait for FFmpeg.
+
+    Returns:
+        The completed Popen process.
+
+    Raises:
+        RuntimeError: If FFmpeg exits with non-zero return code.
+        subprocess.TimeoutExpired: If FFmpeg exceeds *timeout* seconds.
+    """
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        **_SUBPROCESS_KWARGS,
+    )
+
+    _parse_ffmpeg_progress(process, total_duration_ms, progress_cb)
+
+    # Wait for process completion (stdout already drained)
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        raise
+
+    if process.returncode != 0:
+        stderr_output = process.stderr.read() if process.stderr else ""
+        raise RuntimeError(f"FFmpeg export failed: {stderr_output[-500:]}")
+
+    return process
 
 
 def _cleanup_files(paths: list[str]) -> None:
