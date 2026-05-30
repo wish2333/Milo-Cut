@@ -29,10 +29,11 @@ v1.3.0 为 Milo-Cut 的导出管线和任务管理带来三项重大改进：
 | `3e939cc` | `refactor(task): add priority queue with concurrency control and async dispatch` | `core/task_manager.py`, `core/proxy_manager.py`, `core/config.py`, `main.py` |
 | `f7ebb1e` | `feat(batch): add batch export API, proxy UI, and package optimization` | `main.py`, `frontend/src/pages/WorkspacePage.vue`, `frontend/src/components/workspace/SettingsModal.vue`, `app.spec`, `build.py`, `frontend/vite.config.ts` |
 | `0d99494` | `feat(batch): add batch export UI with project selector and progress` | `frontend/src/components/export/BatchExportPanel.vue`, `frontend/src/composables/useBatch.ts` |
+| `ac4986d` | `chore(release): bump version to 1.3.0, fix proxy checkbox and defaults` | `pyproject.toml`, `frontend/package.json`, `app.spec`, `core/config.py`, `frontend/src/components/workspace/SettingsModal.vue`, `uv.lock`, `docs/1.3.0/` |
 
 ---
 
-## 变更文件 (共 15 个)
+## 变更文件 (共 18 个)
 
 ### 后端 (7 个文件)
 
@@ -286,3 +287,63 @@ def create_batch_export(self, project_paths: list[str]) -> dict:
 1. 从 `dev-1.3.0` 创建 PR 到 `main`
 2. 使用 `uv run dev.py` 进行端到端测试
 3. 准备 v1.3.0 发布说明
+
+---
+
+## Merge Message
+
+```
+feat: v1.3.0 Performance & Efficiency
+
+- O(1) memory export: select/aselect replaces split/asplit
+- Lazy proxy generation on first preview (not on import)
+- Batch export with TaskManager priority queue
+- Real-time export progress parsing
+- Package size optimization (ML backend excludes)
+```
+
+---
+
+## Release Note
+
+### v1.3.0 -- 性能与效率
+
+**导出管线优化**
+
+- 滤镜表达式从 `split/asplit` 改为 `select`/`aselect`，内存复杂度从 O(N) 降至 O(1)，100+ 片段导出不再内存爆炸
+- 使用 `-filter_complex_script` 临时文件，绕过 Windows 8191 字符限制
+- FFmpeg 常量修正：`FRAME_RATE`（非 `FR`）、`N/(SR*TB)`（非 `aresample=async=1`）
+
+**实时进度追踪**
+
+- 解析 FFmpeg `-progress pipe:1` 输出，实时显示导出百分比
+- 进度回调从 `subprocess.run` 升级为 `subprocess.Popen` + 实时行读取
+
+**懒加载代理生成**
+
+- 代理文件在首次预览时生成（非导入时），避免与 ASR/静音检测竞争 I/O
+- `ProxyManager` 始终入队，永不丢弃
+- 设置项：`proxy_resolution`（默认 720p）、`proxy_auto_generate`（默认关闭）
+
+**TaskManager 重构**
+
+- 优先队列 + `itertools.count()` 保证 FIFO 顺序
+- 并发信号量：重任务（导出/转录）= 1，并发任务（波形/代理）= 3
+- 异步线程调度解决队头阻塞问题
+- `cancel_task()` 支持取消排队中和运行中的任务
+
+**批量导出**
+
+- `create_batch_export(project_paths)` 创建多个导出任务
+- `get_batch_status(batch_id)` 查询批量进度
+- 前端 `BatchExportPanel.vue` 提供项目选择器和进度条
+
+**打包优化**
+
+- PyInstaller 排除 40+ 重量级 ML 包（torch、tensorflow、onnxruntime 等）
+- Vite 手动分块优化（Vue vendor 独立 chunk）
+
+**UI 修复**
+
+- 代理自动生成勾选框改用原版 HTML（DaisyUI 兼容问题）
+- 代理自动生成默认关闭
