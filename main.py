@@ -11,6 +11,7 @@ import pathlib
 from pathlib import Path
 import subprocess
 import shutil
+import uuid
 
 from pywebvue import App, Bridge, expose
 
@@ -53,7 +54,7 @@ from core.events import EDIT_SUMMARY_UPDATED, ENCODER_FALLBACK, LOG_LINE
 from core.ffmpeg_service import detect_silence, generate_waveform, probe_media
 from core.logging import get_logger, setup_frontend_sink, setup_logging
 from core.media_server import MediaServer
-from core.models import TaskType
+from core.models import TaskStatus, TaskType
 from core.paths import migrate_if_needed
 from core.plugin_manager import PluginManager, PLUGIN_REGISTRY
 from core.project_service import ProjectService
@@ -101,6 +102,7 @@ class MiloCutApi(Bridge):
         )
         self._register_task_handlers()
         self._proxy_manager = ProxyManager(self._task_manager)
+        self._batches: dict[str, dict] = {}  # batch_id -> batch state
 
     def _register_task_handlers(self) -> None:
         """Register handlers for each task type."""
@@ -167,63 +169,92 @@ class MiloCutApi(Bridge):
         return {"project": store_result["data"]}
 
     def _handle_export_video(self, task, cancel_event, progress_cb):
-        """Export cut video as a background task."""
-        if self._project.current is None:
-            raise ValueError("No project open")
-        if self._project.current.media is None:
-            raise ValueError("No media in project")
-        project = self._project.current
-        segments_data = [s.model_dump() for s in project.transcript.segments]
-        edits_data = [e.model_dump() for e in project.edits]
-        media_path = project.media.path
-        output_path = task.payload.get("output_path", "")
-        if not output_path:
-            base, ext = os.path.splitext(media_path)
-            output_path = f"{base}_cut{ext}"
+        """Export cut video as a background task.
 
-        # Read encoding settings from project settings
-        settings = load_settings()
-        video_codec = settings.get("export_video_codec", "libx264")
-        audio_codec = settings.get("export_audio_codec", "aac")
-        audio_bitrate = settings.get("export_audio_bitrate", "192k")
-        preset = settings.get("export_preset", "medium")
-        crf = int(settings.get("export_crf", 23))
-        resolution = settings.get("export_resolution", "original")
-        fade_dur = float(settings.get("export_ffmpeg_fade_duration", 0.0))
-        fade_mode = str(settings.get("export_ffmpeg_fade_mode", "crossfade"))
+        Supports batch mode: if task.payload contains ``project_path``, that
+        project is opened temporarily for the export, then the original project
+        state is restored.
+        """
+        project_path = task.payload.get("project_path", "")
 
-        # Check encoder availability and fallback if needed
-        ffmpeg = _find_ffmpeg()
-        original_codec = video_codec
-        video_codec, fallback_msg = get_fallback_codec(ffmpeg, video_codec)
-        if fallback_msg:
-            logger.warning(fallback_msg)
-            self._emit(ENCODER_FALLBACK, {
-                "requested": original_codec,
-                "fallback": video_codec,
-                "message": fallback_msg,
-            })
+        saved_project = None
+        saved_path = None
 
-        def progress_cb(percent: float, message: str = "") -> None:
-            self._task_manager._update_progress(task.id, percent, message)
+        if project_path:
+            # Batch mode: temporarily open the target project
+            saved_project = self._project.current
+            saved_path = self._project._current_path
+            result = self._project.open_project(project_path)
+            if not result["success"]:
+                self._project._current = saved_project
+                self._project._current_path = saved_path
+                raise RuntimeError(
+                    f"Failed to open project for batch export: "
+                    f"{result.get('error', 'unknown error')}"
+                )
 
-        return export_video(
-            media_path=media_path,
-            segments=segments_data,
-            edits=edits_data,
-            output_path=output_path,
-            media_info=project.media.model_dump() if project.media else None,
-            video_codec=video_codec,
-            audio_codec=audio_codec,
-            audio_bitrate=audio_bitrate,
-            preset=preset,
-            crf=crf,
-            resolution=resolution,
-            progress_callback=progress_cb,
-            cancel_event=cancel_event,
-            fade_duration=fade_dur,
-            fade_mode=fade_mode,
-        )
+        try:
+            if self._project.current is None:
+                raise ValueError("No project open")
+            if self._project.current.media is None:
+                raise ValueError("No media in project")
+            project = self._project.current
+            segments_data = [s.model_dump() for s in project.transcript.segments]
+            edits_data = [e.model_dump() for e in project.edits]
+            media_path = project.media.path
+            output_path = task.payload.get("output_path", "")
+            if not output_path:
+                base, ext = os.path.splitext(media_path)
+                output_path = f"{base}_cut{ext}"
+
+            # Read encoding settings from project settings
+            settings = load_settings()
+            video_codec = settings.get("export_video_codec", "libx264")
+            audio_codec = settings.get("export_audio_codec", "aac")
+            audio_bitrate = settings.get("export_audio_bitrate", "192k")
+            preset = settings.get("export_preset", "medium")
+            crf = int(settings.get("export_crf", 23))
+            resolution = settings.get("export_resolution", "original")
+            fade_dur = float(settings.get("export_ffmpeg_fade_duration", 0.0))
+            fade_mode = str(settings.get("export_ffmpeg_fade_mode", "crossfade"))
+
+            # Check encoder availability and fallback if needed
+            ffmpeg = _find_ffmpeg()
+            original_codec = video_codec
+            video_codec, fallback_msg = get_fallback_codec(ffmpeg, video_codec)
+            if fallback_msg:
+                logger.warning(fallback_msg)
+                self._emit(ENCODER_FALLBACK, {
+                    "requested": original_codec,
+                    "fallback": video_codec,
+                    "message": fallback_msg,
+                })
+
+            def progress_cb(percent: float, message: str = "") -> None:
+                self._task_manager._update_progress(task.id, percent, message)
+
+            return export_video(
+                media_path=media_path,
+                segments=segments_data,
+                edits=edits_data,
+                output_path=output_path,
+                media_info=project.media.model_dump() if project.media else None,
+                video_codec=video_codec,
+                audio_codec=audio_codec,
+                audio_bitrate=audio_bitrate,
+                preset=preset,
+                crf=crf,
+                resolution=resolution,
+                progress_callback=progress_cb,
+                cancel_event=cancel_event,
+                fade_duration=fade_dur,
+                fade_mode=fade_mode,
+            )
+        finally:
+            if project_path:
+                # Restore original project state
+                self._project._current = saved_project
+                self._project._current_path = saved_path
 
     def _handle_export_subtitle(self, task, cancel_event, progress_cb):
         """Export synchronized SRT as a background task."""
@@ -801,6 +832,114 @@ class MiloCutApi(Bridge):
         Deduplicates requests for the same media path.
         """
         return self._proxy_manager.request_proxy(media_path, priority)
+
+    @expose
+    def create_batch_export(self, project_paths: list[str]) -> dict:
+        """Create a batch of export video tasks for multiple projects.
+
+        Each project gets an EXPORT_VIDEO task with ``"normal"`` priority.
+        Tasks execute sequentially via the TaskManager's heavy semaphore
+        (concurrency=1 for EXPORT_VIDEO).
+
+        Args:
+            project_paths: List of project.json file paths to export.
+
+        Returns:
+            ``{"success": True, "data": {"batch_id": ..., "task_ids": [...],
+            "total_count": N}}``
+        """
+        if not project_paths:
+            return {"success": False, "error": "No project paths provided"}
+
+        batch_id = uuid.uuid4().hex[:8]
+        task_ids: list[str] = []
+
+        for path in project_paths:
+            task = self._task_manager.create_task(
+                "export_video",
+                {"project_path": path, "batch_id": batch_id},
+                priority="normal",
+            )
+            if not task["success"]:
+                return task
+            task_ids.append(task["data"]["id"])
+
+        self._batches[batch_id] = {
+            "batch_id": batch_id,
+            "task_ids": task_ids,
+            "project_paths": list(project_paths),
+            "total_count": len(task_ids),
+        }
+
+        logger.info(
+            "Batch export created: batch_id={}, {} projects queued",
+            batch_id, len(task_ids),
+        )
+
+        return {
+            "success": True,
+            "data": {
+                "batch_id": batch_id,
+                "task_ids": task_ids,
+                "total_count": len(task_ids),
+            },
+        }
+
+    @expose
+    def get_batch_status(self, batch_id: str) -> dict:
+        """Get the aggregate status of a batch export.
+
+        Queries each task in the batch from TaskManager and tallies counts
+        by status (completed, failed, running, queued, cancelled).
+
+        Returns:
+            ``{"success": True, "data": {"batch_id", "total_count",
+            "completed_count", "failed_count", "running_count",
+            "queued_count", "cancelled_count", "status"}}``
+        """
+        batch = self._batches.get(batch_id)
+        if not batch:
+            return {"success": False, "error": f"Batch not found: {batch_id}"}
+
+        completed = 0
+        failed = 0
+        running = 0
+        queued = 0
+        cancelled = 0
+
+        for task_id in batch["task_ids"]:
+            task_result = self._task_manager.get_task(task_id)
+            if not task_result["success"]:
+                failed += 1
+                continue
+            status = task_result["data"]["status"]
+            if status == TaskStatus.COMPLETED:
+                completed += 1
+            elif status == TaskStatus.FAILED:
+                failed += 1
+            elif status == TaskStatus.RUNNING:
+                running += 1
+            elif status == TaskStatus.QUEUED:
+                queued += 1
+            elif status == TaskStatus.CANCELLED:
+                cancelled += 1
+
+        total = batch["total_count"]
+        is_done = (completed + failed + cancelled) >= total
+
+        return {
+            "success": True,
+            "data": {
+                "batch_id": batch_id,
+                "total_count": total,
+                "completed_count": completed,
+                "failed_count": failed,
+                "running_count": running,
+                "queued_count": queued,
+                "cancelled_count": cancelled,
+                "status": "completed" if is_done else "running",
+            },
+        }
 
     # ================================================================
     # Project State

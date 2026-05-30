@@ -100,6 +100,7 @@ const videoPaused = ref(true)
 const videoVolume = ref(0.75)
 const { uvAvailable } = useUvAvailability()
 const videoPlaybackRate = ref(1)
+const isGeneratingProxy = ref(false)
 
 // Preview mode: "edited" skips delete ranges, "original" plays full video
 const previewMode = ref<"edited" | "original">("edited")
@@ -324,7 +325,10 @@ const isTranscribing = computed(() => {
 })
 
 async function loadVideoUrl() {
-  const mediaPath = props.project.media?.path
+  const proxyPath = props.project.media?.proxy_path
+  const originalPath = props.project.media?.path
+  // Prefer proxy_path when available, fallback to original
+  const mediaPath = proxyPath || originalPath
   if (!mediaPath) return
   const res = await call<{ url: string; port: number }>("get_video_url", mediaPath)
   if (res.success && res.data) {
@@ -396,9 +400,41 @@ onEvent<{ task_id: string; task_type?: string; result?: { project?: Project } }>
     if (data.task_type === "waveform_generation") {
       resolveWaveformUrl()
     }
+    if (data.task_type === "proxy_generation") {
+      isGeneratingProxy.value = false
+      if (data.result?.project) {
+        emit("project-updated", data.result.project)
+      }
+      loadVideoUrl()
+      showToast("Proxy video ready", "success", 2000)
+    }
   },
 )
-watch(() => props.project.media?.path, loadVideoUrl)
+async function handleRequestProxy() {
+  if (isGeneratingProxy.value) return
+  isGeneratingProxy.value = true
+  try {
+    const res = await call<{ task_id: string }>("request_proxy")
+    if (!res.success) {
+      showToast(res.error ?? "Failed to start proxy generation", "error", 3000)
+      isGeneratingProxy.value = false
+      return
+    }
+    if (res.data) {
+      call("start_task", res.data.task_id)
+    }
+  } catch {
+    isGeneratingProxy.value = false
+  }
+}
+
+// When proxy_path or media path changes, reload video URL
+watch(() => props.project.media?.proxy_path, () => {
+  loadVideoUrl()
+})
+watch(() => props.project.media?.path, () => {
+  loadVideoUrl()
+})
 watch(() => props.project.project?.name, () => { clearHistory() })
 
 async function loadSilenceSettings() {
@@ -954,6 +990,15 @@ onUnmounted(() => {
         <span class="text-xs text-gray-400">
           {{ subtitleCount }} subtitles | {{ silenceCount }} silence | {{ formatTimeShort(duration) }}
         </span>
+        <button
+          v-if="!props.project.media?.proxy_path"
+          class="ml-2 rounded px-2 py-0.5 text-xs text-gray-400 hover:text-white transition-colors border border-gray-700 hover:border-gray-500"
+          :disabled="isGeneratingProxy"
+          title="Generate proxy video for faster preview"
+          @click="handleRequestProxy"
+        >
+          {{ isGeneratingProxy ? "Generating..." : "Generate Proxy" }}
+        </button>
       </div>
       <div class="flex items-center gap-2">
         <span v-if="confirmedEdits.length > 0" class="text-xs text-yellow-300">
@@ -1396,6 +1441,17 @@ onUnmounted(() => {
               :segments="mergedSegments"
               :video-ref="videoRef"
             />
+            <!-- Proxy generation overlay -->
+            <div
+              v-if="isGeneratingProxy"
+              class="absolute inset-0 flex flex-col items-center justify-center bg-black/60 rounded z-10"
+            >
+              <svg class="animate-spin h-8 w-8 text-white mb-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+              </svg>
+              <span class="text-sm text-white font-medium">Generating proxy...</span>
+            </div>
           </div>
           <div v-else class="text-center text-gray-400">
             <svg xmlns="http://www.w3.org/2000/svg" class="mx-auto h-16 w-16 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1">

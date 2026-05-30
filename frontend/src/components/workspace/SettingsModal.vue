@@ -533,6 +533,35 @@ async function loadPluginDataDir() {
           </div>
             </section>
 
+            <!-- Proxy Video Section -->
+            <section>
+              <h3 class="text-sm font-semibold text-gray-700 mb-3">Proxy Video</h3>
+              <p class="text-xs text-gray-400 mb-3">Proxy videos are lower-resolution copies used for faster preview playback.</p>
+          <div v-if="settings" class="space-y-3">
+            <div class="flex items-center justify-between">
+              <label class="text-sm text-gray-600">Proxy resolution</label>
+              <select
+                :value="settings.proxy_resolution"
+                class="px-2 py-1 text-sm border border-gray-300 rounded"
+                @change="updateField('proxy_resolution', ($event.target as HTMLSelectElement).value)"
+              >
+                <option value="854x480">480p</option>
+                <option value="1280x720">720p</option>
+                <option value="1920x1080">1080p</option>
+              </select>
+            </div>
+            <div class="flex items-center justify-between">
+              <label class="text-sm text-gray-600">Auto-generate proxy on import</label>
+              <input
+                type="checkbox"
+                :checked="settings.auto_generate_proxy"
+                class="checkbox checkbox-sm"
+                @change="updateField('auto_generate_proxy', ($event.target as HTMLInputElement).checked)"
+              />
+            </div>
+          </div>
+            </section>
+
             <!-- Data Directory & Cleanup -->
             <section class="pt-3 border-t border-gray-200">
           <div class="mt-4 pt-3 border-t border-gray-200">

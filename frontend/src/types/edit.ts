@@ -58,4 +58,7 @@ export interface AppSettings {
   duplicate_threshold: number
   duplicate_min_length: number
   model_dir: string
+  // Proxy settings
+  proxy_resolution: string
+  auto_generate_proxy: boolean
 }
