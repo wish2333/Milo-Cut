@@ -40,6 +40,7 @@ class TaskType(StrEnum):
     WAVEFORM_GENERATION = "waveform_generation"
     PLUGIN_INSTALL = "plugin_install"
     MODEL_DOWNLOAD = "model_download"
+    PROXY_GENERATION = "proxy_generation"
 
 
 class EditStatus(StrEnum):

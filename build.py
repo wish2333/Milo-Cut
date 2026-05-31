@@ -275,6 +275,23 @@ elif sys.platform == "linux":
 elif sys.platform == "darwin":
     a.excludes += ["PyQt5", "PyQt6", "PySide2", "PySide6", "tkinter"]
 
+# ML backend excludes -- ASR runs in subprocesses, not main process
+a.excludes += [
+    "torch", "torchvision", "torchaudio",
+    "tensorflow", "tensorflow_core", "keras",
+    "jax", "jaxlib", "flax",
+    "onnxruntime", "onnx",
+    "transformers", "accelerate", "safetensors", "tokenizers",
+    "huggingface_hub", "hf_xet",
+    "modelscope",
+    "ctranslate2", "faster_whisper",
+    "numpy", "scipy", "pandas", "sklearn", "scikit_learn",
+    "matplotlib", "PIL", "Pillow", "cv2", "opencv",
+    "tqdm", "datasets", "evaluate",
+    "librosa", "soundfile", "audioread",
+    "notebook", "ipython", "ipykernel", "jupyter",
+]
+
 pyz = PYZ(a.pure)
 
 exe = EXE(

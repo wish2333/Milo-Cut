@@ -106,6 +106,60 @@ EXCLUDES_WIN32 = ["PyQt5", "PyQt6", "PySide2", "PySide6", "tkinter"]
 EXCLUDES_LINUX = ["PyQt5", "PyQt6", "PySide2", "PySide6"]
 EXCLUDES_DARWIN = ["PyQt5", "PyQt6", "PySide2", "PySide6", "tkinter"]
 
+# ========== ML backend excludes ==========
+# ASR transcription runs in isolated subprocesses (via uv-managed envs),
+# NOT inside the main process.  These heavy packages are only needed at
+# subprocess runtime and must NOT be bundled into the desktop executable.
+ML_EXCLUDES = [
+    # -- Deep learning frameworks (hundreds of MB) --
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "tensorflow",
+    "tensorflow_core",
+    "keras",
+    "jax",
+    "jaxlib",
+    "flax",
+    # -- ONNX runtime --
+    "onnxruntime",
+    "onnx",
+    # -- HuggingFace heavy deps --
+    "transformers",
+    "accelerate",
+    "safetensors",
+    "tokenizers",
+    "huggingface_hub",      # model download only, lazy-imported in plugin_manager
+    "hf_xet",               # XET storage backend for huggingface_hub (8.8 MB)
+    # -- ModelScope --
+    "modelscope",           # model download only, lazy-imported in plugin_manager
+    # -- CTranslate2 / faster-whisper --
+    "ctranslate2",
+    "faster_whisper",
+    # -- Heavy scientific / ML transitive deps --
+    "numpy",
+    "scipy",
+    "pandas",
+    "sklearn",
+    "scikit_learn",
+    "matplotlib",
+    "PIL",
+    "Pillow",
+    "cv2",
+    "opencv",
+    "tqdm",                 # progress bars, not needed in bundled app
+    "datasets",
+    "evaluate",
+    "librosa",
+    "soundfile",
+    "audioread",
+    # -- Misc heavy unused --
+    "notebook",
+    "ipython",
+    "ipykernel",
+    "jupyter",
+]
+
 
 # ========== Usually no need to modify below ==========
 
@@ -122,12 +176,16 @@ a = Analysis(
     noarchive=False,
 )
 
+# Apply platform-specific GUI excludes
 if sys.platform == "win32":
     a.excludes += EXCLUDES_WIN32
 elif sys.platform == "linux":
     a.excludes += EXCLUDES_LINUX
 elif sys.platform == "darwin":
     a.excludes += EXCLUDES_DARWIN
+
+# Apply ML backend excludes (ASR runs in subprocesses, not main process)
+a.excludes += ML_EXCLUDES
 
 pyz = PYZ(a.pure)
 
@@ -166,8 +224,8 @@ if sys.platform == "darwin":
         info_plist={
             "CFBundleName": "Milo Cut",
             "CFBundleDisplayName": "Milo Cut",
-            "CFBundleVersion": "1.2.2",
-            "CFBundleShortVersionString": "1.2.2",
+            "CFBundleVersion": "1.3.0",
+            "CFBundleShortVersionString": "1.3.0",
             "NSHighResolutionCapable": True,
             "LSMinimumSystemVersion": "10.13",
         },
