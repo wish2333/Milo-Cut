@@ -15,6 +15,8 @@ import uuid
 
 from pywebvue import App, Bridge, expose
 
+_BRIDGE_DEFAULT_PORT = 18230
+
 _SUBPROCESS_KWARGS: dict = (
     {"creationflags": subprocess.CREATE_NO_WINDOW}
     if sys.platform == "win32"
@@ -54,6 +56,7 @@ from core.events import EDIT_SUMMARY_UPDATED, ENCODER_FALLBACK, LOG_LINE
 from core.ffmpeg_service import detect_silence, generate_waveform, probe_media
 from core.logging import get_logger, setup_frontend_sink, setup_logging
 from core.media_server import MediaServer
+from core.bridge_service import BridgeService
 from core.models import TaskStatus, TaskType
 from core.paths import migrate_if_needed
 from core.plugin_manager import PluginManager, PLUGIN_REGISTRY
@@ -103,6 +106,11 @@ class MiloCutApi(Bridge):
         self._register_task_handlers()
         self._proxy_manager = ProxyManager(self._task_manager)
         self._batches: dict[str, dict] = {}  # batch_id -> batch state
+        self._bridge_service = BridgeService(
+            get_projects_fn=self._bridge_get_projects,
+            get_project_fn=self._bridge_get_project,
+            start_analysis_fn=self._bridge_start_analysis,
+        )
 
     def _register_task_handlers(self) -> None:
         """Register handlers for each task type."""
@@ -1380,6 +1388,79 @@ class MiloCutApi(Bridge):
         media_info = project.media.model_dump() if project.media else {}
         return _export_otio(segments, edits, media_info, output_path, fade_duration=fade_duration, mode=mode, fade_mode=fade_mode, audio_fade_duration=audio_fade_duration)
 
+    # ================================================================
+    # Bridge Service callbacks
+    # ================================================================
+
+    def _bridge_get_projects(self) -> list[dict]:
+        """Callback for BridgeService: return project list."""
+        result = self._project.get_recent_projects(limit=100)
+        if result.get("success") and result.get("data"):
+            return result["data"]
+        return []
+
+    def _bridge_get_project(self, name: str) -> dict | None:
+        """Callback for BridgeService: get project by name."""
+        projects = self._bridge_get_projects()
+        for p in projects:
+            if p.get("name") == name:
+                return self._project.open_project(p["path"])
+        return None
+
+    def _bridge_start_analysis(self, project_name: str, analysis_type: str | None) -> dict | None:
+        """Callback for BridgeService: trigger analysis."""
+        result = self._bridge_get_project(project_name)
+        if result is None:
+            return None
+        return self.create_task("full_analysis", {})
+
+    @expose
+    def get_bridge_status(self) -> dict:
+        """Get bridge HTTP API server status."""
+        return {
+            "success": True,
+            "data": {
+                "running": self._bridge_service.is_running,
+                "port": self._bridge_service.port,
+            },
+        }
+
+    # ================================================================
+    # LLM
+    # ================================================================
+
+    @expose
+    def test_llm_connection(self) -> dict:
+        """Test LLM connectivity with current settings."""
+        from core.llm_service import test_connection
+
+        return test_connection()
+
+    @expose
+    def get_llm_config(self) -> dict:
+        """Read LLM configuration (API key masked)."""
+        from core.llm_service import get_llm_config as _get_cfg
+
+        config = _get_cfg()
+        data = config.model_dump()
+        if data.get("api_key"):
+            key = data["api_key"]
+            data["api_key_masked"] = key[:4] + "*" * (len(key) - 8) + key[-4:] if len(key) > 8 else "****"
+            data["api_key"] = ""
+        return {"success": True, "data": data}
+
+    @expose
+    def update_llm_config(self, updates: dict) -> dict:
+        """Update LLM settings (only llm_* keys accepted)."""
+        allowed = {
+            "llm_provider", "llm_base_url", "llm_api_key",
+            "llm_model", "llm_temperature", "llm_timeout",
+        }
+        filtered = {k: v for k, v in updates.items() if k in allowed}
+        if not filtered:
+            return {"success": False, "error": "No valid LLM settings provided"}
+        return self.update_settings(filtered)
+
 
 if __name__ == "__main__":
     migrate_if_needed()
@@ -1390,6 +1471,16 @@ if __name__ == "__main__":
 
     logger = get_logger()
     logger.info("Milo-Cut starting...")
+
+    # Start bridge HTTP API (localhost only)
+    bridge_result = api._bridge_service.start(port=_BRIDGE_DEFAULT_PORT)
+    if bridge_result.get("success"):
+        logger.info(f"Bridge API on http://127.0.0.1:{bridge_result['data']['port']}")
+    else:
+        logger.warning(f"Bridge API failed to start: {bridge_result.get('error')}")
+
+    import atexit
+    atexit.register(api._bridge_service.stop)
 
     app = App(
         api,

@@ -20,6 +20,19 @@ from pathlib import Path
 project_root = Path(SPECPATH)
 
 
+def _read_version() -> str:
+    """Read version from pyproject.toml (single source of truth)."""
+    try:
+        import tomllib
+        with open(project_root / "pyproject.toml", "rb") as f:
+            return tomllib.load(f)["project"]["version"]
+    except Exception:
+        return "0.0.0"
+
+
+__version__ = _read_version()
+
+
 # ========== [MODIFY] Entry point ==========
 # Change this to your main Python script path.
 # Default: main.py (at project root)
@@ -45,6 +58,8 @@ APP_NAME = "milo-cut"
 # Output goes to:        frontend_dist/
 _frontend_dist = project_root / "frontend_dist"
 datas = [(str(_frontend_dist), "frontend_dist")]
+# Bundle pyproject.toml so core.__version__ can read it at runtime
+datas.append((str(project_root / "pyproject.toml"), "."))
 
 # ASR subprocess scripts (macOS .app bundle needs them as datas)
 if sys.platform == "darwin":
@@ -224,8 +239,8 @@ if sys.platform == "darwin":
         info_plist={
             "CFBundleName": "Milo Cut",
             "CFBundleDisplayName": "Milo Cut",
-            "CFBundleVersion": "1.3.0",
-            "CFBundleShortVersionString": "1.3.0",
+            "CFBundleVersion": __version__,
+            "CFBundleShortVersionString": __version__,
             "NSHighResolutionCapable": True,
             "LSMinimumSystemVersion": "10.13",
         },

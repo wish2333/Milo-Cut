@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "sync-version": "node -e \"const fs=require('fs');const t=fs.readFileSync('../pyproject.toml','utf8');const m=t.match(/version\\s*=\\s*[\\\"'](.+?)[\\\"']/);if(!m){console.error('version not found in pyproject.toml');process.exit(1)}const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version=m[1];fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\\n')\"",
+    "prebuild": "bun run sync-version",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",

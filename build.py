@@ -57,6 +57,14 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent
 
 
+def _read_version() -> str:
+    """Read version from pyproject.toml (single source of truth)."""
+    import tomllib
+
+    with open(PROJECT_ROOT / "pyproject.toml", "rb") as f:
+        return tomllib.load(f)["project"]["version"]
+
+
 # ========== helpers ==========
 
 def _info(msg: str) -> None:
@@ -225,6 +233,11 @@ def _generate_onefile_spec() -> str:
         if _asr_scripts.is_dir():
             datas_line += f'\n        (r"{_asr_scripts}", "core/asr_scripts"),'
 
+    # Bundle pyproject.toml so core.__version__ can read it at runtime
+    _pyproject = project_root / "pyproject.toml"
+    if _pyproject.exists():
+        datas_line += f'\n        (r"{_pyproject}", "."),'
+
     icon_line = f'    icon=r"{icon}",' if icon else "    icon=None,"
 
     return f"""\
@@ -251,6 +264,7 @@ a = Analysis(
 {datas_line}
     ],
     hiddenimports=[
+        "core",
         "pywebvue",
         "pywebvue.app",
         "pywebvue.bridge",
@@ -372,6 +386,7 @@ def _generate_buildozer_spec() -> None:
             "  Then update android.add_jars in buildozer.spec manually."
         )
 
+    version = _read_version()
     content = f"""\
 # ============================================================
 # Buildozer spec for PyWebVue Android builds
@@ -395,7 +410,7 @@ package.name = pywebvue
 package.domain = org.pywebvue
 source.dir = .
 source.include_exts = py,html,css,js
-version = 0.1
+version = {version}
 
 # pywebview 6.x uses Kivyless Android (kivy still needed for bootstrap)
 # [MODIFY] Add your own Python dependencies here, comma-separated

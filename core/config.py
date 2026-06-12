@@ -57,6 +57,13 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     # Proxy
     "proxy_resolution": "720p",
     "proxy_auto_generate": False,
+    # LLM
+    "llm_provider": "custom",
+    "llm_base_url": "",
+    "llm_api_key": "",
+    "llm_model": "",
+    "llm_temperature": 0.3,
+    "llm_timeout": 120,
 }
 
 

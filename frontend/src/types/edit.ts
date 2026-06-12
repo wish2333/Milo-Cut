@@ -61,4 +61,11 @@ export interface AppSettings {
   // Proxy settings
   proxy_resolution: string
   auto_generate_proxy: boolean
+  // LLM settings
+  llm_provider: "openai" | "deepseek" | "qwen" | "custom"
+  llm_base_url: string
+  llm_api_key: string
+  llm_model: string
+  llm_temperature: number
+  llm_timeout: number
 }

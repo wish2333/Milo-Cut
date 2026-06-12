@@ -23,3 +23,9 @@ LOG_LINE = "log_line"
 
 # Encoder fallback
 ENCODER_FALLBACK = "encoder:fallback"
+
+# LLM analysis
+LLM_ANALYSIS_PROGRESS = "llm:analysis_progress"
+LLM_ANALYSIS_COMPLETED = "llm:analysis_completed"
+LLM_ANALYSIS_FAILED = "llm:analysis_failed"
+LLM_TOKEN_USAGE = "llm:token_usage"

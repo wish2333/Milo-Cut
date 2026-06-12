@@ -41,6 +41,8 @@ class TaskType(StrEnum):
     PLUGIN_INSTALL = "plugin_install"
     MODEL_DOWNLOAD = "model_download"
     PROXY_GENERATION = "proxy_generation"
+    # LLM
+    LLM_TOPIC_DRIFT = "llm_topic_drift"
 
 
 class EditStatus(StrEnum):
@@ -176,6 +178,68 @@ class ModelInfo(BaseModel, frozen=True):
     size_bytes: int = 0
     local_path: str = ""
     status: Literal["downloaded", "downloading", "not_downloaded"] = "not_downloaded"
+
+
+# ================================================================
+# LLM configuration
+# ================================================================
+
+
+class LlmProvider(StrEnum):
+    """Supported LLM API providers (all OpenAI-compatible)."""
+
+    OPENAI = "openai"
+    DEEPSEEK = "deepseek"
+    QWEN = "qwen"
+    CUSTOM = "custom"
+
+
+# Provider-specific defaults
+_PROVIDER_DEFAULTS: dict[LlmProvider, dict[str, str]] = {
+    LlmProvider.OPENAI: {
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-4o-mini",
+    },
+    LlmProvider.DEEPSEEK: {
+        "base_url": "https://api.deepseek.com/v1",
+        "model": "deepseek-chat",
+    },
+    LlmProvider.QWEN: {
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "model": "qwen-turbo",
+    },
+    LlmProvider.CUSTOM: {
+        "base_url": "",
+        "model": "",
+    },
+}
+
+
+class LlmConfig(BaseModel, frozen=True):
+    """LLM provider configuration stored in settings."""
+
+    provider: LlmProvider = LlmProvider.CUSTOM
+    base_url: str = ""
+    api_key: str = ""
+    model: str = ""
+    temperature: float = 0.3
+    timeout: int = 120
+
+    def resolved_base_url(self) -> str:
+        """Return configured base_url or provider default."""
+        if self.base_url:
+            return self.base_url
+        return _PROVIDER_DEFAULTS.get(self.provider, {}).get("base_url", "")
+
+    def resolved_model(self) -> str:
+        """Return configured model or provider default."""
+        if self.model:
+            return self.model
+        return _PROVIDER_DEFAULTS.get(self.provider, {}).get("model", "")
+
+    def is_configured(self) -> bool:
+        """Check if the minimum required fields are set."""
+        return bool(self.resolved_base_url() and self.api_key and self.resolved_model())
 
 
 class AnalysisData(BaseModel, frozen=True):

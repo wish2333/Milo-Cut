@@ -5,6 +5,7 @@ import type { AppSettings } from "@/types/edit"
 import type { PluginInfo, ModelInfo, ModelMirror } from "@/types/project"
 import { usePluginManager } from "@/composables/usePluginManager"
 import { useUvAvailability } from "@/composables/useUvAvailability"
+import { useLlmSettings } from "@/composables/useLlmSettings"
 
 defineProps<{
   visible: boolean
@@ -19,7 +20,7 @@ const ffmpegInfo = ref<{ ffmpeg_path: string; ffprobe_path: string; version: str
 const gpuEncoders = ref<string[]>([])
 const saving = ref(false)
 const statusMsg = ref("")
-const activeTab = ref<"general" | "ai-engine" | "export">("general")
+const activeTab = ref<"general" | "ai-engine" | "llm" | "export">("general")
 
 // Plugin manager
 const pluginManager = usePluginManager()
@@ -86,6 +87,32 @@ const notDownloadedModels = ref<ModelInfo[]>([])
 
 // UV availability check (shared composable)
 const { uvAvailable, recheckUvAvailable } = useUvAvailability()
+
+// LLM settings
+const { testing: llmTesting, testResult: llmTestResult, testConnection } = useLlmSettings()
+const showLlmKey = ref(false)
+
+const llmProviders = [
+  { id: "openai" as const, label: "OpenAI", baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini" },
+  { id: "deepseek" as const, label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat" },
+  { id: "qwen" as const, label: "Qwen", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-turbo" },
+  { id: "custom" as const, label: "Custom", baseUrl: "", model: "" },
+]
+
+function onLlmProviderChange(provider: string) {
+  if (!settings.value) return
+  const info = llmProviders.find(p => p.id === provider)
+  settings.value = {
+    ...settings.value,
+    llm_provider: provider as AppSettings["llm_provider"],
+    llm_base_url: info?.baseUrl ?? "",
+    llm_model: info?.model ?? "",
+  }
+}
+
+function isOllamaUrl(url: string): boolean {
+  return url.includes("localhost:11434")
+}
 
 async function detectGpu() {
   const res = await call<{
@@ -381,6 +408,7 @@ async function loadPluginDataDir() {
             v-for="tab in [
               { id: 'general' as const, label: 'General' },
               { id: 'ai-engine' as const, label: 'AI Engine' },
+              { id: 'llm' as const, label: 'LLM' },
               { id: 'export' as const, label: 'Export' },
             ]"
             :key="tab.id"
@@ -912,7 +940,97 @@ async function loadPluginDataDir() {
             <p v-if="pluginList.length === 0" class="text-sm text-gray-500">No plugins available</p>
           </div>
 
-          <!-- Tab 3: Export -->
+          <!-- Tab 3: LLM -->
+          <div v-if="activeTab === 'llm'" class="space-y-6">
+            <template v-if="settings">
+            <p class="text-xs text-gray-400">API Key is stored locally and never sent to our servers.</p>
+
+            <section>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Provider</label>
+              <select
+                :value="settings.llm_provider"
+                class="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                @change="onLlmProviderChange(($event.target as HTMLSelectElement).value)"
+              >
+                <option v-for="p in llmProviders" :key="p.id" :value="p.id">{{ p.label }}</option>
+              </select>
+            </section>
+
+            <section>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Base URL</label>
+              <input
+                type="text"
+                :value="settings.llm_base_url"
+                placeholder="https://api.openai.com/v1"
+                class="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                @input="settings = { ...settings!, llm_base_url: ($event.target as HTMLInputElement).value }"
+              />
+              <p v-if="isOllamaUrl(settings.llm_base_url)" class="mt-1 text-xs text-green-600">Ollama detected</p>
+            </section>
+
+            <section>
+              <label class="block text-sm font-medium text-gray-700 mb-1">API Key</label>
+              <div class="flex gap-2">
+                <input
+                  :type="showLlmKey ? 'text' : 'password'"
+                  :value="settings.llm_api_key"
+                  placeholder="sk-..."
+                  class="flex-1 rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  @input="settings = { ...settings!, llm_api_key: ($event.target as HTMLInputElement).value }"
+                />
+                <button
+                  type="button"
+                  class="rounded border border-gray-300 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50"
+                  @click="showLlmKey = !showLlmKey"
+                >
+                  {{ showLlmKey ? 'Hide' : 'Show' }}
+                </button>
+              </div>
+            </section>
+
+            <section>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Model</label>
+              <input
+                type="text"
+                :value="settings.llm_model"
+                placeholder="gpt-4o-mini"
+                class="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                @input="settings = { ...settings!, llm_model: ($event.target as HTMLInputElement).value }"
+              />
+            </section>
+
+            <section>
+              <label class="block text-sm font-medium text-gray-700 mb-1">
+                Temperature: {{ settings.llm_temperature.toFixed(1) }}
+              </label>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.1"
+                :value="settings.llm_temperature"
+                class="w-full"
+                @input="settings = { ...settings!, llm_temperature: parseFloat(($event.target as HTMLInputElement).value) }"
+              />
+            </section>
+
+            <section class="flex items-center gap-3">
+              <button
+                type="button"
+                :disabled="llmTesting || !settings.llm_api_key"
+                class="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                @click="testConnection"
+              >
+                {{ llmTesting ? 'Testing...' : 'Test Connection' }}
+              </button>
+              <span v-if="llmTestResult" :class="llmTestResult.success ? 'text-green-600' : 'text-red-600'" class="text-sm">
+                {{ llmTestResult.message }}
+              </span>
+            </section>
+            </template>
+          </div>
+
+          <!-- Tab 4: Export -->
           <div v-if="activeTab === 'export'" class="space-y-6">
             <!-- ASR Settings Section -->
             <section v-if="settings">
