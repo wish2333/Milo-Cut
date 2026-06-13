@@ -84,7 +84,7 @@ watch(
 </script>
 
 <template>
-  <div class="flex w-3/5 min-w-[500px] flex-col">
+  <div class="flex h-full w-full min-w-0 flex-col">
     <div class="flex items-center justify-between border-b border-gray-200 px-4 py-2">
       <span class="text-sm font-medium">Timeline</span>
       <div class="flex items-center gap-2">

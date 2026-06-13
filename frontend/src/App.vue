@@ -20,6 +20,17 @@ const showRelinkDialog = ref(false)
 const relinkLostPath = ref("")
 let dragCounter = 0
 
+// Page order for directional slide transitions: 0=welcome, 1=workspace, 2=export.
+// Forward (index increases) slides left; backward slides right.
+const transitionName = ref<"slide-forward" | "slide-backward">("slide-forward")
+function pageOrder(): number {
+  if (!project.value) return 0
+  return showExportPage.value ? 2 : 1
+}
+function setDirection(before: number, after: number) {
+  transitionName.value = after > before ? "slide-forward" : "slide-backward"
+}
+
 waitForPyWebView(10_000)
   .then(() => {
     ready.value = true
@@ -48,6 +59,7 @@ onEvent<{ task_id: string; task_type?: string; result?: { project?: Project } }>
 )
 
 function onProjectCreated(data: Project) {
+  setDirection(pageOrder(), 1)
   project.value = data
   triggerWaveformGeneration()
 }
@@ -62,15 +74,18 @@ function onProjectUpdated(data: Project) {
 }
 
 function onProjectClosed() {
+  setDirection(pageOrder(), 0)
   project.value = null
   showExportPage.value = false
 }
 
 function onGoToExport() {
+  setDirection(pageOrder(), 2)
   showExportPage.value = true
 }
 
 function onGoBackToWorkspace() {
+  setDirection(pageOrder(), 1)
   showExportPage.value = false
 }
 
@@ -114,6 +129,7 @@ async function handleWindowDrop(e: DragEvent) {
     // Open existing project from project.json
     const openRes = await call<Project>("open_project", filePath)
     if (openRes.success && openRes.data) {
+      setDirection(pageOrder(), 1)
       project.value = openRes.data
       triggerWaveformGeneration()
     } else if (openRes.error === "MEDIA_NOT_FOUND" && openRes.data) {
@@ -127,6 +143,7 @@ async function handleWindowDrop(e: DragEvent) {
     const name = filePath.split(/[/\\]/).pop()?.replace(/\.[^.]+$/, "") ?? "Untitled"
     const createRes = await call<Project>("create_project", name, filePath)
     if (createRes.success && createRes.data) {
+      setDirection(pageOrder(), 1)
       project.value = createRes.data
       triggerWaveformGeneration()
     }
@@ -158,7 +175,7 @@ function handleRelinkCancel() {
 
 <template>
   <div
-    class="min-h-screen overflow-x-hidden"
+    class="relative min-h-screen overflow-x-hidden overflow-y-hidden"
     @dragenter="handleWindowDragEnter"
     @dragover="handleWindowDragOver"
     @dragleave="handleWindowDragLeave"
@@ -193,26 +210,31 @@ function handleRelinkCancel() {
       </div>
     </div>
 
-    <WelcomePage
-      v-else-if="!project"
-      @project-created="onProjectCreated"
-      @relink-needed="onRelinkNeeded"
-    />
+    <Transition :name="transitionName">
+      <WelcomePage
+        v-if="!project"
+        key="welcome"
+        @project-created="onProjectCreated"
+        @relink-needed="onRelinkNeeded"
+      />
 
-    <ExportPage
-      v-else-if="showExportPage"
-      :project="project"
-      @go-back="onGoBackToWorkspace"
-      @project-updated="onProjectUpdated"
-    />
+      <ExportPage
+        v-else-if="showExportPage"
+        key="export"
+        :project="project!"
+        @go-back="onGoBackToWorkspace"
+        @project-updated="onProjectUpdated"
+      />
 
-    <WorkspacePage
-      v-else
-      :project="project"
-      @project-updated="onProjectUpdated"
-      @project-closed="onProjectClosed"
-      @go-to-export="onGoToExport"
-    />
+      <WorkspacePage
+        v-else
+        key="workspace"
+        :project="project!"
+        @project-updated="onProjectUpdated"
+        @project-closed="onProjectClosed"
+        @go-to-export="onGoToExport"
+      />
+    </Transition>
 
     <RelinkMediaDialog
       :visible="showRelinkDialog"

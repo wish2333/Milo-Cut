@@ -14,6 +14,7 @@ import { useUvAvailability } from "@/composables/useUvAvailability"
 import { useTopicDrift } from "@/composables/useTopicDrift"
 import { EVENT_TASK_COMPLETED, EVENT_PROJECT_DIRTY, EVENT_PROJECT_SAVED } from "@/utils/events"
 import ProgressBar from "@/components/common/ProgressBar.vue"
+import SplitPanel from "@/components/common/SplitPanel.vue"
 import Timeline from "@/components/workspace/Timeline.vue"
 import WaveformEditor from "@/components/waveform/WaveformEditor.vue"
 import SearchReplaceBar from "@/components/workspace/SearchReplaceBar.vue"
@@ -398,17 +399,30 @@ async function resolveWaveformUrl() {
 }
 
 onMounted(async () => {
+  // Prioritize visible content (video + waveform) so the slide animation
+  // isn't blocked. Settings/engine/model loads are deferred to idle time.
   await loadVideoUrl()
   await resolveWaveformUrl()
-  await loadSilenceSettings()
-  await loadInstalledEngines()  // Must run BEFORE loadAsrSettings to populate installedEngines
-  await loadAsrSettings()
-  modelList.value = await listModels()
-  // Validate loaded model_size against available models
-  validateModelSize()
-  // Load LLM config + cached topic drift results
-  checkLlmConfigured()
-  loadTopicDriftResults()
+
+  // Deferred: non-visible configuration loads, run when the browser is idle
+  // so they don't compete with the transition animation for the main thread.
+  const runIdle = (cb: () => void | Promise<void>) => {
+    if ("requestIdleCallback" in window) {
+      requestIdleCallback(() => { cb() })
+    } else {
+      setTimeout(cb, 50)
+    }
+  }
+
+  runIdle(async () => {
+    await loadSilenceSettings()
+    await loadInstalledEngines()  // Must run BEFORE loadAsrSettings
+    await loadAsrSettings()
+    modelList.value = await listModels()
+    validateModelSize()
+    checkLlmConfigured()
+    loadTopicDriftResults()
+  })
 })
 
 watch(() => props.project.media?.waveform_path, () => {
@@ -1472,8 +1486,10 @@ onUnmounted(() => {
 
     <!-- Main content: two-column layout -->
     <div class="flex flex-1 overflow-hidden">
-      <!-- Left: Video player area -->
-      <div class="flex w-2/5 min-w-[400px] flex-col border-r border-gray-200 bg-gray-900">
+      <SplitPanel storage-key="milo-split-workspace" :min-ratio="0.25" :max-ratio="0.75">
+        <template #left>
+          <!-- Left: Video player area -->
+          <div class="flex h-full min-w-0 flex-col bg-gray-900">
         <div class="flex flex-1 items-center justify-center p-2 overflow-hidden">
           <div v-if="videoUrl" class="relative flex flex-col w-full h-full items-center justify-center">
             <video
@@ -1525,40 +1541,44 @@ onUnmounted(() => {
           @toggle-play="handleTogglePlay"
           @toggle-fullscreen="handleFullscreen"
         />
-      </div>
+          </div>
+        </template>
 
-      <!-- Right: Timeline (transcript editor + suggestion panel) -->
-      <Timeline
-        :segments="mergedSegments"
-        :edits="edits"
-        :analysis-results="analysisResults"
-        :subtitle-count="subtitleCount"
-        :silence-count="silenceCount"
-        :selected-segment-id="editSelectedSegmentId"
-        :global-edit-mode="globalEditMode"
-        :topic-drift-results="topicDriftResults"
-        :topic-drift-loading="topicDriftLoading"
-        :topic-drift-progress="topicDriftProgress"
-        :topic-drift-error="topicDriftError"
-        :llm-configured="llmConfigured"
-        @seek="handleSeek"
-        @update-text="handleUpdateText"
-        @update-time="handleUpdateTime"
-        @toggle-status="(seg) => handleToggleEditStatus(seg)"
-        @confirm-segment="(seg) => handleToggleEditStatus(seg, 'confirmed')"
-        @reject-segment="(seg) => handleToggleEditStatus(seg, 'rejected')"
-        @delete-segment="(seg) => handleDeleteSegment(seg.id)"
-        @confirm-suggestion="confirmEdit"
-        @reject-suggestion="rejectEdit"
-        @confirm-all="handleConfirmAllSuggestions"
-        @reject-all="handleRejectAllSuggestions"
-        @seek-suggestion="handleSeek"
-        @toggle-edit-mode="globalEditMode = !globalEditMode"
-        @start-topic-drift="(desc) => startTopicDriftAnalysis(desc)"
-        @cancel-topic-drift="cancelTopicDrift"
-        @accept-topic-drift="handleAcceptTopicDriftAll"
-        @reject-topic-drift="handleRejectTopicDriftAll"
-      />
+        <template #right>
+          <!-- Right: Timeline (transcript editor + suggestion panel) -->
+          <Timeline
+            :segments="mergedSegments"
+            :edits="edits"
+            :analysis-results="analysisResults"
+            :subtitle-count="subtitleCount"
+            :silence-count="silenceCount"
+            :selected-segment-id="editSelectedSegmentId"
+            :global-edit-mode="globalEditMode"
+            :topic-drift-results="topicDriftResults"
+            :topic-drift-loading="topicDriftLoading"
+            :topic-drift-progress="topicDriftProgress"
+            :topic-drift-error="topicDriftError"
+            :llm-configured="llmConfigured"
+            @seek="handleSeek"
+            @update-text="handleUpdateText"
+            @update-time="handleUpdateTime"
+            @toggle-status="(seg) => handleToggleEditStatus(seg)"
+            @confirm-segment="(seg) => handleToggleEditStatus(seg, 'confirmed')"
+            @reject-segment="(seg) => handleToggleEditStatus(seg, 'rejected')"
+            @delete-segment="(seg) => handleDeleteSegment(seg.id)"
+            @confirm-suggestion="confirmEdit"
+            @reject-suggestion="rejectEdit"
+            @confirm-all="handleConfirmAllSuggestions"
+            @reject-all="handleRejectAllSuggestions"
+            @seek-suggestion="handleSeek"
+            @toggle-edit-mode="globalEditMode = !globalEditMode"
+            @start-topic-drift="(desc) => startTopicDriftAnalysis(desc)"
+            @cancel-topic-drift="cancelTopicDrift"
+            @accept-topic-drift="handleAcceptTopicDriftAll"
+            @reject-topic-drift="handleRejectTopicDriftAll"
+          />
+        </template>
+      </SplitPanel>
     </div>
 
     <!-- Bottom: Waveform editor -->

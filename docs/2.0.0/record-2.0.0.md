@@ -202,3 +202,128 @@ Phase 3 (UIUX Polish) 待实施:
 - Task 3.1: 全局步骤导航
 - Task 3.2: 工作区分栏拖拽
 - Task 3.3: 页面过渡动画
+
+---
+
+## Phase 3: UIUX Polish (已完成)
+
+> 目标: 全局步骤导航 + 工作区分栏拖拽 + 页面过渡动画
+
+### 概要
+
+Phase 3 为 Milo-Cut 实现了 Apple 风格的工作流导航和交互打磨三大能力:
+
+1. **全局步骤导航** -- 5 步骤控制器 (导入 -> 分析 -> 编辑 -> 审阅 -> 导出), useStepNav 状态机管理 currentStep/maxReachedStep/completedSteps, 步骤跳转限制 (仅可跳到已达到的步骤), 项目生命周期联动 (创建/导出/关闭自动推进或重置)
+2. **工作区分栏拖拽** -- SplitPanel 组件支持 pointer 事件拖拽调整左右栏比例 (25%-75%), localStorage 跨会话持久化, WorkspacePage 视频区与 Timeline 集成
+3. **页面过渡动画** -- App.vue 用 `<Transition>` 包裹页面, 300ms fade+slide 动画, 前进 slide-left / 后退 slide-right, 尊重 prefers-reduced-motion 无障碍降级
+
+### 变更文件 (共 11 个)
+
+#### 前端 (9 个文件)
+
+| 文件 | 变更 | 说明 |
+|------|------|------|
+| `frontend/src/composables/useStepNav.ts` | 新增 | 步骤导航状态机: STEPS 常量 (5 步骤), currentStep/maxReachedStep/completedSteps, goToStep (限制) / jumpToStep (跳转) / nextStep / prevStep / markComplete / isNavigable / reset |
+| `frontend/src/components/common/StepController.vue` | 新增 | 步骤控制器组件: 水平 5 步骤, 已完成 Action Blue 勾选, 当前高亮, 超过 maxReached disabled, 响应式 (窄窗口隐藏标签), aria-current 无障碍 |
+| `frontend/src/components/common/SplitPanel.vue` | 新增 | 可拖拽分栏: pointer 事件拖拽分隔条, 比例 clamp 到 [minRatio, maxRatio], localStorage 持久化 (同步初始化避免首帧闪烁), slot #left/#right |
+| `frontend/src/App.vue` | 修改 | 集成 useStepNav + StepController 顶部导航栏; currentPage computed 映射步骤到页面 (welcome/workspace/export); `<Transition>` 包裹页面 + transitionName 方向控制; 项目创建 jumpToStep(1), 导出 jumpToStep(4) + markComplete, 关闭 reset() |
+| `frontend/src/pages/WorkspacePage.vue` | 修改 | 主内容区用 SplitPanel 替代固定 w-2/5 + w-3/5 布局, storage-key=milo-split-workspace, 范围 25%-75% |
+| `frontend/src/components/workspace/Timeline.vue` | 修改 | 根元素 w-3/5 min-w-[500px] 改为 h-full w-full min-w-0, 适配 SplitPanel slot 填充 |
+| `frontend/src/style.css` | 修改 | 新增 slide-left/slide-right 过渡动画 CSS (300ms fade+slide) + @media prefers-reduced-motion 降级 (150ms 纯淡入) |
+| `frontend/src/composables/useStepNav.test.ts` | 新增 | 30 个测试: 常量 (4), 初始状态 (5), nextStep (3), prevStep (3), goToStep 限制 (4), markComplete (4), jumpToStep (4), isNavigable (2), reset (1) |
+| `frontend/src/components/common/StepController.test.ts` | 新增 | 9 个测试: 渲染 5 标签/5 按钮, aria-current, navigate emit, 当前步骤不 emit, disabled 状态, disabled 不 emit, 已完成勾选, 当前显示数字 |
+| `frontend/src/components/common/SplitPanel.test.ts` | 新增 | 10 个测试: slot 渲染, 分隔条, 默认比例, clamp min/max, localStorage 持久化/恢复/clamp/空 key, 事件监听清理 |
+
+#### 文档 (1 个文件)
+
+| 文件 | 说明 |
+|------|------|
+| `docs/2.0.0/audit-plan-v2.0.0-phase3.md` | Phase 3 执行计划文档 |
+
+### 架构决策
+
+#### 步骤映射 -- 不引入 vue-router
+
+- 沿用 audit-plan 决策: 用 computed `currentPage` + `<component :is>` / v-if 模式, 而非 vue-router
+- 5 步骤映射: Import (WelcomePage) / Analyze+Edit+Review (WorkspacePage) / Export (ExportPage)
+- 步骤 1-3 共享 WorkspacePage, 通过 WorkspacePage 内部状态隐式区分 (无需显式子步骤)
+- StepController 仅在有项目时显示 (导入页隐藏, 避免单步骤视觉噪音)
+
+#### SplitPanel -- pointer 事件而非 mouse 事件
+
+- 使用 PointerEvent (pointerdown/move/up) 而非 MouseEvent, 统一支持鼠标/触摸/笔
+- 拖拽时全局监听 pointermove (window 级), 分隔条只需 pointerdown
+- localStorage 在 setup 同步初始化 (非 onMounted), 避免首帧默认比例闪烁
+- 比例范围 25%-75% (略宽于计划的 30%-70%), 适配视频区/转录区的实际需求
+
+#### 过渡动画 -- Transition + 方向感知
+
+- App.vue 维护 transitionName ref, navigateTo 根据目标 index 大小决定 slide-left (前进) / slide-right (后退)
+- 项目生命周期事件 (创建/导出/返回) 显式设置方向
+- prefers-reduced-motion 降级: 禁用 transform, 缩短至 150ms 纯 opacity
+
+### 测试覆盖
+
+| 模块 | 测试数 | 覆盖要点 |
+|------|--------|----------|
+| `useStepNav.test.ts` | 30 | 常量/索引/初始状态/nextStep/prevStep/goToStep 限制/markComplete/jumpToStep/isNavigable/reset |
+| `StepController.test.ts` | 9 | 渲染/aria-current/navigate emit/disabled 状态/已完成勾选/当前数字 |
+| `SplitPanel.test.ts` | 10 | slot/分隔条/比例 clamp/localStorage 持久化/恢复/clamp/空 key/事件清理 |
+| 前端总测试 | 164 | 全部通过 (115 原有 + 49 新增) |
+| 后端总测试 | 174 | 全部通过 (Phase 3 无后端改动) |
+
+### Phase 3 完成状态
+
+## Phase 3 最终状态 (返工后)
+
+Phase 3 经过实施-发现-返工的迭代过程：
+
+1. **初始实施**: 按 audit-plan 实现了 5 步步骤导航 (StepController + useStepNav)、分栏拖拽 (SplitPanel)、fade 过渡动画
+2. **发现的问题**:
+   - 步骤模型与实际页面不匹配: design-spec 定义 5 步 (导入→分析→编辑→审阅→导出), 但分析/编辑/审阅三步都映射到同一个 WorkspacePage, 点击无法区分
+   - 双顶栏浪费空间: App.vue 新增 StepController 全局栏 + WorkspacePage 自己的深色顶栏共存, 占用 88px 垂直空间
+   - 回退失灵: 导航到「导入」步骤时 project 仍非 null, currentPage 逻辑阻止回到欢迎页
+   - 布局溢出: 页面组件 h-screen 在 header 下方额外占 100vh, 内容被推出视口
+   - WelcomePage 多根节点: Transition 要求单根节点, WelcomePage (主 div + SettingsModal) 导致 Transition 警告
+   - out-in fade 白闪: mode="out-in" 导致旧页面完全淡出后才显示新页面, 中间出现明显白屏
+3. **返工决策**:
+   - Task 3.1 步骤导航: **回退**。StepController/useStepNav 已删除, 恢复原有 v-if 页面切换逻辑。理由: 3 个页面不需要 5 步导航, 原有 WorkspacePage 顶栏已足够完成所有导航。
+   - Task 3.2 分栏拖拽: **保留**。SplitPanel 真正改善了工作区布局体验。
+   - Task 3.3 过渡动画: **重做**。从 out-in fade 改为方向感知的水平滑动 (slide-forward/slide-backward), 去掉 out-in 消除白闪。
+4. **额外修复**:
+   - WorkspacePage onMounted 串行 await 导致点击延迟: 将非可见内容的配置加载 (引擎/模型/静音设置) 用 requestIdleCallback 延迟到浏览器空闲时执行
+   - WelcomePage 多根节点: 外层包 div 使其成为单根节点
+
+### 最终交付文件
+
+#### 前端 (6 个文件)
+
+| 文件 | 变更 | 说明 |
+|------|------|------|
+| `frontend/src/components/common/SplitPanel.vue` | 新增 | 可拖拽分栏: pointer 事件, 比例 clamp, localStorage 持久化, slot #left/#right |
+| `frontend/src/components/common/SplitPanel.test.ts` | 新增 | 10 个测试 |
+| `frontend/src/pages/WorkspacePage.vue` | 修改 | 主内容区用 SplitPanel 替代固定 w-2/5+w-3/5; onMounted 非可见加载用 requestIdleCallback 延迟 |
+| `frontend/src/components/workspace/Timeline.vue` | 修改 | 根元素适配 SplitPanel: w-3/5 min-w-[500px] -> h-full w-full min-w-0 |
+| `frontend/src/App.vue` | 修改 | 方向感知页面过渡 (slide-forward/slide-backward): setDirection 基于页面序号比较; WelcomePage 外层包裹单根 div; 用 Transition 包裹页面 (动态 name) |
+| `frontend/src/style.css` | 修改 | slide-forward/slide-backward 水平滑动动画 CSS (260ms cubic-bezier); will-change + backface-visibility 优化; prefers-reduced-motion 降级 |
+| `frontend/src/pages/WelcomePage.vue` | 修改 | 外层包裹 `<div>` 修复 Transition 多根节点警告 |
+
+### 测试覆盖
+
+| 模块 | 测试数 | 覆盖要点 |
+|------|--------|----------|
+| `SplitPanel.test.ts` | 10 | slot/分隔条/比例 clamp/localStorage 持久化/恢复/clamp/空 key/事件清理 |
+| 前端总测试 | 125 | 全部通过 (115 原有 + 10 新增 SplitPanel) |
+| 后端总测试 | 174 | 全部通过 (Phase 3 无后端改动) |
+
+### Phase 3 完成状态
+
+| 任务 | 状态 | 说明 |
+|------|------|------|
+| Task 3.1: 全局步骤导航 | 已回退 | 5 步模型不匹配实际页面, 已删除 StepController/useStepNav |
+| Task 3.2: 工作区分栏拖拽 | 已完成 | SplitPanel 接入 WorkspacePage, 25-75% 拖拽范围 |
+| Task 3.3: 页面过渡动画 | 已完成 (重做) | 方向感知水平滑动, will-change 优化 |
+
+---
+
+Phase 4 (Integration & Delivery) 待实施:

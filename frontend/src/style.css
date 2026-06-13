@@ -33,3 +33,44 @@ body {
   background: var(--color-canvas);
   -webkit-font-smoothing: antialiased;
 }
+
+/* Page transition: directional horizontal slide (carousel-like).
+ * Forward: new page enters from right, old page exits to left.
+ * Backward: new page enters from left, old page exits to right.
+ * Both pages stack during transition (no white flash).
+ * will-change + backface-visibility promote each page to its own compositor
+ * layer so the browser doesn't repaint heavy content (video/canvas) mid-slide.
+ * Respects prefers-reduced-motion. */
+.slide-forward-enter-active,
+.slide-forward-leave-active,
+.slide-backward-enter-active,
+.slide-backward-leave-active {
+  transition: transform 260ms cubic-bezier(0.4, 0, 0.2, 1);
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  will-change: transform;
+  backface-visibility: hidden;
+}
+/* Forward: enter from right (100%), leave to left (-100%) */
+.slide-forward-enter-from { transform: translateX(100%); }
+.slide-forward-leave-to   { transform: translateX(-100%); }
+/* Backward: enter from left (-100%), leave to right (100%) */
+.slide-backward-enter-from { transform: translateX(-100%); }
+.slide-backward-leave-to   { transform: translateX(100%); }
+@media (prefers-reduced-motion: reduce) {
+  .slide-forward-enter-active,
+  .slide-forward-leave-active,
+  .slide-backward-enter-active,
+  .slide-backward-leave-active {
+    transition: opacity 150ms ease;
+    will-change: opacity;
+  }
+  .slide-forward-enter-from,
+  .slide-forward-leave-to,
+  .slide-backward-enter-from,
+  .slide-backward-leave-to {
+    transform: none;
+    opacity: 0;
+  }
+}

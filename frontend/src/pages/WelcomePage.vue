@@ -100,6 +100,7 @@ function formatRelativeTime(iso: string): string {
 </script>
 
 <template>
+  <div>
   <div class="flex min-h-screen items-center justify-center bg-canvas p-8">
     <div class="w-full max-w-xl">
       <div class="mb-10 text-center relative">
@@ -154,4 +155,5 @@ function formatRelativeTime(iso: string): string {
     :visible="showSettings"
     @close="showSettings = false"
   />
+  </div>
 </template>
