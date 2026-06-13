@@ -76,6 +76,7 @@ class _BridgeHandler(BaseHTTPRequestHandler):
     get_projects_fn: Callable[[], list[dict]] | None = None
     get_project_fn: Callable[[str], dict | None] | None = None
     start_analysis_fn: Callable[[str, str | None], dict | None] | None = None
+    get_topic_drift_fn: Callable[[str], dict | None] | None = None
 
     def log_message(self, format, *args):
         """Suppress default stderr logging."""
@@ -102,6 +103,10 @@ class _BridgeHandler(BaseHTTPRequestHandler):
         parts = clean.strip("/").split("/")
         if len(parts) == 4 and parts[0] == "api" and parts[1] == "v1" and parts[2] == "projects" and parts[3] != "timeline":
             return self._handle_get_timeline(parts[3])
+
+        # /api/v1/projects/{name}/topic-drift
+        if len(parts) == 5 and parts[0] == "api" and parts[1] == "v1" and parts[2] == "projects" and parts[4] == "topic-drift":
+            return self._handle_get_topic_drift(parts[3])
 
         _json_response(self, 404, error="Not found")
 
@@ -173,6 +178,19 @@ class _BridgeHandler(BaseHTTPRequestHandler):
             logger.error("Bridge API error: {}", e)
             _json_response(self, 500, error=str(e))
 
+    def _handle_get_topic_drift(self, project_name: str) -> None:
+        """Return cached topic drift results for a project."""
+        if not self.get_topic_drift_fn:
+            return _json_response(self, 503, error="Service not available")
+        try:
+            data = self.get_topic_drift_fn(project_name)
+            if data is None:
+                return _json_response(self, 404, error=f"Project not found: {project_name}")
+            _json_response(self, 200, data=data)
+        except Exception as e:
+            logger.error("Bridge API error: {}", e)
+            _json_response(self, 500, error=str(e))
+
 
 # ------------------------------------------------------------------
 # BridgeService
@@ -188,6 +206,7 @@ class BridgeService:
         get_projects_fn: Callable[[], list[dict]] | None = None,
         get_project_fn: Callable[[str], dict | None] | None = None,
         start_analysis_fn: Callable[[str, str | None], dict | None] | None = None,
+        get_topic_drift_fn: Callable[[str], dict | None] | None = None,
     ) -> None:
         self._server: _QuietHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -196,6 +215,7 @@ class BridgeService:
         self._get_projects_fn = get_projects_fn
         self._get_project_fn = get_project_fn
         self._start_analysis_fn = start_analysis_fn
+        self._get_topic_drift_fn = get_topic_drift_fn
 
     @property
     def port(self) -> int:
@@ -222,6 +242,7 @@ class BridgeService:
             "get_projects_fn": staticmethod(self._get_projects_fn) if self._get_projects_fn else None,
             "get_project_fn": staticmethod(self._get_project_fn) if self._get_project_fn else None,
             "start_analysis_fn": staticmethod(self._start_analysis_fn) if self._start_analysis_fn else None,
+            "get_topic_drift_fn": staticmethod(self._get_topic_drift_fn) if self._get_topic_drift_fn else None,
         }
         handler_cls = type("BoundBridgeHandler", (_BridgeHandler,), handler_attrs)
 

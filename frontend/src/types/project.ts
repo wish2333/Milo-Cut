@@ -73,14 +73,31 @@ export interface Project {
   transcript: TranscriptData
   analysis: AnalysisData
   edits: EditDecision[]
+  topic_drift: TopicDriftData
 }
 
 export interface AnalysisResult {
   id: string
-  type: "filler" | "error" | "duplicate" | "punctuation"
+  type: "filler" | "error" | "duplicate" | "punctuation" | "topic_drift"
   segment_ids: string[]
   confidence: number
   detail: string
+}
+
+export interface TopicDriftResult {
+  segment_id: string
+  topic: string
+  relevance: number
+  confidence: number
+  reason: string
+}
+
+export interface TopicDriftData {
+  topic_description: string
+  results: TopicDriftResult[]
+  transcript_hash: string
+  last_run: string | null
+  token_usage: Record<string, number>
 }
 
 // ================================================================

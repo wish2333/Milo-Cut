@@ -101,6 +101,16 @@ def get_plugin_data_dir() -> Path:
     return d
 
 
+def get_bridge_dir() -> Path:
+    """Return the bridge protocol directory for file-based interop.
+
+    Contains ``outgoing/``, ``incoming/``, and ``archive/`` subdirectories.
+    """
+    d = get_data_dir() / "bridge"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def _old_appdata_dir() -> Path | None:
     """Check for legacy data in APPDATA / XDG_CONFIG_HOME."""
     if sys.platform == "win32":

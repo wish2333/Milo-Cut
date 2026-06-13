@@ -31,6 +31,13 @@ function makeProject(segs: Segment[] = [makeSegment()]): Project {
     transcript: { engine: "test", language: "en", segments: segs },
     analysis: { last_run: null, results: [] },
     edits: [],
+    topic_drift: {
+      topic_description: "",
+      results: [],
+      transcript_hash: "",
+      last_run: null,
+      token_usage: {},
+    },
   }
 }
 

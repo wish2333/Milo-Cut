@@ -106,10 +106,14 @@ class MiloCutApi(Bridge):
         self._register_task_handlers()
         self._proxy_manager = ProxyManager(self._task_manager)
         self._batches: dict[str, dict] = {}  # batch_id -> batch state
+        from core.file_protocol import FileProtocolManager
+
+        self._file_protocol = FileProtocolManager()
         self._bridge_service = BridgeService(
             get_projects_fn=self._bridge_get_projects,
             get_project_fn=self._bridge_get_project,
             start_analysis_fn=self._bridge_start_analysis,
+            get_topic_drift_fn=self._bridge_get_topic_drift,
         )
 
     def _register_task_handlers(self) -> None:
@@ -152,6 +156,9 @@ class MiloCutApi(Bridge):
         )
         self._task_manager.register_handler(
             TaskType.PROXY_GENERATION, self._handle_proxy_generation
+        )
+        self._task_manager.register_handler(
+            TaskType.LLM_TOPIC_DRIFT, self._handle_topic_drift
         )
 
     def _handle_silence_detection(self, task, cancel_event, progress_cb):
@@ -623,6 +630,68 @@ class MiloCutApi(Bridge):
         finally:
             self._proxy_manager.on_proxy_complete(media_path)
 
+    def _handle_topic_drift(self, task, cancel_event, progress_cb):
+        """Run LLM topic drift analysis and stream per-chunk results."""
+        if self._project.current is None:
+            raise ValueError("No project open")
+
+        from core.llm_service import analyze_topic_drift
+
+        project = self._project.current
+        topic_description = task.payload.get("topic_description", "")
+        segments = [s.model_dump() for s in project.transcript.segments]
+
+        if not segments:
+            raise ValueError("No transcript segments to analyze")
+
+        def _chunk_callback(chunk_results: list[dict]) -> None:
+            """Emit per-chunk results immediately for frontend upsert."""
+            self._emit("llm:analysis_progress", {
+                "results": chunk_results,
+                "topic_description": topic_description,
+            })
+
+        result = analyze_topic_drift(
+            segments,
+            topic_description,
+            cancel_event=cancel_event,
+            progress_cb=progress_cb,
+            chunk_callback=_chunk_callback,
+        )
+
+        if not result.get("success"):
+            error = result.get("error", "Topic drift analysis failed")
+            self._emit("llm:analysis_failed", {"error": error})
+            raise RuntimeError(error)
+
+        all_results = result["data"]["results"]
+        token_usage = result["data"]["token_usage"]
+
+        # Compute transcript hash for cache validation
+        import hashlib
+        import json as _json
+        transcript_str = _json.dumps(segments, ensure_ascii=False, sort_keys=True)
+        transcript_hash = hashlib.md5(transcript_str.encode()).hexdigest()
+
+        # Store results in project
+        store = self._project.update_topic_drift(
+            all_results,
+            topic_description=topic_description,
+            transcript_hash=transcript_hash,
+            token_usage=token_usage,
+        )
+        if not store["success"]:
+            raise RuntimeError(store.get("error", "Failed to store topic drift results"))
+
+        # Emit completion + token usage
+        self._emit("llm:analysis_completed", {"results": all_results})
+        self._emit("llm:token_usage", token_usage)
+
+        # Publish to file protocol for external tools
+        self._file_protocol.publish_topic_drift(all_results, topic_description)
+
+        return {"results": all_results, "token_usage": token_usage}
+
     # ================================================================
     # System
     # ================================================================
@@ -706,7 +775,14 @@ class MiloCutApi(Bridge):
 
     @expose
     def save_project(self) -> dict:
-        return self._project.save_project()
+        result = self._project.save_project()
+        # Publish edit timeline to file protocol on save
+        if result.get("success") and self._project.current is not None:
+            project = self._project.current
+            segments = [s.model_dump() for s in project.transcript.segments]
+            edits = [e.model_dump() for e in project.edits]
+            self._file_protocol.publish_edit_timeline(segments, edits)
+        return result
 
     @expose
     def close_project(self) -> dict:
@@ -962,6 +1038,16 @@ class MiloCutApi(Bridge):
     @expose
     def update_edit_decision(self, edit_id: str, status: str) -> dict:
         return self._project.update_edit_decision(edit_id, status)
+
+    @expose
+    def add_analysis_results(self, results: list, source: str = "manual") -> dict:
+        """Add analysis results and generate EditDecisions from them.
+
+        Args:
+            results: List of AnalysisResult dicts.
+            source: Source label for the generated edits.
+        """
+        return self._project.add_analysis_results(results, source=source)
 
     @expose
     def update_segment(self, segment_id: str, updates: dict) -> dict:
@@ -1414,6 +1500,18 @@ class MiloCutApi(Bridge):
             return None
         return self.create_task("full_analysis", {})
 
+    def _bridge_get_topic_drift(self, project_name: str) -> dict | None:
+        """Callback for BridgeService: return topic drift results for a project."""
+        result = self._bridge_get_project(project_name)
+        if result is None:
+            return None
+        td = result.get("data", {}).get("topic_drift", {})
+        return {
+            "topic_description": td.get("topic_description", ""),
+            "results": td.get("results", []),
+            "last_run": td.get("last_run"),
+        }
+
     @expose
     def get_bridge_status(self) -> dict:
         """Get bridge HTTP API server status."""
@@ -1461,6 +1559,50 @@ class MiloCutApi(Bridge):
             return {"success": False, "error": "No valid LLM settings provided"}
         return self.update_settings(filtered)
 
+    @expose
+    def start_topic_drift(self, topic_description: str = "") -> dict:
+        """Start LLM topic drift analysis as a background task.
+
+        Args:
+            topic_description: Optional topic description for relevance scoring.
+
+        Returns:
+            {"success": True, "data": {"task_id": str}}
+        """
+        from core.llm_service import get_llm_config as _get_cfg
+
+        config = _get_cfg()
+        if not config.is_configured():
+            return {"success": False, "error": "LLM not configured"}
+
+        if self._project.current is None:
+            return {"success": False, "error": "No project open"}
+
+        task = self._task_manager.create_task(
+            "llm_topic_drift",
+            {"topic_description": topic_description or ""},
+        )
+        return task
+
+    @expose
+    def get_topic_drift_results(self) -> dict:
+        """Get cached topic drift results for the current project."""
+        return self._project.get_topic_drift()
+
+    @expose
+    def get_file_protocol_status(self) -> dict:
+        """Get file protocol bridge status."""
+        return {
+            "success": True,
+            "data": {
+                "outgoing_dir": str(self._file_protocol.outgoing_dir),
+                "incoming_dir": str(self._file_protocol.incoming_dir),
+                "archive_dir": str(self._file_protocol.archive_dir),
+                "polling": self._file_protocol._poll_thread is not None
+                and self._file_protocol._poll_thread.is_alive(),
+            },
+        }
+
 
 if __name__ == "__main__":
     migrate_if_needed()
@@ -1481,6 +1623,11 @@ if __name__ == "__main__":
 
     import atexit
     atexit.register(api._bridge_service.stop)
+    atexit.register(api._file_protocol.stop_polling)
+
+    # Start file protocol polling for incoming messages from external tools
+    api._file_protocol.start_polling()
+    logger.info("File protocol polling started")
 
     app = App(
         api,

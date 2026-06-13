@@ -280,3 +280,214 @@ def chunk_transcript(
                     i -= 1
 
     return chunks
+
+
+# ------------------------------------------------------------------
+# Topic drift analysis
+# ------------------------------------------------------------------
+
+_TOPIC_DRIFT_SYSTEM = (
+    "你是一位视频内容分析专家。你需要分析视频转录片段与给定主题的相关性，"
+    "并为每个片段打分（0.0 到 1.0，1.0 表示完全相关）。"
+    "请严格按照 JSON 数组格式输出，不要添加额外说明。"
+)
+
+_TOPIC_DRIFT_USER_TEMPLATE = """请分析以下视频转录片段与主题的相关性。
+
+{topic_line}
+
+转录片段：
+{segments_text}
+
+输出格式（JSON 数组，每个元素对应一个片段）：
+```json
+[
+  {{"segment_id": "片段ID", "topic": "实际讨论的话题", "relevance": 0.0到1.0, "reason": "简短理由"}}
+]
+```
+
+要求：
+1. 为每个片段输出一条结果
+2. relevance: 0.0-1.0，1.0 表示与主题完全相关，0.0 表示完全不相关
+3. topic: 简述该片段实际讨论的内容
+4. reason: 一句话说明评分理由
+"""
+
+
+def _build_topic_drift_prompt(
+    segments: list[dict], topic_description: str
+) -> str:
+    """Build the user prompt for topic drift analysis."""
+    topic_line = (
+        f"分析主题：{topic_description}"
+        if topic_description.strip()
+        else "分析主题：未指定（请根据视频整体内容判断片段是否偏离主流话题）"
+    )
+
+    lines: list[str] = []
+    for seg in segments:
+        seg_id = seg.get("id", seg.get("segment_id", "?"))
+        text = seg.get("text", "").strip()
+        lines.append(f"[{seg_id}] {text}")
+
+    segments_text = "\n".join(lines)
+    return _TOPIC_DRIFT_USER_TEMPLATE.format(
+        topic_line=topic_line, segments_text=segments_text
+    )
+
+
+def _parse_topic_drift_response(content: str) -> list[dict]:
+    """Parse LLM response into list of topic drift result dicts.
+
+    Handles markdown code blocks, bare JSON, and is tolerant of
+    missing fields or out-of-range values.
+    """
+    import re
+
+    # Extract JSON from markdown code block or bare text
+    json_match = re.search(r"```(?:json)?\s*\n?(.*?)```", content, re.DOTALL)
+    raw_json = json_match.group(1).strip() if json_match else content.strip()
+
+    # Find the JSON array
+    start = raw_json.find("[")
+    end = raw_json.rfind("]")
+    if start == -1 or end == -1:
+        return []
+
+    try:
+        items = json.loads(raw_json[start : end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return []
+
+    results: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        seg_id = str(item.get("segment_id", item.get("id", "")))
+        if not seg_id:
+            continue
+
+        # Clamp relevance to [0, 1]
+        try:
+            relevance = float(item.get("relevance", 1.0))
+        except (TypeError, ValueError):
+            relevance = 1.0
+        relevance = max(0.0, min(1.0, relevance))
+
+        try:
+            confidence = float(item.get("confidence", 1.0))
+        except (TypeError, ValueError):
+            confidence = 1.0
+        confidence = max(0.0, min(1.0, confidence))
+
+        results.append(
+            {
+                "segment_id": seg_id,
+                "topic": str(item.get("topic", "")),
+                "relevance": relevance,
+                "confidence": confidence,
+                "reason": str(item.get("reason", "")),
+            }
+        )
+
+    return results
+
+
+def analyze_topic_drift(
+    segments: list[dict],
+    topic_description: str = "",
+    *,
+    config: LlmConfig | None = None,
+    cancel_event: threading.Event | None = None,
+    progress_cb: Callable[[float, str], None] | None = None,
+    chunk_callback: Callable[[list[dict]], None] | None = None,
+) -> dict[str, Any]:
+    """Run topic drift analysis on transcript segments.
+
+    Chunks the transcript, calls LLM per chunk, and streams per-chunk
+    results via ``chunk_callback``.
+
+    Args:
+        segments: List of segment dicts with 'id', 'start', 'end', 'text'.
+        topic_description: Optional topic description for relevance scoring.
+        config: LLM config (loads from settings if None).
+        cancel_event: Thread-safe cancellation signal.
+        progress_cb: Optional progress callback (percent, message).
+        chunk_callback: Optional callback receiving per-chunk results.
+
+    Returns:
+        {"success": True, "data": {"results": [...], "token_usage": {...}}}
+        {"success": False, "error": str}
+    """
+    if config is None:
+        config = get_llm_config()
+
+    if not config.is_configured():
+        return {"success": False, "error": "LLM not configured"}
+
+    if not segments:
+        return {"success": False, "error": "No segments to analyze"}
+
+    chunks = chunk_transcript(segments)
+    total_chunks = len(chunks)
+    all_results: list[dict] = []
+    total_usage: dict[str, int] = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+    }
+
+    for idx, chunk in enumerate(chunks):
+        if cancel_event and cancel_event.is_set():
+            return {"success": False, "error": "Cancelled"}
+
+        if progress_cb:
+            pct = (idx / total_chunks) * 100 if total_chunks > 0 else 0
+            progress_cb(
+                pct,
+                f"Analyzing chunk {idx + 1}/{total_chunks}...",
+            )
+
+        prompt = _build_topic_drift_prompt(chunk, topic_description)
+        result = call_llm(
+            prompt,
+            system=_TOPIC_DRIFT_SYSTEM,
+            config=config,
+            cancel_event=cancel_event,
+        )
+
+        if not result.get("success"):
+            error = result.get("error", "LLM call failed")
+            logger.warning(f"Topic drift chunk {idx + 1} failed: {error}")
+            # Continue to next chunk rather than abort entirely
+            continue
+
+        content = result["data"]["content"]
+        usage = result["data"].get("usage", {})
+        for key in total_usage:
+            total_usage[key] += usage.get(key, 0)
+
+        chunk_results = _parse_topic_drift_response(content)
+        if chunk_results and chunk_callback:
+            chunk_callback(chunk_results)
+
+        all_results.extend(chunk_results)
+
+    # Deduplicate by segment_id, keeping the last occurrence (handles overlap)
+    seen: dict[str, dict] = {}
+    for r in all_results:
+        seen[r["segment_id"]] = r
+    deduped = list(seen.values())
+
+    if progress_cb:
+        progress_cb(100.0, f"Completed: {len(deduped)} segments analyzed")
+
+    logger.info(
+        f"Topic drift analysis done: {len(deduped)} results, "
+        f"tokens={total_usage.get('total_tokens', 0)}"
+    )
+
+    return {
+        "success": True,
+        "data": {"results": deduped, "token_usage": total_usage},
+    }

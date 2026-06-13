@@ -146,7 +146,7 @@ class TranscriptData(BaseModel, frozen=True):
 
 class AnalysisResult(BaseModel, frozen=True):
     id: str
-    type: Literal["filler", "error", "duplicate", "punctuation"]
+    type: Literal["filler", "error", "duplicate", "punctuation", "topic_drift"]
     segment_ids: list[str] = Field(default_factory=list)
     confidence: float = 1.0
     detail: str = ""
@@ -242,6 +242,36 @@ class LlmConfig(BaseModel, frozen=True):
         return bool(self.resolved_base_url() and self.api_key and self.resolved_model())
 
 
+# ================================================================
+# Topic Drift (LLM-based)
+# ================================================================
+
+
+class TopicDriftResult(BaseModel, frozen=True):
+    """Single segment topic relevance assessment from LLM."""
+
+    segment_id: str
+    topic: str = ""
+    relevance: float = 1.0
+    confidence: float = 1.0
+    reason: str = ""
+
+
+class TopicDriftData(BaseModel, frozen=True):
+    """Cached topic drift analysis data stored in Project."""
+
+    topic_description: str = ""
+    results: list[TopicDriftResult] = Field(default_factory=list)
+    transcript_hash: str = ""
+    last_run: str | None = None
+    token_usage: dict[str, Any] = Field(default_factory=dict)
+
+
+# ================================================================
+# Analysis data + Project
+# ================================================================
+
+
 class AnalysisData(BaseModel, frozen=True):
     last_run: str | None = None
     results: list[AnalysisResult] = Field(default_factory=list)
@@ -254,3 +284,4 @@ class Project(BaseModel, frozen=True):
     transcript: TranscriptData = Field(default_factory=TranscriptData)
     analysis: AnalysisData = Field(default_factory=AnalysisData)
     edits: list[EditDecision] = Field(default_factory=list)
+    topic_drift: TopicDriftData = Field(default_factory=TopicDriftData)

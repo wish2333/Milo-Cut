@@ -23,6 +23,8 @@ from core.models import (
     ProjectMeta,
     Segment,
     SegmentType,
+    TopicDriftData,
+    TopicDriftResult,
     TranscriptData,
 )
 from core.paths import get_projects_dir
@@ -1055,6 +1057,54 @@ class ProjectService:
         self._current = updated
         logger.info("Added {} analysis results from {}", len(analysis_results), source)
         return {"success": True, "data": updated.model_dump()}
+
+    def update_topic_drift(
+        self,
+        results: list[dict],
+        topic_description: str = "",
+        transcript_hash: str = "",
+        token_usage: dict | None = None,
+    ) -> dict:
+        """Store topic drift analysis results in the current project.
+
+        Args:
+            results: List of TopicDriftResult dicts (segment_id, topic, relevance, ...).
+            topic_description: The topic description used for analysis.
+            transcript_hash: Hash of the transcript for cache validation.
+            token_usage: Cumulative token usage from LLM calls.
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        td_results = [TopicDriftResult.model_validate(r) for r in results]
+        updated_td = TopicDriftData(
+            topic_description=topic_description,
+            results=td_results,
+            transcript_hash=transcript_hash,
+            last_run=datetime.now().isoformat(),
+            token_usage=token_usage or {},
+        )
+
+        updated = self._current.model_copy(update={"topic_drift": updated_td})
+        self._current = updated
+        logger.info("Stored {} topic drift results", len(td_results))
+        return {"success": True, "data": updated.model_dump()}
+
+    def get_topic_drift(self) -> dict:
+        """Return cached topic drift data for the current project."""
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+        td = self._current.topic_drift
+        return {
+            "success": True,
+            "data": {
+                "topic_description": td.topic_description,
+                "results": [r.model_dump() for r in td.results],
+                "transcript_hash": td.transcript_hash,
+                "last_run": td.last_run,
+                "token_usage": td.token_usage,
+            },
+        }
 
     def generate_subtitle_keep_ranges(self, padding: float = 0.3) -> dict:
         """Generate EditDecisions to delete ranges outside subtitle segments + padding.
