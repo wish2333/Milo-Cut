@@ -144,6 +144,12 @@ class MiloCutApi(Bridge):
         self._task_manager.register_handler(
             TaskType.LLM_SUBTITLE_CORRECTION, self._handle_subtitle_correction
         )
+        self._task_manager.register_handler(
+            TaskType.LLM_HIGHLIGHT, self._handle_highlight
+        )
+        self._task_manager.register_handler(
+            TaskType.LLM_SEMANTIC_SEARCH, self._handle_semantic_search
+        )
 
     def _handle_silence_detection(self, task, cancel_event, progress_cb):
         """Run silence detection on the project media and store results."""
@@ -797,6 +803,157 @@ class MiloCutApi(Bridge):
             "apply_result": apply_result["data"],
             "token_usage": token_usage,
         }
+
+    def _handle_highlight(self, task, cancel_event, progress_cb):
+        """Run LLM highlight extraction: identify high-density segments."""
+        if self._project.current is None:
+            raise ValueError("No project open")
+
+        from core.llm_service import analyze_highlights
+
+        project = self._project.current
+        timeline_id = task.payload.get(
+            "timeline_id", project.active_timeline_id
+        )
+        timeline = project.get_timeline(timeline_id)
+        if timeline is None:
+            raise ValueError(f"Timeline {timeline_id} not found")
+
+        target_minutes = task.payload.get("target_duration_minutes", 10)
+
+        segments = [
+            s.model_dump()
+            for s in timeline.transcript.segments
+            if s.type == SegmentType.SUBTITLE
+        ]
+        if not segments:
+            raise ValueError("No subtitle segments to analyze")
+
+        def _chunk_callback(chunk_results: list[dict]) -> None:
+            self._emit(
+                "llm:highlight_progress",
+                {"results": chunk_results},
+            )
+
+        result = analyze_highlights(
+            segments,
+            target_duration_minutes=target_minutes,
+            cancel_event=cancel_event,
+            progress_cb=progress_cb,
+            chunk_callback=_chunk_callback,
+        )
+
+        if not result.get("success"):
+            error = result.get("error", "Highlight analysis failed")
+            self._emit("llm:analysis_failed", {"error": error})
+            raise RuntimeError(error)
+
+        all_results = result["data"]["results"]
+        token_usage = result["data"]["token_usage"]
+        total_duration = result["data"]["total_highlight_duration"]
+
+        # Convert highlights to EditDecisions with action="keep"
+        from datetime import datetime as _dt
+
+        seg_map = {s.id: s for s in timeline.transcript.segments}
+        edits = []
+        for i, r in enumerate(all_results):
+            seg = seg_map.get(r["segment_id"])
+            if seg is None:
+                continue
+            edits.append(
+                {
+                    "id": f"llm_hl_{int(_dt.now().timestamp() * 1000)}_{i}",
+                    "start": seg.start,
+                    "end": seg.end,
+                    "action": "keep",
+                    "source": "llm_highlight",
+                    "target_type": "segment",
+                    "target_id": seg.id,
+                    "priority": 30,
+                }
+            )
+
+        # Store as analysis results
+        if all_results:
+            analysis_results = [
+                {
+                    "id": f"llm_hl_{int(_dt.now().timestamp() * 1000)}",
+                    "type": "llm_highlight",
+                    "segment_ids": [r["segment_id"]],
+                    "confidence": 1.0 if r["density"] == "high" else 0.7,
+                    "detail": r.get("highlight_reason", ""),
+                }
+                for r in all_results
+                if r["segment_id"] in seg_map
+            ]
+            store = self._project.add_analysis_results(analysis_results, source="llm_highlight")
+            if not store["success"]:
+                raise RuntimeError(store.get("error", "Failed to store highlight results"))
+
+        self._emit(
+            "llm:highlight_completed",
+            {
+                "results": all_results,
+                "edits": edits,
+                "total_duration": total_duration,
+                "target_duration": result["data"]["target_duration"],
+            },
+        )
+        self._emit("llm:token_usage", token_usage)
+
+        return {
+            "results": all_results,
+            "edits": edits,
+            "total_duration": total_duration,
+            "token_usage": token_usage,
+        }
+
+    def _handle_semantic_search(self, task, cancel_event, progress_cb):
+        """Run LLM semantic search over transcript."""
+        if self._project.current is None:
+            raise ValueError("No project open")
+
+        from core.llm_service import semantic_search
+
+        project = self._project.current
+        timeline_id = task.payload.get(
+            "timeline_id", project.active_timeline_id
+        )
+        timeline = project.get_timeline(timeline_id)
+        if timeline is None:
+            raise ValueError(f"Timeline {timeline_id} not found")
+
+        query = task.payload.get("query", "")
+        top_k = task.payload.get("top_k", 5)
+
+        segments = [
+            s.model_dump()
+            for s in timeline.transcript.segments
+            if s.type == SegmentType.SUBTITLE
+        ]
+        if not segments:
+            raise ValueError("No subtitle segments to search")
+
+        result = semantic_search(
+            query,
+            segments,
+            top_k=top_k,
+            cancel_event=cancel_event,
+        )
+
+        if not result.get("success"):
+            error = result.get("error", "Semantic search failed")
+            self._emit("llm:analysis_failed", {"error": error})
+            raise RuntimeError(error)
+
+        search_results = result["data"]["results"]
+        self._emit(
+            "llm:semantic_search_completed",
+            {"results": search_results, "query": query},
+        )
+
+        return {"results": search_results, "query": query}
 
     # ================================================================
     # System
@@ -1818,6 +1975,107 @@ class MiloCutApi(Bridge):
         if result["success"] and self._project.current:
             result["data"]["project"] = self._project.current.model_dump()
         return result
+
+    @expose
+    def start_highlight(self, target_duration_minutes: int = 10, timeline_id: str = "") -> dict:
+        """Start LLM highlight extraction as a background task.
+
+        Args:
+            target_duration_minutes: Target highlight reel duration.
+            timeline_id: Target timeline (defaults to active_timeline_id).
+
+        Returns:
+            {"success": True, "data": {"task_id": str}}
+        """
+        from core.llm_service import get_llm_config as _get_cfg
+
+        config = _get_cfg()
+        if not config.is_configured():
+            return {"success": False, "error": "LLM not configured"}
+
+        if self._project.current is None:
+            return {"success": False, "error": "No project open"}
+
+        tl_id = timeline_id or self._project.current.active_timeline_id
+        task = self._task_manager.create_task(
+            "llm_highlight",
+            {"timeline_id": tl_id, "target_duration_minutes": target_duration_minutes},
+        )
+        return task
+
+    @expose
+    def semantic_search(self, query: str, top_k: int = 5, timeline_id: str = "") -> dict:
+        """Run LLM semantic search over transcript segments.
+
+        Args:
+            query: Natural language search query.
+            top_k: Maximum results to return.
+            timeline_id: Target timeline (defaults to active_timeline_id).
+
+        Returns:
+            {"success": True, "data": {"results": [...], "query": str}}
+        """
+        from core.llm_service import get_llm_config as _get_cfg
+        from core.llm_service import semantic_search as _search
+
+        config = _get_cfg()
+        if not config.is_configured():
+            return {"success": False, "error": "LLM not configured"}
+
+        if self._project.current is None:
+            return {"success": False, "error": "No project open"}
+
+        project = self._project.current
+        tl_id = timeline_id or project.active_timeline_id
+        timeline = project.get_timeline(tl_id)
+        if timeline is None:
+            return {"success": False, "error": f"Timeline {tl_id} not found"}
+
+        segments = [
+            s.model_dump()
+            for s in timeline.transcript.segments
+            if s.type == SegmentType.SUBTITLE
+        ]
+
+        result = _search(query, segments, top_k=top_k, config=config)
+        return result
+
+    @expose
+    def detect_highlight_jump_cuts(self, timeline_id: str = "") -> dict:
+        """Detect jump cuts between highlight segments for export preview.
+
+        Args:
+            timeline_id: Target timeline (defaults to active_timeline_id).
+
+        Returns:
+            {"success": True, "data": {"jump_cuts": [...]}}
+        """
+        from core.export_service import detect_jump_cuts, get_highlight_ranges
+
+        if self._project.current is None:
+            return {"success": False, "error": "No project open"}
+
+        project = self._project.current
+        tl_id = timeline_id or project.active_timeline_id
+        timeline = project.get_timeline(tl_id)
+        if timeline is None:
+            return {"success": False, "error": f"Timeline {tl_id} not found"}
+
+        ranges = get_highlight_ranges([e.model_dump() for e in timeline.edits])
+        if not ranges:
+            return {"success": True, "data": {"jump_cuts": [], "highlight_count": 0}}
+
+        seg_dicts = [{"start": s, "end": e} for s, e in ranges]
+        jumps = detect_jump_cuts(seg_dicts)
+
+        return {
+            "success": True,
+            "data": {
+                "jump_cuts": jumps,
+                "highlight_count": len(ranges),
+                "total_highlight_duration": sum(e - s for s, e in ranges),
+            },
+        }
 
     @expose
     def get_file_protocol_status(self) -> dict:

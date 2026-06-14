@@ -1,8 +1,8 @@
 /**
- * Composable for managing LLM analysis tasks (P0 smart-delete, P1 subtitle correction).
+ * Composable for managing LLM analysis tasks (P0 smart-delete, P1 subtitle
+ * correction, P2 highlight extraction).
  *
- * Replaces the old useTopicDrift with a generalized framework that handles
- * task lifecycle, progress events, and result streaming for all LLM features.
+ * Generalized framework for all LLM feature lifecycle + result streaming.
  */
 import { ref, computed } from "vue"
 import { call, onEvent } from "@/bridge"
@@ -13,6 +13,8 @@ import {
   EVENT_LLM_SMART_DELETE_PROGRESS,
   EVENT_LLM_SMART_DELETE_COMPLETED,
   EVENT_LLM_SUBTITLE_CORRECTION_COMPLETED,
+  EVENT_LLM_HIGHLIGHT_PROGRESS,
+  EVENT_LLM_HIGHLIGHT_COMPLETED,
 } from "@/utils/events"
 
 interface SmartDeleteResult {
@@ -32,9 +34,26 @@ interface SubtitleCorrectionResult {
   partial: boolean
 }
 
+interface HighlightResult {
+  segment_id: string
+  highlight_reason: string
+  density: "high" | "medium" | "low"
+}
+
+interface JumpCut {
+  index: number
+  gap_duration: number
+  from_end: number
+  to_start: number
+}
+
 // Singleton state shared across all useLlmTasks() callers
 const smartDeleteResults = ref<SmartDeleteResult[]>([])
 const subtitleCorrectionResult = ref<SubtitleCorrectionResult | null>(null)
+const highlightResults = ref<HighlightResult[]>([])
+const highlightTotalDuration = ref(0)
+const highlightTargetDuration = ref(600) // 10 min default
+const jumpCuts = ref<JumpCut[]>([])
 const isRunning = ref(false)
 const progress = ref(0)
 const errorMsg = ref<string | null>(null)
@@ -86,6 +105,50 @@ function ensureListeners() {
     },
   )
 
+  // P2 highlight: live progress updates
+  onEvent<{ results?: HighlightResult[] }>(
+    EVENT_LLM_HIGHLIGHT_PROGRESS,
+    (detail) => {
+      if (!detail?.results) return
+      for (const r of detail.results) {
+        const idx = highlightResults.value.findIndex(
+          (x) => x.segment_id === r.segment_id,
+        )
+        if (idx >= 0) {
+          highlightResults.value[idx] = r
+        } else {
+          highlightResults.value.push(r)
+        }
+      }
+    },
+  )
+
+  // P2 highlight: completed
+  onEvent<{
+    results?: HighlightResult[]
+    total_duration?: number
+    target_duration?: number
+  }>(EVENT_LLM_HIGHLIGHT_COMPLETED, (detail) => {
+    isRunning.value = false
+    if (detail?.results) {
+      highlightResults.value = detail.results
+    }
+    if (detail?.total_duration !== undefined) {
+      highlightTotalDuration.value = detail.total_duration
+    }
+    if (detail?.target_duration !== undefined) {
+      highlightTargetDuration.value = detail.target_duration
+    }
+    // Fetch jump cuts after completion
+    call<{ jump_cuts?: JumpCut[]; highlight_count?: number }>(
+      "detect_highlight_jump_cuts",
+    ).then((res) => {
+      if (res.success && res.data?.jump_cuts) {
+        jumpCuts.value = res.data.jump_cuts
+      }
+    })
+  })
+
   // LLM failed
   onEvent<{ error?: string }>(EVENT_LLM_ANALYSIS_FAILED, (detail) => {
     isRunning.value = false
@@ -97,6 +160,7 @@ export function useLlmTasks() {
   ensureListeners()
 
   const hasSmartDeleteResults = computed(() => smartDeleteResults.value.length > 0)
+  const hasHighlightResults = computed(() => highlightResults.value.length > 0)
 
   function resetSmartDelete() {
     smartDeleteResults.value = []
@@ -136,6 +200,27 @@ export function useLlmTasks() {
     }
   }
 
+  function resetHighlight() {
+    highlightResults.value = []
+    highlightTotalDuration.value = 0
+    jumpCuts.value = []
+    progress.value = 0
+    errorMsg.value = null
+  }
+
+  async function startHighlight(targetMinutes = 10): Promise<void> {
+    isRunning.value = true
+    progress.value = 0
+    errorMsg.value = null
+    resetHighlight()
+
+    const res = await call<MiloTask>("start_highlight", targetMinutes)
+    if (!res.success) {
+      isRunning.value = false
+      errorMsg.value = res.error ?? "Failed to start highlight extraction"
+    }
+  }
+
   async function confirmAllFromSource(
     source: string,
     minConfidence = 0,
@@ -161,6 +246,14 @@ export function useLlmTasks() {
     subtitleCorrectionResult,
     startSubtitleCorrection,
     resetSubtitleCorrection,
+    // P2 highlight
+    highlightResults,
+    hasHighlightResults,
+    highlightTotalDuration,
+    highlightTargetDuration,
+    jumpCuts,
+    startHighlight,
+    resetHighlight,
     // Shared
     isRunning,
     progress,

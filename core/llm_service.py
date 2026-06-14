@@ -816,3 +816,284 @@ def _assert_timestamps_unchanged(
             logger.warning(msg)
             raise TimestampCorruptionError(segment_id, msg)
 
+
+# ------------------------------------------------------------------
+# P2: Highlight extraction
+# ------------------------------------------------------------------
+
+_HIGHLIGHT_SYSTEM = """你是演讲视频内容分析师。用户以 JSON 格式提供转录片段列表。
+请识别其中的高信息密度片段，用于生成精华版剪辑。
+
+高信息密度片段包括:
+- 核心论点和主要观点
+- 关键数据、统计数字、实验结果
+- 精彩类比、比喻、案例
+- 重要结论和总结
+
+输出格式: JSON 数组
+[{"segment_id": "片段ID", "highlight_reason": "亮点理由", "density": "high|medium"}]
+
+只输出识别到的亮点片段，普通内容不要输出。
+用户会指定目标精华时长，请按信息密度优先级 (high > medium) 选取。
+"""
+
+
+def analyze_highlights(
+    segments: list[dict],
+    target_duration_minutes: int = 10,
+    *,
+    config: LlmConfig | None = None,
+    cancel_event: threading.Event | None = None,
+    progress_cb: Callable[[float, str], None] | None = None,
+    chunk_callback: Callable[[list[dict]], None] | None = None,
+) -> dict[str, Any]:
+    """Full-transcript LLM analysis to extract highlight segments.
+
+    Identifies high-information-density segments for generating a highlight
+    reel. Uses 5-min chunks (full context needed for structure understanding).
+
+    Args:
+        segments: List of segment dicts with 'id', 'start', 'end', 'text'.
+        target_duration_minutes: Target highlight reel duration in minutes.
+        config: LLM config (loads from settings if None).
+        cancel_event: Thread-safe cancellation signal.
+        progress_cb: Optional progress callback (percent, message).
+        chunk_callback: Optional callback receiving per-chunk results.
+
+    Returns:
+        {"success": True, "data": {"results": [...], "token_usage": {...},
+         "total_highlight_duration": float}}
+        {"success": False, "error": str}
+    """
+    if config is None:
+        config = get_llm_config()
+
+    if not config.is_configured():
+        return {"success": False, "error": "LLM not configured"}
+
+    if not segments:
+        return {"success": False, "error": "No segments to analyze"}
+
+    target_seconds = target_duration_minutes * 60
+
+    chunks = chunk_transcript(segments)
+    total_chunks = len(chunks)
+    all_results: list[dict] = []
+    total_usage: dict[str, int] = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+    }
+
+    for idx, chunk in enumerate(chunks):
+        if cancel_event and cancel_event.is_set():
+            return {"success": False, "error": "Cancelled"}
+
+        if progress_cb:
+            pct = (idx / total_chunks) * 100 if total_chunks > 0 else 0
+            progress_cb(pct, f"Highlight analysis chunk {idx + 1}/{total_chunks}...")
+
+        extra_ctx = {
+            "target_duration_minutes": target_duration_minutes,
+            "instruction": "请按信息密度优先级标记亮点片段",
+        }
+        prompt = _build_structured_user_message(chunk, extra_context=extra_ctx)
+        result = call_llm(
+            prompt,
+            system=_HIGHLIGHT_SYSTEM,
+            json_mode=True,
+            config=config,
+            cancel_event=cancel_event,
+        )
+
+        if not result.get("success"):
+            error = result.get("error", "LLM call failed")
+            logger.warning(f"Highlight chunk {idx + 1} failed: {error}")
+            continue
+
+        content = result["data"]["content"]
+        usage = result["data"].get("usage", {})
+        for key in total_usage:
+            total_usage[key] += usage.get(key, 0)
+
+        chunk_results = _parse_json_response_layers(content)
+        if not chunk_results:
+            logger.warning(f"Highlight chunk {idx + 1}: parse returned None")
+            continue
+
+        normalized = []
+        for item in chunk_results:
+            if not isinstance(item, dict):
+                continue
+            seg_id = str(item.get("segment_id", ""))
+            if not seg_id:
+                continue
+            density = str(item.get("density", "medium")).lower()
+            if density not in ("high", "medium", "low"):
+                density = "medium"
+            normalized.append(
+                {
+                    "segment_id": seg_id,
+                    "highlight_reason": str(item.get("highlight_reason", "")),
+                    "density": density,
+                }
+            )
+
+        if normalized and chunk_callback:
+            chunk_callback(normalized)
+        all_results.extend(normalized)
+
+    # Deduplicate by segment_id
+    seen: dict[str, dict] = {}
+    for r in all_results:
+        seen[r["segment_id"]] = r
+    deduped = list(seen.values())
+
+    # Duration-based trimming: sort by density priority, trim to target
+    seg_map = {str(s.get("id", "")): s for s in segments}
+    density_rank = {"high": 0, "medium": 1, "low": 2}
+    deduped.sort(key=lambda r: density_rank.get(r["density"], 1))
+
+    selected: list[dict] = []
+    total_dur = 0.0
+    for r in deduped:
+        seg = seg_map.get(r["segment_id"])
+        if seg is None:
+            continue
+        dur = seg.get("end", 0) - seg.get("start", 0)
+        if total_dur + dur > target_seconds * 1.2 and total_dur >= target_seconds * 0.8:
+            break
+        selected.append(r)
+        total_dur += dur
+
+    # Re-sort by start time for natural playback order
+    selected.sort(key=lambda r: seg_map.get(r["segment_id"], {}).get("start", 0))
+
+    if progress_cb:
+        progress_cb(
+            100.0,
+            f"Completed: {len(selected)} highlights, {total_dur:.1f}s / {target_seconds:.1f}s target",
+        )
+
+    logger.info(
+        f"Highlight analysis done: {len(selected)} segments, "
+        f"duration={total_dur:.1f}s, tokens={total_usage.get('total_tokens', 0)}"
+    )
+
+    return {
+        "success": True,
+        "data": {
+            "results": selected,
+            "token_usage": total_usage,
+            "total_highlight_duration": total_dur,
+            "target_duration": target_seconds,
+        },
+    }
+
+
+# ------------------------------------------------------------------
+# P3: Semantic search
+# ------------------------------------------------------------------
+
+_SEARCH_SYSTEM = """你是内容检索助手。用户以 JSON 格式提供转录片段列表和搜索查询。
+请找出与查询语义最相关的片段 (不仅是字面匹配，包括语义关联)。
+
+输出格式: JSON 数组，按相关度降序排列
+[{"segment_id": "片段ID", "relevance": 0.0到1.0, "match_reason": "匹配原因"}]
+
+只输出最相关的前 K 个片段，K 由用户指定。relevance 为 1.0 表示完全匹配，0.0 表示不相关。
+"""
+
+
+def semantic_search(
+    query: str,
+    segments: list[dict],
+    top_k: int = 5,
+    *,
+    config: LlmConfig | None = None,
+    cancel_event: threading.Event | None = None,
+) -> dict[str, Any]:
+    """Natural language semantic search over transcript segments.
+
+    Uses LLM to find semantically relevant segments (not just keyword match).
+
+    Args:
+        query: Natural language search query.
+        segments: List of segment dicts with 'id', 'start', 'end', 'text'.
+        top_k: Maximum number of results to return.
+        config: LLM config (loads from settings if None).
+        cancel_event: Thread-safe cancellation signal.
+
+    Returns:
+        {"success": True, "data": {"results": [...], "query": str}}
+        {"success": False, "error": str}
+    """
+    if config is None:
+        config = get_llm_config()
+
+    if not config.is_configured():
+        return {"success": False, "error": "LLM not configured"}
+
+    if not query.strip():
+        return {"success": False, "error": "Empty query"}
+
+    if not segments:
+        return {"success": False, "error": "No segments to search"}
+
+    # Single LLM call (no chunking -- context window limited)
+    # For very long transcripts, truncate to last N segments
+    max_segments = 200
+    search_segments = segments[-max_segments:] if len(segments) > max_segments else segments
+
+    extra_ctx = {"query": query.strip(), "top_k": top_k}
+    prompt = _build_structured_user_message(search_segments, extra_context=extra_ctx)
+    result = call_llm(
+        prompt,
+        system=_SEARCH_SYSTEM,
+        json_mode=True,
+        config=config,
+        cancel_event=cancel_event,
+    )
+
+    if not result.get("success"):
+        return result
+
+    content = result["data"]["content"]
+    parsed = _parse_json_response_layers(content)
+    if not parsed:
+        return {
+            "success": False,
+            "error": "Failed to parse LLM search response",
+        }
+
+    # Normalize results
+    normalized = []
+    seg_map = {str(s.get("id", "")): s for s in segments}
+    for item in parsed[:top_k]:
+        if not isinstance(item, dict):
+            continue
+        seg_id = str(item.get("segment_id", ""))
+        if not seg_id or seg_id not in seg_map:
+            continue
+        try:
+            relevance = float(item.get("relevance", 0.5))
+        except (TypeError, ValueError):
+            relevance = 0.5
+        relevance = max(0.0, min(1.0, relevance))
+        normalized.append(
+            {
+                "segment_id": seg_id,
+                "relevance": relevance,
+                "match_reason": str(item.get("match_reason", "")),
+            }
+        )
+
+    # Sort by relevance descending
+    normalized.sort(key=lambda r: r["relevance"], reverse=True)
+
+    logger.info(f"Semantic search '{query}': {len(normalized)} results")
+
+    return {
+        "success": True,
+        "data": {"results": normalized[:top_k], "query": query.strip()},
+    }

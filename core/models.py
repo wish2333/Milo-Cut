@@ -44,6 +44,8 @@ class TaskType(StrEnum):
     # LLM
     LLM_SMART_DELETE = "llm_smart_delete"
     LLM_SUBTITLE_CORRECTION = "llm_subtitle_correction"
+    LLM_HIGHLIGHT = "llm_highlight"
+    LLM_SEMANTIC_SEARCH = "llm_semantic_search"
 
 
 class EditStatus(StrEnum):
@@ -149,7 +151,7 @@ class TranscriptData(BaseModel, frozen=True):
 class AnalysisResult(BaseModel, frozen=True):
     id: str
     type: Literal["filler", "error", "duplicate", "punctuation",
-                  "llm_smart_delete", "llm_subtitle_correction"]
+                  "llm_smart_delete", "llm_subtitle_correction", "llm_highlight"]
     segment_ids: list[str] = Field(default_factory=list)
     confidence: float = 1.0
     detail: str = ""

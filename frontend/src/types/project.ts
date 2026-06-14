@@ -94,6 +94,7 @@ export interface AnalysisResult {
     | "punctuation"
     | "llm_smart_delete"
     | "llm_subtitle_correction"
+    | "llm_highlight"
   segment_ids: string[]
   confidence: number
   detail: string

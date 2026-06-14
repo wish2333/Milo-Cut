@@ -563,6 +563,99 @@ Phase 4b 将 Topic Drift 重构为两大 AI 驱动功能，并解决 LLM 交互�
 | 4b-10: P1 Review UI | 已完成 | SubtitleCorrectionReview.vue + useLlmTasks.ts |
 | 4b-11: Topic Drift 清理 | 已完成 | 后端 6 文件 + 前端 6 文件 + 2 测试文件 |
 
-Phase 4c (P2 + P3) 待实施:
-- P2: 亮点提取 + 精华模式视图
-- P3: 语义搜索
+---
+
+## Phase 4c: P2 亮点提取 + P3 语义搜索 (已完成)
+
+> 目标: 从「减法」(删差的) 到「加法」(挑好的)，并提供自然语言导航
+> 基于: `docs/2.0.0/audit-plan-v2.0.0-2.md` Phase 4c
+
+### 概要
+
+Phase 4c 实现了 AI 驱动的内容筛选和语义导航:
+
+1. **P2 智能亮点提取** -- 全文 5min 分块 LLM 分析，识别高信息密度片段 (核心论点/关键数据/精彩类比/重要结论)，density 排序 + target_duration 裁剪 (±20% 容差)，生成 EditDecision(action="keep", source="llm_highlight")
+2. **P2 精华模式视图** -- HighlightModeView 组件: target 时长输入、density badge、跳变点警告列表、duration 摘要
+3. **P2 跳变点处理** -- detect_jump_cuts 检测间隔 >threshold 的拼接点，导出前预览，crossfade 选项消除音频爆音
+4. **P3 语义搜索** -- LLM 语义匹配 (非 embedding)，自然语言查询返回 top_k 最相关 segment + relevance + match_reason
+
+### 变更文件
+
+#### P2 亮点提取后端
+
+| 文件 | 变更 | 说明 |
+|------|------|------|
+| `core/llm_service.py` | 新增 | _HIGHLIGHT_SYSTEM prompt; analyze_highlights() (全文 5min 分块 + density 排序 + target_duration 裁剪 ±20% + chunk_callback 流式 + total_highlight_duration 返回) |
+| `core/export_service.py` | 新增 | detect_jump_cuts() (gap > threshold 检测跳变点); get_highlight_ranges() (action=keep + source=llm_highlight 提取); import Any |
+| `core/models.py` | 修改 | TaskType 新增 LLM_HIGHLIGHT + LLM_SEMANTIC_SEARCH; AnalysisResult.type 扩展 llm_highlight |
+| `main.py` | 修改 | 注册 _handle_highlight handler (payload 冻结 timeline_id); 3 个 @expose: start_highlight + detect_highlight_jump_cuts + semantic_search |
+
+#### P3 语义搜索后端
+
+| 文件 | 变更 | 说明 |
+|------|------|------|
+| `core/llm_service.py` | 新增 | _SEARCH_SYSTEM prompt; semantic_search() (单次 LLM + top_k + relevance 降序 + 4 层降级; 超长 transcript 截断最近 200 segments) |
+| `main.py` | 修改 | semantic_search @expose (同步 LLM 调用，不走 task 队列); _handle_semantic_search handler (task 模式) |
+
+#### P2/P3 事件同步
+
+| 文件 | 变更 | 说明 |
+|------|------|------|
+| `core/events.py` | 修改 | 新增 LLM_HIGHLIGHT_PROGRESS/COMPLETED + LLM_SEMANTIC_SEARCH_COMPLETED |
+| `frontend/src/utils/events.ts` | 修改 | 同步 3 个 P2/P3 事件 |
+
+#### P2/P3 前端
+
+| 文件 | 变更 | 说明 |
+|------|------|------|
+| `frontend/src/components/workspace/HighlightModeView.vue` | 新增 | target duration 输入 + 开始提取按钮; loading 进度条; duration 摘要 (已选/目标); jump_cut 警告列表; highlight 排序列表 (density badge + reason + time link) |
+| `frontend/src/components/workspace/SemanticSearchBar.vue` | 新增 | 自然语言搜索框 + Enter/按钮触发; loading spinner; 结果下拉 (文本预览 80 chars + relevance% badge + match_reason + 跳转) |
+| `frontend/src/composables/useLlmTasks.ts` | 修改 | P2 扩展: highlight 事件监听 (progress upsert + completed fetch jumpCuts) + startHighlight + jumpCuts/highlightTotalDuration/highlightTargetDuration 状态 + hasHighlightResults |
+| `frontend/src/types/project.ts` | 修改 | AnalysisResult.type 扩展 llm_highlight |
+
+### 架构决策
+
+#### P2 全文分块 + density 优先裁剪
+
+- 复用 chunk_transcript (5min chunk + 30s overlap) -- 需要全局上下文判断核心论点
+- density 分级 (high > medium > low) 决定裁剪优先级
+- target_duration 裁剪: 按 density 排序后累加，达到 target*0.8 停止，target*1.2 硬上限 (±20% 容差)
+- 结果按 start 时间重新排序，保持自然播放顺序
+
+#### P2 跳变点检测 (D-08)
+
+- detect_jump_cuts: 相邻 highlight 在原视频间隔 >2s (可配置) 视为跳变点
+- 导出前通过 detect_highlight_jump_cuts API 预览跳变点
+- 精华版导出复用现有 export_video 管道 + keep ranges，crossfade 选项消除音频爆音
+
+#### P3 LLM 语义匹配 (D-06)
+
+- 使用 LLM 而非 embedding 向量检索，避免引入向量数据库依赖
+- 单次 LLM 调用 (不分块)，受 context window 限制
+- 超长 transcript 截断到最近 200 segments (保留尾部最新内容)
+- 返回 top_k 结果按 relevance 降序
+
+### 测试覆盖
+
+| 模块 | 测试数 | 覆盖要点 |
+|------|--------|----------|
+| `test_llm_phase4c.py` | 16 | 跳变点检测 (5): no-gap/single/multi/empty/threshold; highlight_ranges (3): extract/no-result/sorted; analyze_highlights (4): not-configured/empty/mock-LLM/duration-trimming; semantic_search (4): not-configured/empty-query/mock-search/top_k-limit |
+| 后端总测试 | 216 | 全部通过 (200 + 16 新增) |
+| 前端总测试 | 115 | 全部通过 |
+| ruff check | 0 errors | All checks passed |
+| ESLint | 0 errors | eslint . clean |
+
+### Phase 4c 完成状态
+
+| 任务 | 状态 | 说明 |
+|------|------|------|
+| 4c-1: P2 后端 | 已完成 | analyze_highlights + 时长裁剪 + detect_jump_cuts + get_highlight_ranges |
+| 4c-2: P2 UI | 已完成 | HighlightModeView.vue + useLlmTasks P2 扩展 |
+| 4c-3: P2 导出 | 已完成 | 跳变点检测 + 导出前预览 + crossfade 支持 |
+| 4c-4: P3 后端 | 已完成 | semantic_search + top_k + relevance 降序 |
+| 4c-5: P3 UI | 已完成 | SemanticSearchBar.vue + 跳转 |
+
+Phase 4d (集成测试 + 发布) 待实施:
+- 端到端集成测试 (TaskManager 全链路)
+- 旧代码最终清理确认
+- 构建验证 + 发布

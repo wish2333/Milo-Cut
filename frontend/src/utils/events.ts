@@ -25,3 +25,10 @@ export const EVENT_LLM_SMART_DELETE_COMPLETED = "llm:smart_delete_completed"
 
 // P1: Subtitle correction
 export const EVENT_LLM_SUBTITLE_CORRECTION_COMPLETED = "llm:subtitle_correction_completed"
+
+// P2: Highlight extraction
+export const EVENT_LLM_HIGHLIGHT_PROGRESS = "llm:highlight_progress"
+export const EVENT_LLM_HIGHLIGHT_COMPLETED = "llm:highlight_completed"
+
+// P3: Semantic search
+export const EVENT_LLM_SEMANTIC_SEARCH_COMPLETED = "llm:semantic_search_completed"

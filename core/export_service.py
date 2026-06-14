@@ -10,14 +10,15 @@ import os
 import subprocess
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 _SUBPROCESS_KWARGS: dict = (
     {"creationflags": subprocess.CREATE_NO_WINDOW}
     if sys.platform == "win32"
     else {"start_new_session": True}
 )
-from collections.abc import Callable
 
 from loguru import logger
 
@@ -436,6 +437,55 @@ def _get_confirmed_deletions(edits: list[dict]) -> list[tuple[float, float]]:
     result = []
     for edit in edits:
         if edit.get("action") == "delete" and edit.get("status") == "confirmed":
+            result.append((edit["start"], edit["end"]))
+    result.sort(key=lambda x: x[0])
+    return result
+
+
+def detect_jump_cuts(
+    highlight_segments: list[dict], threshold_s: float = 2.0
+) -> list[dict[str, Any]]:
+    """Detect jump cuts between highlight segments that need transition handling.
+
+    When exporting a highlight reel, segments that were far apart in the
+    original video get stitched together. Large gaps produce jarring audio
+    pops. This detects those points.
+
+    Args:
+        highlight_segments: List of segment dicts sorted by 'start', each
+            with at least 'start' and 'end' keys.
+        threshold_s: Gap duration threshold in seconds. Gaps exceeding this
+            are flagged as jump cuts.
+
+    Returns:
+        List of jump cut dicts: {index, gap_duration, from_end, to_start}
+    """
+    jump_cuts: list[dict[str, Any]] = []
+    for i in range(len(highlight_segments) - 1):
+        current = highlight_segments[i]
+        next_seg = highlight_segments[i + 1]
+        gap = next_seg["start"] - current["end"]
+        if gap > threshold_s:
+            jump_cuts.append(
+                {
+                    "index": i,
+                    "gap_duration": round(gap, 2),
+                    "from_end": current["end"],
+                    "to_start": next_seg["start"],
+                }
+            )
+    return jump_cuts
+
+
+def get_highlight_ranges(edits: list[dict]) -> list[tuple[float, float]]:
+    """Extract confirmed highlight (keep) ranges from edit decisions.
+
+    Used for highlight reel export: only segments with action="keep" and
+    source="llm_highlight" (or status confirmed) are included.
+    """
+    result = []
+    for edit in edits:
+        if edit.get("action") == "keep" and edit.get("source", "").startswith("llm_highlight"):
             result.append((edit["start"], edit["end"]))
     result.sort(key=lambda x: x[0])
     return result
