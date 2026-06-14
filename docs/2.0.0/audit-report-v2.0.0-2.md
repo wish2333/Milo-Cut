@@ -545,3 +545,208 @@ AGENTS.md/CLAUDE.md 明确约定所有前端 import 用 `@/` 别名，但新增�
 | L-01 | 2 | Low | ESLint config | import 路径自动检查 | 建议 |
 | L-02 | 1-2 | Low | test files | 测试 mock 集中管理 | 建议 |
 | L-03 | 1-2 | Low | main.py | 前后端 API 同步检查 | 建议 |
+
+---
+
+## Appendix B: 当前实现状态对照 (2026-06-14 快照)
+
+> 本附录逐项列出审计报告中所有问题的**当前代码库实际状态**，含文件路径与行号，供 Phase 4 实施前作为基线参考。所有行号基于当前工作树 (未开始 Phase 4 重构)。
+
+### B-1. C-01 Topic Drift 当前实现 (待重构)
+
+**状态: 完整存在，尚未按方向 E 重构为 P0-P3。**
+
+| 组件 | 当前状态 | 文件:行号 |
+|------|----------|-----------|
+| Topic Drift 系统 prompt | 存在，中文 prompt 要求 JSON 数组输出 | `core/llm_service.py:289-293` (`_TOPIC_DRIFT_SYSTEM`) |
+| Topic Drift 用户 prompt 模板 | 存在，`str.format()` 拼接 `[id] text` 片段列表 | `core/llm_service.py:295-314` (`_TOPIC_DRIFT_USER_TEMPLATE`) |
+| Prompt 构建函数 | 存在，逐句拼成 `[{seg_id}] {text}` 格式 | `core/llm_service.py:317-336` (`_build_topic_drift_prompt`) |
+| 响应解析函数 | 存在，regex 提取 markdown code block / bare JSON，clamp relevance/confidence 到 [0,1] | `core/llm_service.py:339-393` (`_parse_topic_drift_response`) |
+| 主分析函数 | 存在，`chunk_transcript` 分块 (5min + 30s overlap)，逐块调用 LLM，`chunk_callback` 流式回传，按 segment_id 去重 | `core/llm_service.py:396-493` (`analyze_topic_drift`) |
+| 分块函数 | 存在 | `core/llm_service.py:239-282` (`chunk_transcript`) |
+| 数据模型 | `TopicDriftResult` (`core/models.py:251-257`) + `TopicDriftData` (`core/models.py:260-267`) | `Project.topic_drift: TopicDriftData` (`core/models.py:287`) |
+| 后端 API | `start_topic_drift` (`main.py:1562`), `get_topic_drift_results` (`main.py:1587`), `_handle_topic_drift` 任务处理器 (`main.py:633-691`) | -- |
+| 前端 Panel 组件 | 存在 (187 行)，按 relevance 升序排列，<0.4 红 / 0.4-0.7 黄 / ≥0.7 绿 | `frontend/src/components/workspace/TopicDriftPanel.vue:1-187` |
+| 前端 Composable | 存在，含流式进度 / accept-all / reject-all | `frontend/src/composables/useTopicDrift.ts`, `frontend/src/composables/useLlmAnalysis.ts` |
+| 前端类型定义 | `TopicDriftResult` (`types/project.ts:87`), `TopicDriftData` (`types/project.ts:95`) | `Project.topic_drift` (`types/project.ts:76`) |
+
+**重构影响范围:** P0 阶段 `_TOPIC_DRIFT_*` prompt + 解析函数将被替换，`TopicDriftPanel.vue` 将删除，`useTopicDrift.ts` / `useLlmAnalysis.ts` 将泛化为通用 LLM 分析 composable。`TopicDriftResult`/`TopicDriftData` 模型按 P0-P3 新 schema 调整。
+
+---
+
+### B-2. C-02 LLM 输入输出格式不对称 (当前状态)
+
+**状态: 仍是自然语言 prompt 输入 + regex 解析输出，未结构化。** 审计标记 OPEN，计划在 P0 实施时解决。
+
+当前 `_build_topic_drift_prompt` (`core/llm_service.py:317-336`) 实现:
+
+```python
+lines: list[str] = []
+for seg in segments:
+    seg_id = seg.get("id", seg.get("segment_id", "?"))
+    text = seg.get("text", "").strip()
+    lines.append(f"[{seg_id}] {text}")
+segments_text = "\n".join(lines)
+return _TOPIC_DRIFT_USER_TEMPLATE.format(
+    topic_line=topic_line, segments_text=segments_text
+)
+```
+
+当前 `_parse_topic_drift_response` (`core/llm_service.py:339-393`) 解析层级:
+
+| 层级 | 审计建议 | 当前实现 |
+|------|----------|----------|
+| Layer 1: 直接 `json.loads` | 建议新增 | **缺失** |
+| Layer 2: markdown code block 提取 | 合并 Layer 2+3 | 与 Layer 3 合并在 `:348-360` |
+| Layer 3: `[...]` 子串提取 | 合并 Layer 2+3 | 同上 |
+| Layer 4: 逐行 regex 降级 | 建议新增 | **缺失** |
+
+`call_llm` 中**未**根据 provider 能力传入 `response_format` -- 所有 provider 统一走 prompt 约束。
+
+---
+
+### B-3. M-01 BridgeService 回调绑定陷阱 (已解决)
+
+**状态: RESOLVED。** 当前实现使用 `staticmethod()` 包装回调阻止描述符绑定。
+
+`core/bridge_service.py:200-247`:
+- `BridgeService.__init__` (`:203-218`) 接收回调函数为 kwargs，存为实例属性
+- `start()` (`:232-247`) 动态创建 handler 子类，每个回调用 `staticmethod(...)` 包装:
+
+```python
+handler_attrs = {
+    "get_projects_fn": staticmethod(self._get_projects_fn) if self._get_projects_fn else None,
+    "get_project_fn": staticmethod(self._get_project_fn) if self._get_project_fn else None,
+    "start_analysis_fn": staticmethod(self._start_analysis_fn) if self._start_analysis_fn else None,
+    "get_topic_drift_fn": staticmethod(self._get_topic_drift_fn) if self._get_topic_drift_fn else None,
+}
+handler_cls = type("BoundBridgeHandler", (_BridgeHandler,), handler_attrs)
+```
+
+`_BridgeHandler` 基类 (`core/bridge_service.py:72-79`) 声明这些为 `Callable` 类属性。绑定问题已彻底解决。
+
+---
+
+### B-4. M-02 Timeline.vue import 路径 (已解决)
+
+**状态: RESOLVED。** 当前所有 import 均使用 `@/` 别名。
+
+`frontend/src/components/workspace/Timeline.vue:1-8`:
+```ts
+import type { Segment, EditDecision, AnalysisResult, TopicDriftResult } from "@/types/project"
+import { resolveSegmentState } from "@/utils/segmentHelpers"
+import TranscriptRow from "@/components/workspace/TranscriptRow.vue"
+import SilenceRow from "@/components/workspace/SilenceRow.vue"
+import SuggestionPanel from "@/components/workspace/SuggestionPanel.vue"
+import TopicDriftPanel from "@/components/workspace/TopicDriftPanel.vue"
+```
+
+无相对路径 `../` 违规。
+
+---
+
+### B-5. M-03 mock 字段遗漏 + expose 遗漏 (已解决)
+
+**状态: RESOLVED。** 两项均已修复:
+
+1. **`add_analysis_results` 已 expose**: `main.py:1042-1050` 装饰 `@expose`，委托 `self._project.add_analysis_results(results, source=source)`。当前 `main.py` 共有 **79 个 `@expose` 方法** (审计写作时为 82，后经清理)。
+2. **测试 mock 已补 `topic_drift`**: `frontend/src/composables/useSegmentEdit.test.ts:34` 含 `topic_drift: { ... }` 字段。`TopicDriftResult`/`TopicDriftData` 类型定义见 `frontend/src/types/project.ts:87, 95`。
+
+---
+
+### B-6. L-01 ESLint `no-restricted-imports` 规则 (未实施)
+
+**状态: 未实施。项目完全未配置 ESLint。**
+
+- `frontend/eslint.config.*` / `frontend/.eslintrc*`: **均不存在**
+- `frontend/package.json` devDependencies: **无任何 ESLint 包** (仅 vite / vitest / vue-tsc / tailwindcss / daisyui / typescript / happy-dom / test-utils)
+- 当前唯一静态检查: `vue-tsc --noEmit` (在 `build` script 内, `package.json:10`)
+
+**影响:** M-02 类 import 别名违规无自动化防护，依赖人工 review。
+
+---
+
+### B-7. L-02 测试 mock 集中管理 (未实施)
+
+**状态: 未实施。无集中 mock 层。**
+
+- `tests/conftest.py:1-112`: 仅提供数据 fixtures (sample segments / projects / SRT content)，**无 mock 对象**
+- 后端 mock: 各测试文件**内联**使用 `monkeypatch.setattr` / `patch()` (如 `tests/test_topic_drift.py` 内联构造 mock response dict)
+- 前端 mock: 各 `.test.ts` 文件**内联**构造 Project 对象 (如 `useSegmentEdit.test.ts:34` 内联 `topic_drift` 字段)
+- **无共享 mock 工厂**: `tests/mocks.py` / `tests/factories.py` / `frontend/src/test/helpers/mockProject.ts` 均不存在
+
+**影响:** 模型字段变更时需手动同步多个测试文件 (M-03 第 1 项即因此复发)。
+
+---
+
+### B-8. L-03 前后端 API 同步检查脚本 (未实施)
+
+**状态: 未实施。无 API 同步检查脚本。**
+
+- `package.json` 仅有 `sync-version` 脚本 (`:8`)，**仅同步版本号字符串** (pyproject.toml ↔ package.json)，不检查 API 方法名
+- 79 个 `@expose` 方法 (`main.py`) 与前端 `call()` 调用完全依赖人工保持同步
+
+**影响:** 新增 `ProjectService` 方法忘记 `@expose` (M-03 第 2 项) 无自动化检测。
+
+---
+
+### B-9. 多 Timeline 基础设施 (未实施 -- P0-P3 共同前置依赖)
+
+**状态: 未实施。`Project` 仍是单 timeline 扁平结构。**
+
+当前 `Project` 模型 (`core/models.py:280-287`):
+
+```python
+class Project(BaseModel, frozen=True):
+    schema_version: int = 1
+    project: ProjectMeta = Field(default_factory=ProjectMeta)
+    media: MediaInfo | None = None
+    transcript: TranscriptData = Field(default_factory=TranscriptData)
+    analysis: AnalysisData = Field(default_factory=AnalysisData)
+    edits: list[EditDecision] = Field(default_factory=list)
+    topic_drift: TopicDriftData = Field(default_factory=TopicDriftData)
+```
+
+- **`Timeline` 模型: 不存在** (grep `class Timeline` / `timelines` / `active_timeline` 在 `core/` 无源码匹配)
+- `Project` 直接持有**单一** `transcript` / `edits` / `analysis` / `topic_drift`
+- 无 `timelines: list[Timeline]`，无 `active_timeline_id`，无 fork/switch/delete timeline API
+- 前端无 Timeline 切换器 UI
+
+**影响:** 这是审计规划中 P0-P3 的**共同前置依赖** (预估 4-5 pd)，未实施则所有 LLM 增强功能无法启动。
+
+---
+
+### B-10. P0-P3 LLM 增强功能 (全部未实施)
+
+**状态: 4 项功能全部未实施，代码库中无任何相关符号。**
+
+| 优先级 | 功能 | 搜索关键词 | 匹配结果 |
+|--------|------|-----------|----------|
+| P0 | 智能删除增强 (LLM 补盲区) | `smart_delete` / `smart.delete` / `llm_smart` | **0 匹配** |
+| P1 | 字幕修正 (语义级文本纠错) | `subtitle_correction` / `subtitle.correction` / `llm_corrected` | **0 匹配** |
+| P2 | 亮点提取 (精华版时间线) | `highlight_extract` / `highlight.extract` / `llm_highlight` | **0 匹配** |
+| P3 | 语义搜索 (自然语言定位) | `semantic_search` / `semantic.search` | **0 匹配** |
+
+当前 LLM 能力**仅** Topic Drift (`core/llm_service.py:396-493`)。P0-P3 均待实施。
+
+---
+
+### B-11. 当前实现状态总览表
+
+| 问题 ID | 当前状态 | 关键文件:行号 | Phase 4 是否需处理 |
+|---------|----------|---------------|-------------------|
+| **C-01** Topic Drift | 完整存在，待重构 | `core/llm_service.py:289-493`, `TopicDriftPanel.vue:1-187` | 是 (Phase 4a-4b) |
+| **C-02** LLM 格式不对称 | OPEN，未结构化 | `core/llm_service.py:317-393` | 是 (Phase 4b P0 时解决) |
+| **M-01** Bridge 回调绑定 | RESOLVED | `core/bridge_service.py:232-247` | 否 |
+| **M-02** Timeline.vue import | RESOLVED | `frontend/src/components/workspace/Timeline.vue:1-8` | 否 |
+| **M-03** mock + expose | RESOLVED | `main.py:1042-1050`, `useSegmentEdit.test.ts:34` | 否 |
+| **L-01** ESLint no-restricted-imports | 未实施 (无 ESLint) | -- | 建议 |
+| **L-02** 测试 mock 集中管理 | 未实施 (内联 mock) | `tests/conftest.py` (仅 fixtures) | 建议 |
+| **L-03** API 同步检查脚本 | 未实施 (仅 sync-version) | `package.json:8` | 建议 |
+| **基础** 多 Timeline | 未实施 (单 timeline) | `core/models.py:280-287` | 是 (Phase 4a) |
+| **P0** 智能删除增强 | 未实施 | -- | 是 (Phase 4b) |
+| **P1** 字幕修正 | 未实施 | -- | 是 (Phase 4b) |
+| **P2** 亮点提取 | 未实施 | -- | 是 (Phase 4c) |
+| **P3** 语义搜索 | 未实施 | -- | 是 (Phase 4c) |
+
+**结论:** M-01/M-02/M-03 已解决; C-01/C-02 及基础设施 + P0-P3 全部待 Phase 4 实施; L-01/L-02/L-03 三项工程改进建议均未落地。当前代码库可作为 Phase 4 重构的干净基线。

@@ -9,7 +9,7 @@ import json
 import os
 from typing import Any
 
-from core.paths import get_data_dir, get_settings_path
+from core.paths import get_settings_path
 
 _DEFAULT_SETTINGS: dict[str, Any] = {
     "ffmpeg_path": "",
@@ -24,12 +24,27 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     "export_fade_duration": 0.0,
     "export_transition_mode": "none",
     "filler_words": [
-        "嗯", "啊", "呃", "然后", "就是", "那个",
-        "怎么说呢", "你知道", "对吧", "其实",
+        "嗯",
+        "啊",
+        "呃",
+        "然后",
+        "就是",
+        "那个",
+        "怎么说呢",
+        "你知道",
+        "对吧",
+        "其实",
     ],
     "error_trigger_words": [
-        "不对", "重来", "重新说", "说错了", "刚才说错了",
-        "这段不要", "再来一遍", "算了", "不是这样的",
+        "不对",
+        "重来",
+        "重新说",
+        "说错了",
+        "刚才说错了",
+        "这段不要",
+        "再来一遍",
+        "算了",
+        "不是这样的",
     ],
     "export_video_codec": "libx264",
     "export_audio_codec": "aac",

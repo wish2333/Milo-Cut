@@ -5,13 +5,12 @@ AI-powered video preprocessing tool for oral presentation videos.
 
 from __future__ import annotations
 
-import sys
 import os
-import pathlib
-from pathlib import Path
-import subprocess
 import shutil
+import subprocess
+import sys
 import uuid
+from pathlib import Path
 
 from pywebvue import App, Bridge, expose
 
@@ -40,7 +39,9 @@ def _fix_macos_path() -> None:
     try:
         result = _sp.run(
             [shell, "-l", "-c", "echo $PATH"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode == 0 and result.stdout.strip():
             os.environ["PATH"] = result.stdout.strip()
@@ -51,22 +52,21 @@ def _fix_macos_path() -> None:
 _fix_macos_path()
 
 from core.analysis_service import detect_errors, detect_fillers, run_full_analysis
+from core.bridge_service import BridgeService
 from core.config import load_settings
-from core.events import EDIT_SUMMARY_UPDATED, ENCODER_FALLBACK, LOG_LINE
-from core.ffmpeg_service import detect_silence, generate_waveform, probe_media
+from core.events import EDIT_SUMMARY_UPDATED, ENCODER_FALLBACK
+from core.export_service import export_audio, export_srt, export_video, export_vtt
+from core.ffmpeg_presets import ENCODER_METADATA, get_fallback_codec
+from core.ffmpeg_service import _find_ffmpeg, detect_silence, generate_waveform, probe_media
 from core.logging import get_logger, setup_frontend_sink, setup_logging
 from core.media_server import MediaServer
-from core.bridge_service import BridgeService
 from core.models import TaskStatus, TaskType
 from core.paths import migrate_if_needed
-from core.plugin_manager import PluginManager, PLUGIN_REGISTRY
+from core.plugin_manager import PLUGIN_REGISTRY, PluginManager
 from core.project_service import ProjectService
 from core.proxy_manager import ProxyManager
 from core.subtitle_service import parse_srt
 from core.task_manager import TaskManager
-from core.export_service import export_audio, export_srt, export_video, export_vtt
-from core.ffmpeg_presets import ENCODER_METADATA, get_fallback_codec
-from core.ffmpeg_service import _find_ffmpeg
 
 logger = get_logger()
 
@@ -76,12 +76,14 @@ def _get_version() -> str:
     # Method 1: importlib.metadata (dev env / pip install)
     try:
         from importlib.metadata import version
+
         return version("milo-cut")
     except Exception:
         pass
     # Method 2: read pyproject.toml (PyInstaller/Nuitka packaging fallback)
     try:
         import tomllib
+
         with open(Path(__file__).parent / "pyproject.toml", "rb") as f:
             return tomllib.load(f)["project"]["version"]
     except Exception:
@@ -100,9 +102,7 @@ class MiloCutApi(Bridge):
         self._media_server = MediaServer()
         settings = load_settings()
         model_dir = settings.get("model_dir", "")
-        self._plugin_manager = PluginManager(
-            model_dir=Path(model_dir) if model_dir else None
-        )
+        self._plugin_manager = PluginManager(model_dir=Path(model_dir) if model_dir else None)
         self._register_task_handlers()
         self._proxy_manager = ProxyManager(self._task_manager)
         self._batches: dict[str, dict] = {}  # batch_id -> batch state
@@ -121,45 +121,25 @@ class MiloCutApi(Bridge):
         self._task_manager.register_handler(
             TaskType.SILENCE_DETECTION, self._handle_silence_detection
         )
-        self._task_manager.register_handler(
-            TaskType.EXPORT_VIDEO, self._handle_export_video
-        )
-        self._task_manager.register_handler(
-            TaskType.EXPORT_SUBTITLE, self._handle_export_subtitle
-        )
-        self._task_manager.register_handler(
-            TaskType.EXPORT_AUDIO, self._handle_export_audio
-        )
-        self._task_manager.register_handler(
-            TaskType.EXPORT_VTT, self._handle_export_vtt
-        )
+        self._task_manager.register_handler(TaskType.EXPORT_VIDEO, self._handle_export_video)
+        self._task_manager.register_handler(TaskType.EXPORT_SUBTITLE, self._handle_export_subtitle)
+        self._task_manager.register_handler(TaskType.EXPORT_AUDIO, self._handle_export_audio)
+        self._task_manager.register_handler(TaskType.EXPORT_VTT, self._handle_export_vtt)
         self._task_manager.register_handler(
             TaskType.FILLER_DETECTION, self._handle_filler_detection
         )
-        self._task_manager.register_handler(
-            TaskType.ERROR_DETECTION, self._handle_error_detection
-        )
-        self._task_manager.register_handler(
-            TaskType.FULL_ANALYSIS, self._handle_full_analysis
-        )
+        self._task_manager.register_handler(TaskType.ERROR_DETECTION, self._handle_error_detection)
+        self._task_manager.register_handler(TaskType.FULL_ANALYSIS, self._handle_full_analysis)
         self._task_manager.register_handler(
             TaskType.WAVEFORM_GENERATION, self._handle_waveform_generation
         )
-        self._task_manager.register_handler(
-            TaskType.PLUGIN_INSTALL, self._handle_plugin_install
-        )
-        self._task_manager.register_handler(
-            TaskType.MODEL_DOWNLOAD, self._handle_model_download
-        )
-        self._task_manager.register_handler(
-            TaskType.TRANSCRIPTION, self._handle_transcription
-        )
+        self._task_manager.register_handler(TaskType.PLUGIN_INSTALL, self._handle_plugin_install)
+        self._task_manager.register_handler(TaskType.MODEL_DOWNLOAD, self._handle_model_download)
+        self._task_manager.register_handler(TaskType.TRANSCRIPTION, self._handle_transcription)
         self._task_manager.register_handler(
             TaskType.PROXY_GENERATION, self._handle_proxy_generation
         )
-        self._task_manager.register_handler(
-            TaskType.LLM_TOPIC_DRIFT, self._handle_topic_drift
-        )
+        self._task_manager.register_handler(TaskType.LLM_TOPIC_DRIFT, self._handle_topic_drift)
 
     def _handle_silence_detection(self, task, cancel_event, progress_cb):
         """Run silence detection on the project media and store results."""
@@ -177,7 +157,9 @@ class MiloCutApi(Bridge):
         margin = settings.get("silence_margin", 0.0)
         subtitle_padding = settings.get("silence_subtitle_padding", 0.0)
         store_result = self._project.add_silence_results(
-            result["data"], margin=margin, subtitle_padding=subtitle_padding,
+            result["data"],
+            margin=margin,
+            subtitle_padding=subtitle_padding,
         )
         if not store_result["success"]:
             raise RuntimeError(store_result.get("error", "Failed to store silence results"))
@@ -214,8 +196,8 @@ class MiloCutApi(Bridge):
             if self._project.current.media is None:
                 raise ValueError("No media in project")
             project = self._project.current
-            segments_data = [s.model_dump() for s in project.transcript.segments]
-            edits_data = [e.model_dump() for e in project.edits]
+            segments_data = [s.model_dump() for s in project.active_timeline.transcript.segments]
+            edits_data = [e.model_dump() for e in project.active_timeline.edits]
             media_path = project.media.path
             output_path = task.payload.get("output_path", "")
             if not output_path:
@@ -239,11 +221,14 @@ class MiloCutApi(Bridge):
             video_codec, fallback_msg = get_fallback_codec(ffmpeg, video_codec)
             if fallback_msg:
                 logger.warning(fallback_msg)
-                self._emit(ENCODER_FALLBACK, {
-                    "requested": original_codec,
-                    "fallback": video_codec,
-                    "message": fallback_msg,
-                })
+                self._emit(
+                    ENCODER_FALLBACK,
+                    {
+                        "requested": original_codec,
+                        "fallback": video_codec,
+                        "message": fallback_msg,
+                    },
+                )
 
             def progress_cb(percent: float, message: str = "") -> None:
                 self._task_manager._update_progress(task.id, percent, message)
@@ -278,8 +263,8 @@ class MiloCutApi(Bridge):
         if self._project.current.media is None:
             raise ValueError("No media in project")
         project = self._project.current
-        segments_data = [s.model_dump() for s in project.transcript.segments]
-        edits_data = [e.model_dump() for e in project.edits]
+        segments_data = [s.model_dump() for s in project.active_timeline.transcript.segments]
+        edits_data = [e.model_dump() for e in project.active_timeline.edits]
         output_path = task.payload.get("output_path", "")
         if not output_path:
             output_path = os.path.splitext(project.media.path)[0] + "_cut.srt"
@@ -299,8 +284,8 @@ class MiloCutApi(Bridge):
         if self._project.current.media is None:
             raise ValueError("No media in project")
         project = self._project.current
-        segments_data = [s.model_dump() for s in project.transcript.segments]
-        edits_data = [e.model_dump() for e in project.edits]
+        segments_data = [s.model_dump() for s in project.active_timeline.transcript.segments]
+        edits_data = [e.model_dump() for e in project.active_timeline.edits]
         output_path = task.payload.get("output_path", "")
         if not output_path:
             output_path = os.path.splitext(project.media.path)[0] + "_cut.vtt"
@@ -320,8 +305,8 @@ class MiloCutApi(Bridge):
         if self._project.current.media is None:
             raise ValueError("No media in project")
         project = self._project.current
-        segments_data = [s.model_dump() for s in project.transcript.segments]
-        edits_data = [e.model_dump() for e in project.edits]
+        segments_data = [s.model_dump() for s in project.active_timeline.transcript.segments]
+        edits_data = [e.model_dump() for e in project.active_timeline.edits]
         media_path = project.media.path
         output_path = task.payload.get("output_path", "")
         if not output_path:
@@ -401,7 +386,8 @@ class MiloCutApi(Bridge):
         if self._project._current_path:
             waveform_path = str(self._project._current_path.parent / "waveform.json")
         else:
-            from core.paths import get_data_dir, get_projects_dir
+            from core.paths import get_projects_dir
+
             name = self._project.current.project.name
             waveform_path = str(get_projects_dir() / name / "waveform.json")
 
@@ -438,7 +424,9 @@ class MiloCutApi(Bridge):
             raise ValueError("plugin_id is required")
 
         # Install plugin
-        self._plugin_manager.install_plugin(plugin_id, progress_cb=progress_cb, mirror=mirror, no_cache=no_cache)
+        self._plugin_manager.install_plugin(
+            plugin_id, progress_cb=progress_cb, mirror=mirror, no_cache=no_cache
+        )
 
         # Optionally download model
         if model_id:
@@ -485,8 +473,12 @@ class MiloCutApi(Bridge):
         if plugin_id == "plugin-qwen-mlx":
             from core.asr_service import transcribe_with_mlx
 
-            asr_model_size = task.payload.get("asr_model_size", settings.get("asr_model_size", "0.6B"))
-            aligner_model_size = task.payload.get("aligner_model_size", settings.get("asr_aligner_model_size", "0.6B"))
+            asr_model_size = task.payload.get(
+                "asr_model_size", settings.get("asr_model_size", "0.6B")
+            )
+            aligner_model_size = task.payload.get(
+                "aligner_model_size", settings.get("asr_aligner_model_size", "0.6B")
+            )
 
             result = transcribe_with_mlx(
                 plugin_manager=self._plugin_manager,
@@ -501,8 +493,12 @@ class MiloCutApi(Bridge):
             from core.asr_service import transcribe_with_whisper
             from core.ffmpeg_service import _find_ffmpeg
 
-            model_size = task.payload.get("model_size", settings.get("asr_model_size", "large-v3-turbo"))
-            compute_type = task.payload.get("compute_type", settings.get("whisper_compute_type", "int8_float16"))
+            model_size = task.payload.get(
+                "model_size", settings.get("asr_model_size", "large-v3-turbo")
+            )
+            compute_type = task.payload.get(
+                "compute_type", settings.get("whisper_compute_type", "int8_float16")
+            )
             vad_filter = task.payload.get("vad_filter", settings.get("asr_vad_filter", True))
             vad_threshold = settings.get("whisper_vad_threshold", 0.5)
             vad_min_silence_ms = settings.get("whisper_vad_min_silence_ms", 500)
@@ -525,8 +521,12 @@ class MiloCutApi(Bridge):
         elif engine == "qwen3-asr":
             from core.asr_service import transcribe_with_qwen
 
-            asr_model_size = task.payload.get("asr_model_size", settings.get("asr_model_size", "0.6B"))
-            aligner_model_size = task.payload.get("aligner_model_size", settings.get("asr_aligner_model_size", "0.6B"))
+            asr_model_size = task.payload.get(
+                "asr_model_size", settings.get("asr_model_size", "0.6B")
+            )
+            aligner_model_size = task.payload.get(
+                "aligner_model_size", settings.get("asr_aligner_model_size", "0.6B")
+            )
             compute_type = settings.get("qwen_compute_type", "bfloat16")
 
             result = transcribe_with_qwen(
@@ -559,10 +559,16 @@ class MiloCutApi(Bridge):
         # Auto-save SRT to project directory
         srt_path = None
         try:
+            from datetime import datetime
+
             from core.export_service import export_srt
             from core.paths import get_data_dir
-            from datetime import datetime
-            project_name = self._project.current.project.name if self._project.current.project else "transcript"
+
+            project_name = (
+                self._project.current.project.name
+                if self._project.current.project
+                else "transcript"
+            )
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             srt_filename = f"{project_name}_{timestamp}.srt"
             srt_dir = Path(get_data_dir()) / "transcripts"
@@ -571,19 +577,23 @@ class MiloCutApi(Bridge):
 
             segments_for_export = []
             for seg in result["data"].get("segments", []):
-                segments_for_export.append({
-                    "id": seg.get("id", ""),
-                    "start": seg.get("start", 0),
-                    "end": seg.get("end", 0),
-                    "text": seg.get("text", ""),
-                    "type": "subtitle",
-                })
+                segments_for_export.append(
+                    {
+                        "id": seg.get("id", ""),
+                        "start": seg.get("start", 0),
+                        "end": seg.get("end", 0),
+                        "text": seg.get("text", ""),
+                        "type": "subtitle",
+                    }
+                )
 
             srt_result = export_srt(
                 segments=segments_for_export,
                 edits=[],
                 output_path=srt_path,
-                media_duration=self._project.current.media.duration if self._project.current.media else 0,
+                media_duration=self._project.current.media.duration
+                if self._project.current.media
+                else 0,
             )
             if srt_result.get("success"):
                 logger.info("Auto-saved transcription SRT to {}", srt_path)
@@ -639,17 +649,20 @@ class MiloCutApi(Bridge):
 
         project = self._project.current
         topic_description = task.payload.get("topic_description", "")
-        segments = [s.model_dump() for s in project.transcript.segments]
+        segments = [s.model_dump() for s in project.active_timeline.transcript.segments]
 
         if not segments:
             raise ValueError("No transcript segments to analyze")
 
         def _chunk_callback(chunk_results: list[dict]) -> None:
             """Emit per-chunk results immediately for frontend upsert."""
-            self._emit("llm:analysis_progress", {
-                "results": chunk_results,
-                "topic_description": topic_description,
-            })
+            self._emit(
+                "llm:analysis_progress",
+                {
+                    "results": chunk_results,
+                    "topic_description": topic_description,
+                },
+            )
 
         result = analyze_topic_drift(
             segments,
@@ -670,6 +683,7 @@ class MiloCutApi(Bridge):
         # Compute transcript hash for cache validation
         import hashlib
         import json as _json
+
         transcript_str = _json.dumps(segments, ensure_ascii=False, sort_keys=True)
         transcript_hash = hashlib.md5(transcript_str.encode()).hexdigest()
 
@@ -711,6 +725,7 @@ class MiloCutApi(Bridge):
     @expose
     def select_files(self) -> dict:
         import webview
+
         result = webview.windows[0].create_file_dialog(
             webview.FileDialog.OPEN,
             file_types=(
@@ -728,6 +743,7 @@ class MiloCutApi(Bridge):
     @expose
     def select_file(self) -> dict:
         import webview
+
         result = webview.windows[0].create_file_dialog(
             webview.FileDialog.OPEN,
             file_types=("SRT files (*.srt)", "All files (*.*)"),
@@ -739,6 +755,7 @@ class MiloCutApi(Bridge):
     @expose
     def open_folder(self, path: str) -> dict:
         import webview
+
         webview.windows[0].create_file_dialog(webview.FileDialog.FOLDER, directory=path)
         return {"success": True}
 
@@ -746,6 +763,7 @@ class MiloCutApi(Bridge):
     def select_directory(self) -> dict:
         """Open a folder picker dialog and return the selected path."""
         import webview
+
         result = webview.windows[0].create_file_dialog(webview.FileDialog.FOLDER)
         if result:
             # pywebview FOLDER dialog returns a tuple/list on Windows,
@@ -779,8 +797,8 @@ class MiloCutApi(Bridge):
         # Publish edit timeline to file protocol on save
         if result.get("success") and self._project.current is not None:
             project = self._project.current
-            segments = [s.model_dump() for s in project.transcript.segments]
-            edits = [e.model_dump() for e in project.edits]
+            segments = [s.model_dump() for s in project.active_timeline.transcript.segments]
+            edits = [e.model_dump() for e in project.active_timeline.edits]
             self._file_protocol.publish_edit_timeline(segments, edits)
         return result
 
@@ -792,6 +810,32 @@ class MiloCutApi(Bridge):
     @expose
     def relink_media(self, new_path: str) -> dict:
         return self._project.relink_media(new_path)
+
+    # ================================================================
+    # Timeline (multi-timeline infrastructure, v2.0.0)
+    # ================================================================
+
+    @expose
+    def create_timeline(
+        self, label: str, source: str = "manual", fork_from: str | None = None
+    ) -> dict:
+        return self._project.create_timeline(label, source, fork_from)
+
+    @expose
+    def switch_timeline(self, timeline_id: str) -> dict:
+        return self._project.switch_timeline(timeline_id)
+
+    @expose
+    def delete_timeline(self, timeline_id: str) -> dict:
+        return self._project.delete_timeline(timeline_id)
+
+    @expose
+    def rename_timeline(self, timeline_id: str, new_label: str) -> dict:
+        return self._project.rename_timeline(timeline_id, new_label)
+
+    @expose
+    def duplicate_timeline(self, timeline_id: str, new_label: str) -> dict:
+        return self._project.duplicate_timeline(timeline_id, new_label)
 
     # ================================================================
     # Subtitle
@@ -846,7 +890,10 @@ class MiloCutApi(Bridge):
             return {"success": False, "error": "Media server not running"}
         if not self._media_server._waveform_path:
             return {"success": False, "error": "Waveform not available"}
-        return {"success": True, "data": {"url": f"http://127.0.0.1:{self._media_server.port}/waveform"}}
+        return {
+            "success": True,
+            "data": {"url": f"http://127.0.0.1:{self._media_server.port}/waveform"},
+        }
 
     @expose
     def regenerate_waveform(self) -> dict:
@@ -957,7 +1004,8 @@ class MiloCutApi(Bridge):
 
         logger.info(
             "Batch export created: batch_id={}, {} projects queued",
-            batch_id, len(task_ids),
+            batch_id,
+            len(task_ids),
         )
 
         return {
@@ -1066,7 +1114,9 @@ class MiloCutApi(Bridge):
         return self._project.split_segment(segment_id, position)
 
     @expose
-    def add_segment(self, start: float, end: float, text: str = "", seg_type: str = "subtitle") -> dict:
+    def add_segment(
+        self, start: float, end: float, text: str = "", seg_type: str = "subtitle"
+    ) -> dict:
         return self._project.add_segment(start, end, text, seg_type)
 
     @expose
@@ -1121,6 +1171,7 @@ class MiloCutApi(Bridge):
     @expose
     def validate_srt(self, file_path: str) -> dict:
         from core.subtitle_service import validate_srt
+
         media = self._project.current.media if self._project.current else None
         duration = media.duration if media else 0.0
         return validate_srt(file_path, video_duration=duration)
@@ -1139,7 +1190,9 @@ class MiloCutApi(Bridge):
         return {"success": True, "data": self._plugin_manager.list_plugins()}
 
     @expose
-    def install_plugin(self, plugin_id: str, model_id: str = "", mirror: str = "official", no_cache: bool = False) -> dict:
+    def install_plugin(
+        self, plugin_id: str, model_id: str = "", mirror: str = "official", no_cache: bool = False
+    ) -> dict:
         """Start a background task to install a plugin and optionally download its model."""
         if plugin_id not in PLUGIN_REGISTRY:
             return {"success": False, "error": f"Unknown plugin: {plugin_id}"}
@@ -1185,9 +1238,9 @@ class MiloCutApi(Bridge):
         """Return available model download mirrors."""
         try:
             from core.plugin_manager import MODEL_MIRRORS
+
             mirrors = [
-                {"id": k, "display_name": v["display_name"]}
-                for k, v in MODEL_MIRRORS.items()
+                {"id": k, "display_name": v["display_name"]} for k, v in MODEL_MIRRORS.items()
             ]
             return {"success": True, "data": mirrors}
         except Exception as exc:
@@ -1217,10 +1270,7 @@ class MiloCutApi(Bridge):
 
         installed = self._plugin_manager.is_installed(plugin_id)
         models = PLUGIN_REGISTRY[plugin_id]["models"]
-        downloaded_models = {
-            mid: self._plugin_manager.is_model_downloaded(mid)
-            for mid in models
-        }
+        downloaded_models = {mid: self._plugin_manager.is_model_downloaded(mid) for mid in models}
 
         return {
             "success": True,
@@ -1256,6 +1306,7 @@ class MiloCutApi(Bridge):
     def get_plugin_data_dir(self) -> dict:
         """Return the plugin data directory path."""
         from core.paths import get_plugin_data_dir
+
         path = get_plugin_data_dir()
         return {"success": True, "data": {"path": str(path)}}
 
@@ -1263,7 +1314,9 @@ class MiloCutApi(Bridge):
     def open_data_directory(self) -> dict:
         """Open the plugin data directory in the system file manager."""
         import subprocess as _sp
+
         from core.paths import get_plugin_data_dir
+
         path = get_plugin_data_dir()
         try:
             if sys.platform == "win32":
@@ -1280,6 +1333,7 @@ class MiloCutApi(Bridge):
     def cleanup_tasks_folder(self) -> dict:
         """Clean up old transcription task files (logs and results)."""
         from core.paths import get_plugin_data_dir
+
         try:
             tasks_dir = Path(get_plugin_data_dir()) / "tasks"
             if not tasks_dir.exists():
@@ -1291,7 +1345,10 @@ class MiloCutApi(Bridge):
                     f.unlink()
                     deleted += 1
 
-            return {"success": True, "data": {"deleted": deleted, "message": f"Cleaned up {deleted} task files"}}
+            return {
+                "success": True,
+                "data": {"deleted": deleted, "message": f"Cleaned up {deleted} task files"},
+            }
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -1299,6 +1356,7 @@ class MiloCutApi(Bridge):
     def cleanup_transcripts_folder(self) -> dict:
         """Delete all auto-saved transcription SRT files."""
         from core.paths import get_data_dir
+
         try:
             transcripts_dir = get_data_dir() / "transcripts"
             if not transcripts_dir.exists():
@@ -1312,7 +1370,9 @@ class MiloCutApi(Bridge):
                     f.unlink()
                     deleted += 1
 
-            logger.info("Cleaned up transcripts folder: {} files, {} bytes freed", deleted, size_freed)
+            logger.info(
+                "Cleaned up transcripts folder: {} files, {} bytes freed", deleted, size_freed
+            )
             return {"success": True, "data": {"deleted": deleted, "size_freed": size_freed}}
         except Exception as e:
             logger.exception("cleanup_transcripts_folder failed")
@@ -1325,6 +1385,7 @@ class MiloCutApi(Bridge):
     @expose
     def select_export_path(self, default_name: str, file_types: list[str] | None = None) -> dict:
         import webview
+
         if file_types is None:
             file_types = ["All files (*.*)"]
         result = webview.windows[0].create_file_dialog(
@@ -1347,13 +1408,17 @@ class MiloCutApi(Bridge):
     def detect_gpu_encoders(self) -> dict:
         """Detect available FFmpeg encoders."""
         from core.ffmpeg_presets import ENCODER_METADATA
+
         encoders: list[str] = []
         try:
             from core.ffmpeg_service import _find_ffmpeg
+
             ffmpeg = _find_ffmpeg()
             result = subprocess.run(
                 [ffmpeg, "-hide_banner", "-encoders"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
                 **_SUBPROCESS_KWARGS,
             )
             if result.returncode == 0:
@@ -1375,6 +1440,7 @@ class MiloCutApi(Bridge):
     def detect_gpu(self) -> dict:
         """Detect GPU status for plugin installation recommendations."""
         from core.plugin_manager import detect_gpu
+
         try:
             result = detect_gpu()
             return {"success": True, "data": result}
@@ -1385,18 +1451,22 @@ class MiloCutApi(Bridge):
     def list_mirrors(self) -> dict:
         """List available PyTorch mirrors."""
         from core.plugin_manager import PYTORCH_MIRRORS
+
         return {"success": True, "data": PYTORCH_MIRRORS}
 
     @expose
     def get_ffmpeg_info(self) -> dict:
         """Return FFmpeg status for settings page."""
         from core.ffmpeg_service import _find_ffmpeg, _find_ffprobe
+
         info: dict = {"ffmpeg_path": "", "ffprobe_path": "", "version": ""}
         try:
             info["ffmpeg_path"] = _find_ffmpeg()
             result = subprocess.run(
                 [info["ffmpeg_path"], "-version"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
                 **_SUBPROCESS_KWARGS,
             )
             if result.returncode == 0:
@@ -1413,7 +1483,9 @@ class MiloCutApi(Bridge):
     def check_uv_available(self, force: bool = False) -> dict:
         """Check if uv package manager is available in PATH."""
         if not force and os.environ.get("MILO_FAKE_NO_UV"):
-            import time; time.sleep(0.1)  # avoid pywebview callback race
+            import time
+
+            time.sleep(0.1)  # avoid pywebview callback race
             return {
                 "success": True,
                 "data": {
@@ -1442,11 +1514,12 @@ class MiloCutApi(Bridge):
     def export_edl(self, output_path: str) -> dict:
         """Export EDL (CMX3600) file."""
         from core.export_timeline import export_edl as _export_edl
+
         project = self._project._current
         if not project:
             return {"success": False, "error": "No project open"}
-        segments = [s.model_dump() for s in project.transcript.segments]
-        edits = [e.model_dump() for e in project.edits]
+        segments = [s.model_dump() for s in project.active_timeline.transcript.segments]
+        edits = [e.model_dump() for e in project.active_timeline.edits]
         media_info = project.media.model_dump() if project.media else {}
         return _export_edl(segments, edits, media_info, output_path)
 
@@ -1454,25 +1527,43 @@ class MiloCutApi(Bridge):
     def export_xmeml_premiere(self, output_path: str, mode: str = "clean") -> dict:
         """Export xmeml for Premiere Pro."""
         from core.export_timeline import export_xmeml_premiere as _export_xmeml_premiere
+
         project = self._project._current
         if not project:
             return {"success": False, "error": "No project open"}
-        segments = [s.model_dump() for s in project.transcript.segments]
-        edits = [e.model_dump() for e in project.edits]
+        segments = [s.model_dump() for s in project.active_timeline.transcript.segments]
+        edits = [e.model_dump() for e in project.active_timeline.edits]
         media_info = project.media.model_dump() if project.media else {}
         return _export_xmeml_premiere(segments, edits, media_info, output_path, mode=mode)
 
     @expose
-    def export_otio(self, output_path: str, fade_duration: float = 0.0, mode: str = "clean", fade_mode: str = "crossfade", audio_fade_duration: float | None = None) -> dict:
+    def export_otio(
+        self,
+        output_path: str,
+        fade_duration: float = 0.0,
+        mode: str = "clean",
+        fade_mode: str = "crossfade",
+        audio_fade_duration: float | None = None,
+    ) -> dict:
         """Export OpenTimelineIO (.otio) file."""
         from core.export_timeline import export_otio as _export_otio
+
         project = self._project._current
         if not project:
             return {"success": False, "error": "No project open"}
-        segments = [s.model_dump() for s in project.transcript.segments]
-        edits = [e.model_dump() for e in project.edits]
+        segments = [s.model_dump() for s in project.active_timeline.transcript.segments]
+        edits = [e.model_dump() for e in project.active_timeline.edits]
         media_info = project.media.model_dump() if project.media else {}
-        return _export_otio(segments, edits, media_info, output_path, fade_duration=fade_duration, mode=mode, fade_mode=fade_mode, audio_fade_duration=audio_fade_duration)
+        return _export_otio(
+            segments,
+            edits,
+            media_info,
+            output_path,
+            fade_duration=fade_duration,
+            mode=mode,
+            fade_mode=fade_mode,
+            audio_fade_duration=audio_fade_duration,
+        )
 
     # ================================================================
     # Bridge Service callbacks
@@ -1543,7 +1634,9 @@ class MiloCutApi(Bridge):
         data = config.model_dump()
         if data.get("api_key"):
             key = data["api_key"]
-            data["api_key_masked"] = key[:4] + "*" * (len(key) - 8) + key[-4:] if len(key) > 8 else "****"
+            data["api_key_masked"] = (
+                key[:4] + "*" * (len(key) - 8) + key[-4:] if len(key) > 8 else "****"
+            )
             data["api_key"] = ""
         return {"success": True, "data": data}
 
@@ -1551,8 +1644,12 @@ class MiloCutApi(Bridge):
     def update_llm_config(self, updates: dict) -> dict:
         """Update LLM settings (only llm_* keys accepted)."""
         allowed = {
-            "llm_provider", "llm_base_url", "llm_api_key",
-            "llm_model", "llm_temperature", "llm_timeout",
+            "llm_provider",
+            "llm_base_url",
+            "llm_api_key",
+            "llm_model",
+            "llm_temperature",
+            "llm_timeout",
         }
         filtered = {k: v for k, v in updates.items() if k in allowed}
         if not filtered:
@@ -1622,6 +1719,7 @@ if __name__ == "__main__":
         logger.warning(f"Bridge API failed to start: {bridge_result.get('error')}")
 
     import atexit
+
     atexit.register(api._bridge_service.stop)
     atexit.register(api._file_protocol.stop_polling)
 

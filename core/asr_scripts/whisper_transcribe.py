@@ -17,9 +17,7 @@ Usage (launched by PluginManager.run_in_plugin):
 from __future__ import annotations
 
 import argparse
-import json
 import sys
-import time
 from pathlib import Path
 
 # Import common utilities for subprocess IPC
@@ -36,27 +34,33 @@ def parse_whisper_args() -> argparse.Namespace:
     """Parse whisper-specific arguments."""
     # First parse common args (--result-path)
     common = parse_args()
-    
+
     # Then parse whisper-specific args, ignoring unknown args from common parser
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--media-path", required=True, help="Path to media file")
     parser.add_argument("--model-path", required=True, help="Path to downloaded model")
     parser.add_argument("--language", default="zh", help="Language code")
     parser.add_argument("--device", default="cpu", help="Device: cpu, cuda, auto")
-    parser.add_argument("--compute-type", default="int8", help="Compute type: int8, float16, float32")
+    parser.add_argument(
+        "--compute-type", default="int8", help="Compute type: int8, float16, float32"
+    )
     parser.add_argument("--word-timestamps", default="true", help="Enable word-level timestamps")
     parser.add_argument("--vad-filter", default="true", help="Enable Silero VAD filtering")
-    parser.add_argument("--vad-threshold", type=float, default=0.5, help="VAD onset threshold (0.0-1.0)")
-    parser.add_argument("--vad-min-silence-ms", type=int, default=500, help="Minimum silence duration in ms for VAD")
+    parser.add_argument(
+        "--vad-threshold", type=float, default=0.5, help="VAD onset threshold (0.0-1.0)"
+    )
+    parser.add_argument(
+        "--vad-min-silence-ms", type=int, default=500, help="Minimum silence duration in ms for VAD"
+    )
     parser.add_argument("--result-path", required=True, help="Path to write result JSON")
-    
+
     # Parse known args, ignoring any unknown args
     args, _ = parser.parse_known_args()
-    
+
     # Copy result_path from common args if not set
-    if not args.result_path and hasattr(common, 'result_path'):
+    if not args.result_path and hasattr(common, "result_path"):
         args.result_path = common.result_path
-    
+
     return args
 
 
@@ -73,6 +77,7 @@ def main() -> None:
     # Only set CUDA_VISIBLE_DEVICES for CPU mode -- setting it to ""
     # when the var is not natively set would hide GPUs on Windows.
     import os as _os
+
     if device == "cpu":
         _os.environ["CUDA_VISIBLE_DEVICES"] = ""
     try:
@@ -139,7 +144,11 @@ def main() -> None:
         report("error", message=f"Transcription failed: {exc}")
         sys.exit(1)
 
-    report("progress", percent=30.0, message=f"Detected language: {info.language} (prob: {info.language_probability:.2f})")
+    report(
+        "progress",
+        percent=30.0,
+        message=f"Detected language: {info.language} (prob: {info.language_probability:.2f})",
+    )
 
     # Collect segments with progress reporting
     segments: list[dict] = []
@@ -169,7 +178,11 @@ def main() -> None:
 
         # Report progress based on position in audio
         pct = 20.0 + (seg.end / total_duration) * 70.0
-        report("progress", percent=min(pct, 90.0), message=f"Transcribed {seg.end:.1f}s / {total_duration:.1f}s")
+        report(
+            "progress",
+            percent=min(pct, 90.0),
+            message=f"Transcribed {seg.end:.1f}s / {total_duration:.1f}s",
+        )
 
     report("progress", percent=95.0, message="Saving results...")
 

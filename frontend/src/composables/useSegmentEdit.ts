@@ -25,15 +25,30 @@ export interface UseSegmentEditReturn {
   pendingCount: ComputedRef<number>
 }
 
+function activeEdits(p: Project): EditDecision[] {
+  return p.timelines.find(t => t.id === p.active_timeline_id)?.edits ?? []
+}
+
+function activeTranscriptSegments(p: Project): Segment[] {
+  return p.timelines.find(t => t.id === p.active_timeline_id)?.transcript?.segments ?? []
+}
+
 function replaceSegment(project: Project, segId: string, patch: Partial<Segment>): Project {
   return {
     ...project,
-    transcript: {
-      ...project.transcript,
-      segments: project.transcript.segments.map(s =>
-        s.id === segId ? { ...s, ...patch } : s,
-      ),
-    },
+    timelines: project.timelines.map(tl =>
+      tl.id === project.active_timeline_id
+        ? {
+            ...tl,
+            transcript: {
+              ...tl.transcript,
+              segments: tl.transcript.segments.map(s =>
+                s.id === segId ? { ...s, ...patch } : s,
+              ),
+            },
+          }
+        : tl,
+    ),
   }
 }
 
@@ -66,23 +81,23 @@ export function useSegmentEdit(
   // -- Status queries ---------------------------------------------------
 
   function getEffectiveStatus(seg: Segment): "normal" | "masked" | "kept" {
-    return resolveSegmentState(project.value.edits, seg).styleClass
+    return resolveSegmentState(activeEdits(project.value), seg).styleClass
   }
 
   function getEditStatus(seg: Segment): EditDecision["status"] | null {
-    const state = resolveSegmentState(project.value.edits, seg)
+    const state = resolveSegmentState(activeEdits(project.value), seg)
     return state.displayStatus === "none" ? null : state.displayStatus
   }
 
   function resolveState(seg: Segment): SegmentState {
-    return resolveSegmentState(project.value.edits, seg)
+    return resolveSegmentState(activeEdits(project.value), seg)
   }
 
   // -- Debounced time updates -------------------------------------------
 
   function updateSegmentTime(segmentId: string, field: "start" | "end", value: number) {
     const prev = project.value
-    const seg = prev.transcript.segments.find(s => s.id === segmentId)
+    const seg = activeTranscriptSegments(prev).find(s => s.id === segmentId)
     if (!seg) return
 
     if (onBeforeProjectUpdate) onBeforeProjectUpdate(prev)
@@ -126,7 +141,7 @@ export function useSegmentEdit(
 
   async function toggleEditStatus(segment: Segment, nextStatus?: string): Promise<void> {
     if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value)
-    const edits = project.value.edits
+    const edits = activeEdits(project.value)
     const state = resolveSegmentState(edits, segment)
 
     if (state.activeEdit) {

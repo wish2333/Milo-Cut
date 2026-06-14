@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue"
-import type { Project, Segment, EditDecision, ModelInfo } from "@/types/project"
+import type { Project, Segment, EditDecision, ModelInfo, Timeline as TimelineData } from "@/types/project"
 import { formatTimeShort } from "@/utils/format"
 import { call, onEvent } from "@/bridge"
 import { useAnalysis } from "@/composables/useAnalysis"
@@ -16,6 +16,7 @@ import { EVENT_TASK_COMPLETED, EVENT_PROJECT_DIRTY, EVENT_PROJECT_SAVED } from "
 import ProgressBar from "@/components/common/ProgressBar.vue"
 import SplitPanel from "@/components/common/SplitPanel.vue"
 import Timeline from "@/components/workspace/Timeline.vue"
+import TimelineSwitcher from "@/components/workspace/TimelineSwitcher.vue"
 import WaveformEditor from "@/components/waveform/WaveformEditor.vue"
 import SearchReplaceBar from "@/components/workspace/SearchReplaceBar.vue"
 import VideoControls from "@/components/workspace/VideoControls.vue"
@@ -103,7 +104,12 @@ const {
   updateSegmentText,
   toggleEditStatus,
   flushPendingUpdates,
-} = useSegmentEdit(projectRef as any, (val: Project) => emit("project-updated", val), pushSnapshot)
+} = useSegmentEdit(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  projectRef as any,
+  (val: Project) => emit("project-updated", val),
+  pushSnapshot,
+)
 
 const { showToast } = useToast()
 const { listPlugins, checkEngineReady, listModels } = usePluginManager()
@@ -330,10 +336,13 @@ watch(isDirty, (dirty) => {
   }, 2000)
 })
 
-const segments = computed<Segment[]>(() => props.project.transcript?.segments ?? [])
-const edits = computed<EditDecision[]>(() => props.project.edits ?? [])
+const activeTimeline = computed<TimelineData | null>(() =>
+  props.project.timelines.find(t => t.id === props.project.active_timeline_id) ?? null
+)
+const segments = computed<Segment[]>(() => activeTimeline.value?.transcript?.segments ?? [])
+const edits = computed<EditDecision[]>(() => activeTimeline.value?.edits ?? [])
 const duration = computed(() => props.project.media?.duration ?? 0)
-const analysisResults = computed(() => props.project.analysis?.results ?? [])
+const analysisResults = computed(() => activeTimeline.value?.analysis?.results ?? [])
 
 const mergedSegments = computed<Segment[]>(() => {
   return [...segments.value].sort((a, b) => a.start - b.start)
@@ -712,6 +721,46 @@ function handleFullscreen() {
   }
 }
 
+// -- Timeline operations ----------------------------------------------
+
+async function handleSwitchTimeline(timelineId: string) {
+  const res = await call<Project>("switch_timeline", timelineId)
+  if (res.success && res.data) {
+    emit("project-updated", res.data)
+  } else {
+    showToast(res.error ?? "Failed to switch timeline", "error")
+  }
+}
+
+async function handleCreateTimeline() {
+  const label = window.prompt("Timeline name:", "新 Timeline")
+  if (!label) return
+  const fork = window.confirm("Fork from current timeline? (Cancel = blank timeline)")
+  const res = await call<Project>(
+    "create_timeline",
+    label,
+    "manual",
+    fork ? props.project.active_timeline_id : null,
+  )
+  if (res.success && res.data) {
+    emit("project-updated", res.data)
+    showToast(`Created timeline: ${label}`, "success")
+  } else {
+    showToast(res.error ?? "Failed to create timeline", "error")
+  }
+}
+
+async function handleDeleteTimeline(timelineId: string) {
+  if (!window.confirm("Delete this timeline? This cannot be undone.")) return
+  const res = await call<Project>("delete_timeline", timelineId)
+  if (res.success && res.data) {
+    emit("project-updated", res.data)
+    showToast("Timeline deleted", "success")
+  } else {
+    showToast(res.error ?? "Failed to delete timeline", "error")
+  }
+}
+
 async function handleToggleEditStatus(segment: Segment, nextStatus?: string) {
   await toggleEditStatus(segment, nextStatus)
 }
@@ -1055,6 +1104,13 @@ onUnmounted(() => {
         <span class="text-xs text-gray-400">
           {{ subtitleCount }} subtitles | {{ silenceCount }} silence | {{ formatTimeShort(duration) }}
         </span>
+        <TimelineSwitcher
+          :timelines="props.project.timelines"
+          :active-timeline-id="props.project.active_timeline_id"
+          @switch="handleSwitchTimeline"
+          @create="handleCreateTimeline"
+          @delete="handleDeleteTimeline"
+        />
         <button
           v-if="!props.project.media?.proxy_path"
           class="ml-2 rounded px-2 py-0.5 text-xs text-gray-400 hover:text-white transition-colors border border-gray-700 hover:border-gray-500"

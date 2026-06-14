@@ -237,4 +237,5 @@ project.json
 /test/
 
 # MacOS
-.DS_Store
+.DS_Store.codegraph/
+.reasonix/

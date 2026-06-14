@@ -1,12 +1,13 @@
 import { describe, it, expect } from "vitest"
 import { mount } from "@vue/test-utils"
 import TopicDriftPanel from "./TopicDriftPanel.vue"
-import type { Segment, TopicDriftResult } from "@/types/project"
+import type { TopicDriftResult } from "@/types/project"
+import { mockSegment } from "@/test/helpers/mockProject"
 
-const segments: Segment[] = [
-  { id: "s1", version: 1, type: "subtitle", start: 0, end: 5, text: "Welcome to the talk", speaker: "" },
-  { id: "s2", version: 1, type: "subtitle", start: 5, end: 10, text: "Unrelated tangent", speaker: "" },
-  { id: "s3", version: 1, type: "subtitle", start: 10, end: 15, text: "Back on main topic", speaker: "" },
+const segments = [
+  mockSegment({ id: "s1", start: 0, end: 5, text: "Welcome to the talk" }),
+  mockSegment({ id: "s2", start: 5, end: 10, text: "Unrelated tangent" }),
+  mockSegment({ id: "s3", start: 10, end: 15, text: "Back on main topic" }),
 ]
 
 const results: TopicDriftResult[] = [

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from "vue"
-import type { Project, Segment } from "@/types/project"
+import type { Project, Segment, Timeline } from "@/types/project"
 import type { EditSummary } from "@/types/edit"
 import EncodingSettings from "@/components/export/EncodingSettings.vue"
 import PreviewPlayer from "@/components/export/PreviewPlayer.vue"
@@ -122,12 +122,16 @@ function handleSummaryCancel() {
   exportSummary.value = null
 }
 
+const activeTimeline = computed<Timeline | null>(() =>
+  props.project.timelines.find(t => t.id === props.project.active_timeline_id) ?? null
+)
+
 const subtitleCount = computed(() =>
-  props.project.transcript?.segments?.filter(s => s.type === "subtitle").length ?? 0
+  activeTimeline.value?.transcript?.segments?.filter(s => s.type === "subtitle").length ?? 0
 )
 
 const sortedSegments = computed<Segment[]>(() =>
-  [...(props.project.transcript?.segments ?? [])].sort((a, b) => a.start - b.start)
+  [...(activeTimeline.value?.transcript?.segments ?? [])].sort((a, b) => a.start - b.start)
 )
 
 function handleEncodingSettingsUpdate(settings: typeof encodingSettings.value) {
@@ -329,7 +333,7 @@ function formatTimeShort(seconds: number): string {
         <PreviewPlayer
           :media-path="props.project.media?.path ?? null"
           :proxy-path="props.project.media?.proxy_path ?? null"
-          :edits="props.project.edits ?? []"
+          :edits="activeTimeline?.edits ?? []"
           :duration="props.project.media?.duration ?? 0"
           :segments="sortedSegments"
         />

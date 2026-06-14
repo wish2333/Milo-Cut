@@ -27,7 +27,7 @@ class TestFileProtocolPublish:
         # Verify content
         lines = files[0].read_text(encoding="utf-8").strip().split("\n")
         assert len(lines) == 2
-        parsed = [json.loads(l) for l in lines]
+        parsed = [json.loads(line) for line in lines]
         assert parsed[0]["id"] == "s1"
         assert parsed[1]["action"] == "keep"
 
@@ -44,9 +44,7 @@ class TestFileProtocolPublish:
         tmp_files = list(manager.outgoing_dir.glob("*.tmp"))
         assert len(tmp_files) == 0
 
-    def test_publish_filename_includes_data_type(
-        self, manager: FileProtocolManager
-    ) -> None:
+    def test_publish_filename_includes_data_type(self, manager: FileProtocolManager) -> None:
         manager.publish("my_type", [{"a": 1}])
         files = list(manager.outgoing_dir.glob("*my_type*.milo.jsonl"))
         assert len(files) == 1
@@ -64,7 +62,7 @@ class TestFileProtocolPublish:
 
         files = list(manager.outgoing_dir.glob("*edit_timeline*.milo.jsonl"))
         lines = files[0].read_text(encoding="utf-8").strip().split("\n")
-        records = [json.loads(l) for l in lines]
+        records = [json.loads(line) for line in lines]
         assert records[0]["id"] == "s1"
         assert records[0]["action"] == "delete"
         assert records[1]["id"] == "s2"
@@ -79,7 +77,7 @@ class TestFileProtocolPublish:
 
         files = list(manager.outgoing_dir.glob("*topic_drift*.milo.jsonl"))
         lines = files[0].read_text(encoding="utf-8").strip().split("\n")
-        records = [json.loads(l) for l in lines]
+        records = [json.loads(line) for line in lines]
         # First record is meta
         assert records[0]["type"] == "meta"
         assert records[0]["topic_description"] == "AI presentation"
@@ -120,9 +118,7 @@ class TestFileProtocolPoll:
         results = manager.poll_incoming()
         assert results == []
 
-    def test_poll_incoming_skips_invalid_lines(
-        self, manager: FileProtocolManager
-    ) -> None:
+    def test_poll_incoming_skips_invalid_lines(self, manager: FileProtocolManager) -> None:
         """Invalid JSON lines are skipped, valid ones parsed."""
         incoming_file = manager.incoming_dir / "mixed.milo.jsonl"
         incoming_file.write_text(
@@ -143,9 +139,7 @@ class TestFileProtocolPoll:
         results = manager.poll_incoming()
         assert len(results) == 3
 
-    def test_poll_incoming_callback(
-        self, manager: FileProtocolManager
-    ) -> None:
+    def test_poll_incoming_callback(self, manager: FileProtocolManager) -> None:
         """Registered callback receives parsed records."""
         received: list[tuple[str, list[dict]]] = []
         manager.on_incoming(lambda fn, recs: received.append((fn, recs)))

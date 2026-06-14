@@ -27,6 +27,7 @@ def _get_settings_ffmpeg_path() -> str | None:
     """Read user-configured ffmpeg path from settings."""
     try:
         from core.config import load_settings
+
         settings = load_settings()
         path = settings.get("ffmpeg_path", "")
         if path and Path(path).is_file():
@@ -40,6 +41,7 @@ def _get_settings_ffprobe_path() -> str | None:
     """Read user-configured ffprobe path from settings."""
     try:
         from core.config import load_settings
+
         settings = load_settings()
         path = settings.get("ffprobe_path", "")
         if path and Path(path).is_file():
@@ -65,6 +67,7 @@ def _find_ffprobe() -> str:
     # 3. static_ffmpeg package
     try:
         import static_ffmpeg
+
         paths = static_ffmpeg.utils.get_or_fetch_platform_executables_else_raise()
         return paths[1]  # ffprobe is second
     except Exception as e:
@@ -88,6 +91,7 @@ def _find_ffmpeg() -> str:
     # 3. static_ffmpeg package
     try:
         import static_ffmpeg
+
         paths = static_ffmpeg.utils.get_or_fetch_platform_executables_else_raise()
         return paths[0]  # ffmpeg is first
     except Exception as e:
@@ -104,15 +108,20 @@ def probe_media(file_path: str) -> dict:
         ffprobe = _find_ffprobe()
         cmd = [
             ffprobe,
-            "-v", "quiet",
-            "-print_format", "json",
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
             "-show_format",
             "-show_streams",
             file_path,
         ]
         result = subprocess.run(
-            cmd, capture_output=True, timeout=30,
-            encoding="utf-8", errors="replace",
+            cmd,
+            capture_output=True,
+            timeout=30,
+            encoding="utf-8",
+            errors="replace",
             **_SUBPROCESS_KWARGS,
         )
         if result.returncode != 0:
@@ -174,14 +183,20 @@ def detect_silence(
         ffmpeg = _find_ffmpeg()
         cmd = [
             ffmpeg,
-            "-i", file_path,
-            "-af", f"silencedetect=noise={threshold_db}dB:d={min_duration}",
-            "-f", "null",
+            "-i",
+            file_path,
+            "-af",
+            f"silencedetect=noise={threshold_db}dB:d={min_duration}",
+            "-f",
+            "null",
             "-",
         ]
         result = subprocess.run(
-            cmd, capture_output=True, timeout=300,
-            encoding="utf-8", errors="replace",
+            cmd,
+            capture_output=True,
+            timeout=300,
+            encoding="utf-8",
+            errors="replace",
             **_SUBPROCESS_KWARGS,
         )
         output = result.stderr
@@ -203,11 +218,13 @@ def detect_silence(
                     end_val = float(parts.split()[0])
                     if starts:
                         start = starts.pop(0)
-                        silences.append({
-                            "start": round(start, 3),
-                            "end": round(end_val, 3),
-                            "duration": round(end_val - start, 3),
-                        })
+                        silences.append(
+                            {
+                                "start": round(start, 3),
+                                "end": round(end_val, 3),
+                                "duration": round(end_val - start, 3),
+                            }
+                        )
                 except (ValueError, IndexError):
                     continue
 
@@ -240,22 +257,31 @@ def generate_waveform(
 
         # Extract mono f32le audio at 8kHz to reduce data volume
         cmd = [
-            ffmpeg, "-hide_banner", "-y",
-            "-i", file_path,
-            "-f", "f32le",
-            "-ac", "1",
-            "-ar", "8000",
+            ffmpeg,
+            "-hide_banner",
+            "-y",
+            "-i",
+            file_path,
+            "-f",
+            "f32le",
+            "-ac",
+            "1",
+            "-ar",
+            "8000",
             "-vn",
             "pipe:1",
         ]
         result = subprocess.run(
-            cmd, capture_output=True, timeout=300,
+            cmd,
+            capture_output=True,
+            timeout=300,
             **_SUBPROCESS_KWARGS,
         )
         if result.returncode != 0:
             return {"success": False, "error": f"ffmpeg exited with code {result.returncode}"}
 
         import struct
+
         raw = result.stdout
         sample_count = len(raw) // 4  # 4 bytes per f32
         if sample_count == 0:
@@ -278,13 +304,16 @@ def generate_waveform(
             bucket_min = min(chunk)
             bucket_max = max(chunk)
             # Clamp to [-1, 1]
-            peaks.append({
-                "min": max(-1.0, min(1.0, bucket_min)),
-                "max": max(-1.0, min(1.0, bucket_max)),
-            })
+            peaks.append(
+                {
+                    "min": max(-1.0, min(1.0, bucket_min)),
+                    "max": max(-1.0, min(1.0, bucket_max)),
+                }
+            )
 
         # Write JSON
         import json
+
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(peaks, f)
 
@@ -323,13 +352,24 @@ def generate_proxy(
     height = int(resolution.replace("p", ""))
 
     cmd = [
-        ffmpeg, "-y",
-        "-i", media_path,
-        "-vf", f"scale=-2:{height}",
-        "-c:v", "libx264", "-crf", "28",
-        "-preset", "ultrafast",
-        "-c:a", "aac", "-b:a", "128k",
-        "-movflags", "+faststart",
+        ffmpeg,
+        "-y",
+        "-i",
+        media_path,
+        "-vf",
+        f"scale=-2:{height}",
+        "-c:v",
+        "libx264",
+        "-crf",
+        "28",
+        "-preset",
+        "ultrafast",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-movflags",
+        "+faststart",
         output_path,
     ]
 

@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import json
 import threading
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
-from openai import OpenAI, APIError, APITimeoutError, RateLimitError
+from openai import APIError, APITimeoutError, OpenAI, RateLimitError
 
 from core.config import load_settings
 from core.logging import get_logger
@@ -173,7 +174,7 @@ def call_llm(
 
         # Exponential backoff before retry
         if attempt < _MAX_RETRIES - 1:
-            delay = _RETRY_BASE_DELAY * (2 ** attempt)
+            delay = _RETRY_BASE_DELAY * (2**attempt)
             if cancel_event:
                 cancel_event.wait(timeout=delay)
             else:
@@ -314,9 +315,7 @@ _TOPIC_DRIFT_USER_TEMPLATE = """请分析以下视频转录片段与主题的相
 """
 
 
-def _build_topic_drift_prompt(
-    segments: list[dict], topic_description: str
-) -> str:
+def _build_topic_drift_prompt(segments: list[dict], topic_description: str) -> str:
     """Build the user prompt for topic drift analysis."""
     topic_line = (
         f"分析主题：{topic_description}"
@@ -331,9 +330,7 @@ def _build_topic_drift_prompt(
         lines.append(f"[{seg_id}] {text}")
 
     segments_text = "\n".join(lines)
-    return _TOPIC_DRIFT_USER_TEMPLATE.format(
-        topic_line=topic_line, segments_text=segments_text
-    )
+    return _TOPIC_DRIFT_USER_TEMPLATE.format(topic_line=topic_line, segments_text=segments_text)
 
 
 def _parse_topic_drift_response(content: str) -> list[dict]:

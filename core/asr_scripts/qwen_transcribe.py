@@ -26,7 +26,6 @@ import os
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 from typing import Any
 
@@ -48,9 +47,9 @@ from core.asr_scripts.common import (
 
 # Constants for smart slicing
 ACCUMULATE_THRESHOLD = 280.0  # seconds - target slice length
-FORCE_CUT_THRESHOLD = 240.0   # seconds - force cut if no silence found
-SLICE_OVERLAP = 0.5           # seconds - overlap between slices
-MIN_SILENCE_DURATION = 0.3    # seconds - minimum silence to consider as cut point
+FORCE_CUT_THRESHOLD = 240.0  # seconds - force cut if no silence found
+SLICE_OVERLAP = 0.5  # seconds - overlap between slices
+MIN_SILENCE_DURATION = 0.3  # seconds - minimum silence to consider as cut point
 
 
 def parse_qwen_args() -> argparse.Namespace:
@@ -60,10 +59,14 @@ def parse_qwen_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--media-path", required=True, help="Path to media file")
     parser.add_argument("--asr-model-path", required=True, help="Path to Qwen3-ASR model")
-    parser.add_argument("--aligner-model-path", default="", help="Path to Qwen3-ForcedAligner model (optional)")
+    parser.add_argument(
+        "--aligner-model-path", default="", help="Path to Qwen3-ForcedAligner model (optional)"
+    )
     parser.add_argument("--language", default="zh", help="Language code")
     parser.add_argument("--device", default="cpu", help="Device: cpu, cuda")
-    parser.add_argument("--compute-type", default="bfloat16", help="Compute type: bfloat16, float16, float32")
+    parser.add_argument(
+        "--compute-type", default="bfloat16", help="Compute type: bfloat16, float16, float32"
+    )
     parser.add_argument("--result-path", required=True, help="Path to write result JSON")
 
     args, _ = parser.parse_known_args()
@@ -85,7 +88,7 @@ def find_silence_points(audio_data: Any, sample_rate: int) -> list[float]:
     threshold = np.mean(np.abs(audio_data)) * 0.1
 
     for i in range(0, len(audio_data) - frame_size, hop_size):
-        frame = audio_data[i:i + frame_size]
+        frame = audio_data[i : i + frame_size]
         energy = np.mean(np.abs(frame))
         if energy < threshold:
             timestamp = i / sample_rate
@@ -107,7 +110,9 @@ def find_silence_points(audio_data: Any, sample_rate: int) -> list[float]:
     return merged
 
 
-def find_best_cut_point(silence_points: list[float], target_time: float, search_range: float = 10.0) -> float:
+def find_best_cut_point(
+    silence_points: list[float], target_time: float, search_range: float = 10.0
+) -> float:
     """Find the best silence point near the target time."""
     if not silence_points:
         return target_time
@@ -122,13 +127,20 @@ def smart_slice_audio(audio_path: str, temp_dir: str) -> list[dict[str, Any]]:
     import numpy as np
 
     probe_cmd = [
-        "ffprobe", "-v", "quiet",
-        "-show_entries", "format=duration",
-        "-of", "json", audio_path
+        "ffprobe",
+        "-v",
+        "quiet",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "json",
+        audio_path,
     ]
 
     try:
-        result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True, **_SUBPROCESS_KWARGS)
+        result = subprocess.run(
+            probe_cmd, capture_output=True, text=True, check=True, **_SUBPROCESS_KWARGS
+        )
         duration = float(json.loads(result.stdout)["format"]["duration"])
     except Exception as e:
         report("error", message=f"Failed to get audio duration: {e}")
@@ -139,9 +151,17 @@ def smart_slice_audio(audio_path: str, temp_dir: str) -> list[dict[str, Any]]:
 
     raw_path = Path(temp_dir) / "audio_raw.wav"
     extract_cmd = [
-        "ffmpeg", "-y", "-i", audio_path,
-        "-ac", "1", "-ar", "16000",
-        "-f", "wav", str(raw_path)
+        "ffmpeg",
+        "-y",
+        "-i",
+        audio_path,
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-f",
+        "wav",
+        str(raw_path),
     ]
 
     try:
@@ -152,6 +172,7 @@ def smart_slice_audio(audio_path: str, temp_dir: str) -> list[dict[str, Any]]:
 
     try:
         import wave
+
         with wave.open(str(raw_path), "rb") as wf:
             frames = wf.readframes(wf.getnframes())
             audio_data = np.frombuffer(frames, dtype=np.int16).astype(np.float32)
@@ -171,11 +192,13 @@ def smart_slice_audio(audio_path: str, temp_dir: str) -> list[dict[str, Any]]:
         target_end = current_start + ACCUMULATE_THRESHOLD
 
         if target_end >= duration:
-            slices.append({
-                "path": str(Path(temp_dir) / f"slice_{slice_idx:03d}.wav"),
-                "start": current_start,
-                "end": duration,
-            })
+            slices.append(
+                {
+                    "path": str(Path(temp_dir) / f"slice_{slice_idx:03d}.wav"),
+                    "start": current_start,
+                    "end": duration,
+                }
+            )
             break
 
         cut_point = find_best_cut_point(silence_points, target_end)
@@ -184,11 +207,13 @@ def smart_slice_audio(audio_path: str, temp_dir: str) -> list[dict[str, Any]]:
 
         actual_start = max(0, current_start - SLICE_OVERLAP) if slice_idx > 0 else current_start
 
-        slices.append({
-            "path": str(Path(temp_dir) / f"slice_{slice_idx:03d}.wav"),
-            "start": actual_start,
-            "end": cut_point,
-        })
+        slices.append(
+            {
+                "path": str(Path(temp_dir) / f"slice_{slice_idx:03d}.wav"),
+                "start": actual_start,
+                "end": cut_point,
+            }
+        )
 
         current_start = cut_point
         slice_idx += 1
@@ -198,12 +223,19 @@ def smart_slice_audio(audio_path: str, temp_dir: str) -> list[dict[str, Any]]:
         duration_slice = slice_info["end"] - start
 
         extract_cmd = [
-            "ffmpeg", "-y",
-            "-i", audio_path,
-            "-ss", str(start),
-            "-t", str(duration_slice),
-            "-ac", "1", "-ar", "16000",
-            slice_info["path"]
+            "ffmpeg",
+            "-y",
+            "-i",
+            audio_path,
+            "-ss",
+            str(start),
+            "-t",
+            str(duration_slice),
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            slice_info["path"],
         ]
 
         try:
@@ -213,7 +245,7 @@ def smart_slice_audio(audio_path: str, temp_dir: str) -> list[dict[str, Any]]:
             sys.exit(1)
 
         pct = 5.0 + (i / len(slices)) * 10.0
-        report("progress", percent=pct, message=f"Extracted slice {i+1}/{len(slices)}")
+        report("progress", percent=pct, message=f"Extracted slice {i + 1}/{len(slices)}")
 
     return slices
 
@@ -258,13 +290,15 @@ def _split_into_subtitle_segments(
         return []
 
     if not words:
-        return [{
-            "id": f"seg_{slice_start:.3f}",
-            "start": round(slice_start, 3),
-            "end": round(slice_end, 3),
-            "text": text.strip(),
-            "words": [],
-        }]
+        return [
+            {
+                "id": f"seg_{slice_start:.3f}",
+                "start": round(slice_start, 3),
+                "end": round(slice_end, 3),
+                "text": text.strip(),
+                "words": [],
+            }
+        ]
 
     import re
 
@@ -326,22 +360,26 @@ def _split_into_subtitle_segments(
             current_time = sentence_end
 
         segment_id = f"seg_{sentence_start:.3f}" if sentence_start else f"seg_{slice_start:.3f}"
-        segments.append({
-            "id": segment_id,
-            "start": round(sentence_start or slice_start, 3),
-            "end": round(sentence_end or slice_end, 3),
-            "text": sentence,
-            "words": sentence_words,
-        })
+        segments.append(
+            {
+                "id": segment_id,
+                "start": round(sentence_start or slice_start, 3),
+                "end": round(sentence_end or slice_end, 3),
+                "text": sentence,
+                "words": sentence_words,
+            }
+        )
 
     if not segments:
-        segments.append({
-            "id": f"seg_{slice_start:.3f}",
-            "start": round(slice_start, 3),
-            "end": round(slice_end, 3),
-            "text": text.strip(),
-            "words": words,
-        })
+        segments.append(
+            {
+                "id": f"seg_{slice_start:.3f}",
+                "start": round(slice_start, 3),
+                "end": round(slice_end, 3),
+                "text": text.strip(),
+                "words": words,
+            }
+        )
 
     return segments
 
@@ -415,23 +453,45 @@ def main() -> None:
             report("error", message=f"Failed to load ASR model: {e}")
             sys.exit(1)
 
-        report("progress", percent=15.0, message=f"Model loaded on {dev}. Starting transcription...")
+        report(
+            "progress", percent=15.0, message=f"Model loaded on {dev}. Starting transcription..."
+        )
 
         # Start orphan process defense AFTER model loading
         start_stdin_watchdog()
 
         # Map language codes to Qwen3-ASR language names
         lang_map = {
-            "zh": "Chinese", "en": "English", "yue": "Cantonese",
-            "ar": "Arabic", "de": "German", "fr": "French",
-            "es": "Spanish", "pt": "Portuguese", "id": "Indonesian",
-            "it": "Italian", "ko": "Korean", "ru": "Russian",
-            "th": "Thai", "vi": "Vietnamese", "ja": "Japanese",
-            "tr": "Turkish", "hi": "Hindi", "ms": "Malay",
-            "nl": "Dutch", "sv": "Swedish", "da": "Danish",
-            "fi": "Finnish", "pl": "Polish", "cs": "Czech",
-            "fil": "Filipino", "fa": "Persian", "el": "Greek",
-            "ro": "Romanian", "hu": "Hungarian", "mk": "Macedonian",
+            "zh": "Chinese",
+            "en": "English",
+            "yue": "Cantonese",
+            "ar": "Arabic",
+            "de": "German",
+            "fr": "French",
+            "es": "Spanish",
+            "pt": "Portuguese",
+            "id": "Indonesian",
+            "it": "Italian",
+            "ko": "Korean",
+            "ru": "Russian",
+            "th": "Thai",
+            "vi": "Vietnamese",
+            "ja": "Japanese",
+            "tr": "Turkish",
+            "hi": "Hindi",
+            "ms": "Malay",
+            "nl": "Dutch",
+            "sv": "Swedish",
+            "da": "Danish",
+            "fi": "Finnish",
+            "pl": "Polish",
+            "cs": "Czech",
+            "fil": "Filipino",
+            "fa": "Persian",
+            "el": "Greek",
+            "ro": "Romanian",
+            "hu": "Hungarian",
+            "mk": "Macedonian",
         }
         language = lang_map.get(args.language, args.language)
         # Auto-detect: pass None to model.transcribe() for automatic language detection
@@ -450,7 +510,11 @@ def main() -> None:
             slice_duration = slice_end - slice_start
 
             base_pct = 15.0 + (processed_duration / total_duration) * 65.0
-            report("progress", percent=base_pct, message=f"Transcribing slice {i+1}/{total_slices} ({slice_start:.1f}s - {slice_end:.1f}s)")
+            report(
+                "progress",
+                percent=base_pct,
+                message=f"Transcribing slice {i + 1}/{total_slices} ({slice_start:.1f}s - {slice_end:.1f}s)",
+            )
 
             try:
                 return_timestamps = bool(args.aligner_model_path)
@@ -477,12 +541,14 @@ def main() -> None:
                             start = getattr(ts, "start_time", getattr(ts, "start", None))
                             end = getattr(ts, "end_time", getattr(ts, "end", None))
                             if start is not None and end is not None and (start > 0 or end > 0):
-                                all_words.append({
-                                    "word": ts.text if hasattr(ts, "text") else str(ts),
-                                    "start": round(start + slice_start, 3),
-                                    "end": round(end + slice_start, 3),
-                                    "confidence": round(getattr(ts, "confidence", 0.9), 3),
-                                })
+                                all_words.append(
+                                    {
+                                        "word": ts.text if hasattr(ts, "text") else str(ts),
+                                        "start": round(start + slice_start, 3),
+                                        "end": round(end + slice_start, 3),
+                                        "confidence": round(getattr(ts, "confidence", 0.9), 3),
+                                    }
+                                )
 
                 # Split into subtitle segments
                 segments = _split_into_subtitle_segments(
@@ -502,7 +568,7 @@ def main() -> None:
                 processed_duration += slice_duration
 
                 pct = 15.0 + (processed_duration / total_duration) * 65.0
-                report("progress", percent=pct, message=f"Completed slice {i+1}/{total_slices}")
+                report("progress", percent=pct, message=f"Completed slice {i + 1}/{total_slices}")
 
             except Exception as e:
                 report("error", message=f"Transcription failed on slice {i}: {e}")
@@ -529,7 +595,11 @@ def main() -> None:
         report("progress", percent=95.0, message="Saving results...")
         write_result(args.result_path, result)
 
-        report("progress", percent=100.0, message=f"Transcription complete: {len(all_segments)} segments, {total_words} words")
+        report(
+            "progress",
+            percent=100.0,
+            message=f"Transcription complete: {len(all_segments)} segments, {total_words} words",
+        )
 
 
 if __name__ == "__main__":

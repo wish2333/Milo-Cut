@@ -11,10 +11,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-
 # ================================================================
 # Enums / Literal types
 # ================================================================
+
 
 class TaskStatus(StrEnum):
     QUEUED = "queued"
@@ -59,6 +59,7 @@ class SegmentType(StrEnum):
 # ================================================================
 # Core data models
 # ================================================================
+
 
 class Word(BaseModel, frozen=True):
     word: str
@@ -107,9 +108,9 @@ class EditDecision(BaseModel, frozen=True):
     target_type: Literal["segment", "range"] = "range"
     target_id: str | None = None
 
-    @model_validator(mode='after')
-    def validate_target(self) -> 'EditDecision':
-        if self.target_type == 'segment' and self.target_id is None:
+    @model_validator(mode="after")
+    def validate_target(self) -> EditDecision:
+        if self.target_type == "segment" and self.target_id is None:
             raise ValueError('target_id is required when target_type is "segment"')
         return self
 
@@ -268,7 +269,7 @@ class TopicDriftData(BaseModel, frozen=True):
 
 
 # ================================================================
-# Analysis data + Project
+# Analysis data + Timeline (multi-timeline infrastructure, v2.0.0)
 # ================================================================
 
 
@@ -277,11 +278,69 @@ class AnalysisData(BaseModel, frozen=True):
     results: list[AnalysisResult] = Field(default_factory=list)
 
 
+class Timeline(BaseModel, frozen=True):
+    """Independent timeline -- owns a complete transcript + edits + analysis.
+
+    Each Timeline is a self-contained (transcript, edits, analysis) triple.
+    Switching timelines does not affect others. LLM operations run on forked
+    timelines so the original is never mutated.
+    """
+
+    id: str  # unique identifier ("default" / "subtitle-fix-v1" / "smart-delete-v2")
+    label: str  # user-visible name
+    source: str = "manual"  # creation source ("manual" / "fork" / "llm_p0" / "llm_p1" / "migrated")
+    created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+    parent_id: str = ""  # fork origin (empty = root timeline)
+    transcript: TranscriptData = Field(default_factory=TranscriptData)
+    edits: list[EditDecision] = Field(default_factory=list)
+    analysis: AnalysisData = Field(default_factory=AnalysisData)
+
+
+# ================================================================
+# Project (v2 multi-timeline schema)
+# ================================================================
+
+
 class Project(BaseModel, frozen=True):
-    schema_version: int = 1
+    # Allow mutation of _internal fields despite frozen=True (for ProjectService)
+    model_config = {"frozen": True}
+
+    schema_version: int = 2
     project: ProjectMeta = Field(default_factory=ProjectMeta)
     media: MediaInfo | None = None
-    transcript: TranscriptData = Field(default_factory=TranscriptData)
-    analysis: AnalysisData = Field(default_factory=AnalysisData)
-    edits: list[EditDecision] = Field(default_factory=list)
-    topic_drift: TopicDriftData = Field(default_factory=TopicDriftData)
+
+    # Multi-timeline container (v2 schema)
+    timelines: list[Timeline] = Field(default_factory=list)
+    active_timeline_id: str = "default"
+
+    # Backward-compat: v1 flat fields kept for migration reading.
+    # After _migrate_to_v2 these are never populated on new projects.
+    # They default to empty and are excluded from dumps when timelines is set.
+
+    @model_validator(mode="after")
+    def ensure_default_timeline(self) -> Project:
+        """Ensure at least one timeline exists and active_timeline_id is valid."""
+        if not self.timelines:
+            # Create empty default timeline if none exists
+            default = Timeline(id="default", label="原始", source="default")
+            object.__setattr__(self, "timelines", [default])
+        ids = {tl.id for tl in self.timelines}
+        if self.active_timeline_id not in ids:
+            object.__setattr__(self, "active_timeline_id", self.timelines[0].id)
+        return self
+
+    def get_timeline(self, timeline_id: str) -> Timeline | None:
+        """Get a timeline by ID, or None if not found."""
+        for tl in self.timelines:
+            if tl.id == timeline_id:
+                return tl
+        return None
+
+    @property
+    def active_timeline(self) -> Timeline:
+        """The currently active timeline."""
+        tl = self.get_timeline(self.active_timeline_id)
+        if tl is None:
+            # Fallback to first timeline (shouldn't happen due to validator)
+            return self.timelines[0]
+        return tl

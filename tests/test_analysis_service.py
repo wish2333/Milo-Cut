@@ -1,7 +1,8 @@
 """Tests for core.analysis_service."""
 
 from core.analysis_service import detect_errors, detect_fillers, run_full_analysis
-from core.models import Segment, SegmentType
+from core.models import SegmentType
+from tests.mocks import make_segment
 
 
 class TestDetectFillers:
@@ -12,9 +13,9 @@ class TestDetectFillers:
 
     def test_chinese_fillers(self):
         segments = [
-            Segment(id="s1", type=SegmentType.SUBTITLE, start=0.0, end=5.0, text="嗯这个功能很好"),
-            Segment(id="s2", type=SegmentType.SUBTITLE, start=5.0, end=10.0, text="然后我们可以看到"),
-            Segment(id="s3", type=SegmentType.SUBTITLE, start=10.0, end=15.0, text="正常文本无填充词"),
+            make_segment(id="s1", text="嗯这个功能很好"),
+            make_segment(id="s2", start=5.0, end=10.0, text="然后我们可以看到"),
+            make_segment(id="s3", start=10.0, end=15.0, text="正常文本无填充词"),
         ]
         results = detect_fillers(segments, filler_words=["嗯", "然后"])
         assert len(results) == 2
@@ -25,7 +26,7 @@ class TestDetectFillers:
 
     def test_longest_first_matching(self):
         segments = [
-            Segment(id="s1", type=SegmentType.SUBTITLE, start=0.0, end=5.0, text="怎么说呢这个"),
+            make_segment(id="s1", text="怎么说呢这个"),
         ]
         results = detect_fillers(segments, filler_words=["怎么", "怎么说呢"])
         assert len(results) == 1
@@ -33,14 +34,14 @@ class TestDetectFillers:
 
     def test_skips_silence_segments(self):
         segments = [
-            Segment(id="s1", type=SegmentType.SILENCE, start=0.0, end=5.0, text=""),
+            make_segment(id="s1", type=SegmentType.SILENCE, text=""),
         ]
         results = detect_fillers(segments, filler_words=["嗯"])
         assert len(results) == 0
 
     def test_confidence(self):
         segments = [
-            Segment(id="s1", type=SegmentType.SUBTITLE, start=0.0, end=5.0, text="嗯好"),
+            make_segment(id="s1", text="嗯好"),
         ]
         results = detect_fillers(segments, filler_words=["嗯"])
         assert results[0].confidence == 0.90
@@ -53,11 +54,11 @@ class TestDetectErrors:
 
     def test_error_trigger_with_lookahead(self):
         segments = [
-            Segment(id="s1", type=SegmentType.SUBTITLE, start=0.0, end=5.0, text="正常开始"),
-            Segment(id="s2", type=SegmentType.SUBTITLE, start=5.0, end=10.0, text="不对重来说错了"),
-            Segment(id="s3", type=SegmentType.SUBTITLE, start=10.0, end=15.0, text="重新说的内容"),
-            Segment(id="s4", type=SegmentType.SUBTITLE, start=15.0, end=20.0, text="继续"),
-            Segment(id="s5", type=SegmentType.SUBTITLE, start=20.0, end=25.0, text="再继续"),
+            make_segment(id="s1", text="正常开始"),
+            make_segment(id="s2", start=5.0, end=10.0, text="不对重来说错了"),
+            make_segment(id="s3", start=10.0, end=15.0, text="重新说的内容"),
+            make_segment(id="s4", start=15.0, end=20.0, text="继续"),
+            make_segment(id="s5", start=20.0, end=25.0, text="再继续"),
         ]
         results = detect_errors(segments, trigger_words=["不对"], lookahead=3)
         assert len(results) == 1
@@ -66,8 +67,8 @@ class TestDetectErrors:
 
     def test_lookahead_boundary(self):
         segments = [
-            Segment(id="s1", type=SegmentType.SUBTITLE, start=0.0, end=5.0, text="重来"),
-            Segment(id="s2", type=SegmentType.SUBTITLE, start=5.0, end=10.0, text="next"),
+            make_segment(id="s1", text="重来"),
+            make_segment(id="s2", start=5.0, end=10.0, text="next"),
         ]
         results = detect_errors(segments, trigger_words=["重来"], lookahead=3)
         assert len(results) == 1
@@ -76,7 +77,7 @@ class TestDetectErrors:
 
     def test_confidence(self):
         segments = [
-            Segment(id="s1", type=SegmentType.SUBTITLE, start=0.0, end=5.0, text="不对"),
+            make_segment(id="s1", text="不对"),
         ]
         results = detect_errors(segments, trigger_words=["不对"])
         assert results[0].confidence == 0.85
@@ -85,7 +86,7 @@ class TestDetectErrors:
 class TestRunFullAnalysis:
     def test_combined_results(self):
         segments = [
-            Segment(id="s1", type=SegmentType.SUBTITLE, start=0.0, end=5.0, text="嗯不对重来"),
+            make_segment(id="s1", text="嗯不对重来"),
         ]
         settings = {
             "filler_words": ["嗯"],

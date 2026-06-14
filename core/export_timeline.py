@@ -18,7 +18,6 @@ def export_edl(
         fps = media_info.get("fps", 25.0)
         media_path = media_info.get("path", "")
         media_filename = Path(media_path).name
-        media_stem = Path(media_path).stem
 
         reel = media_filename
 
@@ -105,7 +104,7 @@ def _build_xmeml_full_timeline(
     all_ranges.sort(key=lambda r: r[0])
 
     total_frames = 0
-    for start, end, kind in all_ranges:
+    for start, end, _kind in all_ranges:
         start_frame = _sec_to_frames(start, fps)
         end_frame = _sec_to_frames(end, fps)
         dur = end_frame - start_frame
@@ -115,25 +114,41 @@ def _build_xmeml_full_timeline(
     file_url = Path(media_path).name if wrap_in_project else Path(media_path).resolve().as_uri()
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
-        '<!DOCTYPE xmeml>',
+        "<!DOCTYPE xmeml>",
         '<xmeml version="5">',
     ]
     if wrap_in_project:
-        lines.extend(["  <project>", f"    <name>{media_name}_edited</name>", "    <children>", "      <sequence>"])
+        lines.extend(
+            [
+                "  <project>",
+                f"    <name>{media_name}_edited</name>",
+                "    <children>",
+                "      <sequence>",
+            ]
+        )
     else:
         lines.append("  <sequence>")
 
     si = "      " if wrap_in_project else "    "
-    lines.extend([
-        f"{si}<name>{media_name}_edited</name>",
-        f"{si}<duration>{total_frames}</duration>",
-        f"{si}<rate>", f"{si}  <ntsc>{ntsc_str}</ntsc>", f"{si}  <timebase>{timebase}</timebase>", f"{si}</rate>",
-        f"{si}<media>", f"{si}  <video>",
-        f"{si}    <format>", f"{si}      <samplecharacteristics>",
-        f"{si}        <width>{width}</width>", f"{si}        <height>{height}</height>",
-        f"{si}      </samplecharacteristics>", f"{si}    </format>",
-        f"{si}    <track>",
-    ])
+    lines.extend(
+        [
+            f"{si}<name>{media_name}_edited</name>",
+            f"{si}<duration>{total_frames}</duration>",
+            f"{si}<rate>",
+            f"{si}  <ntsc>{ntsc_str}</ntsc>",
+            f"{si}  <timebase>{timebase}</timebase>",
+            f"{si}</rate>",
+            f"{si}<media>",
+            f"{si}  <video>",
+            f"{si}    <format>",
+            f"{si}      <samplecharacteristics>",
+            f"{si}        <width>{width}</width>",
+            f"{si}        <height>{height}</height>",
+            f"{si}      </samplecharacteristics>",
+            f"{si}    </format>",
+            f"{si}    <track>",
+        ]
+    )
 
     ci = si + "      "
     current_timeline_frame = 0
@@ -155,50 +170,88 @@ def _build_xmeml_full_timeline(
             v_id = f"clipitem-video-{clip_idx}"
             a1_id = f"clipitem-audio1-{clip_idx}"
             a2_id = f"clipitem-audio2-{clip_idx}"
-            lines.extend([
-                f"{ci}<clipitem id=\"{v_id}\">",
-                f"{ci}  <name>{media_filename}</name>",
-                f"{ci}  <duration>{dur_frames}</duration>",
-                f"{ci}  <rate>", f"{ci}    <ntsc>{ntsc_str}</ntsc>", f"{ci}    <timebase>{timebase}</timebase>", f"{ci}  </rate>",
-                f"{ci}  <start>{seq_start}</start>",
-                f"{ci}  <end>{seq_end}</end>",
-                f"{ci}  <in>{start_frame}</in>",
-                f"{ci}  <out>{end_frame}</out>",
-                f"{ci}  <file id=\"file-{clip_idx}\">",
-                f"{ci}    <name>{media_filename}</name>",
-                f"{ci}    <pathurl>{file_url}</pathurl>",
-                f"{ci}    <rate>", f"{ci}      <ntsc>{ntsc_str}</ntsc>", f"{ci}      <timebase>{timebase}</timebase>", f"{ci}    </rate>",
-                f"{ci}    <duration>{source_total_frames}</duration>",
-                f"{ci}    <timecode>", f"{ci}      <rate>", f"{ci}        <ntsc>{ntsc_str}</ntsc>", f"{ci}        <timebase>{timebase}</timebase>", f"{ci}      </rate>",
-                f"{ci}      <string>00:00:00:00</string>", f"{ci}      <frame>0</frame>", f"{ci}      <source>source</source>", f"{ci}    </timecode>",
-                f"{ci}    <media>", f"{ci}      <video>", f"{ci}        <samplecharacteristics>",
-                f"{ci}          <width>{width}</width>", f"{ci}          <height>{height}</height>",
-                f"{ci}        </samplecharacteristics>", f"{ci}      </video>",
-                f"{ci}      <audio>", f"{ci}        <samplecharacteristics>",
-                f"{ci}          <depth>16</depth>", f"{ci}          <samplerate>48000</samplerate>",
-                f"{ci}        </samplecharacteristics>", f"{ci}        <channelcount>2</channelcount>",
-                f"{ci}      </audio>", f"{ci}    </media>",
-                f"{ci}  </file>",
-                f"{ci}  <sourcetrack>", f"{ci}    <mediatype>video</mediatype>", f"{ci}  </sourcetrack>",
-                f"{ci}  <link>", f"{ci}    <linkclipref>{a1_id}</linkclipref>", f"{ci}    <mediatype>audio</mediatype>",
-                f"{ci}    <trackindex>1</trackindex>", f"{ci}    <clipindex>{clip_idx}</clipindex>", f"{ci}  </link>",
-                f"{ci}  <link>", f"{ci}    <linkclipref>{a2_id}</linkclipref>", f"{ci}    <mediatype>audio</mediatype>",
-                f"{ci}    <trackindex>2</trackindex>", f"{ci}    <clipindex>{clip_idx}</clipindex>", f"{ci}  </link>",
-                f"{ci}</clipitem>",
-            ])
+            lines.extend(
+                [
+                    f'{ci}<clipitem id="{v_id}">',
+                    f"{ci}  <name>{media_filename}</name>",
+                    f"{ci}  <duration>{dur_frames}</duration>",
+                    f"{ci}  <rate>",
+                    f"{ci}    <ntsc>{ntsc_str}</ntsc>",
+                    f"{ci}    <timebase>{timebase}</timebase>",
+                    f"{ci}  </rate>",
+                    f"{ci}  <start>{seq_start}</start>",
+                    f"{ci}  <end>{seq_end}</end>",
+                    f"{ci}  <in>{start_frame}</in>",
+                    f"{ci}  <out>{end_frame}</out>",
+                    f'{ci}  <file id="file-{clip_idx}">',
+                    f"{ci}    <name>{media_filename}</name>",
+                    f"{ci}    <pathurl>{file_url}</pathurl>",
+                    f"{ci}    <rate>",
+                    f"{ci}      <ntsc>{ntsc_str}</ntsc>",
+                    f"{ci}      <timebase>{timebase}</timebase>",
+                    f"{ci}    </rate>",
+                    f"{ci}    <duration>{source_total_frames}</duration>",
+                    f"{ci}    <timecode>",
+                    f"{ci}      <rate>",
+                    f"{ci}        <ntsc>{ntsc_str}</ntsc>",
+                    f"{ci}        <timebase>{timebase}</timebase>",
+                    f"{ci}      </rate>",
+                    f"{ci}      <string>00:00:00:00</string>",
+                    f"{ci}      <frame>0</frame>",
+                    f"{ci}      <source>source</source>",
+                    f"{ci}    </timecode>",
+                    f"{ci}    <media>",
+                    f"{ci}      <video>",
+                    f"{ci}        <samplecharacteristics>",
+                    f"{ci}          <width>{width}</width>",
+                    f"{ci}          <height>{height}</height>",
+                    f"{ci}        </samplecharacteristics>",
+                    f"{ci}      </video>",
+                    f"{ci}      <audio>",
+                    f"{ci}        <samplecharacteristics>",
+                    f"{ci}          <depth>16</depth>",
+                    f"{ci}          <samplerate>48000</samplerate>",
+                    f"{ci}        </samplecharacteristics>",
+                    f"{ci}        <channelcount>2</channelcount>",
+                    f"{ci}      </audio>",
+                    f"{ci}    </media>",
+                    f"{ci}  </file>",
+                    f"{ci}  <sourcetrack>",
+                    f"{ci}    <mediatype>video</mediatype>",
+                    f"{ci}  </sourcetrack>",
+                    f"{ci}  <link>",
+                    f"{ci}    <linkclipref>{a1_id}</linkclipref>",
+                    f"{ci}    <mediatype>audio</mediatype>",
+                    f"{ci}    <trackindex>1</trackindex>",
+                    f"{ci}    <clipindex>{clip_idx}</clipindex>",
+                    f"{ci}  </link>",
+                    f"{ci}  <link>",
+                    f"{ci}    <linkclipref>{a2_id}</linkclipref>",
+                    f"{ci}    <mediatype>audio</mediatype>",
+                    f"{ci}    <trackindex>2</trackindex>",
+                    f"{ci}    <clipindex>{clip_idx}</clipindex>",
+                    f"{ci}  </link>",
+                    f"{ci}</clipitem>",
+                ]
+            )
         else:
-            lines.extend([
-                f"{ci}<clipitem id=\"gap-{seq_start}\">",
-                f"{ci}  <name>Milo-Cut Deleted ({start:.3f}-{end:.3f})</name>",
-                f"{ci}  <duration>{dur_frames}</duration>",
-                f"{ci}  <rate>", f"{ci}    <ntsc>{ntsc_str}</ntsc>", f"{ci}    <timebase>{timebase}</timebase>", f"{ci}  </rate>",
-                f"{ci}  <start>{seq_start}</start>",
-                f"{ci}  <end>{seq_end}</end>",
-                f"{ci}  <in>0</in>",
-                f"{ci}  <out>{dur_frames}</out>",
-                f"{ci}  <syncoffset>0</syncoffset>",
-                f"{ci}</clipitem>",
-            ])
+            lines.extend(
+                [
+                    f'{ci}<clipitem id="gap-{seq_start}">',
+                    f"{ci}  <name>Milo-Cut Deleted ({start:.3f}-{end:.3f})</name>",
+                    f"{ci}  <duration>{dur_frames}</duration>",
+                    f"{ci}  <rate>",
+                    f"{ci}    <ntsc>{ntsc_str}</ntsc>",
+                    f"{ci}    <timebase>{timebase}</timebase>",
+                    f"{ci}  </rate>",
+                    f"{ci}  <start>{seq_start}</start>",
+                    f"{ci}  <end>{seq_end}</end>",
+                    f"{ci}  <in>0</in>",
+                    f"{ci}  <out>{dur_frames}</out>",
+                    f"{ci}  <syncoffset>0</syncoffset>",
+                    f"{ci}</clipitem>",
+                ]
+            )
 
     lines.extend([f"{si}    </track>", f"{si}  </video>", f"{si}  <audio>"])
 
@@ -225,32 +278,57 @@ def _build_xmeml_full_timeline(
                 a_id = f"clipitem-{track_suffix}-{clip_idx}"
                 other_a_id = f"clipitem-{'audio2' if track_idx == 1 else 'audio1'}-{clip_idx}"
                 v_id = f"clipitem-video-{clip_idx}"
-                lines.extend([
-                    f"{ci}<clipitem id=\"{a_id}\">",
-                    f"{ci}  <name>{media_filename}</name>",
-                    f"{ci}  <duration>{dur_frames}</duration>",
-                    f"{ci}  <rate>", f"{ci}    <ntsc>{ntsc_str}</ntsc>", f"{ci}    <timebase>{timebase}</timebase>", f"{ci}  </rate>",
-                    f"{ci}  <start>{seq_start}</start>", f"{ci}  <end>{seq_end}</end>",
-                    f"{ci}  <in>{start_frame}</in>", f"{ci}  <out>{end_frame}</out>",
-                    f"{ci}  <file id=\"file-{clip_idx}\"/>",
-                    f"{ci}  <sourcetrack>", f"{ci}    <mediatype>audio</mediatype>", f"{ci}    <trackindex>{track_idx}</trackindex>", f"{ci}  </sourcetrack>",
-                    f"{ci}  <link>", f"{ci}    <linkclipref>{v_id}</linkclipref>", f"{ci}    <mediatype>video</mediatype>",
-                    f"{ci}    <trackindex>1</trackindex>", f"{ci}    <clipindex>{clip_idx}</clipindex>", f"{ci}  </link>",
-                    f"{ci}  <link>", f"{ci}    <linkclipref>{other_a_id}</linkclipref>", f"{ci}    <mediatype>audio</mediatype>",
-                    f"{ci}    <trackindex>{2 if track_idx == 1 else 1}</trackindex>", f"{ci}    <clipindex>{clip_idx}</clipindex>", f"{ci}  </link>",
-                    f"{ci}</clipitem>",
-                ])
+                lines.extend(
+                    [
+                        f'{ci}<clipitem id="{a_id}">',
+                        f"{ci}  <name>{media_filename}</name>",
+                        f"{ci}  <duration>{dur_frames}</duration>",
+                        f"{ci}  <rate>",
+                        f"{ci}    <ntsc>{ntsc_str}</ntsc>",
+                        f"{ci}    <timebase>{timebase}</timebase>",
+                        f"{ci}  </rate>",
+                        f"{ci}  <start>{seq_start}</start>",
+                        f"{ci}  <end>{seq_end}</end>",
+                        f"{ci}  <in>{start_frame}</in>",
+                        f"{ci}  <out>{end_frame}</out>",
+                        f'{ci}  <file id="file-{clip_idx}"/>',
+                        f"{ci}  <sourcetrack>",
+                        f"{ci}    <mediatype>audio</mediatype>",
+                        f"{ci}    <trackindex>{track_idx}</trackindex>",
+                        f"{ci}  </sourcetrack>",
+                        f"{ci}  <link>",
+                        f"{ci}    <linkclipref>{v_id}</linkclipref>",
+                        f"{ci}    <mediatype>video</mediatype>",
+                        f"{ci}    <trackindex>1</trackindex>",
+                        f"{ci}    <clipindex>{clip_idx}</clipindex>",
+                        f"{ci}  </link>",
+                        f"{ci}  <link>",
+                        f"{ci}    <linkclipref>{other_a_id}</linkclipref>",
+                        f"{ci}    <mediatype>audio</mediatype>",
+                        f"{ci}    <trackindex>{2 if track_idx == 1 else 1}</trackindex>",
+                        f"{ci}    <clipindex>{clip_idx}</clipindex>",
+                        f"{ci}  </link>",
+                        f"{ci}</clipitem>",
+                    ]
+                )
             else:
-                lines.extend([
-                    f"{ci}<clipitem id=\"gap-{track_suffix}-{seq_start}\">",
-                    f"{ci}  <name>Milo-Cut Deleted ({start:.3f}-{end:.3f})</name>",
-                    f"{ci}  <duration>{dur_frames}</duration>",
-                    f"{ci}  <rate>", f"{ci}    <ntsc>{ntsc_str}</ntsc>", f"{ci}    <timebase>{timebase}</timebase>", f"{ci}  </rate>",
-                    f"{ci}  <start>{seq_start}</start>", f"{ci}  <end>{seq_end}</end>",
-                    f"{ci}  <in>0</in>", f"{ci}  <out>{dur_frames}</out>",
-                    f"{ci}  <syncoffset>0</syncoffset>",
-                    f"{ci}</clipitem>",
-                ])
+                lines.extend(
+                    [
+                        f'{ci}<clipitem id="gap-{track_suffix}-{seq_start}">',
+                        f"{ci}  <name>Milo-Cut Deleted ({start:.3f}-{end:.3f})</name>",
+                        f"{ci}  <duration>{dur_frames}</duration>",
+                        f"{ci}  <rate>",
+                        f"{ci}    <ntsc>{ntsc_str}</ntsc>",
+                        f"{ci}    <timebase>{timebase}</timebase>",
+                        f"{ci}  </rate>",
+                        f"{ci}  <start>{seq_start}</start>",
+                        f"{ci}  <end>{seq_end}</end>",
+                        f"{ci}  <in>0</in>",
+                        f"{ci}  <out>{dur_frames}</out>",
+                        f"{ci}  <syncoffset>0</syncoffset>",
+                        f"{ci}</clipitem>",
+                    ]
+                )
 
     lines.extend([f"{si}    </track>", f"{si}  </audio>", f"{si}</media>"])
     if wrap_in_project:
@@ -295,56 +373,68 @@ def _build_xmeml_core(
 
     if mode == "full_timeline":
         return _build_xmeml_full_timeline(
-            keep_ranges, edits, media_info, wrap_in_project, fps, media_path,
-            media_name, media_filename, width, height, source_duration,
-            is_ntsc, ntsc_str, timebase, source_total_frames,
+            keep_ranges,
+            edits,
+            media_info,
+            wrap_in_project,
+            fps,
+            media_path,
+            media_name,
+            media_filename,
+            width,
+            height,
+            source_duration,
+            is_ntsc,
+            ntsc_str,
+            timebase,
+            source_total_frames,
         )
 
     total_frames = sum(_sec_to_frames(end - start, fps) for start, end in keep_ranges)
 
     # Premiere prefers relative paths when the XML sits next to source media.
     # Resolve can use a normalized file URI on Windows.
-    file_url = (
-        Path(media_path).name
-        if wrap_in_project
-        else Path(media_path).resolve().as_uri()
-    )
+    file_url = Path(media_path).name if wrap_in_project else Path(media_path).resolve().as_uri()
 
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
-        '<!DOCTYPE xmeml>',
+        "<!DOCTYPE xmeml>",
         '<xmeml version="5">',
     ]
 
     if wrap_in_project:
-        lines.extend([
-            "  <project>",
-            f"    <name>{media_name}_edited</name>",
-            "    <children>",
-            "      <sequence>",
-        ])
+        lines.extend(
+            [
+                "  <project>",
+                f"    <name>{media_name}_edited</name>",
+                "    <children>",
+                "      <sequence>",
+            ]
+        )
     else:
         lines.append("  <sequence>")
 
     seq_indent = "      " if wrap_in_project else "    "
 
-    lines.extend([
-        f"{seq_indent}<name>{media_name}_edited</name>",
-        f"{seq_indent}<duration>{total_frames}</duration>",
-        f"{seq_indent}<rate>",
-        f"{seq_indent}  <ntsc>{ntsc_str}</ntsc>",
-        f"{seq_indent}  <timebase>{timebase}</timebase>",
-        f"{seq_indent}</rate>",
-        f"{seq_indent}<media>",
-        f"{seq_indent}  <video>",
-        f"{seq_indent}    <format>",
-        f"{seq_indent}      <samplecharacteristics>",
-        f"{seq_indent}        <width>{width}</width>",
-        f"{seq_indent}        <height>{height}</height>",
-        f"{seq_indent}      </samplecharacteristics>",
-        f"{seq_indent}    </format>",
-        f"{seq_indent}    <track>",
-    ])
+    lines.extend(
+        [
+            f"{seq_indent}<name>{media_name}_edited</name>",
+            f"{seq_indent}<duration>{total_frames}</duration>",
+            f"{seq_indent}<rate>",
+            f"{seq_indent}  <ntsc>{ntsc_str}</ntsc>",
+            f"{seq_indent}  <timebase>{timebase}</timebase>",
+            f"{seq_indent}</rate>",
+            f"{seq_indent}<media>",
+            f"{seq_indent}  <video>",
+            f"{seq_indent}    <format>",
+            f"{seq_indent}      <samplecharacteristics>",
+            f"{seq_indent}        <width>{width}</width>",
+            f"{seq_indent}        <height>{height}</height>",
+            f"{seq_indent}      </samplecharacteristics>",
+            f"{seq_indent}    </format>",
+            f"{seq_indent}    <track>",
+        ]
+    )
 
     clip_indent = seq_indent + "      "
 
@@ -370,75 +460,79 @@ def _build_xmeml_core(
         a1_id = f"clipitem-audio1-{idx}"
         a2_id = f"clipitem-audio2-{idx}"
 
-        lines.extend([
-            f"{clip_indent}<clipitem id=\"{v_id}\">",
-            f"{clip_indent}  <name>{media_filename}</name>",
-            f"{clip_indent}  <duration>{clip_dur}</duration>",
-            f"{clip_indent}  <rate>",
-            f"{clip_indent}    <ntsc>{ntsc_str}</ntsc>",
-            f"{clip_indent}    <timebase>{timebase}</timebase>",
-            f"{clip_indent}  </rate>",
-            f"{clip_indent}  <start>{rec_start}</start>",
-            f"{clip_indent}  <end>{rec_end}</end>",
-            f"{clip_indent}  <in>{src_in}</in>",
-            f"{clip_indent}  <out>{src_out}</out>",
-            f"{clip_indent}  <file id=\"file-{idx}\">",
-            f"{clip_indent}    <name>{media_filename}</name>",
-            f"{clip_indent}    <pathurl>{file_url}</pathurl>",
-            f"{clip_indent}    <rate>",
-            f"{clip_indent}      <ntsc>{ntsc_str}</ntsc>",
-            f"{clip_indent}      <timebase>{timebase}</timebase>",
-            f"{clip_indent}    </rate>",
-            f"{clip_indent}    <duration>{source_total_frames}</duration>",
-            f"{clip_indent}    <timecode>",
-            f"{clip_indent}      <rate>",
-            f"{clip_indent}        <ntsc>{ntsc_str}</ntsc>",
-            f"{clip_indent}        <timebase>{timebase}</timebase>",
-            f"{clip_indent}      </rate>",
-            f"{clip_indent}      <string>00:00:00:00</string>",
-            f"{clip_indent}      <frame>0</frame>",
-            f"{clip_indent}      <source>source</source>",
-            f"{clip_indent}    </timecode>",
-            f"{clip_indent}    <media>",
-            f"{clip_indent}      <video>",
-            f"{clip_indent}        <samplecharacteristics>",
-            f"{clip_indent}          <width>{width}</width>",
-            f"{clip_indent}          <height>{height}</height>",
-            f"{clip_indent}        </samplecharacteristics>",
-            f"{clip_indent}      </video>",
-            f"{clip_indent}      <audio>",
-            f"{clip_indent}        <samplecharacteristics>",
-            f"{clip_indent}          <depth>16</depth>",
-            f"{clip_indent}          <samplerate>48000</samplerate>",
-            f"{clip_indent}        </samplecharacteristics>",
-            f"{clip_indent}        <channelcount>2</channelcount>",
-            f"{clip_indent}      </audio>",
-            f"{clip_indent}    </media>",
-            f"{clip_indent}  </file>",
-            f"{clip_indent}  <sourcetrack>",
-            f"{clip_indent}    <mediatype>video</mediatype>",
-            f"{clip_indent}  </sourcetrack>",
-            f"{clip_indent}  <link>",
-            f"{clip_indent}    <linkclipref>{a1_id}</linkclipref>",
-            f"{clip_indent}    <mediatype>audio</mediatype>",
-            f"{clip_indent}    <trackindex>1</trackindex>",
-            f"{clip_indent}    <clipindex>{idx}</clipindex>",
-            f"{clip_indent}  </link>",
-            f"{clip_indent}  <link>",
-            f"{clip_indent}    <linkclipref>{a2_id}</linkclipref>",
-            f"{clip_indent}    <mediatype>audio</mediatype>",
-            f"{clip_indent}    <trackindex>2</trackindex>",
-            f"{clip_indent}    <clipindex>{idx}</clipindex>",
-            f"{clip_indent}  </link>",
-            f"{clip_indent}</clipitem>",
-        ])
+        lines.extend(
+            [
+                f'{clip_indent}<clipitem id="{v_id}">',
+                f"{clip_indent}  <name>{media_filename}</name>",
+                f"{clip_indent}  <duration>{clip_dur}</duration>",
+                f"{clip_indent}  <rate>",
+                f"{clip_indent}    <ntsc>{ntsc_str}</ntsc>",
+                f"{clip_indent}    <timebase>{timebase}</timebase>",
+                f"{clip_indent}  </rate>",
+                f"{clip_indent}  <start>{rec_start}</start>",
+                f"{clip_indent}  <end>{rec_end}</end>",
+                f"{clip_indent}  <in>{src_in}</in>",
+                f"{clip_indent}  <out>{src_out}</out>",
+                f'{clip_indent}  <file id="file-{idx}">',
+                f"{clip_indent}    <name>{media_filename}</name>",
+                f"{clip_indent}    <pathurl>{file_url}</pathurl>",
+                f"{clip_indent}    <rate>",
+                f"{clip_indent}      <ntsc>{ntsc_str}</ntsc>",
+                f"{clip_indent}      <timebase>{timebase}</timebase>",
+                f"{clip_indent}    </rate>",
+                f"{clip_indent}    <duration>{source_total_frames}</duration>",
+                f"{clip_indent}    <timecode>",
+                f"{clip_indent}      <rate>",
+                f"{clip_indent}        <ntsc>{ntsc_str}</ntsc>",
+                f"{clip_indent}        <timebase>{timebase}</timebase>",
+                f"{clip_indent}      </rate>",
+                f"{clip_indent}      <string>00:00:00:00</string>",
+                f"{clip_indent}      <frame>0</frame>",
+                f"{clip_indent}      <source>source</source>",
+                f"{clip_indent}    </timecode>",
+                f"{clip_indent}    <media>",
+                f"{clip_indent}      <video>",
+                f"{clip_indent}        <samplecharacteristics>",
+                f"{clip_indent}          <width>{width}</width>",
+                f"{clip_indent}          <height>{height}</height>",
+                f"{clip_indent}        </samplecharacteristics>",
+                f"{clip_indent}      </video>",
+                f"{clip_indent}      <audio>",
+                f"{clip_indent}        <samplecharacteristics>",
+                f"{clip_indent}          <depth>16</depth>",
+                f"{clip_indent}          <samplerate>48000</samplerate>",
+                f"{clip_indent}        </samplecharacteristics>",
+                f"{clip_indent}        <channelcount>2</channelcount>",
+                f"{clip_indent}      </audio>",
+                f"{clip_indent}    </media>",
+                f"{clip_indent}  </file>",
+                f"{clip_indent}  <sourcetrack>",
+                f"{clip_indent}    <mediatype>video</mediatype>",
+                f"{clip_indent}  </sourcetrack>",
+                f"{clip_indent}  <link>",
+                f"{clip_indent}    <linkclipref>{a1_id}</linkclipref>",
+                f"{clip_indent}    <mediatype>audio</mediatype>",
+                f"{clip_indent}    <trackindex>1</trackindex>",
+                f"{clip_indent}    <clipindex>{idx}</clipindex>",
+                f"{clip_indent}  </link>",
+                f"{clip_indent}  <link>",
+                f"{clip_indent}    <linkclipref>{a2_id}</linkclipref>",
+                f"{clip_indent}    <mediatype>audio</mediatype>",
+                f"{clip_indent}    <trackindex>2</trackindex>",
+                f"{clip_indent}    <clipindex>{idx}</clipindex>",
+                f"{clip_indent}  </link>",
+                f"{clip_indent}</clipitem>",
+            ]
+        )
 
     # Close video track and video section, open audio section
-    lines.extend([
-        f"{seq_indent}    </track>",
-        f"{seq_indent}  </video>",
-        f"{seq_indent}  <audio>",
-    ])
+    lines.extend(
+        [
+            f"{seq_indent}    </track>",
+            f"{seq_indent}  </video>",
+            f"{seq_indent}  <audio>",
+        ]
+    )
 
     # Audio tracks (two tracks: L and R)
     for track_idx, track_suffix in ((1, "audio1"), (2, "audio2")):
@@ -461,50 +555,56 @@ def _build_xmeml_core(
             other_a_id = f"clipitem-{'audio2' if track_idx == 1 else 'audio1'}-{idx}"
             v_id = f"clipitem-video-{idx}"
 
-            lines.extend([
-                f"{clip_indent}<clipitem id=\"{a_id}\">",
-                f"{clip_indent}  <name>{media_filename}</name>",
-                f"{clip_indent}  <duration>{clip_dur}</duration>",
-                f"{clip_indent}  <rate>",
-                f"{clip_indent}    <ntsc>{ntsc_str}</ntsc>",
-                f"{clip_indent}    <timebase>{timebase}</timebase>",
-                f"{clip_indent}  </rate>",
-                f"{clip_indent}  <start>{rec_start}</start>",
-                f"{clip_indent}  <end>{rec_end}</end>",
-                f"{clip_indent}  <in>{src_in}</in>",
-                f"{clip_indent}  <out>{src_out}</out>",
-                f"{clip_indent}  <file id=\"file-{idx}\"/>",
-                f"{clip_indent}  <sourcetrack>",
-                f"{clip_indent}    <mediatype>audio</mediatype>",
-                f"{clip_indent}    <trackindex>{track_idx}</trackindex>",
-                f"{clip_indent}  </sourcetrack>",
-                f"{clip_indent}  <link>",
-                f"{clip_indent}    <linkclipref>{v_id}</linkclipref>",
-                f"{clip_indent}    <mediatype>video</mediatype>",
-                f"{clip_indent}    <trackindex>1</trackindex>",
-                f"{clip_indent}    <clipindex>{idx}</clipindex>",
-                f"{clip_indent}  </link>",
-                f"{clip_indent}  <link>",
-                f"{clip_indent}    <linkclipref>{other_a_id}</linkclipref>",
-                f"{clip_indent}    <mediatype>audio</mediatype>",
-                f"{clip_indent}    <trackindex>{2 if track_idx == 1 else 1}</trackindex>",
-                f"{clip_indent}    <clipindex>{idx}</clipindex>",
-                f"{clip_indent}  </link>",
-                f"{clip_indent}</clipitem>",
-            ])
+            lines.extend(
+                [
+                    f'{clip_indent}<clipitem id="{a_id}">',
+                    f"{clip_indent}  <name>{media_filename}</name>",
+                    f"{clip_indent}  <duration>{clip_dur}</duration>",
+                    f"{clip_indent}  <rate>",
+                    f"{clip_indent}    <ntsc>{ntsc_str}</ntsc>",
+                    f"{clip_indent}    <timebase>{timebase}</timebase>",
+                    f"{clip_indent}  </rate>",
+                    f"{clip_indent}  <start>{rec_start}</start>",
+                    f"{clip_indent}  <end>{rec_end}</end>",
+                    f"{clip_indent}  <in>{src_in}</in>",
+                    f"{clip_indent}  <out>{src_out}</out>",
+                    f'{clip_indent}  <file id="file-{idx}"/>',
+                    f"{clip_indent}  <sourcetrack>",
+                    f"{clip_indent}    <mediatype>audio</mediatype>",
+                    f"{clip_indent}    <trackindex>{track_idx}</trackindex>",
+                    f"{clip_indent}  </sourcetrack>",
+                    f"{clip_indent}  <link>",
+                    f"{clip_indent}    <linkclipref>{v_id}</linkclipref>",
+                    f"{clip_indent}    <mediatype>video</mediatype>",
+                    f"{clip_indent}    <trackindex>1</trackindex>",
+                    f"{clip_indent}    <clipindex>{idx}</clipindex>",
+                    f"{clip_indent}  </link>",
+                    f"{clip_indent}  <link>",
+                    f"{clip_indent}    <linkclipref>{other_a_id}</linkclipref>",
+                    f"{clip_indent}    <mediatype>audio</mediatype>",
+                    f"{clip_indent}    <trackindex>{2 if track_idx == 1 else 1}</trackindex>",
+                    f"{clip_indent}    <clipindex>{idx}</clipindex>",
+                    f"{clip_indent}  </link>",
+                    f"{clip_indent}</clipitem>",
+                ]
+            )
 
-    lines.extend([
-        f"{seq_indent}    </track>",
-        f"{seq_indent}  </audio>",
-        f"{seq_indent}</media>",
-    ])
+    lines.extend(
+        [
+            f"{seq_indent}    </track>",
+            f"{seq_indent}  </audio>",
+            f"{seq_indent}</media>",
+        ]
+    )
 
     if wrap_in_project:
-        lines.extend([
-            "      </sequence>",
-            "    </children>",
-            "  </project>",
-        ])
+        lines.extend(
+            [
+                "      </sequence>",
+                "    </children>",
+                "  </project>",
+            ]
+        )
     else:
         lines.append("  </sequence>")
 
@@ -658,7 +758,11 @@ def export_otio(
         # Track items for full_timeline mode (no fades supported)
         if mode == "full_timeline":
             track_items = _build_full_timeline_items(
-                keep_ranges, edits, fps, media_filename, available_dur_frames,
+                keep_ranges,
+                edits,
+                fps,
+                media_filename,
+                available_dur_frames,
             )
             video_track = otio.schema.Track(
                 name="Video 1",
@@ -714,14 +818,22 @@ def export_otio(
             video_items: list = list(otio_clips)
             if fade_duration > 0 and len(otio_clips) > 1:
                 video_items = _build_otio_clips_with_transitions(
-                    otio_clips, fps, fade_duration, keep_ranges, source_duration,
+                    otio_clips,
+                    fps,
+                    fade_duration,
+                    keep_ranges,
+                    source_duration,
                 )
             for item in video_items:
                 video_track.append(item)
             # Build audio track transitions (may use different duration)
             if audio_fade > 0 and len(otio_clips) > 1 and audio_fade != fade_duration:
                 audio_items = _build_otio_clips_with_transitions(
-                    otio_clips, fps, audio_fade, keep_ranges, source_duration,
+                    otio_clips,
+                    fps,
+                    audio_fade,
+                    keep_ranges,
+                    source_duration,
                 )
                 for item in audio_items:
                     audio_track.append(item)
@@ -794,5 +906,3 @@ def _build_otio_clips_with_transitions(
         interleaved.append(transition)
 
     return interleaved
-
-

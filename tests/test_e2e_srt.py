@@ -12,13 +12,14 @@ Usage:
     uv run python tests/test_e2e_srt.py --engine whisper
     uv run python tests/test_e2e_srt.py --device cuda
 """
+
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
 import time
-import argparse
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -39,13 +40,20 @@ ENGINE_CONFIG = {
             "Purfview/faster-whisper-large-v3-turbo": {"plugin_id": "plugin-whisper"},
         },
         "arg_template": [
-            "--media-path", "{video}",
-            "--model-path", "{model_path}",
-            "--language", "zh",
-            "--device", "{device}",
-            "--compute-type", "int8",
-            "--word-timestamps", "true",
-            "--vad-filter", "true",
+            "--media-path",
+            "{video}",
+            "--model-path",
+            "{model_path}",
+            "--language",
+            "zh",
+            "--device",
+            "{device}",
+            "--compute-type",
+            "int8",
+            "--word-timestamps",
+            "true",
+            "--vad-filter",
+            "true",
         ],
     },
     "qwen3-asr": {
@@ -57,11 +65,16 @@ ENGINE_CONFIG = {
         },
         "known_issue": "qwen_transcribe.py uses AutoModelForSpeechSeq2Seq but Qwen3-ASR needs qwen-asr package (Qwen3ASRModel)",
         "arg_template": [
-            "--media-path", "{video}",
-            "--asr-model-path", "{asr_model_path}",
-            "--aligner-model-path", "{aligner_model_path}",
-            "--language", "zh",
-            "--device", "{device}",
+            "--media-path",
+            "{video}",
+            "--asr-model-path",
+            "{asr_model_path}",
+            "--aligner-model-path",
+            "{aligner_model_path}",
+            "--language",
+            "zh",
+            "--device",
+            "{device}",
         ],
     },
 }
@@ -69,14 +82,15 @@ ENGINE_CONFIG = {
 
 def run_test_case(engine: str, model_id: str, device: str) -> dict:
     """Run a single transcription + SRT test case."""
-    from core.plugin_manager import PluginManager
     from core.export_service import export_srt
+    from core.plugin_manager import PluginManager
 
     pm = PluginManager()
     config = ENGINE_CONFIG[engine]
     model_path = pm.ensure_model(model_id)
 
     progress_log = []
+
     def progress_cb(pct, msg):
         progress_log.append((pct, msg))
 
@@ -151,7 +165,7 @@ def run_test_case(engine: str, model_id: str, device: str) -> dict:
         result["error"] = "Result file missing"
         return result
 
-    with open(task.result_path, "r", encoding="utf-8") as f:
+    with open(task.result_path, encoding="utf-8") as f:
         trans_result = json.load(f)
 
     result["segment_count"] = trans_result.get("segment_count", 0)
@@ -160,13 +174,15 @@ def run_test_case(engine: str, model_id: str, device: str) -> dict:
     srt_path = OUTPUT_DIR / f"{engine}_{model_id.split('/')[-1]}_{device}.srt"
     segments = []
     for seg in trans_result.get("segments", []):
-        segments.append({
-            "id": seg["id"],
-            "start": seg["start"],
-            "end": seg["end"],
-            "text": seg["text"],
-            "type": "subtitle",
-        })
+        segments.append(
+            {
+                "id": seg["id"],
+                "start": seg["start"],
+                "end": seg["end"],
+                "text": seg["text"],
+                "type": "subtitle",
+            }
+        )
 
     export_result = export_srt(
         segments=segments,
@@ -210,7 +226,7 @@ def main():
                     test_cases.append((engine, model_id, device))
 
     print("=" * 70)
-    print(f"E2E Test: Transcription -> SRT Generation")
+    print("E2E Test: Transcription -> SRT Generation")
     print(f"  Test cases: {len(test_cases)}")
     print(f"  Video: {TEST_VIDEO}")
     print("=" * 70)
@@ -222,10 +238,12 @@ def main():
         results.append(result)
 
         status = "PASS" if result["srt_valid"] and result["srt_has_chinese"] else "FAIL"
-        print(f"  [{status}] {result['elapsed']}s, "
-              f"{result['segment_count']} segs, "
-              f"SRT: {result['srt_segments']} segs, "
-              f"CN={result['srt_has_chinese']}")
+        print(
+            f"  [{status}] {result['elapsed']}s, "
+            f"{result['segment_count']} segs, "
+            f"SRT: {result['srt_segments']} segs, "
+            f"CN={result['srt_has_chinese']}"
+        )
         if result["error"]:
             print(f"  ERROR: {result['error']}")
 
@@ -240,8 +258,10 @@ def main():
 
     for r in results:
         status = "PASS" if r["srt_valid"] and r["srt_has_chinese"] else "FAIL"
-        print(f"  [{status}] {r['engine']} | {r['model']} | {r['device']} | "
-              f"{r['elapsed']}s | {r['segment_count']} segs")
+        print(
+            f"  [{status}] {r['engine']} | {r['model']} | {r['device']} | "
+            f"{r['elapsed']}s | {r['segment_count']} segs"
+        )
         if r["error"]:
             print(f"         Error: {r['error']}")
 

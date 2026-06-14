@@ -2,17 +2,12 @@ import { describe, it, expect } from "vitest"
 import { mount } from "@vue/test-utils"
 import { nextTick } from "vue"
 import TranscriptRow from "./TranscriptRow.vue"
-import type { Segment } from "@/types/project"
+import { mockSegment } from "@/test/helpers/mockProject"
 
-const baseSegment: Segment = {
+const baseSegment = mockSegment({
   id: "seg-0001",
-  version: 1,
-  type: "subtitle",
-  start: 1.0,
-  end: 5.0,
   text: "Hello world",
-  speaker: "",
-}
+})
 
 describe("TranscriptRow", () => {
   it("renders segment text", () => {

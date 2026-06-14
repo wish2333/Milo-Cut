@@ -128,8 +128,7 @@ Bad timestamps
         # SRT ends at 15s, video is 16s -> within 10%
         result = validate_srt(srt_file, video_duration=16.0)
         duration_warnings = [
-            i for i in result["data"]["issues"]
-            if "duration" in i["message"].lower()
+            i for i in result["data"]["issues"] if "duration" in i["message"].lower()
         ]
         assert len(duration_warnings) == 0
 

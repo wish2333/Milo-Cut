@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { ref, type Ref, nextTick } from "vue"
-import type { Project, Segment } from "@/types/project"
+import type { Project } from "@/types/project"
 import { useSegmentEdit } from "./useSegmentEdit"
+import { mockProject, mockSegment } from "@/test/helpers/mockProject"
 
 vi.mock("@/bridge", () => ({
   call: vi.fn(),
@@ -10,37 +11,6 @@ vi.mock("@/bridge", () => ({
 import { call } from "@/bridge"
 const mockCall = vi.mocked(call)
 
-function makeSegment(overrides: Partial<Segment> = {}): Segment {
-  return {
-    id: "seg-1",
-    version: 1,
-    type: "subtitle",
-    start: 1.0,
-    end: 5.0,
-    text: "hello",
-    speaker: "",
-    ...overrides,
-  }
-}
-
-function makeProject(segs: Segment[] = [makeSegment()]): Project {
-  return {
-    schema_version: 1,
-    project: { name: "test", created_at: "", updated_at: "" },
-    media: null,
-    transcript: { engine: "test", language: "en", segments: segs },
-    analysis: { last_run: null, results: [] },
-    edits: [],
-    topic_drift: {
-      topic_description: "",
-      results: [],
-      transcript_hash: "",
-      last_run: null,
-      token_usage: {},
-    },
-  }
-}
-
 describe("useSegmentEdit", () => {
   let project: Ref<Project>
   let onProjectUpdate: ReturnType<typeof vi.fn>
@@ -48,7 +18,7 @@ describe("useSegmentEdit", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.useFakeTimers()
-    project = ref(makeProject()) as Ref<Project>
+    project = ref(mockProject()) as Ref<Project>
     onProjectUpdate = vi.fn((p: Project) => { project.value = p })
   })
 
@@ -76,11 +46,11 @@ describe("useSegmentEdit", () => {
       updateSegmentTime("seg-1", "start", 2.0)
       expect(onProjectUpdate).toHaveBeenCalled()
       const updated = onProjectUpdate.mock.calls[0][0] as Project
-      expect(updated.transcript.segments[0].start).toBe(2.0)
+      expect(updated.timelines.find(t => t.id === updated.active_timeline_id)?.transcript.segments[0].start).toBe(2.0)
     })
 
     it("debounces backend call", async () => {
-      mockCall.mockResolvedValue({ success: true, data: makeProject() })
+      mockCall.mockResolvedValue({ success: true, data: mockProject() })
       const { updateSegmentTime } = useSegmentEdit(project, onProjectUpdate)
       updateSegmentTime("seg-1", "start", 2.0)
 
@@ -94,7 +64,7 @@ describe("useSegmentEdit", () => {
     })
 
     it("cancels previous debounce on rapid updates", () => {
-      mockCall.mockResolvedValue({ success: true, data: makeProject() })
+      mockCall.mockResolvedValue({ success: true, data: mockProject() })
       const { updateSegmentTime } = useSegmentEdit(project, onProjectUpdate)
       updateSegmentTime("seg-1", "start", 2.0)
       updateSegmentTime("seg-1", "start", 3.0)
@@ -108,7 +78,7 @@ describe("useSegmentEdit", () => {
 
   describe("updateSegmentText", () => {
     it("calls backend immediately", async () => {
-      const updatedProj = makeProject([makeSegment({ text: "changed" })])
+      const updatedProj = mockProject({ timelines: [{ id: "default", label: "原始", source: "default", created_at: "", parent_id: "", transcript: { engine: "test", language: "en", segments: [mockSegment({ text: "changed" })] }, edits: [], analysis: { last_run: null, results: [] } }] })
       mockCall.mockResolvedValue({ success: true, data: updatedProj })
       const { updateSegmentText } = useSegmentEdit(project, onProjectUpdate)
       const result = await updateSegmentText("seg-1", "changed")
@@ -127,16 +97,16 @@ describe("useSegmentEdit", () => {
 
   describe("toggleEditStatus", () => {
     it("creates delete edit when none exists", async () => {
-      mockCall.mockResolvedValue({ success: true, data: makeProject() })
+      mockCall.mockResolvedValue({ success: true, data: mockProject() })
       const { toggleEditStatus } = useSegmentEdit(project, onProjectUpdate)
-      await toggleEditStatus(makeSegment())
+      await toggleEditStatus(mockSegment())
       expect(mockCall).toHaveBeenCalledWith("mark_segments", ["seg-1"], "delete", "confirmed")
     })
 
     it("toggles confirmed to rejected", async () => {
       project.value = {
-        ...makeProject(),
-        edits: [{
+        ...mockProject(),
+        timelines: [{ ...mockProject().timelines[0], edits: [{
           id: "ed-1",
           start: 1,
           end: 5,
@@ -146,18 +116,18 @@ describe("useSegmentEdit", () => {
           priority: 100,
           target_type: "segment",
           target_id: "seg-1",
-        }],
+        }] }],
       }
-      mockCall.mockResolvedValue({ success: true, data: makeProject() })
+      mockCall.mockResolvedValue({ success: true, data: mockProject() })
       const { toggleEditStatus } = useSegmentEdit(project, onProjectUpdate)
-      await toggleEditStatus(makeSegment())
+      await toggleEditStatus(mockSegment())
       expect(mockCall).toHaveBeenCalledWith("update_edit_decision", "ed-1", "rejected")
     })
 
     it("toggles rejected edit back to confirmed instead of creating keep edit", async () => {
       project.value = {
-        ...makeProject(),
-        edits: [{
+        ...mockProject(),
+        timelines: [{ ...mockProject().timelines[0], edits: [{
           id: "ed-rejected",
           start: 1,
           end: 5,
@@ -167,11 +137,11 @@ describe("useSegmentEdit", () => {
           priority: 100,
           target_type: "segment",
           target_id: "seg-1",
-        }],
+        }] }],
       }
-      mockCall.mockResolvedValue({ success: true, data: makeProject() })
+      mockCall.mockResolvedValue({ success: true, data: mockProject() })
       const { toggleEditStatus } = useSegmentEdit(project, onProjectUpdate)
-      await toggleEditStatus(makeSegment())
+      await toggleEditStatus(mockSegment())
       expect(mockCall).not.toHaveBeenCalledWith("mark_segments", expect.anything(), expect.anything(), expect.anything())
       expect(mockCall).toHaveBeenCalledWith("update_edit_decision", "ed-rejected", "confirmed")
     })
@@ -180,7 +150,7 @@ describe("useSegmentEdit", () => {
   describe("resolveState", () => {
     it("returns SegmentState from resolveSegmentState", () => {
       const { resolveState } = useSegmentEdit(project, onProjectUpdate)
-      const state = resolveState(makeSegment())
+      const state = resolveState(mockSegment())
       expect(state.displayStatus).toBe("none")
       expect(state.styleClass).toBe("normal")
       expect(state.activeEdit).toBeUndefined()
@@ -188,8 +158,8 @@ describe("useSegmentEdit", () => {
 
     it("reflects active edit when present", () => {
       project.value = {
-        ...makeProject(),
-        edits: [{
+        ...mockProject(),
+        timelines: [{ ...mockProject().timelines[0], edits: [{
           id: "ed-active",
           start: 1,
           end: 5,
@@ -199,10 +169,10 @@ describe("useSegmentEdit", () => {
           priority: 200,
           target_type: "segment",
           target_id: "seg-1",
-        }],
+        }] }],
       }
       const { resolveState } = useSegmentEdit(project, onProjectUpdate)
-      const state = resolveState(makeSegment())
+      const state = resolveState(mockSegment())
       expect(state.displayStatus).toBe("confirmed")
       expect(state.styleClass).toBe("masked")
       expect(state.activeEdit).toBeDefined()
@@ -212,12 +182,12 @@ describe("useSegmentEdit", () => {
   describe("status queries", () => {
     it("getEffectiveStatus returns normal when no edits", () => {
       const { getEffectiveStatus } = useSegmentEdit(project, onProjectUpdate)
-      expect(getEffectiveStatus(makeSegment())).toBe("normal")
+      expect(getEffectiveStatus(mockSegment())).toBe("normal")
     })
 
     it("getEditStatus returns null when no edits", () => {
       const { getEditStatus } = useSegmentEdit(project, onProjectUpdate)
-      expect(getEditStatus(makeSegment())).toBeNull()
+      expect(getEditStatus(mockSegment())).toBeNull()
     })
   })
 })

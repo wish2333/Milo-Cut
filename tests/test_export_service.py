@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-import os
-
-import pytest
-
 from core.export_service import (
     _format_srt_time,
     _format_vtt_time,

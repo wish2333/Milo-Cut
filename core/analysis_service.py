@@ -21,7 +21,7 @@ def _get_ngrams(text: str, language: str, n: int = 3) -> list[str]:
 
     # Chinese: character-level n-grams
     if language and language.startswith("zh"):
-        return [text[i:i + n] for i in range(len(text) - n + 1)]
+        return [text[i : i + n] for i in range(len(text) - n + 1)]
 
     # English/Western: word-level 2-grams
     if language and language.startswith(("en", "de", "fr", "es", "it", "pt", "ru")):
@@ -31,7 +31,7 @@ def _get_ngrams(text: str, language: str, n: int = 3) -> list[str]:
         return [f"{words[i]} {words[i + 1]}" for i in range(len(words) - 1)]
 
     # Default: character-level n-grams
-    return [text[i:i + n] for i in range(len(text) - n + 1)]
+    return [text[i : i + n] for i in range(len(text) - n + 1)]
 
 
 def _cosine_similarity(vec1: Counter, vec2: Counter) -> float:
@@ -95,8 +95,7 @@ def detect_duplicates(
     """
     # Filter to subtitle segments with sufficient text length
     subtitle_segs = [
-        s for s in segments
-        if s.type == "subtitle" and s.text and len(s.text) >= min_length
+        s for s in segments if s.type == "subtitle" and s.text and len(s.text) >= min_length
     ]
 
     if len(subtitle_segs) < 2:
@@ -124,13 +123,15 @@ def detect_duplicates(
 
             if similarity >= threshold:
                 seen_pairs.add(pair_key)
-                results.append(AnalysisResult(
-                    id=f"dup-{uuid.uuid4().hex[:8]}",
-                    type="duplicate",
-                    segment_ids=[seg1.id, seg2.id],
-                    confidence=round(similarity, 3),
-                    detail=f"Duplicate detected: '{seg1.text[:30]}...' ~ '{seg2.text[:30]}...' (similarity: {similarity:.2%})",
-                ))
+                results.append(
+                    AnalysisResult(
+                        id=f"dup-{uuid.uuid4().hex[:8]}",
+                        type="duplicate",
+                        segment_ids=[seg1.id, seg2.id],
+                        confidence=round(similarity, 3),
+                        detail=f"Duplicate detected: '{seg1.text[:30]}...' ~ '{seg2.text[:30]}...' (similarity: {similarity:.2%})",
+                    )
+                )
 
     return results
 
@@ -155,13 +156,15 @@ def detect_fillers(
             if word in seg.text:
                 matched.append(word)
         if matched:
-            results.append(AnalysisResult(
-                id=f"filler-{uuid.uuid4().hex[:8]}",
-                type="filler",
-                segment_ids=[seg.id],
-                confidence=0.90,
-                detail=f"Filler words found: {', '.join(matched)}",
-            ))
+            results.append(
+                AnalysisResult(
+                    id=f"filler-{uuid.uuid4().hex[:8]}",
+                    type="filler",
+                    segment_ids=[seg.id],
+                    confidence=0.90,
+                    detail=f"Filler words found: {', '.join(matched)}",
+                )
+            )
 
     return results
 
@@ -196,13 +199,15 @@ def detect_errors(
         for j in range(i + 1, min(i + 1 + lookahead, len(subtitle_segs))):
             region_ids.append(subtitle_segs[j].id)
 
-        results.append(AnalysisResult(
-            id=f"error-{uuid.uuid4().hex[:8]}",
-            type="error",
-            segment_ids=region_ids,
-            confidence=0.85,
-            detail=f"Error trigger: '{matched_trigger}' at segment {seg.id}",
-        ))
+        results.append(
+            AnalysisResult(
+                id=f"error-{uuid.uuid4().hex[:8]}",
+                type="error",
+                segment_ids=region_ids,
+                confidence=0.85,
+                detail=f"Error trigger: '{matched_trigger}' at segment {seg.id}",
+            )
+        )
 
     return results
 
@@ -228,13 +233,41 @@ def detect_punctuation(
         # Default: common Chinese and English punctuation
         punctuation_marks = [
             # Chinese punctuation
-            "。", "！", "？", "，", "、", "；", "：",
-            """, """, "'", "'", "（", "）", "【", "】",
-            "《", "》", "…", "——",
+            "。",
+            "！",
+            "？",
+            "，",
+            "、",
+            "；",
+            "：",
+            """, """,
+            "'",
+            "'",
+            "（",
+            "）",
+            "【",
+            "】",
+            "《",
+            "》",
+            "…",
+            "——",
             # English punctuation
-            ".", "!", "?", ",", ";", ":",
-            "(", ")", "[", "]", "{", "}",
-            "'", "'", "\"", "\"",
+            ".",
+            "!",
+            "?",
+            ",",
+            ";",
+            ":",
+            "(",
+            ")",
+            "[",
+            "]",
+            "{",
+            "}",
+            "'",
+            "'",
+            '"',
+            '"',
         ]
 
     results: list[AnalysisResult] = []
@@ -256,13 +289,15 @@ def detect_punctuation(
             density = punct_count / max(text_len, 1)
             confidence = min(0.95, 0.7 + density * 2)  # Higher density = higher confidence
 
-            results.append(AnalysisResult(
-                id=f"punct-{uuid.uuid4().hex[:8]}",
-                type="punctuation",
-                segment_ids=[seg.id],
-                confidence=round(confidence, 3),
-                detail=f"Punctuation found: {''.join(found_punctuation[:5])}{'...' if len(found_punctuation) > 5 else ''}",
-            ))
+            results.append(
+                AnalysisResult(
+                    id=f"punct-{uuid.uuid4().hex[:8]}",
+                    type="punctuation",
+                    segment_ids=[seg.id],
+                    confidence=round(confidence, 3),
+                    detail=f"Punctuation found: {''.join(found_punctuation[:5])}{'...' if len(found_punctuation) > 5 else ''}",
+                )
+            )
 
     return results
 

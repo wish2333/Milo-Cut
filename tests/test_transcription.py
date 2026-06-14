@@ -39,6 +39,7 @@ STALL_THRESHOLD_SECONDS = 30
 # Helpers
 # ------------------------------------------------------------------
 
+
 def _ts() -> str:
     """Return a timestamp string for debug output."""
     return time.strftime("%H:%M:%S")
@@ -138,11 +139,8 @@ class TestPluginStatus:
         print("\n  Model status:")
         for m in models:
             marker = "[DOWNLOADED]" if m["status"] == "downloaded" else "[NOT DOWNLOADED]"
-            size_gb = m["size_bytes"] / (1024 ** 3)
-            print(
-                f"    {marker} {m['model_id']}"
-                f"  ({size_gb:.1f} GB, plugin={m['plugin_id']})"
-            )
+            size_gb = m["size_bytes"] / (1024**3)
+            print(f"    {marker} {m['model_id']}  ({size_gb:.1f} GB, plugin={m['plugin_id']})")
 
         assert len(models) >= 2, "Expected at least 2 models in registry"
 
@@ -186,9 +184,7 @@ class TestModelResolution:
         for size_key, expected_id in cases:
             result = _resolve_whisper_model(size_key)
             print(f"\n  resolve_whisper_model('{size_key}') => {result}")
-            assert result == expected_id, (
-                f"Expected {expected_id} for '{size_key}', got {result}"
-            )
+            assert result == expected_id, f"Expected {expected_id} for '{size_key}', got {result}"
 
     def test_resolve_whisper_model_full_id_passthrough(self):
         """Full HuggingFace IDs should pass through unchanged."""
@@ -295,21 +291,21 @@ class TestWhisperTranscription:
 
         # Step 1: Resolve model
         model_id = _resolve_whisper_model(model_size)
-        print(f"\n  [STAGE 1] Model resolution:")
+        print("\n  [STAGE 1] Model resolution:")
         print(f"    model_size={model_size} => model_id={model_id}")
         assert model_id is not None, f"Cannot resolve whisper model size: {model_size}"
 
         # Step 2: Check if model is downloaded
         model_downloaded = pm.is_model_downloaded(model_id)
         model_path = pm.get_model_path(model_id)
-        print(f"  [STAGE 2] Model download status:")
+        print("  [STAGE 2] Model download status:")
         print(f"    model_id={model_id}")
         print(f"    downloaded={model_downloaded}")
         print(f"    path={model_path}")
 
         # Step 3: Check subprocess script
         script_path = PROJECT_ROOT / "core" / "asr_scripts" / "whisper_transcribe.py"
-        print(f"  [STAGE 3] Subprocess script:")
+        print("  [STAGE 3] Subprocess script:")
         print(f"    exists={script_path.exists()}")
         print(f"    path={script_path}")
 
@@ -383,6 +379,7 @@ class TestWhisperTranscription:
         assert python_path.exists(), f"Python not found: {python_path}"
 
         import subprocess
+
         from core.plugin_manager import _clean_subprocess_env
 
         env = _clean_subprocess_env()
@@ -406,12 +403,14 @@ class TestWhisperTranscription:
         python_path = pm.get_plugin_python("plugin-whisper")
 
         import subprocess
+
         from core.plugin_manager import _clean_subprocess_env
 
         env = _clean_subprocess_env()
         proc = subprocess.run(
             [
-                str(python_path), "-c",
+                str(python_path),
+                "-c",
                 "import faster_whisper; print(f'faster-whisper {faster_whisper.__version__}')",
             ],
             capture_output=True,
@@ -454,7 +453,7 @@ class TestQwenTranscription:
         # Step 1: Resolve models
         asr_model_id = _resolve_qwen_model("asr", "0.6B")
         aligner_model_id = _resolve_qwen_model("aligner", "0.6B")
-        print(f"\n  [STAGE 1] Model resolution:")
+        print("\n  [STAGE 1] Model resolution:")
         print(f"    asr: 0.6B => {asr_model_id}")
         print(f"    aligner: 0.6B => {aligner_model_id}")
         assert asr_model_id is not None
@@ -463,13 +462,13 @@ class TestQwenTranscription:
         # Step 2: Check download status
         asr_downloaded = pm.is_model_downloaded(asr_model_id)
         aligner_downloaded = pm.is_model_downloaded(aligner_model_id)
-        print(f"  [STAGE 2] Model download status:")
+        print("  [STAGE 2] Model download status:")
         print(f"    asr ({asr_model_id}): downloaded={asr_downloaded}")
         print(f"    aligner ({aligner_model_id}): downloaded={aligner_downloaded}")
 
         # Step 3: Check subprocess script
         script_path = PROJECT_ROOT / "core" / "asr_scripts" / "qwen_transcribe.py"
-        print(f"  [STAGE 3] Subprocess script:")
+        print("  [STAGE 3] Subprocess script:")
         print(f"    exists={script_path.exists()}")
         print(f"    path={script_path}")
 
@@ -539,6 +538,7 @@ class TestQwenTranscription:
         assert python_path.exists(), f"Python not found: {python_path}"
 
         import subprocess
+
         from core.plugin_manager import _clean_subprocess_env
 
         env = _clean_subprocess_env()
@@ -559,12 +559,14 @@ class TestQwenTranscription:
         python_path = pm.get_plugin_python("plugin-qwen-cpu")
 
         import subprocess
+
         from core.plugin_manager import _clean_subprocess_env
 
         env = _clean_subprocess_env()
         proc = subprocess.run(
             [
-                str(python_path), "-c",
+                str(python_path),
+                "-c",
                 (
                     "import transformers; import torch; "
                     "print(f'transformers {transformers.__version__}'); "
@@ -593,6 +595,7 @@ class TestSubprocessIPC:
             pytest.skip("plugin-whisper not installed")
 
         import subprocess
+
         from core.plugin_manager import _clean_subprocess_env
 
         python_path = pm.get_plugin_python("plugin-whisper")
@@ -602,11 +605,11 @@ class TestSubprocessIPC:
         test_script = PROJECT_ROOT / "data" / "plugins" / "tasks" / "_test_ipc.py"
         test_script.parent.mkdir(parents=True, exist_ok=True)
         test_script.write_text(
-            'import json, sys, time\n'
+            "import json, sys, time\n"
             'print(json.dumps({"type": "progress", "percent": 10.0, "message": "start"}), flush=True)\n'
-            'time.sleep(0.5)\n'
+            "time.sleep(0.5)\n"
             'print(json.dumps({"type": "progress", "percent": 50.0, "message": "mid"}), flush=True)\n'
-            'time.sleep(0.5)\n'
+            "time.sleep(0.5)\n"
             'print(json.dumps({"type": "progress", "percent": 100.0, "message": "done"}), flush=True)\n',
             encoding="utf-8",
         )
@@ -619,7 +622,7 @@ class TestSubprocessIPC:
                 timeout=30,
                 env=env,
             )
-            print(f"\n  Test script stdout:")
+            print("\n  Test script stdout:")
             events = []
             for line in result.stdout.strip().split("\n"):
                 line = line.strip()
@@ -647,6 +650,7 @@ class TestSubprocessIPC:
 # Standalone runner
 # ------------------------------------------------------------------
 
+
 def _run_standalone():
     """Run all checks outside of pytest for quick debugging."""
     print("=" * 60)
@@ -654,7 +658,7 @@ def _run_standalone():
     print("=" * 60)
 
     # 1. Test video
-    print(f"\n[1] Test video check:")
+    print("\n[1] Test video check:")
     if TEST_VIDEO.exists():
         size_mb = TEST_VIDEO.stat().st_size / (1024 * 1024)
         print(f"  OK: {TEST_VIDEO} ({size_mb:.1f} MB)")
@@ -663,7 +667,7 @@ def _run_standalone():
         return
 
     # 2. Plugin status
-    print(f"\n[2] Plugin status:")
+    print("\n[2] Plugin status:")
     try:
         pm = _get_plugin_manager()
         plugins = pm.list_plugins()
@@ -675,30 +679,34 @@ def _run_standalone():
         return
 
     # 3. Model status
-    print(f"\n[3] Model status:")
+    print("\n[3] Model status:")
     try:
         models = pm.list_models()
         for m in models:
             marker = "[DOWNLOADED]" if m["status"] == "downloaded" else "[NOT DOWNLOADED]"
-            size_gb = m["size_bytes"] / (1024 ** 3)
+            size_gb = m["size_bytes"] / (1024**3)
             print(f"  {marker} {m['model_id']} ({size_gb:.1f} GB)")
     except Exception as exc:
         print(f"  FAIL: {exc}")
 
     # 4. Settings
-    print(f"\n[4] Settings:")
+    print("\n[4] Settings:")
     settings = _get_settings()
     relevant_keys = [
-        "asr_engine", "asr_model_size", "asr_language",
-        "asr_device", "asr_compute_type", "asr_vad_filter",
+        "asr_engine",
+        "asr_model_size",
+        "asr_language",
+        "asr_device",
+        "asr_compute_type",
+        "asr_vad_filter",
     ]
     for key in relevant_keys:
         print(f"  {key}: {settings.get(key, '<not set>')}")
 
     # 5. Model resolution
-    print(f"\n[5] Model resolution:")
+    print("\n[5] Model resolution:")
     try:
-        from core.asr_service import _resolve_whisper_model, _resolve_qwen_model
+        from core.asr_service import _resolve_qwen_model, _resolve_whisper_model
 
         whisper_id = _resolve_whisper_model(settings.get("asr_model_size", "large-v3-turbo"))
         print(f"  whisper ({settings.get('asr_model_size', 'large-v3-turbo')}): {whisper_id}")
@@ -711,7 +719,7 @@ def _run_standalone():
         print(f"  FAIL: {exc}")
 
     # 6. Run transcription if plugin available
-    print(f"\n[6] Transcription test:")
+    print("\n[6] Transcription test:")
     if pm.is_installed("plugin-whisper"):
         print(f"  Running whisper transcription (timeout={TRANSCRIPTION_TIMEOUT}s)...")
         try:
@@ -758,11 +766,11 @@ def _run_standalone():
                     print(f"  FAIL: {result.get('error')}")
 
             if stall_detected[0]:
-                print(f"  WARNING: Stall detected during execution")
+                print("  WARNING: Stall detected during execution")
         except Exception as exc:
             print(f"  FAIL: {exc}")
     else:
-        print(f"  SKIPPED: plugin-whisper not installed")
+        print("  SKIPPED: plugin-whisper not installed")
 
     if pm.is_installed("plugin-qwen-cpu"):
         print(f"\n  Running qwen transcription (timeout={TRANSCRIPTION_TIMEOUT}s)...")
@@ -806,14 +814,14 @@ def _run_standalone():
                     print(f"  FAIL: {result.get('error')}")
 
             if stall_detected[0]:
-                print(f"  WARNING: Stall detected during execution")
+                print("  WARNING: Stall detected during execution")
         except Exception as exc:
             print(f"  FAIL: {exc}")
     else:
-        print(f"\n  SKIPPED: plugin-qwen-cpu not installed")
+        print("\n  SKIPPED: plugin-qwen-cpu not installed")
 
     print(f"\n{'=' * 60}")
-    print(f"  Diagnostic complete.")
+    print("  Diagnostic complete.")
     print(f"{'=' * 60}")
 
 

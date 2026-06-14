@@ -70,10 +70,19 @@ export interface Project {
   schema_version: number
   project: ProjectMeta
   media: MediaInfo | null
+  timelines: Timeline[]
+  active_timeline_id: string
+}
+
+export interface Timeline {
+  id: string
+  label: string
+  source: string
+  created_at: string
+  parent_id: string
   transcript: TranscriptData
-  analysis: AnalysisData
   edits: EditDecision[]
-  topic_drift: TopicDriftData
+  analysis: AnalysisData
 }
 
 export interface AnalysisResult {

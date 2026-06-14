@@ -118,19 +118,84 @@ ENCODER_FALLBACK_CHAIN: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 ENCODER_METADATA: dict[str, dict] = {
-    "libx264":     {"label": "H.264 (CPU)",     "qualityMode": "crf", "recommendedQuality": 23, "qualityRange": [18, 28]},
-    "libx265":     {"label": "H.265 (CPU)",     "qualityMode": "crf", "recommendedQuality": 24, "qualityRange": [18, 28]},
-    "libsvtav1":   {"label": "AV1 (CPU)",       "qualityMode": "crf", "recommendedQuality": 32, "qualityRange": [20, 40]},
-    "h264_nvenc":  {"label": "H.264 (NVIDIA)",  "qualityMode": "cq",  "recommendedQuality": 28, "qualityRange": [20, 36]},
-    "hevc_nvenc":  {"label": "H.265 (NVIDIA)",  "qualityMode": "cq",  "recommendedQuality": 28, "qualityRange": [20, 36]},
-    "av1_nvenc":   {"label": "AV1 (NVIDIA)",    "qualityMode": "cq",  "recommendedQuality": 36, "qualityRange": [24, 44]},
-    "h264_qsv":    {"label": "H.264 (Intel)",   "qualityMode": "qp",  "recommendedQuality": 28, "qualityRange": [20, 36]},
-    "hevc_qsv":    {"label": "H.265 (Intel)",   "qualityMode": "qp",  "recommendedQuality": 30, "qualityRange": [20, 36]},
-    "av1_qsv":     {"label": "AV1 (Intel)",     "qualityMode": "qp",  "recommendedQuality": 32, "qualityRange": [20, 40]},
-    "h264_amf":    {"label": "H.264 (AMD)",     "qualityMode": "qp",  "recommendedQuality": 34, "qualityRange": [20, 40]},
-    "hevc_amf":    {"label": "H.265 (AMD)",     "qualityMode": "qp",  "recommendedQuality": 32, "qualityRange": [20, 40]},
-    "h264_videotoolbox": {"label": "H.264 (Apple)", "qualityMode": "q", "recommendedQuality": 65, "qualityRange": [40, 80]},
-    "hevc_videotoolbox": {"label": "H.265 (Apple)", "qualityMode": "q", "recommendedQuality": 65, "qualityRange": [40, 80]},
+    "libx264": {
+        "label": "H.264 (CPU)",
+        "qualityMode": "crf",
+        "recommendedQuality": 23,
+        "qualityRange": [18, 28],
+    },
+    "libx265": {
+        "label": "H.265 (CPU)",
+        "qualityMode": "crf",
+        "recommendedQuality": 24,
+        "qualityRange": [18, 28],
+    },
+    "libsvtav1": {
+        "label": "AV1 (CPU)",
+        "qualityMode": "crf",
+        "recommendedQuality": 32,
+        "qualityRange": [20, 40],
+    },
+    "h264_nvenc": {
+        "label": "H.264 (NVIDIA)",
+        "qualityMode": "cq",
+        "recommendedQuality": 28,
+        "qualityRange": [20, 36],
+    },
+    "hevc_nvenc": {
+        "label": "H.265 (NVIDIA)",
+        "qualityMode": "cq",
+        "recommendedQuality": 28,
+        "qualityRange": [20, 36],
+    },
+    "av1_nvenc": {
+        "label": "AV1 (NVIDIA)",
+        "qualityMode": "cq",
+        "recommendedQuality": 36,
+        "qualityRange": [24, 44],
+    },
+    "h264_qsv": {
+        "label": "H.264 (Intel)",
+        "qualityMode": "qp",
+        "recommendedQuality": 28,
+        "qualityRange": [20, 36],
+    },
+    "hevc_qsv": {
+        "label": "H.265 (Intel)",
+        "qualityMode": "qp",
+        "recommendedQuality": 30,
+        "qualityRange": [20, 36],
+    },
+    "av1_qsv": {
+        "label": "AV1 (Intel)",
+        "qualityMode": "qp",
+        "recommendedQuality": 32,
+        "qualityRange": [20, 40],
+    },
+    "h264_amf": {
+        "label": "H.264 (AMD)",
+        "qualityMode": "qp",
+        "recommendedQuality": 34,
+        "qualityRange": [20, 40],
+    },
+    "hevc_amf": {
+        "label": "H.265 (AMD)",
+        "qualityMode": "qp",
+        "recommendedQuality": 32,
+        "qualityRange": [20, 40],
+    },
+    "h264_videotoolbox": {
+        "label": "H.264 (Apple)",
+        "qualityMode": "q",
+        "recommendedQuality": 65,
+        "qualityRange": [40, 80],
+    },
+    "hevc_videotoolbox": {
+        "label": "H.265 (Apple)",
+        "qualityMode": "q",
+        "recommendedQuality": 65,
+        "qualityRange": [40, 80],
+    },
 }
 
 
@@ -164,7 +229,9 @@ def check_encoder_availability(ffmpeg: str, codec: str) -> bool:
     try:
         result = subprocess.run(
             [ffmpeg, "-hide_banner", "-encoders"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
             **_SUBPROCESS_KWARGS,
         )
         return codec in result.stdout
@@ -185,13 +252,7 @@ def get_fallback_codec(ffmpeg: str, requested: str) -> tuple[str, str | None]:
     while current in ENCODER_FALLBACK_CHAIN:
         fallback = ENCODER_FALLBACK_CHAIN[current]
         if check_encoder_availability(ffmpeg, fallback):
-            return fallback, (
-                f"Encoder '{requested}' not available, "
-                f"falling back to '{fallback}'"
-            )
+            return fallback, (f"Encoder '{requested}' not available, falling back to '{fallback}'")
         current = fallback
 
-    return "libx264", (
-        f"Encoder '{requested}' not available, "
-        f"falling back to 'libx264'"
-    )
+    return "libx264", (f"Encoder '{requested}' not available, falling back to 'libx264'")

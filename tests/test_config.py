@@ -1,7 +1,6 @@
 """Tests for core.config."""
 
 import json
-from pathlib import Path
 
 from core.config import load_settings, save_settings
 

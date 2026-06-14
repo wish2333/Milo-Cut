@@ -24,6 +24,7 @@ class _QuietHTTPServer(ThreadingHTTPServer):
     def handle_error(self, request, client_address):
         """Suppress traceback for client disconnects."""
         import sys
+
         exc = sys.exc_info()[1]
         if isinstance(exc, _EXPECTED_CONN_ERRORS):
             return

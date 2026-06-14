@@ -10,7 +10,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from core.models import Segment, SegmentType
+from core.models import SegmentType
 
 
 def parse_srt(file_path: str) -> dict:
@@ -47,13 +47,15 @@ def parse_srt(file_path: str) -> dict:
             end = _timestamp_to_seconds(g[4], g[5], g[6], g[7])
             text = "\n".join(lines[2:]).strip()
 
-            segments.append({
-                "id": f"seg-{len(segments) + 1:04d}",
-                "type": SegmentType.SUBTITLE,
-                "start": round(start, 3),
-                "end": round(end, 3),
-                "text": text,
-            })
+            segments.append(
+                {
+                    "id": f"seg-{len(segments) + 1:04d}",
+                    "type": SegmentType.SUBTITLE,
+                    "start": round(start, 3),
+                    "end": round(end, 3),
+                    "text": text,
+                }
+            )
 
         logger.info("Parsed {} segments from {}", len(segments), file_path)
         return {"success": True, "data": segments}
@@ -99,14 +101,21 @@ def validate_srt(file_path: str, video_duration: float = 0.0) -> dict:
     for block_idx, block in enumerate(blocks):
         lines = block.strip().splitlines()
         if len(lines) < 3:
-            issues.append({"level": "error", "message": f"Block {block_idx + 1}: insufficient lines"})
+            issues.append(
+                {"level": "error", "message": f"Block {block_idx + 1}: insufficient lines"}
+            )
             continue
 
         # Parse index
         try:
             index = int(lines[0].strip())
         except ValueError:
-            issues.append({"level": "error", "message": f"Block {block_idx + 1}: invalid index '{lines[0].strip()}'"})
+            issues.append(
+                {
+                    "level": "error",
+                    "message": f"Block {block_idx + 1}: invalid index '{lines[0].strip()}'",
+                }
+            )
             continue
 
         # Parse timestamp
@@ -115,7 +124,9 @@ def validate_srt(file_path: str, video_duration: float = 0.0) -> dict:
             lines[1].strip(),
         )
         if not ts_match:
-            issues.append({"level": "error", "message": f"Block {block_idx + 1}: invalid timestamp format"})
+            issues.append(
+                {"level": "error", "message": f"Block {block_idx + 1}: invalid timestamp format"}
+            )
             continue
 
         g = ts_match.groups()
@@ -123,7 +134,9 @@ def validate_srt(file_path: str, video_duration: float = 0.0) -> dict:
         end = _timestamp_to_seconds(g[4], g[5], g[6], g[7])
 
         if start >= end:
-            issues.append({"level": "error", "message": f"Block {block_idx + 1} (idx {index}): start >= end"})
+            issues.append(
+                {"level": "error", "message": f"Block {block_idx + 1} (idx {index}): start >= end"}
+            )
 
         entries.append((index, start, end))
 
@@ -131,27 +144,33 @@ def validate_srt(file_path: str, video_duration: float = 0.0) -> dict:
     for i, (idx, _, _) in enumerate(entries):
         expected = i + 1
         if idx != expected:
-            issues.append({"level": "warning", "message": f"Index gap: expected {expected}, got {idx}"})
+            issues.append(
+                {"level": "warning", "message": f"Index gap: expected {expected}, got {idx}"}
+            )
 
     # Check overlapping timestamps
     for i in range(1, len(entries)):
         prev_end = entries[i - 1][2]
         curr_start = entries[i][1]
         if curr_start < prev_end - 0.001:
-            issues.append({
-                "level": "warning",
-                "message": f"Overlap between entry {entries[i - 1][0]} and {entries[i][0]}",
-            })
+            issues.append(
+                {
+                    "level": "warning",
+                    "message": f"Overlap between entry {entries[i - 1][0]} and {entries[i][0]}",
+                }
+            )
 
     # Check duration mismatch
     if video_duration > 0 and entries:
         last_end = entries[-1][2]
         mismatch = abs(last_end - video_duration) / video_duration
         if mismatch > 0.10:
-            issues.append({
-                "level": "warning",
-                "message": f"Duration mismatch: SRT ends at {last_end:.1f}s, video is {video_duration:.1f}s ({mismatch:.0%})",
-            })
+            issues.append(
+                {
+                    "level": "warning",
+                    "message": f"Duration mismatch: SRT ends at {last_end:.1f}s, video is {video_duration:.1f}s ({mismatch:.0%})",
+                }
+            )
 
     warning_count = sum(1 for i in issues if i["level"] == "warning")
     error_count = sum(1 for i in issues if i["level"] == "error")

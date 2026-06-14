@@ -2,7 +2,7 @@ import { ref, computed, watch } from "vue"
 import { call } from "@/bridge"
 import { useBridge } from "./useBridge"
 import { EVENT_PROJECT_SAVED, EVENT_PROJECT_DIRTY, EVENT_TASK_COMPLETED } from "@/utils/events"
-import type { Project, Segment, EditDecision, MediaInfo } from "@/types/project"
+import type { Project, Segment, EditDecision, MediaInfo, Timeline } from "@/types/project"
 
 export function useProject() {
   const { on } = useBridge()
@@ -15,8 +15,11 @@ export function useProject() {
   const pendingRelinkPath = ref<string | null>(null)
   const pendingProjectPath = ref<string | null>(null)
 
-  const segments = computed<Segment[]>(() => project.value?.transcript?.segments ?? [])
-  const edits = computed<EditDecision[]>(() => project.value?.edits ?? [])
+  const activeTimeline = computed<Timeline | null>(() =>
+    project.value?.timelines.find(t => t.id === project.value!.active_timeline_id) ?? null
+  )
+  const segments = computed<Segment[]>(() => activeTimeline.value?.transcript?.segments ?? [])
+  const edits = computed<EditDecision[]>(() => activeTimeline.value?.edits ?? [])
   const mediaDuration = computed<number>(() => project.value?.media?.duration ?? 0)
   const mediaInfo = computed<MediaInfo | null>(() => project.value?.media ?? null)
   const waveformPath = computed<string | undefined>(() => project.value?.media?.waveform_path ?? undefined)
@@ -132,6 +135,7 @@ export function useProject() {
 
   return {
     project,
+    activeTimeline,
     isDirty,
     loading,
     isSaving,

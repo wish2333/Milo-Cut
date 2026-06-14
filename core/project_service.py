@@ -23,8 +23,7 @@ from core.models import (
     ProjectMeta,
     Segment,
     SegmentType,
-    TopicDriftData,
-    TopicDriftResult,
+    Timeline,
     TranscriptData,
 )
 from core.paths import get_projects_dir
@@ -64,6 +63,31 @@ class ProjectService:
     def current_path(self) -> Path | None:
         return self._current_path
 
+    @property
+    def active_timeline(self) -> Timeline:
+        """The currently active Timeline of the open project.
+
+        All transcript/edits/analysis operations go through this property.
+        """
+        if self._current is None:
+            raise RuntimeError("No project loaded")
+        return self._current.active_timeline
+
+    def _update_active_timeline(self, **updates) -> Project:
+        """Update the active timeline and write it back to Project.timelines.
+
+        Returns the updated Project (also stored as self._current).
+        """
+        if self._current is None:
+            raise RuntimeError("No project loaded")
+        tl = self.active_timeline
+        new_tl = tl.model_copy(update=updates)
+        new_timelines = [
+            new_tl if t.id == tl.id else t for t in self._current.timelines
+        ]
+        self._current = self._current.model_copy(update={"timelines": new_timelines})
+        return self._current
+
     def create_project(self, name: str, media_path: str, media_info: dict) -> dict:
         """Create a new project with media info."""
         media_fields = {k: v for k, v in media_info.items() if k in MediaInfo.model_fields and k != "path"}
@@ -100,6 +124,10 @@ class ProjectService:
                 return {"success": False, "error": f"Project file not found: {path}"}
 
             data = json.loads(project_path.read_text(encoding="utf-8"))
+
+            # Migrate v1 -> v2 schema if needed
+            data = self._migrate_to_v2(data)
+
             project = Project.model_validate(data)
 
             self._current = project
@@ -137,18 +165,45 @@ class ProjectService:
             logger.exception("Failed to open project: {}", path)
             return {"success": False, "error": str(e)}
 
+    def _migrate_to_v2(self, raw: dict) -> dict:
+        """Migrate schema_version 1 -> 2: wrap flat fields into default Timeline."""
+        if raw.get("schema_version", 1) >= 2:
+            return raw
+
+        transcript = raw.pop("transcript", {"segments": []})
+        edits = raw.pop("edits", [])
+        analysis = raw.pop("analysis", {"results": []})
+        raw.pop("topic_drift", None)  # Drop old Topic Drift data
+
+        created_at = raw.get("project", {}).get("created_at", "")
+        raw["timelines"] = [
+            {
+                "id": "default",
+                "label": "原始",
+                "source": "migrated",
+                "created_at": created_at,
+                "parent_id": "",
+                "transcript": transcript,
+                "edits": edits,
+                "analysis": analysis,
+            }
+        ]
+        raw["active_timeline_id"] = "default"
+        raw["schema_version"] = 2
+        return raw
+
     def _migrate_silence_edits(self) -> None:
         """Migrate old format silence EditDecisions to bind target_id."""
         if not self._current:
             return
 
         silence_map = {
-            s.id: s for s in self._current.transcript.segments
+            s.id: s for s in self.active_timeline.transcript.segments
             if s.type == SegmentType.SILENCE
         }
 
         migrated = []
-        for edit in self._current.edits:
+        for edit in self.active_timeline.edits:
             if (edit.source == "silence_detection"
                     and edit.target_type == "range"
                     and edit.target_id is None):
@@ -168,7 +223,7 @@ class ProjectService:
             else:
                 migrated.append(edit)
 
-        self._current = self._current.model_copy(update={"edits": migrated})
+        self._update_active_timeline(edits=migrated)
 
     def save_project(self) -> dict:
         """Save the current project to disk."""
@@ -200,6 +255,89 @@ class ProjectService:
         self._current_path = None
         return {"success": True}
 
+    # ------------------------------------------------------------------
+    # Timeline CRUD (multi-timeline infrastructure, v2.0.0)
+    # ------------------------------------------------------------------
+
+    def create_timeline(
+        self, label: str, source: str = "manual", fork_from: str | None = None
+    ) -> dict:
+        """Create a new timeline, optionally forking from an existing one."""
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        tl_id = f"tl_{int(datetime.now().timestamp() * 1000)}"
+
+        if fork_from:
+            parent = self._current.get_timeline(fork_from)
+            if parent is None:
+                return {"success": False, "error": f"Timeline not found: {fork_from}"}
+            new_tl = Timeline(
+                id=tl_id,
+                label=label,
+                source=source,
+                parent_id=fork_from,
+                transcript=parent.transcript.model_copy(deep=True),
+                edits=[e.model_copy() for e in parent.edits],
+                analysis=parent.analysis.model_copy(deep=True),
+            )
+        else:
+            new_tl = Timeline(id=tl_id, label=label, source=source)
+
+        new_timelines = list(self._current.timelines) + [new_tl]
+        self._current = self._current.model_copy(
+            update={"timelines": new_timelines, "active_timeline_id": tl_id}
+        )
+        logger.info("Created timeline '{}' ({})", label, tl_id)
+        return {"success": True, "data": self._current.model_dump()}
+
+    def switch_timeline(self, timeline_id: str) -> dict:
+        """Switch the active timeline."""
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+        if self._current.get_timeline(timeline_id) is None:
+            return {"success": False, "error": f"Timeline not found: {timeline_id}"}
+        self._current = self._current.model_copy(update={"active_timeline_id": timeline_id})
+        logger.info("Switched to timeline {}", timeline_id)
+        return {"success": True, "data": self._current.model_dump()}
+
+    def delete_timeline(self, timeline_id: str) -> dict:
+        """Delete a timeline (cannot delete if it's the only one)."""
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+        if len(self._current.timelines) <= 1:
+            return {"success": False, "error": "Cannot delete the last timeline"}
+        if self._current.get_timeline(timeline_id) is None:
+            return {"success": False, "error": f"Timeline not found: {timeline_id}"}
+
+        new_timelines = [tl for tl in self._current.timelines if tl.id != timeline_id]
+        new_active = self._current.active_timeline_id
+        if new_active == timeline_id:
+            new_active = new_timelines[0].id
+        self._current = self._current.model_copy(
+            update={"timelines": new_timelines, "active_timeline_id": new_active}
+        )
+        logger.info("Deleted timeline {}", timeline_id)
+        return {"success": True, "data": self._current.model_dump()}
+
+    def rename_timeline(self, timeline_id: str, new_label: str) -> dict:
+        """Rename a timeline."""
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+        tl = self._current.get_timeline(timeline_id)
+        if tl is None:
+            return {"success": False, "error": f"Timeline not found: {timeline_id}"}
+        new_timelines = [
+            t.model_copy(update={"label": new_label}) if t.id == timeline_id else t
+            for t in self._current.timelines
+        ]
+        self._current = self._current.model_copy(update={"timelines": new_timelines})
+        return {"success": True, "data": self._current.model_dump()}
+
+    def duplicate_timeline(self, timeline_id: str, new_label: str) -> dict:
+        """Duplicate a timeline (creates a fork)."""
+        return self.create_timeline(new_label, source="duplicate", fork_from=timeline_id)
+
     def relink_media(self, new_path: str) -> dict:
         """Relink media to a new path. Updates path + fingerprint."""
         if self._current is None:
@@ -224,7 +362,7 @@ class ProjectService:
         updated_media = self._current.media.model_copy(update={"waveform_path": waveform_path})
         updated = self._current.model_copy(update={"media": updated_media})
         self._current = updated
-        return {"success": True, "data": updated.model_dump()}
+        return {"success": True, "data": self._current.model_dump()}
 
     def update_transcript(self, segments: list[dict]) -> dict:
         """Replace subtitle segments while preserving silence segments.
@@ -236,7 +374,7 @@ class ProjectService:
             return {"success": False, "error": "No project is open"}
 
         new_subtitles = [Segment.model_validate(s) for s in segments]
-        existing = self._current.transcript.segments
+        existing = self.active_timeline.transcript.segments
         existing_silence = [s for s in existing if s.type == SegmentType.SILENCE]
 
         all_segments = new_subtitles + existing_silence
@@ -244,16 +382,15 @@ class ProjectService:
 
         # Remove orphaned EditDecisions whose target_id no longer exists
         cleaned_edits = [
-            e for e in self._current.edits
+            e for e in self.active_timeline.edits
             if e.target_id is None or e.target_id in new_seg_ids
         ]
 
-        updated = self._current.model_copy(update={
-            "transcript": TranscriptData(segments=all_segments),
-            "edits": cleaned_edits,
-        })
-        self._current = updated
-        return {"success": True, "data": updated.model_dump()}
+        self._update_active_timeline(
+            transcript=TranscriptData(segments=all_segments),
+            edits=cleaned_edits,
+        )
+        return {"success": True, "data": self._current.model_dump()}
 
     def update_media_info(self, media_info: dict) -> dict:
         """Update media info in the current project."""
@@ -265,7 +402,7 @@ class ProjectService:
         )
         updated = self._current.model_copy(update={"media": info})
         self._current = updated
-        return {"success": True, "data": updated.model_dump()}
+        return {"success": True, "data": self._current.model_dump()}
 
     def _resolve_subtitle_overlap(
         self,
@@ -346,12 +483,12 @@ class ProjectService:
 
         # Exclude subtitles that have been confirmed for deletion
         confirmed_deleted_ids: set[str] = {
-            e.target_id for e in (self._current.edits if self._current else [])
+            e.target_id for e in (self.active_timeline.edits if self._current else [])
             if e.status == EditStatus.CONFIRMED and e.action == "delete" and e.target_id
         }
 
         subtitle_segs = sorted(
-            [s for s in (self._current.transcript.segments if self._current else [])
+            [s for s in (self.active_timeline.transcript.segments if self._current else [])
              if s.type == SegmentType.SUBTITLE and s.id not in confirmed_deleted_ids],
             key=lambda s: s.start,
         )
@@ -433,8 +570,8 @@ class ProjectService:
         if not silences:
             return {"success": True, "data": {"message": "No silence ranges after processing"}}
 
-        existing = self._current.transcript.segments
-        existing_edits = list(self._current.edits)
+        existing = self.active_timeline.transcript.segments
+        existing_edits = list(self.active_timeline.edits)
 
         new_segments: list[Segment] = []
         new_edits: list[EditDecision] = []
@@ -479,15 +616,13 @@ class ProjectService:
         # Note: _resolve_subtitle_overlap is deprecated. D-2 handles subtitle
         # protection via _trim_silences_around_subtitles before segment creation.
 
-        from core.models import AnalysisData
-        updated = self._current.model_copy(update={
-            "transcript": TranscriptData(segments=all_segments),
-            "edits": all_edits,
-            "analysis": AnalysisData(last_run=datetime.now().isoformat()),
-        })
-        self._current = updated
+        self._update_active_timeline(
+            transcript=TranscriptData(segments=all_segments),
+            edits=all_edits,
+            analysis=AnalysisData(last_run=datetime.now().isoformat()),
+        )
         logger.info("Added {} silence segments to project", len(new_segments))
-        return {"success": True, "data": updated.model_dump()}
+        return {"success": True, "data": self._current.model_dump()}
 
     def update_edit_decision(self, edit_id: str, status: str) -> dict:
         """Update the status of an edit decision."""
@@ -501,7 +636,7 @@ class ProjectService:
 
         updated_edits = []
         found = False
-        for edit in self._current.edits:
+        for edit in self.active_timeline.edits:
             if edit.id == edit_id:
                 updated_edits.append(edit.model_copy(update={"status": new_status}))
                 found = True
@@ -511,9 +646,8 @@ class ProjectService:
         if not found:
             return {"success": False, "error": f"Edit decision not found: {edit_id}"}
 
-        updated = self._current.model_copy(update={"edits": updated_edits})
-        self._current = updated
-        return {"success": True, "data": updated.model_dump()}
+        self._update_active_timeline(edits=updated_edits)
+        return {"success": True, "data": self._current.model_dump()}
 
     def update_segment(self, segment_id: str, updates: dict) -> dict:
         """Update a segment's fields (start, end, text)."""
@@ -526,7 +660,7 @@ class ProjectService:
             return {"success": False, "error": "No valid fields to update"}
 
         old_seg = next(
-            (s for s in self._current.transcript.segments if s.id == segment_id),
+            (s for s in self.active_timeline.transcript.segments if s.id == segment_id),
             None,
         )
         if old_seg is None:
@@ -534,14 +668,14 @@ class ProjectService:
 
         updated_segments = []
         updated_seg = None
-        for seg in self._current.transcript.segments:
+        for seg in self.active_timeline.transcript.segments:
             if seg.id == segment_id:
                 updated_seg = seg.model_copy(update=filtered)
                 updated_segments.append(updated_seg)
             else:
                 updated_segments.append(seg)
 
-        updated_transcript = self._current.transcript.model_copy(
+        updated_transcript = self.active_timeline.transcript.model_copy(
             update={"segments": updated_segments}
         )
 
@@ -549,7 +683,7 @@ class ProjectService:
 
         if updated_seg and ("start" in filtered or "end" in filtered) and old_seg.type == SegmentType.SILENCE:
             updated_edits = []
-            for edit in self._current.edits:
+            for edit in self.active_timeline.edits:
                 if (abs(edit.start - old_seg.start) < 0.01
                         and abs(edit.end - old_seg.end) < 0.01
                         and edit.source == "silence_detection"):
@@ -561,9 +695,8 @@ class ProjectService:
                     updated_edits.append(edit)
             update_kwargs["edits"] = updated_edits
 
-        updated = self._current.model_copy(update=update_kwargs)
-        self._current = updated
-        return {"success": True, "data": updated.model_dump()}
+        self._update_active_timeline(**update_kwargs)
+        return {"success": True, "data": self._current.model_dump()}
 
     def update_segment_text(self, segment_id: str, text: str) -> dict:
         """Update a subtitle segment's text and set dirty_flags."""
@@ -572,7 +705,7 @@ class ProjectService:
             return result
 
         # Set dirty_flags on the updated segment
-        segments = self._current.transcript.segments
+        segments = self.active_timeline.transcript.segments
         updated_segments = []
         for seg in segments:
             if seg.id == segment_id:
@@ -582,11 +715,10 @@ class ProjectService:
             else:
                 updated_segments.append(seg)
 
-        updated = self._current.model_copy(update={
-            "transcript": self._current.transcript.model_copy(update={"segments": updated_segments}),
-        })
-        self._current = updated
-        return {"success": True, "data": updated.model_dump()}
+        self._update_active_timeline(
+            transcript=self.active_timeline.transcript.model_copy(update={"segments": updated_segments}),
+        )
+        return {"success": True, "data": self._current.model_dump()}
 
     def add_segment(self, start: float, end: float, text: str = "", seg_type: str = "subtitle") -> dict:
         """Add a new segment to the transcript."""
@@ -594,7 +726,7 @@ class ProjectService:
             return {"success": False, "error": "No project is open"}
 
         segment_type = SegmentType(seg_type)
-        existing = self._current.transcript.segments
+        existing = self.active_timeline.transcript.segments
         # Generate unique ID
         type_prefix = "sub" if segment_type == SegmentType.SUBTITLE else "sil"
         existing_ids = {s.id for s in existing}
@@ -614,40 +746,38 @@ class ProjectService:
         all_segments = list(existing) + [new_seg]
         all_segments.sort(key=lambda s: s.start)
 
-        updated = self._current.model_copy(update={
-            "transcript": TranscriptData(segments=all_segments),
-        })
-        self._current = updated
+        self._update_active_timeline(
+            transcript=TranscriptData(segments=all_segments),
+        )
         logger.info("Added segment {} ({:.3f}s - {:.3f}s)", seg_id, start, end)
-        return {"success": True, "data": updated.model_dump()}
+        return {"success": True, "data": self._current.model_dump()}
 
     def delete_segment(self, segment_id: str) -> dict:
         """Remove a segment and its associated edit decisions."""
         if self._current is None:
             return {"success": False, "error": "No project is open"}
 
-        segments = self._current.transcript.segments
+        segments = self.active_timeline.transcript.segments
         target = [s for s in segments if s.id == segment_id]
         if not target:
             return {"success": False, "error": f"Segment not found: {segment_id}"}
 
         remaining_segs = [s for s in segments if s.id != segment_id]
-        remaining_edits = [e for e in self._current.edits if e.target_id != segment_id]
+        remaining_edits = [e for e in self.active_timeline.edits if e.target_id != segment_id]
 
-        updated = self._current.model_copy(update={
-            "transcript": self._current.transcript.model_copy(update={"segments": remaining_segs}),
-            "edits": remaining_edits,
-        })
-        self._current = updated
+        self._update_active_timeline(
+            transcript=self.active_timeline.transcript.model_copy(update={"segments": remaining_segs}),
+            edits=remaining_edits,
+        )
         logger.info("Deleted segment {}", segment_id)
-        return {"success": True, "data": updated.model_dump()}
+        return {"success": True, "data": self._current.model_dump()}
 
     def clear_subtitles(self) -> dict:
         """Remove all subtitle-type segments and their associated edit decisions."""
         if self._current is None:
             return {"success": False, "error": "No project is open"}
 
-        segments = self._current.transcript.segments
+        segments = self.active_timeline.transcript.segments
         subtitle_ids = {s.id for s in segments if s.type == SegmentType.SUBTITLE}
 
         if not subtitle_ids:
@@ -655,24 +785,23 @@ class ProjectService:
 
         remaining_segs = [s for s in segments if s.type != SegmentType.SUBTITLE]
         remaining_edits = [
-            e for e in self._current.edits
+            e for e in self.active_timeline.edits
             if e.target_id not in subtitle_ids and e.source != "subtitle"
         ]
 
-        updated = self._current.model_copy(update={
-            "transcript": self._current.transcript.model_copy(update={"segments": remaining_segs}),
-            "edits": remaining_edits,
-        })
-        self._current = updated
+        self._update_active_timeline(
+            transcript=self.active_timeline.transcript.model_copy(update={"segments": remaining_segs}),
+            edits=remaining_edits,
+        )
         logger.info("Cleared {} subtitle segments", len(subtitle_ids))
-        return {"success": True, "data": updated.model_dump()}
+        return {"success": True, "data": self._current.model_dump()}
 
     def delete_silence_segments(self) -> dict:
         """Remove all silence-type segments and their associated edit decisions."""
         if self._current is None:
             return {"success": False, "error": "No project is open"}
 
-        segments = self._current.transcript.segments
+        segments = self.active_timeline.transcript.segments
         silence_ids = {s.id for s in segments if s.type == SegmentType.SILENCE}
 
         if not silence_ids:
@@ -680,33 +809,31 @@ class ProjectService:
 
         remaining_segs = [s for s in segments if s.type != SegmentType.SILENCE]
         remaining_edits = [
-            e for e in self._current.edits
+            e for e in self.active_timeline.edits
             if e.target_id not in silence_ids and e.source != "silence_detection"
         ]
 
-        updated = self._current.model_copy(update={
-            "transcript": self._current.transcript.model_copy(update={"segments": remaining_segs}),
-            "edits": remaining_edits,
-        })
-        self._current = updated
+        self._update_active_timeline(
+            transcript=self.active_timeline.transcript.model_copy(update={"segments": remaining_segs}),
+            edits=remaining_edits,
+        )
         logger.info("Deleted {} silence segments", len(silence_ids))
-        return {"success": True, "data": updated.model_dump()}
+        return {"success": True, "data": self._current.model_dump()}
 
     def delete_subtitle_trim_edits(self) -> dict:
         """Remove all subtitle_trim source edit decisions."""
         if self._current is None:
             return {"success": False, "error": "No project is open"}
 
-        remaining_edits = [e for e in self._current.edits if e.source != "subtitle_trim"]
-        removed_count = len(self._current.edits) - len(remaining_edits)
+        remaining_edits = [e for e in self.active_timeline.edits if e.source != "subtitle_trim"]
+        removed_count = len(self.active_timeline.edits) - len(remaining_edits)
 
         if removed_count == 0:
             return {"success": True, "data": self._current.model_dump()}
 
-        updated = self._current.model_copy(update={"edits": remaining_edits})
-        self._current = updated
+        self._update_active_timeline(edits=remaining_edits)
         logger.info("Deleted {} subtitle trim edits", removed_count)
-        return {"success": True, "data": updated.model_dump()}
+        return {"success": True, "data": self._current.model_dump()}
 
     def merge_segments(self, segment_ids: list[str]) -> dict:
         """Merge contiguous subtitle segments into one.
@@ -716,7 +843,7 @@ class ProjectService:
         if self._current is None:
             return {"success": False, "error": "No project is open"}
 
-        segments = list(self._current.transcript.segments)
+        segments = list(self.active_timeline.transcript.segments)
         targets = [s for s in segments if s.id in segment_ids and s.type == SegmentType.SUBTITLE]
         if len(targets) < 2:
             return {"success": False, "error": "Need at least 2 subtitle segments to merge"}
@@ -734,16 +861,15 @@ class ProjectService:
                         for s in segments if s.id not in remove_ids]
 
         # Remove orphaned EditDecisions that referenced removed segments
-        new_edits = [e for e in self._current.edits
+        new_edits = [e for e in self.active_timeline.edits
                      if not any(sid in remove_ids for sid in getattr(e, '_segment_ids', []))]
 
-        updated = self._current.model_copy(update={
-            "transcript": self._current.transcript.model_copy(update={"segments": new_segments}),
-            "edits": new_edits,
-        })
-        self._current = updated
+        self._update_active_timeline(
+            transcript=self.active_timeline.transcript.model_copy(update={"segments": new_segments}),
+            edits=new_edits,
+        )
         logger.info("Merged {} segments into {}", len(targets), merged_seg.id)
-        return {"success": True, "data": updated.model_dump()}
+        return {"success": True, "data": self._current.model_dump()}
 
     def split_segment(self, segment_id: str, position: float) -> dict:
         """Split a subtitle segment at the given time position.
@@ -753,7 +879,7 @@ class ProjectService:
         if self._current is None:
             return {"success": False, "error": "No project is open"}
 
-        segments = list(self._current.transcript.segments)
+        segments = list(self.active_timeline.transcript.segments)
         target = next((s for s in segments if s.id == segment_id), None)
         if target is None:
             return {"success": False, "error": f"Segment not found: {segment_id}"}
@@ -788,16 +914,15 @@ class ProjectService:
                 new_segments.append(s)
 
         # Remove EditDecisions referencing the old segment
-        new_edits = [e for e in self._current.edits
+        new_edits = [e for e in self.active_timeline.edits
                      if not hasattr(e, '_segment_ids') or segment_id not in e._segment_ids]
 
-        updated = self._current.model_copy(update={
-            "transcript": self._current.transcript.model_copy(update={"segments": new_segments}),
-            "edits": new_edits,
-        })
-        self._current = updated
+        self._update_active_timeline(
+            transcript=self.active_timeline.transcript.model_copy(update={"segments": new_segments}),
+            edits=new_edits,
+        )
         logger.info("Split segment {} at {:.3f}s", segment_id, position)
-        return {"success": True, "data": updated.model_dump()}
+        return {"success": True, "data": self._current.model_dump()}
 
     def search_replace(
         self,
@@ -817,7 +942,7 @@ class ProjectService:
         if self._current is None:
             return {"success": False, "error": "No project is open"}
 
-        segments = list(self._current.transcript.segments)
+        segments = list(self.active_timeline.transcript.segments)
         modified_ids: list[str] = []
         new_segments: list[Segment] = []
 
@@ -839,11 +964,9 @@ class ProjectService:
                 new_segments.append(seg)
 
         if modified_ids:
-            updated = self._current.model_copy(update={
-                "transcript": self._current.transcript.model_copy(update={"segments": new_segments}),
-            })
-            self._current = updated
-
+            self._update_active_timeline(
+                transcript=self.active_timeline.transcript.model_copy(update={"segments": new_segments}),
+            )
         logger.info("Search-replace: {} segments modified", len(modified_ids))
         return {
             "success": True,
@@ -861,7 +984,7 @@ class ProjectService:
         if self._current is None:
             return {"success": False, "error": "No project is open"}
 
-        segments = self._current.transcript.segments
+        segments = self.active_timeline.transcript.segments
         target_segs = [s for s in segments if s.id in segment_ids]
         if not target_segs:
             return {"success": False, "error": "No matching segments found"}
@@ -871,7 +994,7 @@ class ProjectService:
         except ValueError:
             edit_status = EditStatus.PENDING
 
-        existing_edits = list(self._current.edits)
+        existing_edits = list(self.active_timeline.edits)
         target_seg_ids = {seg.id for seg in target_segs}
         new_edits: list[EditDecision] = []
 
@@ -895,10 +1018,9 @@ class ProjectService:
             if not (e.source == "user" and e.target_id in target_seg_ids)
         ] + new_edits
 
-        updated = self._current.model_copy(update={"edits": merged_edits})
-        self._current = updated
+        self._update_active_timeline(edits=merged_edits)
         logger.info("Marked {} segments as {} ({})", len(target_segs), action, status)
-        return {"success": True, "data": updated.model_dump()}
+        return {"success": True, "data": self._current.model_dump()}
 
     def confirm_all_suggestions(self) -> dict:
         """Set all pending edit decisions to confirmed."""
@@ -907,15 +1029,14 @@ class ProjectService:
 
         count = 0
         updated_edits = []
-        for edit in self._current.edits:
+        for edit in self.active_timeline.edits:
             if edit.status == EditStatus.PENDING:
                 updated_edits.append(edit.model_copy(update={"status": EditStatus.CONFIRMED}))
                 count += 1
             else:
                 updated_edits.append(edit)
 
-        updated = self._current.model_copy(update={"edits": updated_edits})
-        self._current = updated
+        self._update_active_timeline(edits=updated_edits)
         logger.info("Confirmed {} pending edits", count)
         return {"success": True, "data": {"confirmed_count": count}}
 
@@ -926,15 +1047,14 @@ class ProjectService:
 
         count = 0
         updated_edits = []
-        for edit in self._current.edits:
+        for edit in self.active_timeline.edits:
             if edit.status == EditStatus.PENDING:
                 updated_edits.append(edit.model_copy(update={"status": EditStatus.REJECTED}))
                 count += 1
             else:
                 updated_edits.append(edit)
 
-        updated = self._current.model_copy(update={"edits": updated_edits})
-        self._current = updated
+        self._update_active_timeline(edits=updated_edits)
         logger.info("Rejected {} pending edits", count)
         return {"success": True, "data": {"rejected_count": count}}
 
@@ -949,8 +1069,8 @@ class ProjectService:
         if self._current is None:
             return {"success": False, "error": "No project is open"}
 
-        segments = self._current.transcript.segments
-        edits = self._current.edits
+        segments = self.active_timeline.transcript.segments
+        edits = self.active_timeline.edits
         warnings: list[str] = []
 
         # Compute total duration
@@ -1016,13 +1136,13 @@ class ProjectService:
             return {"success": False, "error": "No project is open"}
 
         analysis_results = [AnalysisResult.model_validate(r) for r in results]
-        existing_results = list(self._current.analysis.results)
+        existing_results = list(self.active_timeline.analysis.results)
         all_results = existing_results + analysis_results
 
         # Create EditDecisions from analysis time ranges
-        segments = self._current.transcript.segments
+        segments = self.active_timeline.transcript.segments
         seg_map = {s.id: s for s in segments}
-        existing_edits = list(self._current.edits)
+        existing_edits = list(self.active_timeline.edits)
         new_edits: list[EditDecision] = []
 
         for ar in analysis_results:
@@ -1047,16 +1167,15 @@ class ProjectService:
                 target_id=ar.segment_ids[0],
             ))
 
-        updated = self._current.model_copy(update={
-            "analysis": self._current.analysis.model_copy(update={
+        self._update_active_timeline(
+            analysis=self.active_timeline.analysis.model_copy(update={
                 "results": all_results,
                 "last_run": datetime.now().isoformat(),
             }),
-            "edits": existing_edits + new_edits,
-        })
-        self._current = updated
+            edits=existing_edits + new_edits,
+        )
         logger.info("Added {} analysis results from {}", len(analysis_results), source)
-        return {"success": True, "data": updated.model_dump()}
+        return {"success": True, "data": self._current.model_dump()}
 
     def update_topic_drift(
         self,
@@ -1065,44 +1184,31 @@ class ProjectService:
         transcript_hash: str = "",
         token_usage: dict | None = None,
     ) -> dict:
-        """Store topic drift analysis results in the current project.
+        """Store topic drift analysis results.
 
-        Args:
-            results: List of TopicDriftResult dicts (segment_id, topic, relevance, ...).
-            topic_description: The topic description used for analysis.
-            transcript_hash: Hash of the transcript for cache validation.
-            token_usage: Cumulative token usage from LLM calls.
+        DEPRECATED: Topic Drift is being removed in Phase 4b.
+        Returns success but does not persist (kept for API compat during transition).
         """
         if self._current is None:
             return {"success": False, "error": "No project is open"}
-
-        td_results = [TopicDriftResult.model_validate(r) for r in results]
-        updated_td = TopicDriftData(
-            topic_description=topic_description,
-            results=td_results,
-            transcript_hash=transcript_hash,
-            last_run=datetime.now().isoformat(),
-            token_usage=token_usage or {},
-        )
-
-        updated = self._current.model_copy(update={"topic_drift": updated_td})
-        self._current = updated
-        logger.info("Stored {} topic drift results", len(td_results))
-        return {"success": True, "data": updated.model_dump()}
+        logger.warning("update_topic_drift is deprecated (Phase 4b removal)")
+        return {"success": True, "data": self._current.model_dump()}
 
     def get_topic_drift(self) -> dict:
-        """Return cached topic drift data for the current project."""
+        """Return cached topic drift data.
+
+        DEPRECATED: Topic Drift is being removed in Phase 4b. Returns empty data.
+        """
         if self._current is None:
             return {"success": False, "error": "No project is open"}
-        td = self._current.topic_drift
         return {
             "success": True,
             "data": {
-                "topic_description": td.topic_description,
-                "results": [r.model_dump() for r in td.results],
-                "transcript_hash": td.transcript_hash,
-                "last_run": td.last_run,
-                "token_usage": td.token_usage,
+                "topic_description": "",
+                "results": [],
+                "transcript_hash": "",
+                "last_run": None,
+                "token_usage": {},
             },
         }
 
@@ -1117,19 +1223,13 @@ class ProjectService:
 
         # Collect IDs of segments with confirmed delete edits
         confirmed_deleted_ids: set[str] = {
-            e.target_id for e in self._current.edits
+            e.target_id for e in self.active_timeline.edits
             if e.status == EditStatus.CONFIRMED and e.action == "delete" and e.target_id
-        }
-
-        # Collect IDs of segments with confirmed keep edits
-        confirmed_kept_ids: set[str] = {
-            e.target_id for e in self._current.edits
-            if e.status == EditStatus.CONFIRMED and e.action == "keep" and e.target_id
         }
 
         # Exclude confirmed-deleted subtitles from keep ranges
         subtitle_segs = sorted(
-            [s for s in self._current.transcript.segments
+            [s for s in self.active_timeline.transcript.segments
              if s.type == SegmentType.SUBTITLE and s.id not in confirmed_deleted_ids],
             key=lambda s: s.start,
         )
@@ -1137,7 +1237,7 @@ class ProjectService:
             return {"success": False, "error": "No subtitle segments found"}
 
         # Compute total duration
-        total_duration = max(s.end for s in self._current.transcript.segments)
+        total_duration = max(s.end for s in self.active_timeline.transcript.segments)
 
         # Build expanded keep ranges (subtitle + padding)
         keep_ranges: list[tuple[float, float]] = []
@@ -1161,7 +1261,7 @@ class ProjectService:
             delete_ranges.append((current, total_duration))
 
         # Create EditDecisions for delete ranges
-        existing_edits = list(self._current.edits)
+        existing_edits = list(self.active_timeline.edits)
         new_edits: list[EditDecision] = []
         for i, (start, end) in enumerate(delete_ranges):
             edit_id = f"edit-subtitle-trim-{i:04d}"
@@ -1185,8 +1285,7 @@ class ProjectService:
                     target_type="range",
                 ))
 
-        updated = self._current.model_copy(update={"edits": existing_edits + new_edits})
-        self._current = updated
+        self._update_active_timeline(edits=existing_edits + new_edits)
         logger.info("Generated {} delete ranges from subtitle trim (padding={:.1f}s)", len(new_edits), padding)
         return {
             "success": True,
@@ -1194,7 +1293,7 @@ class ProjectService:
                 "keep_ranges": len(keep_ranges),
                 "delete_ranges": len(delete_ranges),
                 "new_edits": len(new_edits),
-                "project": updated.model_dump(),
+                "project": self._current.model_dump(),
             },
         }
 

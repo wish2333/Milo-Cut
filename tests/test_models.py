@@ -1,19 +1,17 @@
 """Tests for core.models data models."""
 
+import pytest
+from pydantic import ValidationError
+
 from core.models import (
     AnalysisData,
     AnalysisResult,
     EditDecision,
     EditStatus,
-    MediaInfo,
-    MiloTask,
     Project,
-    ProjectMeta,
     Segment,
     SegmentType,
-    TaskStatus,
     TaskType,
-    TranscriptData,
 )
 
 
@@ -31,11 +29,8 @@ class TestTaskType:
 
 class TestSegment:
     def test_frozen(self, sample_segment):
-        try:
+        with pytest.raises(ValidationError):
             sample_segment.text = "changed"
-            assert False, "Should raise ValidationError"
-        except Exception:
-            pass
 
     def test_default_type(self):
         seg = Segment(id="s1", start=0.0, end=1.0, text="test")
@@ -58,11 +53,8 @@ class TestEditDecision:
         assert ed.priority == 100
 
     def test_frozen(self, sample_edit_decision):
-        try:
+        with pytest.raises(ValidationError):
             sample_edit_decision.status = EditStatus.CONFIRMED
-            assert False, "Should raise"
-        except Exception:
-            pass
 
 
 class TestAnalysisResult:
@@ -79,11 +71,8 @@ class TestAnalysisResult:
 
     def test_frozen(self):
         ar = AnalysisResult(id="ar-1", type="filler")
-        try:
+        with pytest.raises(ValidationError):
             ar.type = "error"
-            assert False, "Should raise"
-        except Exception:
-            pass
 
 
 class TestAnalysisData:
@@ -100,17 +89,19 @@ class TestAnalysisData:
 
 class TestProject:
     def test_default_schema_version(self, sample_project):
-        assert sample_project.schema_version == 1
+        assert sample_project.schema_version == 2
 
     def test_model_dump_roundtrip(self, sample_project):
         data = sample_project.model_dump()
         restored = Project.model_validate(data)
         assert restored.project.name == "test-project"
-        assert len(restored.transcript.segments) == 7
+        assert len(restored.active_timeline.transcript.segments) == 7
 
     def test_model_copy_update(self, sample_project):
-        updated = sample_project.model_copy(update={
-            "project": sample_project.project.model_copy(update={"name": "new-name"}),
-        })
+        updated = sample_project.model_copy(
+            update={
+                "project": sample_project.project.model_copy(update={"name": "new-name"}),
+            }
+        )
         assert updated.project.name == "new-name"
         assert sample_project.project.name == "test-project"

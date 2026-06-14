@@ -1,12 +1,9 @@
 """Unit tests for core.llm_service."""
 
-import threading
-
 import pytest
 
-from core.llm_service import estimate_tokens, chunk_transcript, get_llm_config
+from core.llm_service import chunk_transcript, estimate_tokens, get_llm_config
 from core.models import LlmConfig, LlmProvider
-
 
 # ------------------------------------------------------------------
 # estimate_tokens
@@ -80,8 +77,10 @@ class TestLlmConfig:
         assert not config.is_configured()
 
     def test_frozen_immutability(self) -> None:
+        from pydantic import ValidationError
+
         config = LlmConfig()
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             config.provider = LlmProvider.DEEPSEEK  # type: ignore[misc]
 
 
@@ -103,8 +102,7 @@ class TestChunkTranscript:
     def test_basic_chunking(self) -> None:
         # 600 seconds of content, 300s chunks -> 2 chunks
         segments = [
-            {"start": i * 10.0, "end": (i + 1) * 10.0, "text": f"seg_{i}"}
-            for i in range(60)
+            {"start": i * 10.0, "end": (i + 1) * 10.0, "text": f"seg_{i}"} for i in range(60)
         ]
         chunks = chunk_transcript(segments, chunk_duration=300.0, overlap_duration=0.0)
         assert len(chunks) == 2
@@ -115,8 +113,7 @@ class TestChunkTranscript:
         # 100 seconds, 50s chunks, 10s overlap
         # Chunk 1: 0-50s, back up to 40s -> Chunk 2: 40-90s, back up to 80s -> Chunk 3: 80-100s
         segments = [
-            {"start": i * 10.0, "end": (i + 1) * 10.0, "text": f"seg_{i}"}
-            for i in range(10)
+            {"start": i * 10.0, "end": (i + 1) * 10.0, "text": f"seg_{i}"} for i in range(10)
         ]
         chunks = chunk_transcript(segments, chunk_duration=50.0, overlap_duration=10.0)
         assert len(chunks) == 3
@@ -127,10 +124,7 @@ class TestChunkTranscript:
 
     def test_short_content_single_chunk(self) -> None:
         # 30 seconds of content, 300s chunk -> single chunk
-        segments = [
-            {"start": i * 3.0, "end": (i + 1) * 3.0, "text": f"seg_{i}"}
-            for i in range(10)
-        ]
+        segments = [{"start": i * 3.0, "end": (i + 1) * 3.0, "text": f"seg_{i}"} for i in range(10)]
         chunks = chunk_transcript(segments, chunk_duration=300.0, overlap_duration=30.0)
         assert len(chunks) == 1
         assert len(chunks[0]) == 10

@@ -1,7 +1,6 @@
 """Unit tests for core.bridge_service."""
 
 import json
-import threading
 import urllib.request
 
 import pytest

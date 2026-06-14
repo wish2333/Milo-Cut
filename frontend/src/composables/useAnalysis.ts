@@ -93,7 +93,8 @@ export function useAnalysis(
   }
 
   async function confirmAllEdits(): Promise<boolean> {
-    const edits = project.value?.edits ?? []
+    const tl = project.value?.timelines.find(t => t.id === project.value?.active_timeline_id)
+    const edits = tl?.edits ?? []
     let ok = true
     for (const edit of edits) {
       if (edit.status === "pending" && edit.action === "delete") {

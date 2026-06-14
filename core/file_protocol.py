@@ -15,8 +15,8 @@ import os
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
 
 from core.logging import get_logger
 from core.paths import get_bridge_dir
@@ -78,16 +78,12 @@ class FileProtocolManager:
         filename = f"{timestamp}_{data_type}{_FILE_SUFFIX}"
         target = self._outgoing / filename
 
-        content = "\n".join(
-            json.dumps(r, ensure_ascii=False) for r in records
-        ) + "\n"
+        content = "\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n"
 
         with self._lock:
             try:
                 # Write to temp file in same directory, then atomic replace
-                fd, tmp_path = tempfile.mkstemp(
-                    dir=str(self._outgoing), suffix=".tmp"
-                )
+                fd, tmp_path = tempfile.mkstemp(dir=str(self._outgoing), suffix=".tmp")
                 try:
                     with os.fdopen(fd, "w", encoding="utf-8") as f:
                         f.write(content)
@@ -101,9 +97,7 @@ class FileProtocolManager:
                         pass
                     raise
 
-                logger.info(
-                    f"Published {len(records)} records to {filename}"
-                )
+                logger.info(f"Published {len(records)} records to {filename}")
                 return {
                     "success": True,
                     "data": {"path": str(target), "records": len(records)},
@@ -128,15 +122,17 @@ class FileProtocolManager:
         for seg in segments:
             sid = seg.get("id", "")
             edit = edit_map.get(sid, {})
-            records.append({
-                "type": "segment",
-                "id": sid,
-                "start": seg.get("start", 0),
-                "end": seg.get("end", 0),
-                "text": seg.get("text", ""),
-                "action": edit.get("action", "keep"),
-                "edit_status": edit.get("status", ""),
-            })
+            records.append(
+                {
+                    "type": "segment",
+                    "id": sid,
+                    "start": seg.get("start", 0),
+                    "end": seg.get("end", 0),
+                    "text": seg.get("text", ""),
+                    "action": edit.get("action", "keep"),
+                    "edit_status": edit.get("status", ""),
+                }
+            )
 
         return self.publish("edit_timeline", records)
 
@@ -157,10 +153,13 @@ class FileProtocolManager:
             for r in results
         ]
         if topic_description:
-            records.insert(0, {
-                "type": "meta",
-                "topic_description": topic_description,
-            })
+            records.insert(
+                0,
+                {
+                    "type": "meta",
+                    "topic_description": topic_description,
+                },
+            )
         return self.publish("topic_drift", records)
 
     # ------------------------------------------------------------------
@@ -191,7 +190,7 @@ class FileProtocolManager:
     def _parse_jsonl(self, path: Path) -> list[dict]:
         """Parse a JSONL file into a list of dicts."""
         records: list[dict] = []
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:

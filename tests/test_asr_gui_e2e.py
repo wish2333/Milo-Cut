@@ -14,8 +14,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
-
 # Resolve project root (one level up from tests/)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -23,6 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _read_source(relative: str) -> str:
     """Read a source file relative to project root and return its text."""
@@ -32,6 +31,7 @@ def _read_source(relative: str) -> str:
 # ---------------------------------------------------------------------------
 # 1. Config behavioral tests (tests 1-5)
 # ---------------------------------------------------------------------------
+
 
 class TestConfigBehavior:
     """Verify engine-prefixed settings keys exist with correct defaults."""
@@ -53,16 +53,19 @@ class TestConfigBehavior:
     def test_config_old_key_removed(self):
         """The legacy 'asr_compute_type' key must NOT exist."""
         from core.config import _DEFAULT_SETTINGS
+
         assert "asr_compute_type" not in _DEFAULT_SETTINGS
 
     def test_whisper_default_is_int8_float16(self):
         """whisper_compute_type must default to 'int8_float16'."""
         from core.config import _DEFAULT_SETTINGS
+
         assert _DEFAULT_SETTINGS["whisper_compute_type"] == "int8_float16"
 
     def test_qwen_default_is_bfloat16(self):
         """qwen_compute_type must default to 'bfloat16'."""
         from core.config import _DEFAULT_SETTINGS
+
         assert _DEFAULT_SETTINGS["qwen_compute_type"] == "bfloat16"
 
     def test_settings_roundtrip_preserves_keys(self, tmp_path, monkeypatch):
@@ -71,9 +74,7 @@ class TestConfigBehavior:
 
         # Patch get_settings_path to use a temp file
         settings_file = tmp_path / "settings.json"
-        monkeypatch.setattr(
-            "core.config.get_settings_path", lambda: settings_file
-        )
+        monkeypatch.setattr("core.config.get_settings_path", lambda: settings_file)
 
         # First load (no file) -- returns defaults
         s1 = load_settings()
@@ -99,14 +100,13 @@ class TestConfigBehavior:
             "qwen_language",
         ):
             assert key in s2, f"Key {key} lost after roundtrip"
-            assert s2[key] == s1[key], (
-                f"Value mismatch for {key}: {s2[key]} != {s1[key]}"
-            )
+            assert s2[key] == s1[key], f"Value mismatch for {key}: {s2[key]} != {s1[key]}"
 
 
 # ---------------------------------------------------------------------------
 # 2. Backend source behavioral tests (tests 6-10)
 # ---------------------------------------------------------------------------
+
 
 class TestBackendSource:
     """Source-level behavioral checks on ASR scripts and main.py."""
@@ -119,24 +119,18 @@ class TestBackendSource:
     def test_qwen_has_compute_type_arg(self):
         """qwen_transcribe.py must accept --compute-type argument."""
         src = _read_source("core/asr_scripts/qwen_transcribe.py")
-        assert "--compute-type" in src, (
-            "--compute-type arg missing from qwen argparse"
-        )
+        assert "--compute-type" in src, "--compute-type arg missing from qwen argparse"
 
     def test_whisper_has_vad_params(self):
         """whisper_transcribe.py must pass vad_parameters to transcription."""
         src = _read_source("core/asr_scripts/whisper_transcribe.py")
-        assert "vad_parameters" in src, (
-            "vad_parameters not found in whisper script"
-        )
+        assert "vad_parameters" in src, "vad_parameters not found in whisper script"
 
     def test_main_reads_engine_prefixed_keys(self):
         """main.py must read whisper_compute_type from settings."""
         src = _read_source("main.py")
         # Verify it's used in a settings.get() call, not just a comment
-        assert "whisper_compute_type" in src, (
-            "main.py does not reference whisper_compute_type"
-        )
+        assert "whisper_compute_type" in src, "main.py does not reference whisper_compute_type"
         # More specific: must appear in a settings.get call
         assert re.search(r'settings\.get\(\s*["\']whisper_compute_type', src), (
             "whisper_compute_type not used in settings.get() call"
@@ -153,6 +147,7 @@ class TestBackendSource:
 # 3. Frontend source behavioral tests (tests 11-12)
 # ---------------------------------------------------------------------------
 
+
 class TestFrontendSource:
     """Source-level behavioral checks on Vue components."""
 
@@ -160,23 +155,17 @@ class TestFrontendSource:
         """SettingsModal.vue must use engine-prefixed keys, not old asr_compute_type."""
         src = _read_source("frontend/src/components/workspace/SettingsModal.vue")
         # Must use engine-prefixed keys
-        assert "whisper_compute_type" in src, (
-            "SettingsModal.vue does not use whisper_compute_type"
-        )
-        assert "qwen_compute_type" in src, (
-            "SettingsModal.vue does not use qwen_compute_type"
-        )
+        assert "whisper_compute_type" in src, "SettingsModal.vue does not use whisper_compute_type"
+        assert "qwen_compute_type" in src, "SettingsModal.vue does not use qwen_compute_type"
         # Must have int8_float16 as a compute option
-        assert "int8_float16" in src, (
-            "SettingsModal.vue missing int8_float16 compute option"
-        )
+        assert "int8_float16" in src, "SettingsModal.vue missing int8_float16 compute option"
         # Must NOT use old un-prefixed key as a settings key
         # (allow it only if not used in updateField/setField calls)
         if "asr_compute_type" in src:
             # If present, must only be in a comparison, not as a settings key
-            assert not re.search(
-                r"updateField\(\s*['\"]asr_compute_type", src
-            ), "SettingsModal.vue still uses old asr_compute_type as settings key"
+            assert not re.search(r"updateField\(\s*['\"]asr_compute_type", src), (
+                "SettingsModal.vue still uses old asr_compute_type as settings key"
+            )
 
     def test_workspace_handle_transcribe_saves_first(self):
         """handleTranscribe must call saveAsrSettings() before runTranscription()."""
@@ -190,12 +179,8 @@ class TestFrontendSource:
         assert match is not None, "handleTranscribe function not found"
         body = match.group(1)
         # Both calls must exist
-        assert "saveAsrSettings" in body, (
-            "handleTranscribe does not call saveAsrSettings"
-        )
-        assert "runTranscription" in body, (
-            "handleTranscribe does not call runTranscription"
-        )
+        assert "saveAsrSettings" in body, "handleTranscribe does not call saveAsrSettings"
+        assert "runTranscription" in body, "handleTranscribe does not call runTranscription"
         # saveAsrSettings must come before runTranscription
         save_pos = body.index("saveAsrSettings")
         transcribe_pos = body.index("runTranscription")

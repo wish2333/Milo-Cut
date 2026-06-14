@@ -1,6 +1,7 @@
 """Milo-Cut core package."""
 
-from importlib.metadata import version as _metadata_version, PackageNotFoundError
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _metadata_version
 
 
 def _read_version() -> str:

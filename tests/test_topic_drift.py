@@ -18,7 +18,6 @@ from core.models import (
     TopicDriftResult,
 )
 
-
 # ------------------------------------------------------------------
 # TopicDriftResult / TopicDriftData models
 # ------------------------------------------------------------------
@@ -34,8 +33,10 @@ class TestTopicDriftModels:
         assert r.reason == ""
 
     def test_topic_drift_result_frozen(self) -> None:
+        from pydantic import ValidationError
+
         r = TopicDriftResult(segment_id="s1", relevance=0.5)
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             r.relevance = 0.9  # type: ignore
 
     def test_topic_drift_data_defaults(self) -> None:
@@ -58,19 +59,22 @@ class TestTopicDriftModels:
         assert d.results[0].relevance == 0.8
         assert d.token_usage["total_tokens"] == 100
 
-    def test_project_has_topic_drift_field(self) -> None:
+    def test_project_v2_schema_no_topic_drift(self) -> None:
+        """v2 Project schema does not have flat topic_drift field (moved to timeline)."""
         p = Project()
-        assert p.topic_drift is not None
-        assert p.topic_drift.results == []
+        assert p.schema_version == 2
+        assert not hasattr(p, "topic_drift")  # removed in v2
+        assert hasattr(p, "timelines")
+        assert len(p.timelines) == 1  # auto-created default
 
-    def test_project_round_trip_with_topic_drift(self) -> None:
-        r = TopicDriftResult(segment_id="s1", relevance=0.3, topic="off-topic")
-        p = Project(topic_drift=TopicDriftData(results=[r], topic_description="test"))
+    def test_project_round_trip_preserves_timelines(self) -> None:
+        """v2 Project round-trips through dump/validate preserving timeline data."""
+        p = Project()
         dumped = p.model_dump()
         restored = Project.model_validate(dumped)
-        assert restored.topic_drift.topic_description == "test"
-        assert len(restored.topic_drift.results) == 1
-        assert restored.topic_drift.results[0].relevance == 0.3
+        assert restored.schema_version == 2
+        assert len(restored.timelines) == 1
+        assert restored.active_timeline_id == "default"
 
 
 # ------------------------------------------------------------------

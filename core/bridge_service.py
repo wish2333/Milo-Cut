@@ -13,8 +13,9 @@ from __future__ import annotations
 import json
 import socket
 import threading
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Callable
+from typing import Any
 
 from core import __version__
 from core.logging import get_logger
@@ -101,11 +102,23 @@ class _BridgeHandler(BaseHTTPRequestHandler):
 
         # /api/v1/projects/{name}/timeline
         parts = clean.strip("/").split("/")
-        if len(parts) == 4 and parts[0] == "api" and parts[1] == "v1" and parts[2] == "projects" and parts[3] != "timeline":
+        if (
+            len(parts) == 4
+            and parts[0] == "api"
+            and parts[1] == "v1"
+            and parts[2] == "projects"
+            and parts[3] != "timeline"
+        ):
             return self._handle_get_timeline(parts[3])
 
         # /api/v1/projects/{name}/topic-drift
-        if len(parts) == 5 and parts[0] == "api" and parts[1] == "v1" and parts[2] == "projects" and parts[4] == "topic-drift":
+        if (
+            len(parts) == 5
+            and parts[0] == "api"
+            and parts[1] == "v1"
+            and parts[2] == "projects"
+            and parts[4] == "topic-drift"
+        ):
             return self._handle_get_topic_drift(parts[3])
 
         _json_response(self, 404, error="Not found")
@@ -223,11 +236,7 @@ class BridgeService:
 
     @property
     def is_running(self) -> bool:
-        return (
-            self._server is not None
-            and self._thread is not None
-            and self._thread.is_alive()
-        )
+        return self._server is not None and self._thread is not None and self._thread.is_alive()
 
     def start(self, port: int = _DEFAULT_PORT) -> dict:
         """Start the HTTP API server.
@@ -239,10 +248,16 @@ class BridgeService:
 
         # Inject callbacks into handler (staticmethod prevents self-binding)
         handler_attrs = {
-            "get_projects_fn": staticmethod(self._get_projects_fn) if self._get_projects_fn else None,
+            "get_projects_fn": staticmethod(self._get_projects_fn)
+            if self._get_projects_fn
+            else None,
             "get_project_fn": staticmethod(self._get_project_fn) if self._get_project_fn else None,
-            "start_analysis_fn": staticmethod(self._start_analysis_fn) if self._start_analysis_fn else None,
-            "get_topic_drift_fn": staticmethod(self._get_topic_drift_fn) if self._get_topic_drift_fn else None,
+            "start_analysis_fn": staticmethod(self._start_analysis_fn)
+            if self._start_analysis_fn
+            else None,
+            "get_topic_drift_fn": staticmethod(self._get_topic_drift_fn)
+            if self._get_topic_drift_fn
+            else None,
         }
         handler_cls = type("BoundBridgeHandler", (_BridgeHandler,), handler_attrs)
 

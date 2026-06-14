@@ -65,6 +65,8 @@ function onProjectCreated(data: Project) {
 }
 
 function onRelinkNeeded(lostPath: string, _projectPath: string) {
+  // _projectPath retained in signature for future use (multi-project relink context)
+  void _projectPath
   relinkLostPath.value = lostPath
   showRelinkDialog.value = true
 }
