@@ -29,3 +29,10 @@ LLM_ANALYSIS_PROGRESS = "llm:analysis_progress"
 LLM_ANALYSIS_COMPLETED = "llm:analysis_completed"
 LLM_ANALYSIS_FAILED = "llm:analysis_failed"
 LLM_TOKEN_USAGE = "llm:token_usage"
+
+# P0: Smart delete
+LLM_SMART_DELETE_PROGRESS = "llm:smart_delete_progress"
+LLM_SMART_DELETE_COMPLETED = "llm:smart_delete_completed"
+
+# P1: Subtitle correction
+LLM_SUBTITLE_CORRECTION_COMPLETED = "llm:subtitle_correction_completed"

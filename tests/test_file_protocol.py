@@ -68,22 +68,6 @@ class TestFileProtocolPublish:
         assert records[1]["id"] == "s2"
         assert records[1]["action"] == "keep"  # no edit -> default keep
 
-    def test_publish_topic_drift(self, manager: FileProtocolManager) -> None:
-        results = [
-            {"segment_id": "s1", "relevance": 0.2, "topic": "off-topic"},
-        ]
-        result = manager.publish_topic_drift(results, "AI presentation")
-        assert result["success"] is True
-
-        files = list(manager.outgoing_dir.glob("*topic_drift*.milo.jsonl"))
-        lines = files[0].read_text(encoding="utf-8").strip().split("\n")
-        records = [json.loads(line) for line in lines]
-        # First record is meta
-        assert records[0]["type"] == "meta"
-        assert records[0]["topic_description"] == "AI presentation"
-        assert records[1]["type"] == "topic_drift"
-        assert records[1]["segment_id"] == "s1"
-
     def test_publish_chinese_content(self, manager: FileProtocolManager) -> None:
         """Chinese characters should be preserved (ensure_ascii=False)."""
         manager.publish("test", [{"text": "你好世界"}])

@@ -18,3 +18,10 @@ export const EVENT_LLM_ANALYSIS_PROGRESS = "llm:analysis_progress"
 export const EVENT_LLM_ANALYSIS_COMPLETED = "llm:analysis_completed"
 export const EVENT_LLM_ANALYSIS_FAILED = "llm:analysis_failed"
 export const EVENT_LLM_TOKEN_USAGE = "llm:token_usage"
+
+// P0: Smart delete
+export const EVENT_LLM_SMART_DELETE_PROGRESS = "llm:smart_delete_progress"
+export const EVENT_LLM_SMART_DELETE_COMPLETED = "llm:smart_delete_completed"
+
+// P1: Subtitle correction
+export const EVENT_LLM_SUBTITLE_CORRECTION_COMPLETED = "llm:subtitle_correction_completed"

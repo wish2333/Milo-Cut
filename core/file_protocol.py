@@ -136,32 +136,6 @@ class FileProtocolManager:
 
         return self.publish("edit_timeline", records)
 
-    def publish_topic_drift(
-        self,
-        results: list[dict],
-        topic_description: str = "",
-    ) -> dict:
-        """Publish topic drift analysis results."""
-        records = [
-            {
-                "type": "topic_drift",
-                "segment_id": r.get("segment_id", ""),
-                "topic": r.get("topic", ""),
-                "relevance": r.get("relevance", 1.0),
-                "reason": r.get("reason", ""),
-            }
-            for r in results
-        ]
-        if topic_description:
-            records.insert(
-                0,
-                {
-                    "type": "meta",
-                    "topic_description": topic_description,
-                },
-            )
-        return self.publish("topic_drift", records)
-
     # ------------------------------------------------------------------
     # Consume (incoming)
     # ------------------------------------------------------------------

@@ -435,8 +435,134 @@ Phase 4a 是 Phase 4b-4d (LLM 重构) 的前置基础, 完成两大任务:
 | 4a-9: Timeline CRUD API | 已完成 | 5 方法 + @expose |
 | 4a-10: TimelineSwitcher UI | 已完成 | 组件 + WorkspacePage 集成 + handler |
 
-Phase 4b (C-02 + P0 + P1) 待实施:
-- C-02: LLM 输入结构化 + 输出分层降级
-- P0: 智能删除增强
-- P1: 字幕修正
-- Topic Drift 旧代码清理
+---
+
+## Phase 4b: C-02 + P0 + P1 (已完成)
+
+> 目标: LLM 格式重构 + 智能删除 + 字幕修正 + Topic Drift 旧代码清理
+> 基于: `docs/2.0.0/audit-plan-v2.0.0-2.md` Phase 4b
+
+### 概要
+
+Phase 4b 将 Topic Drift 重构为两大 AI 驱动功能，并解决 LLM 交互格式的基础问题:
+
+1. **C-02 LLM 格式重构** -- 输入端从 `[id] text` 改为 JSON payload (消除 segment_id 歧义)，输出端 4 层降级解析 (跨 provider 容错)，call_llm 支持 json_mode (OpenAI/DeepSeek response_format)
+2. **P0 智能删除增强** -- 短窗口 (25s+5s overlap) LLM 分析，补全规则引擎盲区 (语义重复/无触发词口误/上下文口头禅)，增量分析跳过已标记 segment，直接生成 EditDecision(source="llm_smart")
+3. **P1 字幕修正** -- ASR 字幕纠错模式 A (LLM 自主纠错) + 模式 B (参考稿对齐)，context_window 上下文辅助，word-level diff 置信度标记，时间戳双层断言 (dev raise/prod warn+回滚)，分层容错策略
+4. **Topic Drift 完全清除** -- 后端 (llm_service/models/project_service/main/bridge_service/file_protocol) + 前端 (TopicDriftPanel/useTopicDrift/类型定义) + 测试全部删除
+
+### 变更文件
+
+#### C-02 LLM 格式重构
+
+| 文件 | 变更 | 说明 |
+|------|------|------|
+| `core/llm_service.py` | 修改 | 新增 import re; call_llm 新增 json_mode 参数 (OpenAI/DeepSeek response_format json_object); 新增 _build_structured_user_message (JSON payload + extra_context); 新增 _parse_json_response_layers (Layer1-4: direct/markdown/regex/line-by-line); 新增 chunk_transcript_short (25s 窗口) |
+| `core/models.py` | 修改 | TaskType 新增 LLM_SMART_DELETE + LLM_SUBTITLE_CORRECTION; AnalysisResult.type 扩展 llm_smart_delete/llm_subtitle_correction |
+
+#### P0 智能删除增强
+
+| 文件 | 变更 | 说明 |
+|------|------|------|
+| `core/llm_service.py` | 新增 | _SMART_DELETE_SYSTEM prompt; analyze_smart_delete() (短窗口分块 + 结构化输入 + json_mode + 4 层降级 + 增量过滤 existing_flagged_ids + 去重 + chunk_callback 流式) |
+| `main.py` | 修改 | 注册 _handle_smart_delete handler (payload 冻结 timeline_id); 3 个 @expose: start_smart_delete, confirm_all_from_source |
+| `core/project_service.py` | 新增 | confirm_all_from_source() 批量信任功能 |
+| `core/events.py` | 修改 | 新增 LLM_SMART_DELETE_PROGRESS + LLM_SMART_DELETE_COMPLETED |
+| `frontend/src/utils/events.ts` | 修改 | 同步 2 个 P0 事件 |
+| `frontend/src/composables/useLlmTasks.ts` | 新增 | 通用 LLM 任务 composable (P0/P1 共用): smart_delete 实时 upsert + startSmartDelete + confirmAllFromSource |
+
+#### P1 字幕修正
+
+| 文件 | 变更 | 说明 |
+|------|------|------|
+| `core/llm_service.py` | 新增 | _SUBTITLE_CORRECTION_SYSTEM_A/B prompts; analyze_subtitle_correction() (模式 A/B + context_window + 批处理 + target_segment_ids 过滤); _check_correction_confidence() (edit_distance + low_confidence >50%); _levenshtein(); TimestampCorruptionError + _assert_timestamps_unchanged() (双层 dev raise/prod warn+rollback) |
+| `core/project_service.py` | 新增 | apply_subtitle_corrections() (分层容错: 全量匹配/部分匹配+uncovered标记/全量失配报错; 时间戳断言逐 segment 回滚; dirty_flags.llm_corrected/llm_low_confidence/llm_uncovered) |
+| `main.py` | 修改 | 注册 _handle_subtitle_correction handler; @expose: start_subtitle_correction (模式 A/B + context_window) |
+| `core/events.py` | 修改 | 新增 LLM_SUBTITLE_CORRECTION_COMPLETED |
+| `frontend/src/utils/events.ts` | 修改 | 同步 P1 事件 |
+| `frontend/src/components/workspace/SubtitleCorrectionReview.vue` | 新增 | diff 风格修正预览 (原文 strikethrough + 修正后高亮); 高/低置信度分组 (低置信度默认折叠); category badge (同音错字/专有名词/标点断句/参考稿对齐); 逐条 accept/reject; "信任高置信度" 批量按钮; uncovered/partial 提示; 模式 A/B 输入区 |
+| `frontend/src/types/project.ts` | 修改 | AnalysisResult.type 扩展 llm_smart_delete/llm_subtitle_correction |
+
+#### Topic Drift 旧代码清理
+
+| 文件 | 动作 | 说明 |
+|------|------|------|
+| `core/llm_service.py` | 删除 | _TOPIC_DRIFT_SYSTEM/TEMPLATE, _build_topic_drift_prompt, _parse_topic_drift_response, analyze_topic_drift (文件 1014->818 行) |
+| `core/models.py` | 删除 | TopicDriftResult, TopicDriftData 模型; TaskType.LLM_TOPIC_DRIFT; AnalysisResult.type 移除 topic_drift |
+| `core/project_service.py` | 删除 | update_topic_drift + get_topic_drift stub 方法 |
+| `main.py` | 删除 | _handle_topic_drift handler + start_topic_drift/get_topic_drift_results @expose + _bridge_get_topic_drift + BridgeService get_topic_drift_fn |
+| `core/bridge_service.py` | 删除 | /topic-drift 路由 + _handle_get_topic_drift + get_topic_drift_fn 参数 |
+| `core/file_protocol.py` | 删除 | publish_topic_drift 方法 |
+| `frontend/src/components/workspace/TopicDriftPanel.vue` | 删除 | 整个文件 |
+| `frontend/src/components/workspace/TopicDriftPanel.test.ts` | 删除 | 整个文件 (10 测试) |
+| `frontend/src/composables/useTopicDrift.ts` | 删除 | 整个文件 |
+| `frontend/src/components/workspace/Timeline.vue` | 修改 | 移除 TopicDriftPanel import + topicDriftResults prop + tab 切换器 (恢复纯 SuggestionPanel) |
+| `frontend/src/pages/WorkspacePage.vue` | 修改 | 移除 useTopicDrift + handleAccept/RejectTopicDriftAll + loadTopicDriftResults + Timeline 的 topic drift props/events |
+| `frontend/src/types/project.ts` | 删除 | TopicDriftResult + TopicDriftData 接口 |
+| `tests/test_topic_drift.py` | 删除 | 整个文件 (26 测试) |
+| `tests/test_file_protocol.py` | 修改 | 移除 test_publish_topic_drift |
+
+### 架构决策
+
+#### C-02 输入端: JSON payload 替代 [id] text 格式
+
+- `_build_structured_user_message`: segment dict -> JSON `{"segments": [{id, text, start, end}]}` + extra_context 合并
+- 消除 segment_id 解析歧义和特殊字符破坏问题
+- 可附加任意上下文 (topic, reference_text, target_segment_ids) 不破坏格式
+
+#### C-02 输出端: 4 层降级解析
+
+- Layer 1: `json.loads` 直接解析 (最快，遵循格式的模型)
+- Layer 2: 提取 markdown code block 后解析
+- Layer 3: regex 提取 `[...]` 或 `{...}` 子串后解析
+- Layer 4: 逐行 regex 提取 segment_id + relevance/action (极端降级)
+- 所有 4 层独立可测试，全部返回 None 时调用者 graceful 降级
+
+#### P0 短窗口策略
+
+- `chunk_transcript_short`: 25s 窗口 + 5s overlap (区别于 Topic Drift 的 5min+30s)
+- 口误/重复/口头禅都是局部现象，短窗口更精准
+- 增量分析: `existing_flagged_ids` 跳过规则引擎已标记的 segment，避免重复 LLM 调用
+- 结果直接转为 EditDecision(source="llm_smart")，与规则结果同列展示
+
+#### P1 时间戳双层断言 (D-03)
+
+- **dev 环境** (`MILO_ENV=development`): 时间戳损坏直接 raise ValueError，开发期强保证
+- **prod 环境**: raise TimestampCorruptionError，调用者 catch 后回滚该 segment 文本，不影响其他已修正 segment
+- 断言在 apply_subtitle_corrections 内部逐 segment 执行
+
+#### P1 分层容错策略 (D-07)
+
+- **全量匹配** (N=N): 正常应用
+- **部分匹配** (M<N): 按 segment_id 最大化匹配已覆盖的，未覆盖的保留原样 + 标记 dirty_flags.llm_uncovered，返回 partial=true
+- **全量失配** (0 匹配): 才报错
+- **分段回滚**: 时间戳断言失败的 segment 单独回滚，不影响其他已匹配 segment
+
+#### payload 冻结 timeline_id (7.2 并发隔离)
+
+- P0/P1 handler 从 task.payload 读取 timeline_id，而非实时 active_timeline_id
+- 解决排队期间用户切换 timeline 的状态隔离问题
+
+### 测试覆盖
+
+| 模块 | 测试数 | 覆盖要点 |
+|------|--------|----------|
+| `test_llm_phase4b.py` | 37 | C-02 结构化输入 (5), 4 层降级 (9), 短窗口分块 (3), P0 smart-delete mock (5), 置信度 (4), Levenshtein (4), 时间戳断言 dev/prod (3), P1 字幕修正 mock (4) |
+| 后端总测试 | 200 | 全部通过 (163 原 + 37 新增) |
+| 前端总测试 | 115 | 全部通过 (TopicDriftPanel 10 测试随文件删除) |
+| ruff check | 0 errors | All checks passed |
+| ESLint | 0 errors | eslint . clean |
+
+### Phase 4b 完成状态
+
+| 任务 | 状态 | 说明 |
+|------|------|------|
+| 4b-1/2/3: C-02 | 已完成 | _build_structured_user_message + _parse_json_response_layers + json_mode |
+| 4b-4/5/6: P0 | 已完成 | analyze_smart_delete + handler + 增量分析 + TaskType |
+| 4b-7/8/9: P1 | 已完成 | 模式 A/B + context_window + 置信度 + 时间戳断言 + 分层容错 |
+| 4b-10: P1 Review UI | 已完成 | SubtitleCorrectionReview.vue + useLlmTasks.ts |
+| 4b-11: Topic Drift 清理 | 已完成 | 后端 6 文件 + 前端 6 文件 + 2 测试文件 |
+
+Phase 4c (P2 + P3) 待实施:
+- P2: 亮点提取 + 精华模式视图
+- P3: 语义搜索

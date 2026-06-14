@@ -11,7 +11,6 @@ import { useToast } from "@/composables/useToast"
 import { useUndoRedo } from "@/composables/useUndoRedo"
 import { usePluginManager } from "@/composables/usePluginManager"
 import { useUvAvailability } from "@/composables/useUvAvailability"
-import { useTopicDrift } from "@/composables/useTopicDrift"
 import { EVENT_TASK_COMPLETED, EVENT_PROJECT_DIRTY, EVENT_PROJECT_SAVED } from "@/utils/events"
 import ProgressBar from "@/components/common/ProgressBar.vue"
 import SplitPanel from "@/components/common/SplitPanel.vue"
@@ -59,26 +58,6 @@ const {
   confirmEdit,
   rejectEdit,
 } = useAnalysis(projectRef, pushSnapshot)
-
-// Topic drift (LLM) state
-const {
-  results: topicDriftResults,
-  loading: topicDriftLoading,
-  progress: topicDriftProgress,
-  error: topicDriftError,
-  startAnalysis: startTopicDriftAnalysis,
-  loadResults: loadTopicDriftResults,
-  cancelAnalysis: cancelTopicDrift,
-} = useTopicDrift()
-
-// LLM configured status
-const llmConfigured = ref(false)
-async function checkLlmConfigured() {
-  const res = await call<{ api_key: string; base_url: string; model: string }>("get_llm_config")
-  if (res.success && res.data) {
-    llmConfigured.value = !!(res.data.base_url && res.data.api_key && res.data.model)
-  }
-}
 
 const {
   isExporting,
@@ -429,8 +408,6 @@ onMounted(async () => {
     await loadAsrSettings()
     modelList.value = await listModels()
     validateModelSize()
-    checkLlmConfigured()
-    loadTopicDriftResults()
   })
 })
 
@@ -875,33 +852,6 @@ async function handleConfirmAllSuggestions() {
 async function handleRejectAllSuggestions() {
   errorMessage.value = ""
   await rejectAllSuggestions()
-}
-
-// Topic drift accept/reject: convert low-relevance results into EditDecisions
-async function handleAcceptTopicDriftAll() {
-  const lowRelevance = topicDriftResults.value.filter((r) => r.relevance < 0.4)
-  if (lowRelevance.length === 0) return
-
-  // Build analysis results for topic drift and store
-  const analysisResults = lowRelevance.map((r) => ({
-    id: `td-${r.segment_id}`,
-    type: "topic_drift" as const,
-    segment_ids: [r.segment_id],
-    confidence: r.confidence,
-    detail: `主题相关性 ${r.relevance.toFixed(2)}: ${r.reason || r.topic}`,
-  }))
-
-  const res = await call<Project>("add_analysis_results", analysisResults, "topic_drift")
-  if (res.success && res.data) {
-    emit("project-updated", res.data)
-    showToast(`已接受 ${lowRelevance.length} 条主题漂移删除建议`, "success", 2000)
-  }
-}
-
-async function handleRejectTopicDriftAll() {
-  // Simply clear the results from view
-  topicDriftResults.value = []
-  showToast("已忽略所有主题漂移建议", "info", 2000)
 }
 
 async function handleSaveProject() {
@@ -1610,11 +1560,6 @@ onUnmounted(() => {
             :silence-count="silenceCount"
             :selected-segment-id="editSelectedSegmentId"
             :global-edit-mode="globalEditMode"
-            :topic-drift-results="topicDriftResults"
-            :topic-drift-loading="topicDriftLoading"
-            :topic-drift-progress="topicDriftProgress"
-            :topic-drift-error="topicDriftError"
-            :llm-configured="llmConfigured"
             @seek="handleSeek"
             @update-text="handleUpdateText"
             @update-time="handleUpdateTime"
@@ -1628,10 +1573,6 @@ onUnmounted(() => {
             @reject-all="handleRejectAllSuggestions"
             @seek-suggestion="handleSeek"
             @toggle-edit-mode="globalEditMode = !globalEditMode"
-            @start-topic-drift="(desc) => startTopicDriftAnalysis(desc)"
-            @cancel-topic-drift="cancelTopicDrift"
-            @accept-topic-drift="handleAcceptTopicDriftAll"
-            @reject-topic-drift="handleRejectTopicDriftAll"
           />
         </template>
       </SplitPanel>

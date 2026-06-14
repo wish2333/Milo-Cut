@@ -8,6 +8,7 @@ produce complete analysis output without truncation.
 from __future__ import annotations
 
 import json
+import re
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -86,6 +87,7 @@ def call_llm(
     prompt: str,
     system: str = "",
     *,
+    json_mode: bool = False,
     config: LlmConfig | None = None,
     cancel_event: threading.Event | None = None,
     progress_cb: Callable[[float, str], None] | None = None,
@@ -95,6 +97,9 @@ def call_llm(
     Args:
         prompt: User message content.
         system: System message content.
+        json_mode: If True, request JSON output format from providers that
+            support it (OpenAI, DeepSeek). Other providers rely on prompt
+            constraints + layered parsing on the caller side.
         config: LLM config (loads from settings if None).
         cancel_event: Thread-safe cancellation signal.
         progress_cb: Optional progress callback (percent, message).
@@ -117,6 +122,16 @@ def call_llm(
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
+    # Build kwargs -- only enable response_format for providers that support it
+    request_kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": config.temperature,
+        # No max_tokens -- let model produce full output
+    }
+    if json_mode and config.provider in (LlmProvider.OPENAI, LlmProvider.DEEPSEEK):
+        request_kwargs["response_format"] = {"type": "json_object"}
+
     last_error: str = ""
     for attempt in range(_MAX_RETRIES):
         if cancel_event and cancel_event.is_set():
@@ -129,12 +144,7 @@ def call_llm(
             )
 
         try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=config.temperature,
-                # No max_tokens -- let model produce full output
-            )
+            response = client.chat.completions.create(**request_kwargs)
 
             content = response.choices[0].message.content or ""
             usage = {}
@@ -283,130 +293,177 @@ def chunk_transcript(
     return chunks
 
 
+def chunk_transcript_short(
+    segments: list[dict],
+    window_duration: float = 25.0,
+    overlap_duration: float = 5.0,
+) -> list[list[dict]]:
+    """Split transcript into short overlapping windows for local-phenomenon analysis.
+
+    Used by P0 smart-delete where the phenomena (semantic dup, self-correction,
+    filler phrases) are local -- 15-30s windows catch them better than 5min chunks.
+
+    Args:
+        segments: List of segment dicts with 'start', 'end', 'text'.
+        window_duration: Target window length in seconds (default 25s).
+        overlap_duration: Overlap between windows in seconds (default 5s).
+
+    Returns:
+        List of window groups, each a list of segments.
+    """
+    return chunk_transcript(
+        segments,
+        chunk_duration=window_duration,
+        overlap_duration=overlap_duration,
+    )
+
+
 # ------------------------------------------------------------------
-# Topic drift analysis
+# Structured message building + layered JSON parsing (C-02)
 # ------------------------------------------------------------------
 
-_TOPIC_DRIFT_SYSTEM = (
-    "你是一位视频内容分析专家。你需要分析视频转录片段与给定主题的相关性，"
-    "并为每个片段打分（0.0 到 1.0，1.0 表示完全相关）。"
-    "请严格按照 JSON 数组格式输出，不要添加额外说明。"
-)
 
-_TOPIC_DRIFT_USER_TEMPLATE = """请分析以下视频转录片段与主题的相关性。
+def _build_structured_user_message(
+    segments: list[dict],
+    extra_context: dict[str, Any] | None = None,
+) -> str:
+    """Build structured JSON user message for LLM analysis.
 
-{topic_line}
+    Replaces ad-hoc ``[id] text`` formatting with JSON, eliminating
+    segment_id parsing ambiguity and special-character breakage.
 
-转录片段：
-{segments_text}
+    Args:
+        segments: List of segment dicts with 'id', 'text', 'start', 'end'.
+        extra_context: Additional top-level keys to merge into the payload
+            (e.g. ``{"topic": "...", "reference_text": "..."}``).
 
-输出格式（JSON 数组，每个元素对应一个片段）：
-```json
-[
-  {{"segment_id": "片段ID", "topic": "实际讨论的话题", "relevance": 0.0到1.0, "reason": "简短理由"}}
-]
-```
+    Returns:
+        JSON string suitable for the LLM user message.
+    """
+    payload: dict[str, Any] = {
+        "segments": [
+            {
+                "id": str(s.get("id", s.get("segment_id", "?"))),
+                "text": str(s.get("text", "")).strip(),
+                "start": s.get("start"),
+                "end": s.get("end"),
+            }
+            for s in segments
+        ],
+    }
+    if extra_context:
+        payload.update(extra_context)
+    return json.dumps(payload, ensure_ascii=False)
 
-要求：
-1. 为每个片段输出一条结果
-2. relevance: 0.0-1.0，1.0 表示与主题完全相关，0.0 表示完全不相关
-3. topic: 简述该片段实际讨论的内容
-4. reason: 一句话说明评分理由
+
+def _parse_json_response_layers(content: str) -> list[dict] | None:
+    """4-layer degraded JSON parsing for cross-provider robustness.
+
+    Layer 1: Direct ``json.loads`` (fastest, model follows format).
+    Layer 2: Extract markdown code block then ``json.loads``.
+    Layer 3: Regex extract ``[...]`` or ``{...}`` substring then ``json.loads``.
+    Layer 4: Line-by-line regex extract key fields (extreme fallback).
+
+    Returns:
+        List of parsed dicts, or ``None`` if all layers fail.
+    """
+    if not content or not content.strip():
+        return None
+
+    # Layer 1: Direct parse
+    try:
+        result = json.loads(content.strip())
+        return result if isinstance(result, list) else [result]
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Layer 2: Markdown code block
+    md_match = re.search(r"```(?:json)?\s*\n?(.*?)```", content, re.DOTALL)
+    if md_match:
+        try:
+            result = json.loads(md_match.group(1).strip())
+            return result if isinstance(result, list) else [result]
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Layer 3: Regex extract array or object
+    arr_start = content.find("[")
+    arr_end = content.rfind("]")
+    if arr_start != -1 and arr_end != -1 and arr_end > arr_start:
+        try:
+            return json.loads(content[arr_start : arr_end + 1])
+        except (json.JSONDecodeError, ValueError):
+            pass
+    obj_start = content.find("{")
+    obj_end = content.rfind("}")
+    if obj_start != -1 and obj_end != -1 and obj_end > obj_start:
+        try:
+            result = json.loads(content[obj_start : obj_end + 1])
+            return result if isinstance(result, list) else [result]
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Layer 4: Line-by-line fallback -- extract common fields
+    items: list[dict] = []
+    # Try segment_id + relevance (topic drift / semantic search pattern)
+    pattern_relevance = re.compile(
+        r'"segment_id"\s*:\s*"([^"]+)".*?"relevance"\s*:\s*([\d.]+)'
+    )
+    for match in pattern_relevance.finditer(content):
+        items.append(
+            {"segment_id": match.group(1), "relevance": float(match.group(2))}
+        )
+    if items:
+        return items
+
+    # Try segment_id + action (smart delete pattern)
+    pattern_action = re.compile(
+        r'"segment_id"\s*:\s*"([^"]+)".*?"action"\s*:\s*"(\w+)"'
+    )
+    for match in pattern_action.finditer(content):
+        items.append(
+            {"segment_id": match.group(1), "action": match.group(2)}
+        )
+    if items:
+        return items
+
+    return None
+
+
+# ------------------------------------------------------------------
+# P0: Smart delete analysis
+# ------------------------------------------------------------------
+
+_SMART_DELETE_SYSTEM = """你是视频剪辑助手。用户以 JSON 格式提供一组转录片段。
+请识别其中可安全删除的片段:
+1. semantic_dup: 语义重复 -- 同一观点换措辞重述 (规则引擎只能识别字面重复)
+2. self_correct: 无触发词口误 -- 说错后自然纠正的完整区域
+3. filler_phrase: 上下文口头禅 -- 无实义过渡句如"然后接下来就是我们要讲的那个"
+
+输出格式: JSON 数组
+[{"segment_id": "片段ID", "action": "delete", "reason": "删除理由", "category": "semantic_dup|self_correct|filler_phrase"}]
+只输出建议删除的片段，无需删除的不要输出。
 """
 
 
-def _build_topic_drift_prompt(segments: list[dict], topic_description: str) -> str:
-    """Build the user prompt for topic drift analysis."""
-    topic_line = (
-        f"分析主题：{topic_description}"
-        if topic_description.strip()
-        else "分析主题：未指定（请根据视频整体内容判断片段是否偏离主流话题）"
-    )
-
-    lines: list[str] = []
-    for seg in segments:
-        seg_id = seg.get("id", seg.get("segment_id", "?"))
-        text = seg.get("text", "").strip()
-        lines.append(f"[{seg_id}] {text}")
-
-    segments_text = "\n".join(lines)
-    return _TOPIC_DRIFT_USER_TEMPLATE.format(topic_line=topic_line, segments_text=segments_text)
-
-
-def _parse_topic_drift_response(content: str) -> list[dict]:
-    """Parse LLM response into list of topic drift result dicts.
-
-    Handles markdown code blocks, bare JSON, and is tolerant of
-    missing fields or out-of-range values.
-    """
-    import re
-
-    # Extract JSON from markdown code block or bare text
-    json_match = re.search(r"```(?:json)?\s*\n?(.*?)```", content, re.DOTALL)
-    raw_json = json_match.group(1).strip() if json_match else content.strip()
-
-    # Find the JSON array
-    start = raw_json.find("[")
-    end = raw_json.rfind("]")
-    if start == -1 or end == -1:
-        return []
-
-    try:
-        items = json.loads(raw_json[start : end + 1])
-    except (json.JSONDecodeError, ValueError):
-        return []
-
-    results: list[dict] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        seg_id = str(item.get("segment_id", item.get("id", "")))
-        if not seg_id:
-            continue
-
-        # Clamp relevance to [0, 1]
-        try:
-            relevance = float(item.get("relevance", 1.0))
-        except (TypeError, ValueError):
-            relevance = 1.0
-        relevance = max(0.0, min(1.0, relevance))
-
-        try:
-            confidence = float(item.get("confidence", 1.0))
-        except (TypeError, ValueError):
-            confidence = 1.0
-        confidence = max(0.0, min(1.0, confidence))
-
-        results.append(
-            {
-                "segment_id": seg_id,
-                "topic": str(item.get("topic", "")),
-                "relevance": relevance,
-                "confidence": confidence,
-                "reason": str(item.get("reason", "")),
-            }
-        )
-
-    return results
-
-
-def analyze_topic_drift(
+def analyze_smart_delete(
     segments: list[dict],
-    topic_description: str = "",
+    existing_flagged_ids: set[str] | None = None,
     *,
     config: LlmConfig | None = None,
     cancel_event: threading.Event | None = None,
     progress_cb: Callable[[float, str], None] | None = None,
     chunk_callback: Callable[[list[dict]], None] | None = None,
 ) -> dict[str, Any]:
-    """Run topic drift analysis on transcript segments.
+    """Short-window LLM analysis to catch what the rule engine misses.
 
-    Chunks the transcript, calls LLM per chunk, and streams per-chunk
-    results via ``chunk_callback``.
+    Identifies semantic duplicates, self-corrections, and context filler
+    phrases that rule-based detection cannot catch.
 
     Args:
         segments: List of segment dicts with 'id', 'start', 'end', 'text'.
-        topic_description: Optional topic description for relevance scoring.
+        existing_flagged_ids: segment IDs already flagged by rule engine --
+            these are skipped to avoid redundant analysis.
         config: LLM config (loads from settings if None).
         cancel_event: Thread-safe cancellation signal.
         progress_cb: Optional progress callback (percent, message).
@@ -425,7 +482,16 @@ def analyze_topic_drift(
     if not segments:
         return {"success": False, "error": "No segments to analyze"}
 
-    chunks = chunk_transcript(segments)
+    # Filter out segments already flagged by rule engine (incremental analysis)
+    flagged = existing_flagged_ids or set()
+    to_analyze = [s for s in segments if str(s.get("id", "")) not in flagged]
+    if not to_analyze:
+        return {
+            "success": True,
+            "data": {"results": [], "token_usage": {}, "skipped": len(segments)},
+        }
+
+    chunks = chunk_transcript_short(to_analyze)
     total_chunks = len(chunks)
     all_results: list[dict] = []
     total_usage: dict[str, int] = {
@@ -440,23 +506,20 @@ def analyze_topic_drift(
 
         if progress_cb:
             pct = (idx / total_chunks) * 100 if total_chunks > 0 else 0
-            progress_cb(
-                pct,
-                f"Analyzing chunk {idx + 1}/{total_chunks}...",
-            )
+            progress_cb(pct, f"Smart-delete analyzing window {idx + 1}/{total_chunks}...")
 
-        prompt = _build_topic_drift_prompt(chunk, topic_description)
+        prompt = _build_structured_user_message(chunk)
         result = call_llm(
             prompt,
-            system=_TOPIC_DRIFT_SYSTEM,
+            system=_SMART_DELETE_SYSTEM,
+            json_mode=True,
             config=config,
             cancel_event=cancel_event,
         )
 
         if not result.get("success"):
             error = result.get("error", "LLM call failed")
-            logger.warning(f"Topic drift chunk {idx + 1} failed: {error}")
-            # Continue to next chunk rather than abort entirely
+            logger.warning(f"Smart-delete window {idx + 1} failed: {error}")
             continue
 
         content = result["data"]["content"]
@@ -464,23 +527,44 @@ def analyze_topic_drift(
         for key in total_usage:
             total_usage[key] += usage.get(key, 0)
 
-        chunk_results = _parse_topic_drift_response(content)
-        if chunk_results and chunk_callback:
-            chunk_callback(chunk_results)
+        chunk_results = _parse_json_response_layers(content)
+        if not chunk_results:
+            logger.warning(f"Smart-delete window {idx + 1}: JSON parse returned None")
+            continue
 
-        all_results.extend(chunk_results)
+        # Normalize: ensure each result has required fields
+        normalized = []
+        for item in chunk_results:
+            if not isinstance(item, dict):
+                continue
+            seg_id = str(item.get("segment_id", ""))
+            if not seg_id:
+                continue
+            normalized.append(
+                {
+                    "segment_id": seg_id,
+                    "action": str(item.get("action", "delete")),
+                    "reason": str(item.get("reason", "")),
+                    "category": str(item.get("category", "filler_phrase")),
+                    "confidence": min(1.0, max(0.0, float(item.get("confidence", 0.8)))),
+                }
+            )
 
-    # Deduplicate by segment_id, keeping the last occurrence (handles overlap)
+        if normalized and chunk_callback:
+            chunk_callback(normalized)
+        all_results.extend(normalized)
+
+    # Deduplicate by segment_id, keeping the last occurrence
     seen: dict[str, dict] = {}
     for r in all_results:
         seen[r["segment_id"]] = r
     deduped = list(seen.values())
 
     if progress_cb:
-        progress_cb(100.0, f"Completed: {len(deduped)} segments analyzed")
+        progress_cb(100.0, f"Completed: {len(deduped)} smart-delete suggestions")
 
     logger.info(
-        f"Topic drift analysis done: {len(deduped)} results, "
+        f"Smart-delete analysis done: {len(deduped)} results, "
         f"tokens={total_usage.get('total_tokens', 0)}"
     )
 
@@ -488,3 +572,247 @@ def analyze_topic_drift(
         "success": True,
         "data": {"results": deduped, "token_usage": total_usage},
     }
+
+
+# ------------------------------------------------------------------
+# P1: Subtitle correction
+# ------------------------------------------------------------------
+
+_SUBTITLE_CORRECTION_SYSTEM_A = """你是视频字幕纠错专家。用户以 JSON 格式提供转录片段列表。
+请修正每个片段中的 ASR 识别错误:
+- 同音错字 (如"由于"误识为"优化")
+- 专有名词错误 (如人名、地名、术语)
+- 断句/标点问题
+
+注意: 不要改变片段的原始时间戳 (start/end)。只修正文本内容。
+
+输出格式: JSON 数组，每个元素对应输入中的一个片段:
+[{"segment_id": "片段ID", "corrected_text": "修正后的文本", "changes": ["变更说明1", "变更说明2"], "category": "homophone|proper_noun|punctuation|none"}]
+如果某片段无需修正，corrected_text 设为与原文相同，category 设为 "none"。
+"""
+
+_SUBTITLE_CORRECTION_SYSTEM_B = """你是视频字幕对齐专家。用户以 JSON 格式提供 ASR 转录片段和参考稿全文。
+请将每个 ASR 片段与参考稿内容对齐，用参考稿内容修正 ASR 文本错误。
+
+注意: 不要改变片段的原始时间戳 (start/end)。只修正文本内容使其与参考稿一致。
+
+输出格式: JSON 数组:
+[{"segment_id": "片段ID", "corrected_text": "修正后的文本", "changes": ["变更说明"], "category": "reference_aligned|none", "confidence": 0.0到1.0}]
+如果某片段无需修正，corrected_text 设为与原文相同，category 设为 "none"。
+"""
+
+
+def analyze_subtitle_correction(
+    segments: list[dict],
+    reference_text: str | None = None,
+    context_window: int = 3,
+    *,
+    config: LlmConfig | None = None,
+    cancel_event: threading.Event | None = None,
+    progress_cb: Callable[[float, str], None] | None = None,
+) -> dict[str, Any]:
+    """LLM-powered ASR subtitle correction.
+
+    Mode A (reference_text=None): LLM self-correction -- fixes homophones,
+        proper nouns, punctuation based on language model knowledge.
+    Mode B (reference_text provided): Reference-aligned -- uses a reference
+        transcript to correct ASR errors via alignment.
+
+    Args:
+        segments: List of segment dicts with 'id', 'start', 'end', 'text'.
+        reference_text: None for mode A, non-empty for mode B.
+        context_window: Number of adjacent segments to include as context
+            (helps LLM disambiguate homophones).
+        config: LLM config (loads from settings if None).
+        cancel_event: Thread-safe cancellation signal.
+        progress_cb: Optional progress callback (percent, message).
+
+    Returns:
+        {"success": True, "data": {"corrections": [...], "token_usage": {...}}}
+        {"success": False, "error": str}
+    """
+    if config is None:
+        config = get_llm_config()
+
+    if not config.is_configured():
+        return {"success": False, "error": "LLM not configured"}
+
+    if not segments:
+        return {"success": False, "error": "No segments to analyze"}
+
+    is_mode_b = bool(reference_text and reference_text.strip())
+    system = _SUBTITLE_CORRECTION_SYSTEM_B if is_mode_b else _SUBTITLE_CORRECTION_SYSTEM_A
+
+    # Build context-rich segment windows
+    # Each LLM call gets a batch of segments + their neighbors for context
+    batch_size = 20  # segments per LLM call
+    all_corrections: list[dict] = []
+    total_usage: dict[str, int] = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+    }
+
+    total_batches = (len(segments) + batch_size - 1) // batch_size
+
+    for batch_idx in range(total_batches):
+        if cancel_event and cancel_event.is_set():
+            return {"success": False, "error": "Cancelled"}
+
+        if progress_cb:
+            pct = (batch_idx / total_batches) * 100 if total_batches > 0 else 0
+            progress_cb(pct, f"Subtitle correction batch {batch_idx + 1}/{total_batches}...")
+
+        # Select batch + context window
+        start_i = batch_idx * batch_size
+        end_i = min(start_i + batch_size, len(segments))
+        ctx_start = max(0, start_i - context_window)
+        ctx_end = min(len(segments), end_i + context_window)
+
+        batch_with_context = segments[ctx_start:ctx_end]
+        # Mark which ones are the "target" segments (the batch itself)
+        target_ids = {str(segments[i].get("id", "")) for i in range(start_i, end_i)}
+
+        extra_ctx: dict[str, Any] = {"target_segment_ids": sorted(target_ids)}
+        if is_mode_b:
+            extra_ctx["reference_text"] = reference_text
+
+        prompt = _build_structured_user_message(batch_with_context, extra_context=extra_ctx)
+        result = call_llm(
+            prompt,
+            system=system,
+            json_mode=True,
+            config=config,
+            cancel_event=cancel_event,
+        )
+
+        if not result.get("success"):
+            error = result.get("error", "LLM call failed")
+            logger.warning(f"Subtitle correction batch {batch_idx + 1} failed: {error}")
+            continue
+
+        content = result["data"]["content"]
+        usage = result["data"].get("usage", {})
+        for key in total_usage:
+            total_usage[key] += usage.get(key, 0)
+
+        parsed = _parse_json_response_layers(content)
+        if not parsed:
+            logger.warning(f"Subtitle correction batch {batch_idx + 1}: parse returned None")
+            continue
+
+        # Normalize: only keep results for target segment IDs
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            seg_id = str(item.get("segment_id", ""))
+            if not seg_id or seg_id not in target_ids:
+                continue
+            all_corrections.append(
+                {
+                    "segment_id": seg_id,
+                    "corrected_text": str(item.get("corrected_text", "")),
+                    "changes": item.get("changes", []),
+                    "category": str(item.get("category", "none")),
+                    "confidence": min(1.0, max(0.0, float(item.get("confidence", 0.9)))),
+                }
+            )
+
+    if progress_cb:
+        progress_cb(100.0, f"Completed: {len(all_corrections)} corrections")
+
+    logger.info(
+        f"Subtitle correction done: {len(all_corrections)} results, "
+        f"tokens={total_usage.get('total_tokens', 0)}, mode={'B' if is_mode_b else 'A'}"
+    )
+
+    return {
+        "success": True,
+        "data": {"corrections": all_corrections, "token_usage": total_usage},
+    }
+
+
+def _check_correction_confidence(original_text: str, corrected_text: str) -> dict[str, Any]:
+    """Flag low-confidence corrections via edit distance ratio.
+
+    Uses a simple character-level change ratio as a proxy for confidence.
+    High change ratio (>50%) suggests the correction might be unreliable.
+
+    Args:
+        original_text: Original ASR text.
+        corrected_text: LLM-corrected text.
+
+    Returns:
+        {"edit_distance": int, "change_ratio": float, "low_confidence": bool}
+    """
+    if not original_text and not corrected_text:
+        return {"edit_distance": 0, "change_ratio": 0.0, "low_confidence": False}
+
+    # Simple Levenshtein distance (no external dependency)
+    dist = _levenshtein(original_text, corrected_text)
+    max_len = max(len(original_text), len(corrected_text), 1)
+    ratio = dist / max_len
+    return {
+        "edit_distance": dist,
+        "change_ratio": ratio,
+        "low_confidence": ratio > 0.5,
+    }
+
+
+def _levenshtein(s1: str, s2: str) -> int:
+    """Compute Levenshtein edit distance between two strings."""
+    if len(s1) < len(s2):
+        return _levenshtein(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+    previous_row = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1):
+        current_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = previous_row[j + 1] + 1
+            deletions = current_row[j] + 1
+            substitutions = previous_row[j] + (c1 != c2)
+            current_row.append(min(insertions, deletions, substitutions))
+        previous_row = current_row
+    return previous_row[-1]
+
+
+# ------------------------------------------------------------------
+# Timestamp safety assertion (P1)
+# ------------------------------------------------------------------
+
+
+class TimestampCorruptionError(Exception):
+    """Raised when subtitle correction alters start/end timestamps.
+
+    In development mode this is raised; in production it's caught by the
+    caller to trigger a rollback of the specific segment.
+    """
+
+
+def _assert_timestamps_unchanged(
+    original_start: float,
+    original_end: float,
+    corrected_start: float,
+    corrected_end: float,
+    *,
+    segment_id: str,
+) -> None:
+    """Double-layer assertion: dev raises, prod warns + signal rollback.
+
+    Ensures subtitle correction NEVER alters start/end physical values.
+    """
+    if original_start != corrected_start or original_end != corrected_end:
+        msg = (
+            f"Timestamp corruption detected on segment {segment_id}: "
+            f"start {original_start}->{corrected_start}, "
+            f"end {original_end}->{corrected_end}"
+        )
+        import os
+
+        if os.environ.get("MILO_ENV") == "development":
+            raise ValueError(msg)
+        else:
+            logger.warning(msg)
+            raise TimestampCorruptionError(segment_id, msg)
+

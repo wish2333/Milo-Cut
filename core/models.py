@@ -42,7 +42,8 @@ class TaskType(StrEnum):
     MODEL_DOWNLOAD = "model_download"
     PROXY_GENERATION = "proxy_generation"
     # LLM
-    LLM_TOPIC_DRIFT = "llm_topic_drift"
+    LLM_SMART_DELETE = "llm_smart_delete"
+    LLM_SUBTITLE_CORRECTION = "llm_subtitle_correction"
 
 
 class EditStatus(StrEnum):
@@ -147,7 +148,8 @@ class TranscriptData(BaseModel, frozen=True):
 
 class AnalysisResult(BaseModel, frozen=True):
     id: str
-    type: Literal["filler", "error", "duplicate", "punctuation", "topic_drift"]
+    type: Literal["filler", "error", "duplicate", "punctuation",
+                  "llm_smart_delete", "llm_subtitle_correction"]
     segment_ids: list[str] = Field(default_factory=list)
     confidence: float = 1.0
     detail: str = ""
@@ -241,31 +243,6 @@ class LlmConfig(BaseModel, frozen=True):
     def is_configured(self) -> bool:
         """Check if the minimum required fields are set."""
         return bool(self.resolved_base_url() and self.api_key and self.resolved_model())
-
-
-# ================================================================
-# Topic Drift (LLM-based)
-# ================================================================
-
-
-class TopicDriftResult(BaseModel, frozen=True):
-    """Single segment topic relevance assessment from LLM."""
-
-    segment_id: str
-    topic: str = ""
-    relevance: float = 1.0
-    confidence: float = 1.0
-    reason: str = ""
-
-
-class TopicDriftData(BaseModel, frozen=True):
-    """Cached topic drift analysis data stored in Project."""
-
-    topic_description: str = ""
-    results: list[TopicDriftResult] = Field(default_factory=list)
-    transcript_hash: str = ""
-    last_run: str | None = None
-    token_usage: dict[str, Any] = Field(default_factory=dict)
 
 
 # ================================================================

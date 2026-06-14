@@ -60,7 +60,7 @@ from core.ffmpeg_presets import ENCODER_METADATA, get_fallback_codec
 from core.ffmpeg_service import _find_ffmpeg, detect_silence, generate_waveform, probe_media
 from core.logging import get_logger, setup_frontend_sink, setup_logging
 from core.media_server import MediaServer
-from core.models import TaskStatus, TaskType
+from core.models import SegmentType, TaskStatus, TaskType
 from core.paths import migrate_if_needed
 from core.plugin_manager import PLUGIN_REGISTRY, PluginManager
 from core.project_service import ProjectService
@@ -113,7 +113,6 @@ class MiloCutApi(Bridge):
             get_projects_fn=self._bridge_get_projects,
             get_project_fn=self._bridge_get_project,
             start_analysis_fn=self._bridge_start_analysis,
-            get_topic_drift_fn=self._bridge_get_topic_drift,
         )
 
     def _register_task_handlers(self) -> None:
@@ -139,7 +138,12 @@ class MiloCutApi(Bridge):
         self._task_manager.register_handler(
             TaskType.PROXY_GENERATION, self._handle_proxy_generation
         )
-        self._task_manager.register_handler(TaskType.LLM_TOPIC_DRIFT, self._handle_topic_drift)
+        self._task_manager.register_handler(
+            TaskType.LLM_SMART_DELETE, self._handle_smart_delete
+        )
+        self._task_manager.register_handler(
+            TaskType.LLM_SUBTITLE_CORRECTION, self._handle_subtitle_correction
+        )
 
     def _handle_silence_detection(self, task, cancel_event, progress_cb):
         """Run silence detection on the project media and store results."""
@@ -640,71 +644,159 @@ class MiloCutApi(Bridge):
         finally:
             self._proxy_manager.on_proxy_complete(media_path)
 
-    def _handle_topic_drift(self, task, cancel_event, progress_cb):
-        """Run LLM topic drift analysis and stream per-chunk results."""
+    def _handle_smart_delete(self, task, cancel_event, progress_cb):
+        """Run LLM smart-delete analysis: catch what rule engine misses."""
         if self._project.current is None:
             raise ValueError("No project open")
 
-        from core.llm_service import analyze_topic_drift
+        from core.llm_service import analyze_smart_delete
 
         project = self._project.current
-        topic_description = task.payload.get("topic_description", "")
-        segments = [s.model_dump() for s in project.active_timeline.transcript.segments]
+        timeline_id = task.payload.get(
+            "timeline_id", project.active_timeline_id
+        )
+        timeline = project.get_timeline(timeline_id)
+        if timeline is None:
+            raise ValueError(f"Timeline {timeline_id} not found")
 
+        segments = [
+            s.model_dump()
+            for s in timeline.transcript.segments
+            if s.type == SegmentType.SUBTITLE
+        ]
         if not segments:
-            raise ValueError("No transcript segments to analyze")
+            raise ValueError("No subtitle segments to analyze")
+
+        # Collect segment IDs already flagged by rule engine (incremental)
+        existing_ids: set[str] = set()
+        for result in timeline.analysis.results:
+            existing_ids.update(result.segment_ids)
 
         def _chunk_callback(chunk_results: list[dict]) -> None:
-            """Emit per-chunk results immediately for frontend upsert."""
+            """Emit per-window results for frontend live update."""
             self._emit(
-                "llm:analysis_progress",
-                {
-                    "results": chunk_results,
-                    "topic_description": topic_description,
-                },
+                "llm:smart_delete_progress",
+                {"results": chunk_results},
             )
 
-        result = analyze_topic_drift(
+        result = analyze_smart_delete(
             segments,
-            topic_description,
+            existing_flagged_ids=existing_ids,
             cancel_event=cancel_event,
             progress_cb=progress_cb,
             chunk_callback=_chunk_callback,
         )
 
         if not result.get("success"):
-            error = result.get("error", "Topic drift analysis failed")
+            error = result.get("error", "Smart-delete analysis failed")
             self._emit("llm:analysis_failed", {"error": error})
             raise RuntimeError(error)
 
         all_results = result["data"]["results"]
         token_usage = result["data"]["token_usage"]
 
-        # Compute transcript hash for cache validation
-        import hashlib
-        import json as _json
+        # Convert results to EditDecisions with source="llm_smart"
+        from datetime import datetime as _dt
 
-        transcript_str = _json.dumps(segments, ensure_ascii=False, sort_keys=True)
-        transcript_hash = hashlib.md5(transcript_str.encode()).hexdigest()
+        edits = []
+        seg_map = {s.id: s for s in timeline.transcript.segments}
+        for i, r in enumerate(all_results):
+            seg = seg_map.get(r["segment_id"])
+            if seg is None:
+                continue
+            edits.append(
+                {
+                    "id": f"llm_smart_{int(_dt.now().timestamp() * 1000)}_{i}",
+                    "start": seg.start,
+                    "end": seg.end,
+                    "action": "delete",
+                    "source": "llm_smart",
+                    "target_type": "segment",
+                    "target_id": seg.id,
+                    "priority": 50,
+                }
+            )
 
-        # Store results in project
-        store = self._project.update_topic_drift(
-            all_results,
-            topic_description=topic_description,
-            transcript_hash=transcript_hash,
-            token_usage=token_usage,
-        )
-        if not store["success"]:
-            raise RuntimeError(store.get("error", "Failed to store topic drift results"))
+        # Store as analysis results + edits
+        if edits:
+            analysis_results = [
+                {
+                    "id": f"llm_smart_{int(_dt.now().timestamp() * 1000)}",
+                    "type": "llm_smart_delete",
+                    "segment_ids": [r["segment_id"]],
+                    "confidence": r.get("confidence", 0.8),
+                    "detail": r.get("reason", ""),
+                }
+                for r in all_results
+                if r["segment_id"] in seg_map
+            ]
+            store = self._project.add_analysis_results(analysis_results, source="llm_smart")
+            if not store["success"]:
+                raise RuntimeError(store.get("error", "Failed to store smart-delete results"))
 
-        # Emit completion + token usage
-        self._emit("llm:analysis_completed", {"results": all_results})
+        self._emit("llm:smart_delete_completed", {"results": all_results, "edits": edits})
         self._emit("llm:token_usage", token_usage)
 
-        # Publish to file protocol for external tools
-        self._file_protocol.publish_topic_drift(all_results, topic_description)
+        return {"results": all_results, "edits": edits, "token_usage": token_usage}
 
-        return {"results": all_results, "token_usage": token_usage}
+    def _handle_subtitle_correction(self, task, cancel_event, progress_cb):
+        """Run LLM subtitle correction on the active timeline."""
+        if self._project.current is None:
+            raise ValueError("No project open")
+
+        from core.llm_service import analyze_subtitle_correction
+
+        project = self._project.current
+        timeline_id = task.payload.get(
+            "timeline_id", project.active_timeline_id
+        )
+        timeline = project.get_timeline(timeline_id)
+        if timeline is None:
+            raise ValueError(f"Timeline {timeline_id} not found")
+
+        reference_text = task.payload.get("reference_text", "")
+        context_window = task.payload.get("context_window", 3)
+
+        segments = [
+            s.model_dump()
+            for s in timeline.transcript.segments
+            if s.type == SegmentType.SUBTITLE
+        ]
+        if not segments:
+            raise ValueError("No subtitle segments to correct")
+
+        result = analyze_subtitle_correction(
+            segments,
+            reference_text=reference_text if reference_text else None,
+            context_window=context_window,
+            cancel_event=cancel_event,
+            progress_cb=progress_cb,
+        )
+
+        if not result.get("success"):
+            error = result.get("error", "Subtitle correction failed")
+            self._emit("llm:analysis_failed", {"error": error})
+            raise RuntimeError(error)
+
+        corrections = result["data"]["corrections"]
+        token_usage = result["data"]["token_usage"]
+
+        # Apply corrections to project
+        apply_result = self._project.apply_subtitle_corrections(corrections)
+
+        if not apply_result["success"]:
+            raise RuntimeError(
+                apply_result.get("error", "Failed to apply subtitle corrections")
+            )
+
+        self._emit("llm:subtitle_correction_completed", apply_result["data"])
+        self._emit("llm:token_usage", token_usage)
+
+        return {
+            "corrections": corrections,
+            "apply_result": apply_result["data"],
+            "token_usage": token_usage,
+        }
 
     # ================================================================
     # System
@@ -1591,18 +1683,6 @@ class MiloCutApi(Bridge):
             return None
         return self.create_task("full_analysis", {})
 
-    def _bridge_get_topic_drift(self, project_name: str) -> dict | None:
-        """Callback for BridgeService: return topic drift results for a project."""
-        result = self._bridge_get_project(project_name)
-        if result is None:
-            return None
-        td = result.get("data", {}).get("topic_drift", {})
-        return {
-            "topic_description": td.get("topic_description", ""),
-            "results": td.get("results", []),
-            "last_run": td.get("last_run"),
-        }
-
     @expose
     def get_bridge_status(self) -> dict:
         """Get bridge HTTP API server status."""
@@ -1657,11 +1737,11 @@ class MiloCutApi(Bridge):
         return self.update_settings(filtered)
 
     @expose
-    def start_topic_drift(self, topic_description: str = "") -> dict:
-        """Start LLM topic drift analysis as a background task.
+    def start_smart_delete(self, timeline_id: str = "") -> dict:
+        """Start LLM smart-delete analysis as a background task.
 
         Args:
-            topic_description: Optional topic description for relevance scoring.
+            timeline_id: Target timeline (defaults to active_timeline_id).
 
         Returns:
             {"success": True, "data": {"task_id": str}}
@@ -1675,16 +1755,69 @@ class MiloCutApi(Bridge):
         if self._project.current is None:
             return {"success": False, "error": "No project open"}
 
+        tl_id = timeline_id or self._project.current.active_timeline_id
         task = self._task_manager.create_task(
-            "llm_topic_drift",
-            {"topic_description": topic_description or ""},
+            "llm_smart_delete",
+            {"timeline_id": tl_id},
         )
         return task
 
     @expose
-    def get_topic_drift_results(self) -> dict:
-        """Get cached topic drift results for the current project."""
-        return self._project.get_topic_drift()
+    def start_subtitle_correction(
+        self,
+        reference_text: str = "",
+        timeline_id: str = "",
+        context_window: int = 3,
+    ) -> dict:
+        """Start LLM subtitle correction as a background task.
+
+        Args:
+            reference_text: Optional reference transcript for mode B alignment.
+                Empty string = mode A (LLM self-correction).
+            timeline_id: Target timeline (defaults to active_timeline_id).
+            context_window: Number of adjacent segments for context.
+
+        Returns:
+            {"success": True, "data": {"task_id": str}}
+        """
+        from core.llm_service import get_llm_config as _get_cfg
+
+        config = _get_cfg()
+        if not config.is_configured():
+            return {"success": False, "error": "LLM not configured"}
+
+        if self._project.current is None:
+            return {"success": False, "error": "No project open"}
+
+        tl_id = timeline_id or self._project.current.active_timeline_id
+        task = self._task_manager.create_task(
+            "llm_subtitle_correction",
+            {
+                "timeline_id": tl_id,
+                "reference_text": reference_text,
+                "context_window": context_window,
+            },
+        )
+        return task
+
+    @expose
+    def confirm_all_from_source(self, source: str, min_confidence: float = 0.0) -> dict:
+        """Batch-confirm all pending edit decisions from a given source.
+
+        Implements the 'trust this source' feature for reducing user review
+        burden when a model's suggestions are trusted.
+
+        Args:
+            source: Source filter (e.g. "llm_smart").
+            min_confidence: Minimum confidence threshold for auto-confirm.
+
+        Returns:
+            {"success": True, "data": {"confirmed_count": int, "project": dict}}
+        """
+        result = self._project.confirm_all_from_source(source, min_confidence)
+        if result["success"] and self._project.current:
+            result["data"]["project"] = self._project.current.model_dump()
+        return result
 
     @expose
     def get_file_protocol_status(self) -> dict:

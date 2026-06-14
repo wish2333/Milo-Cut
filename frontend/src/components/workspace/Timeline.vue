@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from "vue"
-import type { Segment, EditDecision, AnalysisResult, TopicDriftResult } from "@/types/project"
+import { computed } from "vue"
+import type { Segment, EditDecision, AnalysisResult } from "@/types/project"
 import { resolveSegmentState } from "@/utils/segmentHelpers"
 import TranscriptRow from "@/components/workspace/TranscriptRow.vue"
 import SilenceRow from "@/components/workspace/SilenceRow.vue"
 import SuggestionPanel from "@/components/workspace/SuggestionPanel.vue"
-import TopicDriftPanel from "@/components/workspace/TopicDriftPanel.vue"
 
 const props = defineProps<{
   segments: Segment[]
@@ -15,11 +14,6 @@ const props = defineProps<{
   silenceCount: number
   selectedSegmentId?: string | null
   globalEditMode?: boolean
-  topicDriftResults?: TopicDriftResult[]
-  topicDriftLoading?: boolean
-  topicDriftProgress?: number
-  topicDriftError?: string | null
-  llmConfigured?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -36,10 +30,6 @@ const emit = defineEmits<{
   "reject-all": []
   "seek-suggestion": [time: number]
   "toggle-edit-mode": []
-  "start-topic-drift": [topicDescription: string]
-  "cancel-topic-drift": []
-  "accept-topic-drift": []
-  "reject-topic-drift": []
 }>()
 
 function getSegmentState(seg: Segment) {
@@ -65,9 +55,6 @@ const adjacentSubtitleIds = computed(() => {
 })
 
 import { watch, nextTick } from "vue"
-
-// Right sidebar tab state
-const sidebarTab = ref<"suggestions" | "topic-drift">("suggestions")
 
 watch(
   () => props.selectedSegmentId,
@@ -152,54 +139,18 @@ watch(
         </div>
       </div>
 
-      <!-- Right sidebar with tab switcher -->
+      <!-- Right sidebar: suggestions panel -->
       <div class="w-72 border-l border-gray-200 flex flex-col">
-        <!-- Tab switcher -->
-        <div class="flex border-b border-gray-200 text-xs">
-          <button
-            class="flex-1 px-2 py-1.5 font-medium transition-colors"
-            :class="sidebarTab === 'suggestions' ? 'bg-blue-50 text-blue-600 border-b-2 border-blue-400' : 'text-gray-500 hover:bg-gray-50'"
-            @click="sidebarTab = 'suggestions'"
-          >
-            建议
-          </button>
-          <button
-            class="flex-1 px-2 py-1.5 font-medium transition-colors"
-            :class="sidebarTab === 'topic-drift' ? 'bg-blue-50 text-blue-600 border-b-2 border-blue-400' : 'text-gray-500 hover:bg-gray-50'"
-            @click="sidebarTab = 'topic-drift'"
-          >
-            主题漂移
-          </button>
-        </div>
-
-        <!-- Tab content -->
-        <div class="flex-1 overflow-y-auto">
-          <SuggestionPanel
-            v-if="sidebarTab === 'suggestions'"
-            :analysis-results="analysisResults"
-            :edits="edits"
-            :segments="segments"
-            @confirm-edit="(editId) => emit('confirm-suggestion', editId)"
-            @reject-edit="(editId) => emit('reject-suggestion', editId)"
-            @confirm-all="emit('confirm-all')"
-            @reject-all="emit('reject-all')"
-            @seek="(t) => emit('seek-suggestion', t)"
-          />
-          <TopicDriftPanel
-            v-else
-            :results="topicDriftResults ?? []"
-            :segments="segments"
-            :loading="topicDriftLoading"
-            :progress="topicDriftProgress"
-            :error="topicDriftError"
-            :llm-configured="llmConfigured ?? false"
-            @start-analysis="(desc) => emit('start-topic-drift', desc)"
-            @cancel="emit('cancel-topic-drift')"
-            @accept-all="emit('accept-topic-drift')"
-            @reject-all="emit('reject-topic-drift')"
-            @seek="(t) => emit('seek-suggestion', t)"
-          />
-        </div>
+        <SuggestionPanel
+          :analysis-results="analysisResults"
+          :edits="edits"
+          :segments="segments"
+          @confirm-edit="(editId) => emit('confirm-suggestion', editId)"
+          @reject-edit="(editId) => emit('reject-suggestion', editId)"
+          @confirm-all="emit('confirm-all')"
+          @reject-all="emit('reject-all')"
+          @seek="(t) => emit('seek-suggestion', t)"
+        />
       </div>
     </div>
   </div>

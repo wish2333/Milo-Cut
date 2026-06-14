@@ -1177,40 +1177,169 @@ class ProjectService:
         logger.info("Added {} analysis results from {}", len(analysis_results), source)
         return {"success": True, "data": self._current.model_dump()}
 
-    def update_topic_drift(
-        self,
-        results: list[dict],
-        topic_description: str = "",
-        transcript_hash: str = "",
-        token_usage: dict | None = None,
-    ) -> dict:
-        """Store topic drift analysis results.
+    def apply_subtitle_corrections(self, corrections: list[dict]) -> dict:
+        """Apply LLM subtitle corrections to the active timeline.
 
-        DEPRECATED: Topic Drift is being removed in Phase 4b.
-        Returns success but does not persist (kept for API compat during transition).
+        Uses layered fault tolerance: does not fail entirely on partial
+        mismatches. Matches by segment_id, applies what matches, and marks
+        uncovered segments with dirty_flags.llm_uncovered.
+
+        Args:
+            corrections: List of dicts with segment_id, corrected_text,
+                changes, category, confidence.
+
+        Returns:
+            {"success": True, "data": {corrected_count, uncovered_count,
+             uncovered_ids, orphaned_count, partial}}
+            {"success": False, "error": str} on complete mismatch.
         """
         if self._current is None:
             return {"success": False, "error": "No project is open"}
-        logger.warning("update_topic_drift is deprecated (Phase 4b removal)")
-        return {"success": True, "data": self._current.model_dump()}
 
-    def get_topic_drift(self) -> dict:
-        """Return cached topic drift data.
+        from core.llm_service import (
+            TimestampCorruptionError,
+            _assert_timestamps_unchanged,
+            _check_correction_confidence,
+        )
 
-        DEPRECATED: Topic Drift is being removed in Phase 4b. Returns empty data.
-        """
-        if self._current is None:
-            return {"success": False, "error": "No project is open"}
+        timeline = self.active_timeline
+        seg_map = {s.id: s for s in timeline.transcript.segments}
+        total = len(timeline.transcript.segments)
+
+        # Match corrections to segments
+        matched: list[tuple[Segment, dict]] = []
+        uncovered_ids: list[str] = []
+
+        for seg in timeline.transcript.segments:
+            corr = next((c for c in corrections if c["segment_id"] == seg.id), None)
+            if corr:
+                matched.append((seg, corr))
+            else:
+                uncovered_ids.append(seg.id)
+
+        extra_corrections = [c for c in corrections if c["segment_id"] not in seg_map]
+
+        # Complete mismatch
+        if len(matched) == 0 and total > 0:
+            return {
+                "success": False,
+                "error": "No segment_id matched (LLM output completely mismatched)",
+            }
+
+        if len(matched) < total:
+            logger.warning(
+                f"Partial correction coverage: {len(matched)}/{total} segments matched, "
+                f"{len(uncovered_ids)} uncovered, {len(extra_corrections)} orphaned"
+            )
+
+        # Apply corrections
+        corr_map = {seg_id: corr for seg, corr in matched for seg_id in [seg.id]}
+        new_segments: list[Segment] = []
+        rolled_back_count = 0
+
+        for seg in timeline.transcript.segments:
+            corr = corr_map.get(seg.id)
+            if corr:
+                corrected_text = str(corr.get("corrected_text", seg.text))
+                # Confidence check
+                conf = _check_correction_confidence(seg.text, corrected_text)
+                new_flags = {**seg.dirty_flags, "llm_corrected": True}
+                if conf["low_confidence"]:
+                    new_flags["llm_low_confidence"] = True
+
+                corrected = seg.model_copy(
+                    update={"text": corrected_text, "dirty_flags": new_flags}
+                )
+
+                # Timestamp assertion
+                try:
+                    _assert_timestamps_unchanged(
+                        seg.start, seg.end, corrected.start, corrected.end,
+                        segment_id=seg.id,
+                    )
+                    new_segments.append(corrected)
+                except TimestampCorruptionError:
+                    # Rollback this segment, keep original
+                    rolled_back_count += 1
+                    new_segments.append(seg)
+            else:
+                # Uncovered: keep original, mark for UI
+                uncovered = seg.model_copy(
+                    update={
+                        "dirty_flags": {**seg.dirty_flags, "llm_uncovered": True}
+                    }
+                )
+                new_segments.append(uncovered)
+
+        # Update timeline: new segments + invalidate analysis
+        self._update_active_timeline(
+            transcript=timeline.transcript.model_copy(update={"segments": new_segments}),
+            analysis=timeline.analysis.model_copy(update={"last_run": None}),
+        )
+
+        logger.info(
+            f"Applied subtitle corrections: {len(matched)} matched, "
+            f"{len(uncovered_ids)} uncovered, {rolled_back_count} rolled back"
+        )
+
         return {
             "success": True,
             "data": {
-                "topic_description": "",
-                "results": [],
-                "transcript_hash": "",
-                "last_run": None,
-                "token_usage": {},
+                "corrected_count": len(matched) - rolled_back_count,
+                "uncovered_count": len(uncovered_ids),
+                "uncovered_ids": uncovered_ids,
+                "orphaned_count": len(extra_corrections),
+                "rolled_back_count": rolled_back_count,
+                "partial": len(matched) < total,
             },
         }
+
+    def confirm_all_from_source(self, source: str, min_confidence: float = 0.0) -> dict:
+        """Batch-confirm all edit decisions from a given source.
+
+        Implements the 'trust this source' feature: one-click accept all
+        suggestions from a specific source (e.g. 'llm_smart') that meet
+        the minimum confidence threshold.
+
+        Args:
+            source: The source string to filter by (e.g. "llm_smart").
+            min_confidence: Minimum confidence to auto-confirm. Lower-
+                confidence items still require manual review.
+
+        Returns:
+            {"success": True, "data": {"confirmed_count": int}}
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        timeline = self.active_timeline
+        confirmed_count = 0
+        new_edits: list[EditDecision] = []
+
+        for edit in timeline.edits:
+            if edit.source == source and edit.status == EditStatus.PENDING:
+                # Check confidence from analysis results if available
+                should_confirm = True
+                if min_confidence > 0:
+                    # Look up confidence from analysis results
+                    for result in timeline.analysis.results:
+                        if edit.target_id in result.segment_ids:
+                            should_confirm = result.confidence >= min_confidence
+                            break
+
+                if should_confirm:
+                    new_edits.append(edit.model_copy(update={"status": EditStatus.CONFIRMED}))
+                    confirmed_count += 1
+                else:
+                    new_edits.append(edit)
+            else:
+                new_edits.append(edit)
+
+        if confirmed_count > 0:
+            self._update_active_timeline(edits=new_edits)
+            logger.info(f"Batch-confirmed {confirmed_count} edits from source '{source}'")
+
+        return {"success": True, "data": {"confirmed_count": confirmed_count}}
 
     def generate_subtitle_keep_ranges(self, padding: float = 0.3) -> dict:
         """Generate EditDecisions to delete ranges outside subtitle segments + padding.
