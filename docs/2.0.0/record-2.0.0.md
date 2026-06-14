@@ -327,3 +327,116 @@ Phase 3 经过实施-发现-返工的迭代过程：
 ---
 
 Phase 4 (Integration & Delivery) 待实施:
+
+---
+
+## Phase 4a: 工程化前置 + 多 Timeline 基础设施 (已完成)
+
+> 目标: Lint 工具链 + Mock 工厂 + API 同步检查 + 多 Timeline 数据模型与 ProjectService 重构
+> 基于: `docs/2.0.0/audit-plan-v2.0.0-2.md`
+> Commit: e280368
+
+### 概要
+
+Phase 4a 是 Phase 4b-4d (LLM 重构) 的前置基础, 完成两大任务:
+
+1. **工程化前置 (L-01/L-02/L-03)** -- 引入 ruff (Python lint+format) + ESLint (前端 lint, 含 `no-restricted-imports` 防护 M-02 类违规), 建立前后端 mock 工厂集中管理测试数据构造, 新增 `scripts/check_api_sync.py` 验证前后端 API 契约一致
+2. **多 Timeline 基础设施** -- 新增 `Timeline` 模型, 将 `Project` 从扁平 schema (v1: transcript/edits/analysis/topic_drift) 升级为 v2 (timelines 列表 + active_timeline_id), 实现 v1->v2 自动迁移, ProjectService 全面重构 (active_timeline property + ~50 处引用替换 + 16 处 model_copy 转换), Timeline CRUD API + TimelineSwitcher UI 组件
+
+### 变更文件 (共 33 个核心)
+
+#### 工程化前置
+
+| 文件 | 变更 | 说明 |
+|------|------|------|
+| `pyproject.toml` | 修改 | 新增 `[tool.ruff]` (line-length=100, select E/W/F/I/UP/B, per-file E402 ignores) + `[tool.pytest.ini_options]` (testpaths, integration marker); 新增 ruff dev 依赖 |
+| `scripts/check_api_sync.py` | 新增 | 前后端 API 同步检查: 提取 main.py + pywebvue/bridge.py 的 @expose 方法, 提取 frontend/src 的 call() 调用, 比对报告不一致; 发现预存 bug (download_ffmpeg 前端调用无 @expose) |
+| `frontend/eslint.config.js` | 新增 | ESLint flat config: TypeScript-aware Vue parser (vue-eslint-parser + tseslint.parser), browser globals, `no-restricted-imports` 规则 (禁止 ../ 相对路径, 强制 @/ 别名), 放宽 Vue 模板格式规则 |
+| `frontend/package.json` | 修改 | 新增 lint/lint:fix/check:api scripts; 新增 eslint 相关 devDependencies |
+| `tests/mocks/__init__.py` + `tests/mocks/factories.py` | 新增 | 后端 mock 工厂: `make_segment`, `make_segments`, `make_edit_decision`, `make_project`, `make_llm_response` + SAMPLE_SRT_CONTENT/SAMPLE_SEGMENTS_RAW fixtures |
+| `frontend/src/test/helpers/mockProject.ts` | 新增 | 前端 mock 工厂: `mockSegment`, `mockSegments`, `mockEditDecision`, `mockMediaInfo`, `mockTranscriptData`, `mockAnalysisData`, `mockTimeline`, `mockProject` |
+| `tests/conftest.py` | 重写 | Fixtures 改为 mock 工厂的薄包装 (向后兼容) |
+| `tests/test_analysis_service.py` | 修改 | 13 处内联 Segment(id= 构造改为 make_segment() |
+| `tests/test_project_service.py` | 修改 | Helper 方法改用 mock 工厂; 测试引用 `.current.transcript` -> `.current.active_timeline.transcript` |
+
+**全量 ruff 修复涉及 ~35 个文件** (import 排序、未使用变量、B007/B011/B017/B904/E741/E702 规则修复)
+
+#### 多 Timeline 基础设施
+
+| 文件 | 变更 | 说明 |
+|------|------|------|
+| `core/models.py` | 修改 | 新增 `Timeline` 模型 (id/label/source/created_at/parent_id/transcript/edits/analysis); `Project` 重构为 v2 schema (schema_version=2, timelines 列表, active_timeline_id); `ensure_default_timeline` validator 自动创建 default timeline; `get_timeline()` 方法 + `active_timeline` property; 移除扁平 transcript/edits/analysis/topic_drift 字段 |
+| `core/project_service.py` | 重构 | 新增 `active_timeline` property + `_update_active_timeline()` helper; `_migrate_to_v2()` v1->v2 迁移 (扁平字段包装为 default Timeline, 丢弃 topic_drift); ~50 处 `self._current.transcript/edits/analysis` 替换为 `self.active_timeline.*`; 16 处 `model_copy(update={timeline_fields})` 转换为 `_update_active_timeline()`; 5 个 Timeline CRUD 方法 (create/switch/delete/rename/duplicate); topic_drift 方法 stub 化 (Phase 4b 删除) |
+| `main.py` | 修改 | `project.transcript/edits/analysis` -> `project.active_timeline.*`; 新增 5 个 Timeline CRUD @expose 方法 |
+| `frontend/src/types/project.ts` | 修改 | `Project` 接口改为 v2 (timelines + active_timeline_id); 新增 `Timeline` 接口; 移除 transcript/edits/analysis/topic_drift 扁平字段 |
+| `frontend/src/composables/useProject.ts` | 修改 | 新增 `activeTimeline` computed (从 timelines 按 active_timeline_id 查找); segments/edits 改为从 activeTimeline 读取 |
+| `frontend/src/composables/useExport.ts` | 修改 | `confirmedEdits` 从 active_timeline 读取 |
+| `frontend/src/composables/useAnalysis.ts` | 修改 | `confirmAllEdits` 从 active_timeline 读取 |
+| `frontend/src/composables/useSegmentEdit.ts` | 重构 | 新增 `activeEdits()`/`activeTranscriptSegments()` helper; `replaceSegment()` 重写为重建 timelines 数组; 所有 `project.value.edits/transcript` 引用改为 helper 调用 |
+| `frontend/src/pages/WorkspacePage.vue` | 修改 | 新增 `activeTimeline` computed; segments/edits/analysisResults 从 activeTimeline 读取; 集成 TimelineSwitcher + 3 个 handler (switch/create/delete) |
+| `frontend/src/pages/ExportPage.vue` | 修改 | 新增 `activeTimeline` computed; subtitleCount/sortedSegments/edits 从 activeTimeline 读取 |
+| `frontend/src/components/workspace/TimelineSwitcher.vue` | 新增 | Timeline 切换器: 下拉显示所有 timeline, 切换/新建/删除操作, source 标签, 当前 timeline 勾选 |
+| `tests/test_migration.py` | 新增 | 16 个测试: v1->v2 迁移 (transcript 保留/topic_drift 丢弃/v2 passthrough/完整 open_project 流程) + Timeline CRUD (blank 创建/fork 创建/切换/删除/删除最后一条失败/重命名/复制) |
+| `tests/test_models.py` | 修改 | schema_version 断言改为 2; round-trip 测试改为 active_timeline |
+| `tests/test_topic_drift.py` | 修改 | topic_drift 字段测试改为 v2 schema 验证 |
+
+### 架构决策
+
+#### v2 schema 设计 -- 每条 Timeline 独立 transcript (D-05)
+
+- 每条 Timeline 拥有完整的 (transcript, edits, analysis) 三元组, 非-overlay 叠加
+- segment ID 体系在 timeline 内部自洽, P1 字幕断句修正时 edits 引用始终有效
+- `active_timeline` property 提供统一访问入口, 替代原扁平字段
+- `_update_active_timeline()` helper 封装 frozen model 的更新模式 (model_copy timeline + 重建 timelines 列表)
+
+#### v1->v2 迁移 -- 自动透明
+
+- `open_project()` 加载 JSON 后调用 `_migrate_to_v2()`
+- v1 扁平的 transcript/edits/analysis 包装为 `id="default"` 的 Timeline
+- v1 的 `topic_drift` 数据丢弃 (Topic Drift 在 Phase 4b 移除)
+- `schema_version` 从 1 升级到 2, v2 数据直接 passthrough
+
+#### ProjectService 重构 -- active_timeline 适配器
+
+- `active_timeline` property 从 `self._current.timelines` 按 `active_timeline_id` 查找
+- `_update_active_timeline(**updates)` 封装: model_copy timeline -> 重建 timelines 列表 -> 写回 Project
+- 机械替换 ~50 处 `self._current.transcript/edits/analysis` -> `self.active_timeline.*`
+- 16 处 `self._current.model_copy(update={transcript/edits/analysis})` 转换为 `self._update_active_timeline()`
+- 非时间线字段 (media/project) 保持原 model_copy 模式
+
+#### 工程化 -- ruff + ESLint 双工具链
+
+- ruff: line-length=100, select E/W/F/I/UP/B; per-file E402 ignores (main.py 路径设置、asr_scripts sys.path 操作); `[tool.pytest.ini_options]` 补充 testpaths + integration marker
+- ESLint: flat config, TypeScript-aware Vue parser (vue-eslint-parser + tseslint.parser), browser globals; `no-restricted-imports` 禁止 ../ 相对路径 (防护 M-02 类违规); 放宽 Vue 模板格式规则 (max-attributes-per-line 等风格偏好)
+- API 同步脚本: 提取 @expose + call() 比对, 发现预存 download_ffmpeg gap
+
+### 测试覆盖
+
+| 模块 | 测试数 | 覆盖要点 |
+|------|--------|----------|
+| `test_migration.py` | 16 | v1->v2 迁移 (transcript 保留/topic_drift 丢弃/v2 passthrough/open_project 全流程) + Timeline CRUD (blank/fork/switch/delete/rename/duplicate) |
+| `test_analysis_service.py` | 12 | (迁移至 mock 工厂) filler/error/combined 分析 |
+| 后端总测试 | 190 | 全部通过 (排除预存 test_transcription.py VadOptions 失败) |
+| 前端总测试 | 125 | 全部通过 |
+| ruff check | 0 errors | All checks passed |
+| ESLint | 0 errors | eslint . clean |
+| API sync | 64 calls vs 86 @expose | OK (5 新 timeline API 已 expose) |
+
+### Phase 4a 完成状态
+
+| 任务 | 状态 | 说明 |
+|------|------|------|
+| 4a-1: ruff 引入 | 已完成 | pyproject.toml [tool.ruff] + 全量修复 (136->0 errors) |
+| 4a-2: ESLint 引入 | 已完成 | eslint.config.js flat config + no-restricted-imports |
+| 4a-3/4: Mock 工厂 | 已完成 | tests/mocks/factories.py (后端 5 函数) + mockProject.ts (前端 8 函数) |
+| 4a-5: API 同步检查 | 已完成 | scripts/check_api_sync.py, 发现 download_ffmpeg gap |
+| 4a-6: Timeline 模型 | 已完成 | Timeline + Project v2 schema + validator + property |
+| 4a-7/8: 迁移+重构 | 已完成 | _migrate_to_v2 + active_timeline + _update_active_timeline (~50 替换) |
+| 4a-9: Timeline CRUD API | 已完成 | 5 方法 + @expose |
+| 4a-10: TimelineSwitcher UI | 已完成 | 组件 + WorkspacePage 集成 + handler |
+
+Phase 4b (C-02 + P0 + P1) 待实施:
+- C-02: LLM 输入结构化 + 输出分层降级
+- P0: 智能删除增强
+- P1: 字幕修正
+- Topic Drift 旧代码清理
