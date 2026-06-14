@@ -956,7 +956,7 @@ class MiloCutApi(Bridge):
         return {"results": search_results, "query": query}
 
     # ================================================================
-    # System
+    # region System
     # ================================================================
 
     @expose
@@ -1026,7 +1026,8 @@ class MiloCutApi(Bridge):
         return {"success": True, "data": None}
 
     # ================================================================
-    # Project
+    # endregion System
+    # region Project
     # ================================================================
 
     @expose
@@ -1061,7 +1062,8 @@ class MiloCutApi(Bridge):
         return self._project.relink_media(new_path)
 
     # ================================================================
-    # Timeline (multi-timeline infrastructure, v2.0.0)
+    # endregion Project
+    # region Timeline (multi-timeline infrastructure, v2.0.0)
     # ================================================================
 
     @expose
@@ -1087,7 +1089,8 @@ class MiloCutApi(Bridge):
         return self._project.duplicate_timeline(timeline_id, new_label)
 
     # ================================================================
-    # Subtitle
+    # endregion Timeline
+    # region Subtitle
     # ================================================================
 
     @expose
@@ -1114,7 +1117,8 @@ class MiloCutApi(Bridge):
         return update_result
 
     # ================================================================
-    # FFmpeg
+    # endregion Subtitle
+    # region FFmpeg
     # ================================================================
 
     @expose
@@ -1181,7 +1185,8 @@ class MiloCutApi(Bridge):
         )
 
     # ================================================================
-    # Tasks
+    # endregion FFmpeg
+    # region Tasks
     # ================================================================
 
     @expose
@@ -1323,7 +1328,8 @@ class MiloCutApi(Bridge):
         }
 
     # ================================================================
-    # Project State
+    # endregion Tasks
+    # region Project State (editing, analysis, segments)
     # ================================================================
 
     @expose
@@ -1430,7 +1436,8 @@ class MiloCutApi(Bridge):
         return self._project.get_recent_projects()
 
     # ================================================================
-    # Plugin Management
+    # endregion Project State
+    # region Plugin Management
     # ================================================================
 
     @expose
@@ -1547,6 +1554,11 @@ class MiloCutApi(Bridge):
         """Return the current state of a subprocess ASR task."""
         return {"success": True, "data": self._plugin_manager.get_subprocess_state(task_id)}
 
+    # ================================================================
+    # endregion Plugin Management
+    # region Settings & Data Management
+    # ================================================================
+
     @expose
     def get_settings(self) -> dict:
         return self._project.get_settings()
@@ -1630,6 +1642,11 @@ class MiloCutApi(Bridge):
     @expose
     def update_settings(self, updates: dict) -> dict:
         return self._project.update_settings(updates)
+
+    # ================================================================
+    # endregion Settings & Data Management
+    # region Export & Encoding
+    # ================================================================
 
     @expose
     def select_export_path(self, default_name: str, file_types: list[str] | None = None) -> dict:
@@ -1815,7 +1832,8 @@ class MiloCutApi(Bridge):
         )
 
     # ================================================================
-    # Bridge Service callbacks
+    # endregion Export & Encoding
+    # region Bridge Service callbacks
     # ================================================================
 
     def _bridge_get_projects(self) -> list[dict]:
@@ -1852,7 +1870,8 @@ class MiloCutApi(Bridge):
         }
 
     # ================================================================
-    # LLM
+    # endregion Bridge Service
+    # region LLM (P0 smart-delete, P1 subtitle correction, P2 highlight, P3 search)
     # ================================================================
 
     @expose
@@ -2090,6 +2109,10 @@ class MiloCutApi(Bridge):
                 and self._file_protocol._poll_thread.is_alive(),
             },
         }
+
+
+    # ================================================================
+    # endregion LLM
 
 
 if __name__ == "__main__":

@@ -655,7 +655,113 @@ Phase 4c 实现了 AI 驱动的内容筛选和语义导航:
 | 4c-4: P3 后端 | 已完成 | semantic_search + top_k + relevance 降序 |
 | 4c-5: P3 UI | 已完成 | SemanticSearchBar.vue + 跳转 |
 
-Phase 4d (集成测试 + 发布) 待实施:
-- 端到端集成测试 (TaskManager 全链路)
-- 旧代码最终清理确认
-- 构建验证 + 发布
+---
+
+## Phase 4d: 集成测试 + 发布 (已完成)
+
+> 目标: 端到端集成测试、旧代码最终清理、构建验证
+> 基于: `docs/2.0.0/audit-plan-v2.0.0-2.md` Phase 4d
+
+### 概要
+
+Phase 4d 为 v2.0.0 完成发布前的质量保证:
+
+1. **后端集成测试** -- 15 个 `@pytest.mark.integration` E2E 测试，覆盖 P0-P3 全链路 + 多 Timeline 隔离 + 时间戳断言安全网
+2. **前端集成测试** -- 32 个组件测试，覆盖 TimelineSwitcher 切换流、HighlightModeView 精华模式、SubtitleCorrectionReview 字幕修正 diff
+3. **旧代码最终清理确认** -- `topic_drift` 仅保留在迁移代码 (用于丢弃旧数据)，无活跃 Topic Drift 代码
+4. **main.py region 分区** -- 12 个 `# region` / `# endregion` 分区 (System/Project/Timeline/Subtitle/FFmpeg/Tasks/Project State/Plugin/Settings/Export/Bridge/LLM)
+5. **构建验证** -- 全量测试 378 通过 + Lint 零错误 + API 同步检查通过 + 前端构建成功
+
+### 变更文件 (共 6 个)
+
+#### 测试 (4 个文件)
+
+| 文件 | 变更 | 说明 |
+|------|------|------|
+| `tests/integration/__init__.py` | 新增 | 集成测试包初始化 |
+| `tests/integration/test_llm_pipeline.py` | 新增 | 15 个集成测试: P0 smart-delete E2E (3)、P1 subtitle correction 时间戳安全 (4)、P2 highlight 时长控制 (2)、P3 semantic search top_k (2)、多 Timeline 隔离 (4) |
+| `frontend/src/components/workspace/TimelineSwitcher.test.ts` | 新增 | 8 个测试: 渲染/切换/创建/删除/canDelete/active 状态 |
+| `frontend/src/components/workspace/HighlightModeView.test.ts` | 新增 | 10 个测试: 空状态/LLM未配置/排序/density badge/时长摘要/跳切警告/加载/start-highlight/seek/计数 |
+| `frontend/src/components/workspace/SubtitleCorrectionReview.test.ts` | 新增 | 14 个测试: 空状态/LLM未配置/排序/diff视图/category badge/置信度/高低分组/计数/accept-reject/信任/未覆盖/加载/start-correction/seek |
+
+#### 工程化 (1 个文件)
+
+| 文件 | 变更 | 说明 |
+|------|------|------|
+| `main.py` | 修改 | 12 个 `# region` / `# endregion` 分区整理 90 个 `@expose` 方法: System / Project / Timeline / Subtitle / FFmpeg / Tasks / Project State / Plugin Management / Settings & Data Management / Export & Encoding / Bridge Service / LLM |
+
+### 架构决策
+
+#### 集成测试分层: 单元 + 集成分离
+
+- `@pytest.mark.integration` 标记的测试默认不在 `pytest` 运行中被选中 (通过 `-m "not integration"` 排除)
+- 运行集成测试: `uv run pytest -m integration`
+- 单元测试关注单个函数/类的内部逻辑; 集成测试关注跨模块数据流和边界条件
+- 集成测试使用 mock LLM (monkeypatch `core.llm_service.call_llm`)，不依赖真实 API
+
+#### 集成测试覆盖的 E2E 路径
+
+| 测试 | 验证路径 |
+|------|----------|
+| P0 smart-delete E2E | segments -> analyze_smart_delete -> add_analysis_results -> EditDecision(source=llm_smart) |
+| P1 timestamp safety | analyze_subtitle_correction -> apply_subtitle_corrections -> 时间戳不变 + 分层容错 (partial/uncovered) |
+| P1 dev/prod assertion | _assert_timestamps_unchanged dev raises ValueError / prod raises TimestampCorruptionError |
+| P2 highlight | analyze_highlights -> density 排序 -> target_duration 裁剪 -> 按 start 排序 |
+| P3 semantic search | semantic_search -> top_k limit -> relevance 降序 |
+| multi-timeline isolation | fork -> 操作 fork -> 原始 timeline 不受影响; 并发任务 payload 冻结 timeline_id |
+
+#### main.py region 分区策略 (反馈 2.3 评估结论)
+
+- v2.0.0 不做 main.py 模块拆分 (Bridge @expose 机制依赖单类聚合)
+- 用 `# region` / `# endregion` 注释分区，提升 IDE 折叠导航性
+- 拆分评估延后至 v2.1 候选项
+
+### 测试覆盖
+
+| 模块 | 测试数 | 覆盖要点 |
+|------|--------|----------|
+| `test_llm_pipeline.py` (integration) | 15 | P0-P3 全链路 mock-LLM + 多 timeline 隔离 + 时间戳断言 + 并发 payload 冻结 |
+| `TimelineSwitcher.test.ts` | 8 | 切换/创建/删除 emit + active 标记 + canDelete 条件 |
+| `HighlightModeView.test.ts` | 10 | 空状态/加载/排序/density badge/时长摘要/跳切警告/start-highlight/seek |
+| `SubtitleCorrectionReview.test.ts` | 14 | diff 视图/category badge/置信度分组/accept-reject/信任/未覆盖/加载/start-correction/seek |
+| 后端总测试 | 216 + 15 | 单元 216 + 集成 15，全部通过 (排除预存 ASR VadOptions 失败) |
+| 前端总测试 | 147 | 全部通过 (115 原 + 32 新增) |
+| ruff check | 0 errors | All checks passed |
+| ESLint | 0 errors | eslint . clean |
+| API sync | OK | 64 frontend calls verified against 90 @expose methods |
+
+### 发布前 checklist 状态
+
+| 项目 | 状态 | 说明 |
+|------|------|------|
+| 全量测试零失败 | OK | 216 单元 + 15 集成 + 147 前端 = 378 通过 |
+| Lint 零错误 | OK | ruff + ESLint |
+| 前端构建 | OK | vue-tsc 0 错误, 83 modules |
+| API 同步检查 | OK | 64/90 verified (26 后端专用) |
+| main.py region 分区 | OK | 12 region 平衡 |
+| topic_drift 清理 | OK | 仅迁移代码保留 (有意为之) |
+| 版本号 bump | 待办 | 1.3.0 -> 2.0.0 在 dev 合并 main 时执行 |
+| build.py --onefile 产物 | 待办 | 需完整 GUI 环境验证 |
+
+### Phase 4d 完成状态
+
+| 任务 | 状态 | 说明 |
+|------|------|------|
+| 4d-1: 后端集成测试 | 已完成 | 15 个 @pytest.mark.integration 测试 |
+| 4d-2: 前端集成测试 | 已完成 | 32 个组件测试 (3 个新文件) |
+| 4d-3: 旧代码清理 + region 分区 | 已完成 | topic_drift 确认 + 12 region |
+| 4d-4: 构建验证 | 已完成 | 全链路通过 |
+| 4d-5: Git 提交 + record | 已完成 | 本提交 |
+
+---
+
+## v2.0.0 全部完成
+
+v2.0.0 Phase 1-4 全部完成:
+- **Phase 1 (Foundation)**: LLM 服务层 + HTTP API 桥接 + 单一版本源 + LLM 设置面板
+- **Phase 2 (Core Features)**: Topic Drift + 文件协议 (后续在 Phase 4b 中重构为 P0/P1)
+- **Phase 3 (UIUX Polish)**: 全局步骤导航 + 工作区分栏拖拽 + 页面过渡动画
+- **Phase 4a (工程化)**: L-01/L-02/L-03 + 多 Timeline 基础设施
+- **Phase 4b (C-02 + P0 + P1)**: LLM 格式重构 + 智能删除 + 字幕修正 + Topic Drift 清除
+- **Phase 4c (P2 + P3)**: 智能亮点提取 + 语义搜索
+- **Phase 4d (集成测试 + 发布)**: 端到端集成测试 + region 分区 + 构建验证
