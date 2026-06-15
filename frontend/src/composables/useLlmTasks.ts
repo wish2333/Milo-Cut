@@ -58,6 +58,14 @@ const isRunning = ref(false)
 const progress = ref(0)
 const errorMsg = ref<string | null>(null)
 
+// LLM configuration status (Phase 2 D-04, D-12)
+interface LlmConfigStatus {
+  configured: boolean
+  model: string
+  baseUrl: string
+}
+const llmConfig = ref<LlmConfigStatus>({ configured: false, model: "", baseUrl: "" })
+
 let listenersRegistered = false
 
 function ensureListeners() {
@@ -162,6 +170,30 @@ export function useLlmTasks() {
   const hasSmartDeleteResults = computed(() => smartDeleteResults.value.length > 0)
   const hasHighlightResults = computed(() => highlightResults.value.length > 0)
 
+  // Load LLM configuration status from backend (Phase 2 D-04/D-12).
+  // Stores result in the singleton llmConfig ref so AIAssistantPanel can
+  // reflect configured/unconfigured state without repeated calls.
+  async function loadLlmConfig(): Promise<void> {
+    const res = await call<{
+      model?: string
+      base_url?: string
+      api_key_masked?: string
+    }>("get_llm_config")
+    if (res.success && res.data) {
+      const model = res.data.model ?? ""
+      const baseUrl = res.data.base_url ?? ""
+      // is_configured requires base_url + api_key + model all non-empty.
+      // api_key is masked out by backend, so we treat non-empty model +
+      // non-empty base_url as "configured" (api_key presence is implied --
+      // the backend masks but doesn't blank base_url/model).
+      llmConfig.value = {
+        configured: Boolean(model && baseUrl && (res.data.api_key_masked ?? "")),
+        model,
+        baseUrl,
+      }
+    }
+  }
+
   function resetSmartDelete() {
     smartDeleteResults.value = []
     progress.value = 0
@@ -258,6 +290,9 @@ export function useLlmTasks() {
     isRunning,
     progress,
     errorMsg,
+    // LLM configuration (Phase 2)
+    llmConfig,
+    loadLlmConfig,
     // Batch trust
     confirmAllFromSource,
   }

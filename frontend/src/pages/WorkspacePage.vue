@@ -11,7 +11,12 @@ import { useToast } from "@/composables/useToast"
 import { useUndoRedo } from "@/composables/useUndoRedo"
 import { usePluginManager } from "@/composables/usePluginManager"
 import { useUvAvailability } from "@/composables/useUvAvailability"
-import { EVENT_TASK_COMPLETED, EVENT_PROJECT_DIRTY, EVENT_PROJECT_SAVED } from "@/utils/events"
+import { useLlmTasks } from "@/composables/useLlmTasks"
+import {
+  EVENT_TASK_COMPLETED,
+  EVENT_PROJECT_DIRTY,
+  EVENT_PROJECT_SAVED,
+} from "@/utils/events"
 import ProgressBar from "@/components/common/ProgressBar.vue"
 import SplitPanel from "@/components/common/SplitPanel.vue"
 import Timeline from "@/components/workspace/Timeline.vue"
@@ -20,6 +25,7 @@ import WaveformEditor from "@/components/waveform/WaveformEditor.vue"
 import SearchReplaceBar from "@/components/workspace/SearchReplaceBar.vue"
 import VideoControls from "@/components/workspace/VideoControls.vue"
 import SubtitleOverlay from "@/components/workspace/SubtitleOverlay.vue"
+import SettingsModal from "@/components/workspace/SettingsModal.vue"
 
 interface Props {
   project: Project
@@ -33,6 +39,33 @@ interface Emits {
 
 const props = defineProps<Props>()
 const emit = defineEmits<Emits>()
+
+// Phase 2: LLM integration
+const {
+  llmConfig,
+  loadLlmConfig,
+  isRunning: llmIsRunning,
+  progress: llmProgress,
+  errorMsg: llmErrorMsg,
+  subtitleCorrectionResult,
+  highlightResults,
+  highlightTotalDuration,
+  highlightTargetDuration,
+  jumpCuts,
+  startSmartDelete,
+  startSubtitleCorrection,
+  startHighlight,
+} = useLlmTasks()
+
+// P1 fullscreen diff view state (D-16)
+const showSubtitleFullscreen = ref(false)
+// Settings modal (opened from AI assistant "go to settings")
+const showSettingsModal = ref(false)
+
+// P1 subtitle correction result count (for "view results" button)
+const subtitleCorrectionCount = computed(() =>
+  subtitleCorrectionResult.value?.corrected_count ?? null,
+)
 
 const projectRef = computed({
   get: () => props.project,
@@ -408,6 +441,8 @@ onMounted(async () => {
     await loadAsrSettings()
     modelList.value = await listModels()
     validateModelSize()
+    // Phase 2: load LLM config status for AI assistant panel
+    await loadLlmConfig()
   })
 })
 
@@ -431,6 +466,16 @@ onEvent<{ task_id: string; task_type?: string; result?: { project?: Project } }>
       }
       loadVideoUrl()
       showToast("Proxy video ready", "success", 2000)
+    }
+    // Phase 2: LLM task completion refreshes project (edits/analysis applied)
+    if (
+      data.task_type === "llm_smart_delete" ||
+      data.task_type === "llm_subtitle_correction" ||
+      data.task_type === "llm_highlight"
+    ) {
+      if (data.result?.project) {
+        emit("project-updated", data.result.project)
+      }
     }
   },
 )
@@ -852,6 +897,64 @@ async function handleConfirmAllSuggestions() {
 async function handleRejectAllSuggestions() {
   errorMessage.value = ""
   await rejectAllSuggestions()
+}
+
+// ===== Phase 2: LLM task handlers =====
+
+async function handleStartSmartDelete() {
+  if (!llmConfig.value.configured) {
+    showToast("请先配置 LLM", "error", 3000)
+    return
+  }
+  await startSmartDelete()
+  showToast("智能分析已启动", "info", 2000)
+}
+
+async function handleStartSubtitleCorrection(referenceText: string) {
+  if (!llmConfig.value.configured) {
+    showToast("请先配置 LLM", "error", 3000)
+    return
+  }
+  await startSubtitleCorrection(referenceText)
+  showToast("字幕修正已启动", "info", 2000)
+}
+
+async function handleStartHighlight(targetMinutes: number) {
+  if (!llmConfig.value.configured) {
+    showToast("请先配置 LLM", "error", 3000)
+    return
+  }
+  await startHighlight(targetMinutes)
+  showToast("精华提取已启动", "info", 2000)
+}
+
+function handleOpenSubtitleFullscreen() {
+  showSubtitleFullscreen.value = true
+}
+
+function handleGoToSettings() {
+  showSettingsModal.value = true
+}
+
+// ESC key closes P1 fullscreen diff view (D-16 UX补齐)
+function handleKeydown(e: KeyboardEvent) {
+  if (e.key === "Escape" && showSubtitleFullscreen.value) {
+    showSubtitleFullscreen.value = false
+  }
+}
+
+onMounted(() => {
+  window.addEventListener("keydown", handleKeydown)
+})
+
+onUnmounted(() => {
+  window.removeEventListener("keydown", handleKeydown)
+})
+
+async function handleSettingsClosed() {
+  showSettingsModal.value = false
+  // Refresh LLM config status after settings change
+  await loadLlmConfig()
 }
 
 async function handleSaveProject() {
@@ -1560,6 +1663,16 @@ onUnmounted(() => {
             :silence-count="silenceCount"
             :selected-segment-id="editSelectedSegmentId"
             :global-edit-mode="globalEditMode"
+            :llm-configured="llmConfig.configured"
+            :llm-model="llmConfig.model"
+            :llm-is-running="llmIsRunning"
+            :llm-progress="llmProgress"
+            :llm-error-msg="llmErrorMsg"
+            :subtitle-correction-count="subtitleCorrectionCount"
+            :highlight-items="highlightResults"
+            :highlight-total-duration="highlightTotalDuration"
+            :highlight-target-duration="highlightTargetDuration"
+            :jump-cuts="jumpCuts"
             @seek="handleSeek"
             @update-text="handleUpdateText"
             @update-time="handleUpdateTime"
@@ -1573,6 +1686,11 @@ onUnmounted(() => {
             @reject-all="handleRejectAllSuggestions"
             @seek-suggestion="handleSeek"
             @toggle-edit-mode="globalEditMode = !globalEditMode"
+            @start-smart-delete="handleStartSmartDelete"
+            @start-subtitle-correction="handleStartSubtitleCorrection"
+            @open-subtitle-fullscreen="handleOpenSubtitleFullscreen"
+            @start-highlight="handleStartHighlight"
+            @go-to-settings="handleGoToSettings"
           />
         </template>
       </SplitPanel>
@@ -1622,6 +1740,41 @@ onUnmounted(() => {
           </div>
         </div>
       </div>
+    </Teleport>
+
+    <!-- Phase 2: Settings modal (opened from AI assistant "go to settings") -->
+    <SettingsModal
+      :visible="showSettingsModal"
+      @close="handleSettingsClosed"
+    />
+
+    <!-- Phase 2: P1 subtitle correction fullscreen diff view (D-16) -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div
+          v-if="showSubtitleFullscreen"
+          class="fixed inset-0 z-[9998] bg-white flex flex-col"
+        >
+          <div class="flex items-center justify-between border-b border-gray-200 px-6 py-4">
+            <h2 class="text-base font-semibold text-gray-800">字幕修正审阅</h2>
+            <button
+              class="rounded-md px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-100 transition-colors"
+              @click="showSubtitleFullscreen = false"
+            >
+              返回 (ESC)
+            </button>
+          </div>
+          <div class="flex-1 overflow-y-auto p-6">
+            <p v-if="subtitleCorrectionCount !== null" class="mb-4 text-sm text-gray-600">
+              共修正 {{ subtitleCorrectionCount }} 条字幕
+              <span v-if="subtitleCorrectionResult">
+                (未覆盖 {{ subtitleCorrectionResult.uncovered_count }} 条)
+              </span>
+            </p>
+            <p v-else class="text-sm text-gray-500">暂无修正结果</p>
+          </div>
+        </div>
+      </Transition>
     </Teleport>
   </div>
 </template>

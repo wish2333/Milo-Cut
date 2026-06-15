@@ -17,14 +17,14 @@ const emit = defineEmits<{
   "seek": [time: number]
 }>()
 
-const expandedGroups = ref<Set<string>>(new Set(["filler", "error"]))
+const expandedGroups = ref<Set<string>>(new Set(["filler", "error", "llm_smart"]))
 
 interface SuggestionItem {
   id: string
   start: number
   end: number
   label: string
-  type: "filler" | "error" | "silence"
+  type: "filler" | "error" | "silence" | "llm_smart"
 }
 
 interface GroupedResult {
@@ -86,6 +86,32 @@ const groups = computed<GroupedResult[]>(() => {
     })
   }
 
+  // LLM smart-delete edits (Phase 2 D-15: P0 results merged into SuggestionPanel)
+  const llmSmartEdits = props.edits.filter(
+    e => e.source === "llm_smart" && e.status === "pending"
+  )
+  if (llmSmartEdits.length > 0) {
+    result.push({
+      type: "llm_smart",
+      label: "智能删除",
+      items: llmSmartEdits.map(e => {
+        // Reason text lives in AnalysisResult.detail (backend stores the
+        // LLM-generated reason there, not on the EditDecision itself).
+        const analysis = props.analysisResults.find(
+          r => r.type === "llm_smart_delete" && e.target_id &&
+                r.segment_ids.includes(e.target_id)
+        )
+        return {
+          id: e.id,
+          start: e.start,
+          end: e.end,
+          label: analysis?.detail || `智能删除 ${(e.end - e.start).toFixed(1)}s`,
+          type: "llm_smart" as const,
+        }
+      }),
+    })
+  }
+
   return result
 })
 
@@ -106,7 +132,7 @@ function isExpanded(type: string): boolean {
 }
 
 function getEditForItem(item: SuggestionItem): EditDecision | undefined {
-  if (item.type === "silence") {
+  if (item.type === "silence" || item.type === "llm_smart") {
     return props.edits.find(e => e.id === item.id)
   }
   return props.edits.find(e => e.analysis_id === item.id)

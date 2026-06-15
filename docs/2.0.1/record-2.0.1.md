@@ -108,3 +108,71 @@ DaisyUI 5 + Tailwind v4 强烈推荐 `oklch()` 色彩空间。虽然 Hex 也兼�
 - **Phase 4**: SettingsModal 当前结构快照 + ESC 快捷键 + Transition 过渡动画
 - **附录 A**: Phase 1 根因分析 (现状/根因/受影响组件/为何主体 UI 未暴露/Tailwind 4 说明)
 - **附录 B**: 当前代码架构快照 (后端 LLM 架构/前端架构/Event 同步/SettingsModal 结构)
+
+---
+
+## Phase 2: AI 助手面板 (已完成)
+
+### 概要
+
+Phase 2 将 P0/P1/P2/P3 四个 AI 分析功能接入工作区 UI,实现:
+
+1. **右侧面板三 tab 切换器** (D-18) -- 建议 / AI 助手 / 精华
+2. **AIAssistantPanel 组件** (D-02, D-04, D-12, D-14) -- LLM 状态指示器 + 功能卡片 + 操作区
+3. **P0 智能删除结果合并** (D-15) -- 新增 llm_smart 分组到 SuggestionPanel
+4. **P1 字幕修正全屏 diff 视图** (D-16) -- Teleport + Transition + ESC 关闭
+5. **P2 精华提取接入** -- HighlightModeView 作为第三 tab
+6. **P3 语义搜索接入** -- SemanticSearchBar 内联到 AI 助手面板
+
+### 变更文件 (共 5 个)
+
+| 文件 | 变更 | 说明 |
+|------|------|------|
+| `frontend/src/composables/useLlmTasks.ts` | 修改 (+30 行) | 新增 LlmConfigStatus 接口、llmConfig 单例 ref、loadLlmConfig() 方法,暴露 LLM 配置状态 (D-04/D-12) |
+| `frontend/src/components/workspace/SuggestionPanel.vue` | 修改 (+22 行) | 新增 llm_smart 分组 (D-15);扩展 SuggestionItem.type 联合类型;expandedGroups 默认展开加入 llm_smart;getEditForItem 按 id 查找 |
+| `frontend/src/components/workspace/AIAssistantPanel.vue` | **新增** (260 行) | LLM 状态指示器 + 3 功能卡片 (场景名+副标题、未配置置灰+badge) + P0 启动 + P1 参考稿+查看结果 + P3 语义搜索内联 |
+| `frontend/src/components/workspace/Timeline.vue` | 修改 (+80/-10 行) | 右侧面板从单 SuggestionPanel 改为三 tab 切换器 (v-show 保持状态);面板宽度 w-72→w-80;新增 LLM props/events 代理 |
+| `frontend/src/pages/WorkspacePage.vue` | 修改 (+110 行) | 集成 useLlmTasks;onMounted 调用 loadLlmConfig;EVENT_TASK_COMPLETED 扩展处理 LLM 任务;LLM handler 函数;Timeline 传入 LLM props;SettingsModal + P1 全屏 diff 视图 |
+
+### 架构决策
+
+#### Tab 切换使用 v-show 而非 v-if -- 保持组件状态
+
+三 tab 内容组件 (SuggestionPanel/AIAssistantPanel/HighlightModeView) 使用 `v-show` 条件渲染。原因:
+- `SuggestionPanel` 内部维护 `expandedGroups` (分组折叠状态)
+- `SemanticSearchBar` 内部维护用户输入的搜索 query + results
+- `AIAssistantPanel` 维护选中的功能卡片 + P1 参考稿 textarea
+
+使用 `v-if` 会导致每次切换 tab 时组件销毁重建,用户交互状态全部丢失。
+
+#### LLM 配置状态获取 -- 通过 get_llm_config 桥接方法
+
+useLlmTasks 新增 `loadLlmConfig()` 方法,调用后端 `get_llm_config` @expose 方法。后端返回 masked api_key (非空表示已配置),前端通过 `api_key_masked` 是否非空判断 configured 状态。状态存储在单例 ref 中,所有 useLlmTasks() 调用者共享。
+
+#### P0 结果合并路径 -- 通过 project refresh 自动反映
+
+P0 smart-delete 完成后,后端将结果写入 EditDecision (source="llm_smart"),通过 EVENT_TASK_COMPLETED 事件触发 WorkspacePage 的 project refresh。刷新后的 edits 传给 SuggestionPanel,自动渲染为新的 llm_smart 分组。无需 AIAssistantPanel 直接管理结果。
+
+#### P1 全屏 diff 视图 -- 基础实现
+
+v2.0.1 的 P1 全屏 diff 视图为基础实现 (显示修正统计 + 返回按钮)。完整的逐条 diff 审阅 (accept/reject/diff 展示) 留待后续完善 -- 当前 SubtitleCorrectionReview 组件已具备完整的 diff 能力,但需要后端暴露 corrections 列表获取接口 (当前 corrections 仅在任务返回值中,未通过事件或 @expose 方法持久化)。
+
+### 决策映射
+
+| 决策 | 实现 |
+|------|------|
+| D-02 (统一 AI 面板) | AIAssistantPanel.vue 作为所有 AI 功能入口 |
+| D-04 (LLM 状态指示器) | 绿/黄色圆点 + 模型名 + 未配置时"去设置"链接 |
+| D-12 (未配置置灰) | 卡片 opacity-50 + cursor-not-allowed + "未配置" badge |
+| D-14 (场景名+副标题) | "快速清理 (智能删除)" / "字幕纠错 (字幕修正)" / "内容搜索 (语义搜索)" |
+| D-15 (P0 结果合并) | SuggestionPanel 新增 llm_smart 分组,默认展开 |
+| D-16 (P1 全屏 diff) | Teleport + Transition fade + ESC 关闭 |
+| D-18 (三 tab 切换) | 建议 / AI 助手 / 精华,使用 v-show |
+
+### 测试覆盖
+
+| 验证项 | 结果 |
+|--------|------|
+| `bun run build` (前端构建) | 通过 -- 90 modules,JS 210.37 kB,CSS 107.83 kB |
+| `bun run test` (147 测试) | 全部通过 -- 含 HighlightModeView/SubtitleCorrectionReview/TimelineSwitcher 测试 |
+| TypeScript 类型检查 | 通过 -- vue-tsc --noEmit 无错误 |
