@@ -5,6 +5,25 @@
   prefix: false;
 }
 
+/* appleLight 主题颜色定义 -- DaisyUI 5 要求自定义主题显式定义颜色变量,
+ * 否则 bg-base-100 / border-base-300 等语义类无对应 CSS 变量,渲染为透明。
+ * 颜色值与上方 @theme 中的 Hex 定义视觉等效 (oklch 经精确转换)。 */
+@plugin "daisyui/theme" {
+  name: "appleLight";
+  default: true;
+  color-scheme: light;
+
+  --color-base-100: oklch(100% 0 0);           /* #ffffff (= canvas) */
+  --color-base-200: oklch(97.1% 0.0027 286.4);  /* #f5f5f7 (= parchment) */
+  --color-base-300: oklch(86.5% 0.0068 286.3);  /* #d2d2d7 (= hairline) */
+  --color-base-content: oklch(23.2% 0.0038 286.1); /* #1d1d1f (= ink) */
+
+  /* border radius (DaisyUI 语义圆角,供 rounded-box / rounded-field 等使用) */
+  --radius-selector: 0.5rem;
+  --radius-field: 0.25rem;
+  --radius-box: 0.5rem;
+}
+
 @theme {
   --color-primary: #0066cc;
   --color-canvas: #ffffff;

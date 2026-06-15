@@ -1,7 +1,7 @@
 <template>
   <div class="flex items-center gap-2">
     <div class="dropdown dropdown-end">
-      <div tabindex="0" role="button" class="btn btn-sm btn-outline gap-2">
+      <div tabindex="0" role="button" class="flex items-center gap-2 rounded px-2 py-1 text-xs text-gray-300 hover:text-white hover:bg-white/10 transition-colors cursor-pointer">
         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2H7a2 2 0 00-2 2v2m4-4h6" />
         </svg>
