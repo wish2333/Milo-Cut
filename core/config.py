@@ -5,6 +5,7 @@ Migrated from ff-intelligent-neo core/config.py, adapted for Milo-Cut.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 from typing import Any
@@ -81,19 +82,27 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     "llm_timeout": 120,
     # LLM prompts (Phase 3: parameterized prompt customization)
     "llm_prompts": {},
+    # LLM prompt presets (v2.1.0 Phase 1: per-feature saved parameter snapshots)
+    "llm_prompt_presets": {},
 }
 
 
 def load_settings() -> dict[str, Any]:
-    """Load settings from disk, returning defaults for missing keys."""
+    """Load settings from disk, returning defaults for missing keys.
+
+    Returns a deep copy of the merged settings so callers can freely mutate
+    nested values (e.g. ``llm_prompt_presets``) without polluting the module
+    level ``_DEFAULT_SETTINGS`` singleton across invocations.
+    """
     path = get_settings_path()
     if not path.exists():
-        return {**_DEFAULT_SETTINGS}
+        return copy.deepcopy(_DEFAULT_SETTINGS)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return {**_DEFAULT_SETTINGS}
-    merged = {**_DEFAULT_SETTINGS, **data}
+        return copy.deepcopy(_DEFAULT_SETTINGS)
+    merged = copy.deepcopy(_DEFAULT_SETTINGS)
+    merged.update(data)
     return merged
 
 

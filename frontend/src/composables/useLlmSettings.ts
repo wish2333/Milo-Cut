@@ -25,8 +25,22 @@ export interface LlmPromptsData {
   overrides: Record<string, PromptOverride>
 }
 
+// v2.1.0 Phase 1: Prompt preset (parameter snapshot per LLM feature)
+export interface PromptPreset {
+  id: string
+  name: string
+  params: Record<string, string[]>
+  system_override: string
+  model: string // D-73 reserved (Phase 1 stores without UI)
+  created_at: string
+}
+
 const promptsData = ref<LlmPromptsData | null>(null)
 const loadingPrompts = ref(false)
+
+// Preset state keyed by func_key
+const presetsByFunc = ref<Record<string, PromptPreset[]>>({})
+const loadingPresets = ref<Record<string, boolean>>({})
 
 export function useLlmSettings() {
   async function testConnection(): Promise<boolean> {
@@ -92,6 +106,73 @@ export function useLlmSettings() {
     return false
   }
 
+  // v2.1.0 Phase 1: Load presets for a feature
+  async function loadPresets(funcKey: string): Promise<void> {
+    loadingPresets.value[funcKey] = true
+    const res = await call<PromptPreset[]>("get_prompt_presets", funcKey)
+    loadingPresets.value[funcKey] = false
+    if (res.success && res.data) {
+      presetsByFunc.value[funcKey] = res.data
+    }
+  }
+
+  // v2.1.0 Phase 1: Save current params as a new preset
+  async function savePreset(
+    funcKey: string,
+    name: string,
+    params: Record<string, string[]>,
+    systemOverride = "",
+  ): Promise<PromptPreset | null> {
+    const res = await call<PromptPreset>(
+      "save_prompt_preset",
+      funcKey,
+      name,
+      params,
+      systemOverride,
+    )
+    if (res.success && res.data) {
+      // Refresh local cache
+      await loadPresets(funcKey)
+      return res.data
+    }
+    return null
+  }
+
+  // v2.1.0 Phase 1: Apply a preset (writes to current override)
+  async function applyPreset(
+    funcKey: string,
+    presetId: string,
+  ): Promise<boolean> {
+    const res = await call<{ func_key: string; preset_id: string }>(
+      "apply_prompt_preset",
+      funcKey,
+      presetId,
+    )
+    if (res.success) {
+      // Refresh override cache so the editor reflects the applied preset
+      await loadPrompts()
+      return true
+    }
+    return false
+  }
+
+  // v2.1.0 Phase 1: Delete a preset (built-in default is protected)
+  async function deletePreset(
+    funcKey: string,
+    presetId: string,
+  ): Promise<boolean> {
+    const res = await call<{ func_key: string; preset_id: string }>(
+      "delete_prompt_preset",
+      funcKey,
+      presetId,
+    )
+    if (res.success) {
+      await loadPresets(funcKey)
+      return true
+    }
+    return false
+  }
+
   return {
     testing,
     testResult,
@@ -102,5 +183,12 @@ export function useLlmSettings() {
     loadPrompts,
     updatePrompt,
     resetPrompt,
+    // v2.1.0 Phase 1: Preset management
+    presetsByFunc,
+    loadingPresets,
+    loadPresets,
+    savePreset,
+    applyPreset,
+    deletePreset,
   }
 }

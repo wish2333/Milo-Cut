@@ -2028,6 +2028,117 @@ class MiloCutApi(Bridge):
 
         return load_settings()
 
+    # ------------------------------------------------------------------
+    # LLM prompt presets (v2.1.0 Phase 1: per-feature parameter snapshots)
+    # ------------------------------------------------------------------
+
+    @expose
+    def get_prompt_presets(self, func_key: str) -> dict:
+        """Get the saved preset list for a feature (always includes default).
+
+        Args:
+            func_key: One of PRESET_SUPPORTED_KEYS (smart_delete, etc.).
+
+        Returns:
+            {"success": True, "data": [preset, ...]}
+        """
+        from core.llm_presets import PRESET_SUPPORTED_KEYS, get_presets
+
+        if func_key not in PRESET_SUPPORTED_KEYS:
+            return {"success": False, "error": f"Unsupported preset key: {func_key}"}
+
+        return {"success": True, "data": get_presets(func_key)}
+
+    @expose
+    def save_prompt_preset(
+        self,
+        func_key: str,
+        name: str,
+        params: dict | None = None,
+        system_override: str = "",
+        model: str = "",
+    ) -> dict:
+        """Save a new preset from the supplied parameters.
+
+        Args:
+            func_key: Feature key.
+            name: Human-readable preset name.
+            params: Simple-mode params snapshot (defaults to empty).
+            system_override: Advanced-mode full prompt (empty = simple mode).
+            model: Reserved model field (D-73, stored without UI).
+
+        Returns:
+            {"success": True, "data": preset}
+        """
+        from core.llm_presets import PRESET_SUPPORTED_KEYS, save_preset
+
+        if func_key not in PRESET_SUPPORTED_KEYS:
+            return {"success": False, "error": f"Unsupported preset key: {func_key}"}
+        if not name or not name.strip():
+            return {"success": False, "error": "Preset name is required"}
+
+        try:
+            preset = save_preset(
+                func_key,
+                name,
+                params or {},
+                system_override or "",
+                model or "",
+            )
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+        return {"success": True, "data": preset}
+
+    @expose
+    def apply_prompt_preset(self, func_key: str, preset_id: str) -> dict:
+        """Apply a preset -- writes its params + system_override to llm_prompts.
+
+        Args:
+            func_key: Feature key.
+            preset_id: Target preset id.
+
+        Returns:
+            {"success": True, "data": {"func_key": str, "preset_id": str}}
+        """
+        from core.llm_presets import PRESET_SUPPORTED_KEYS, apply_preset
+
+        if func_key not in PRESET_SUPPORTED_KEYS:
+            return {"success": False, "error": f"Unsupported preset key: {func_key}"}
+
+        try:
+            apply_preset(func_key, preset_id)
+        except (KeyError, ValueError) as e:
+            return {"success": False, "error": str(e)}
+        return {
+            "success": True,
+            "data": {"func_key": func_key, "preset_id": preset_id},
+        }
+
+    @expose
+    def delete_prompt_preset(self, func_key: str, preset_id: str) -> dict:
+        """Delete a preset (the built-in default is protected).
+
+        Args:
+            func_key: Feature key.
+            preset_id: Target preset id.
+
+        Returns:
+            {"success": True, "data": {"func_key": str, "preset_id": str}}
+        """
+        from core.llm_presets import PRESET_SUPPORTED_KEYS, delete_preset
+
+        if func_key not in PRESET_SUPPORTED_KEYS:
+            return {"success": False, "error": f"Unsupported preset key: {func_key}"}
+
+        try:
+            delete_preset(func_key, preset_id)
+        except (KeyError, ValueError) as e:
+            return {"success": False, "error": str(e)}
+        return {
+            "success": True,
+            "data": {"func_key": func_key, "preset_id": preset_id},
+        }
+
     @expose
     def start_smart_delete(self, timeline_id: str = "") -> dict:
         """Start LLM smart-delete analysis as a background task.
