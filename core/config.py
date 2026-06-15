@@ -79,6 +79,8 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     "llm_model": "",
     "llm_temperature": 0.3,
     "llm_timeout": 120,
+    # LLM prompts (Phase 3: parameterized prompt customization)
+    "llm_prompts": {},
 }
 
 

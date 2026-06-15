@@ -89,8 +89,94 @@ const notDownloadedModels = ref<ModelInfo[]>([])
 const { uvAvailable, recheckUvAvailable } = useUvAvailability()
 
 // LLM settings
-const { testing: llmTesting, testResult: llmTestResult, testConnection } = useLlmSettings()
+const {
+  testing: llmTesting,
+  testResult: llmTestResult,
+  testConnection,
+  promptsData,
+  loadPrompts,
+  updatePrompt,
+  resetPrompt,
+} = useLlmSettings()
 const showLlmKey = ref(false)
+
+// Phase 3: Prompt editing state
+const promptFuncKeys = [
+  { key: "smart_delete", label: "智能删除" },
+  { key: "subtitle_correction_a", label: "字幕修正 (模式 A)" },
+  { key: "subtitle_correction_b", label: "字幕修正 (模式 B)" },
+  { key: "highlight", label: "精华提取" },
+  { key: "search", label: "语义搜索" },
+] as const
+
+const selectedPromptKey = ref<string>("smart_delete")
+const promptEditMode = ref<"simple" | "advanced">("simple")
+const promptParamText = ref<Record<string, string>>({})  // textarea text per param
+const promptSystemOverride = ref("")
+const promptSaving = ref(false)
+const promptStatusMsg = ref("")
+
+// Param labels for simple mode UI
+const promptParamLabels: Record<string, string> = {
+  custom_fillers: "自定义口头禅 (每行一个)",
+  glossary: "术语表 (每行一个)",
+  focus_keywords: "关注关键词 (每行一个)",
+}
+
+// Placeholder hint text for advanced mode (avoid {{ }} in template)
+const placeholderHint = "留空使用默认提示词 + 简单模式参数"
+
+function loadPromptEditor(funcKey: string) {
+  const defaults = promptsData.value?.defaults?.[funcKey]
+  const override = promptsData.value?.overrides?.[funcKey]
+  // Initialize param text from override or default
+  promptParamText.value = {}
+  if (defaults?.params) {
+    for (const [k, v] of Object.entries(defaults.params)) {
+      const overrideVals = override?.params?.[k]
+      promptParamText.value[k] = (overrideVals ?? v).join("\n")
+    }
+  }
+  promptSystemOverride.value = override?.system_override ?? ""
+}
+
+async function handlePromptKeyChange(key: string) {
+  selectedPromptKey.value = key
+  if (!promptsData.value) await loadPrompts()
+  loadPromptEditor(key)
+}
+
+async function handleSavePrompt() {
+  promptSaving.value = true
+  promptStatusMsg.value = ""
+  const funcKey = selectedPromptKey.value
+  if (promptEditMode.value === "advanced") {
+    const success = await updatePrompt(funcKey, {
+      system_override: promptSystemOverride.value,
+    })
+    promptStatusMsg.value = success ? "已保存" : "保存失败"
+  } else {
+    // Convert textarea text to list arrays
+    const params: Record<string, string[]> = {}
+    for (const [k, text] of Object.entries(promptParamText.value)) {
+      params[k] = text.split("\n").map(s => s.trim()).filter(Boolean)
+    }
+    const success = await updatePrompt(funcKey, { params })
+    promptStatusMsg.value = success ? "已保存" : "保存失败"
+  }
+  promptSaving.value = false
+  setTimeout(() => { promptStatusMsg.value = "" }, 2000)
+}
+
+async function handleResetPrompt() {
+  const funcKey = selectedPromptKey.value
+  const success = await resetPrompt(funcKey)
+  if (success) {
+    loadPromptEditor(funcKey)
+    promptStatusMsg.value = "已重置为默认"
+    setTimeout(() => { promptStatusMsg.value = "" }, 2000)
+  }
+}
 
 const llmProviders = [
   { id: "openai" as const, label: "OpenAI", baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini" },
@@ -166,6 +252,9 @@ onMounted(async () => {
   refreshInstalledLists()
   // Load plugin data directory
   await loadPluginDataDir()
+  // Phase 3: Load LLM prompt configurations
+  await loadPrompts()
+  loadPromptEditor(selectedPromptKey.value)
   // Detect GPU capabilities
   await detectGpu()
   // Load available mirrors
@@ -1026,6 +1115,103 @@ async function loadPluginDataDir() {
               <span v-if="llmTestResult" :class="llmTestResult.success ? 'text-green-600' : 'text-red-600'" class="text-sm">
                 {{ llmTestResult.message }}
               </span>
+            </section>
+
+            <!-- Phase 3: Prompt editing section -->
+            <section class="border-t border-gray-200 pt-4">
+              <h3 class="text-sm font-semibold text-gray-700 mb-3">提示词编辑</h3>
+
+              <!-- Function selector -->
+              <div class="flex items-center gap-2 mb-3">
+                <label class="text-xs text-gray-500">功能:</label>
+                <select
+                  :value="selectedPromptKey"
+                  class="px-2 py-1 text-xs border border-gray-300 rounded"
+                  @change="handlePromptKeyChange(($event.target as HTMLSelectElement).value)"
+                >
+                  <option v-for="f in promptFuncKeys" :key="f.key" :value="f.key">
+                    {{ f.label }}
+                  </option>
+                </select>
+              </div>
+
+              <!-- Mode toggle -->
+              <div class="flex items-center gap-3 mb-3">
+                <label class="flex items-center gap-1 text-xs">
+                  <input
+                    type="radio"
+                    value="simple"
+                    v-model="promptEditMode"
+                  />
+                  简单模式
+                </label>
+                <label class="flex items-center gap-1 text-xs">
+                  <input
+                    type="radio"
+                    value="advanced"
+                    v-model="promptEditMode"
+                  />
+                  高级模式
+                </label>
+              </div>
+
+              <!-- Simple mode: parameter fields -->
+              <div v-if="promptEditMode === 'simple'" class="space-y-3">
+                <div
+                  v-for="(_text, paramKey) in promptParamText"
+                  :key="paramKey"
+                >
+                  <label class="block text-xs font-medium text-gray-600 mb-1">
+                    {{ promptParamLabels[paramKey] ?? paramKey }}
+                  </label>
+                  <textarea
+                    v-model="promptParamText[paramKey]"
+                    class="w-full p-2 text-xs border border-gray-300 rounded font-mono"
+                    rows="3"
+                    :placeholder="'每行一个'"
+                  ></textarea>
+                </div>
+                <p v-if="Object.keys(promptParamText).length === 0" class="text-xs text-gray-400">
+                  此功能无可配置参数
+                </p>
+              </div>
+
+              <!-- Advanced mode: full prompt textarea -->
+              <div v-else class="space-y-2">
+                <label class="block text-xs font-medium text-gray-600">
+                  完整提示词 (含标记位)
+                </label>
+                <textarea
+                  v-model="promptSystemOverride"
+                  class="w-full p-2 text-xs border border-gray-300 rounded font-mono"
+                  rows="10"
+                  :placeholder="placeholderHint"
+                ></textarea>
+                <details class="text-xs text-gray-500">
+                  <summary class="cursor-pointer">查看默认提示词</summary>
+                  <pre class="mt-2 p-2 bg-gray-50 rounded text-xs overflow-x-auto whitespace-pre-wrap">{{ promptsData?.defaults?.[selectedPromptKey]?.system ?? '(无)' }}</pre>
+                </details>
+              </div>
+
+              <!-- Action buttons -->
+              <div class="flex items-center gap-2 mt-3">
+                <button
+                  class="rounded bg-blue-600 px-3 py-1.5 text-xs text-white hover:bg-blue-700 disabled:opacity-50"
+                  :disabled="promptSaving"
+                  @click="handleSavePrompt"
+                >
+                  {{ promptSaving ? '保存中...' : '保存' }}
+                </button>
+                <button
+                  class="rounded border border-gray-300 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50"
+                  @click="handleResetPrompt"
+                >
+                  重置为默认
+                </button>
+                <span v-if="promptStatusMsg" class="text-xs text-green-600">
+                  {{ promptStatusMsg }}
+                </span>
+              </div>
             </section>
             </template>
           </div>

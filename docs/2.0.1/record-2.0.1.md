@@ -176,3 +176,76 @@ v2.0.1 的 P1 全屏 diff 视图为基础实现 (显示修正统计 + 返回按�
 | `bun run build` (前端构建) | 通过 -- 90 modules,JS 210.37 kB,CSS 107.83 kB |
 | `bun run test` (147 测试) | 全部通过 -- 含 HighlightModeView/SubtitleCorrectionReview/TimelineSwitcher 测试 |
 | TypeScript 类型检查 | 通过 -- vue-tsc --noEmit 无错误 |
+
+---
+
+## Phase 3: 提示词编辑系统 (已完成)
+
+### 概要
+
+Phase 3 实现了 AI 提示词的自定义能力,支持:
+
+1. **5 个 prompt 标记位化** -- smart_delete/subtitle_correction_a/b/highlight 加入 `{{param}}` 标记位 (search 无参数化)
+2. **分层持久化** (D-08) -- 全局默认 (settings.json) + 项目覆盖 (Timeline.llm_prompts)
+3. **双模式编辑** (D-05) -- 简单模式 (参数化字段) + 高级模式 (全量 textarea)
+4. **标记位注入** (D-19) -- `{{param}}` 替换,空值→空字符串,`_format_param` 按 key 类型格式化 + strip 处理
+5. **重置为默认** (D-07) -- 每个 prompt 可独立重置
+
+### 变更文件 (共 8 个)
+
+| 文件 | 变更 | 说明 |
+|------|------|------|
+| `core/llm_prompts.py` | **新增** (250 行) | 5 个 prompt 常量 (含 {{param}} 标记位) + DEFAULT_PROMPTS 注册表 + get_effective_prompt + _inject_placeholders + _format_param + get_default_prompt_text/params |
+| `core/llm_service.py` | 修改 (-60/+30 行) | 删除 5 个内联常量定义,改为从 llm_prompts 导入;4 个 analyze_* 函数新增 system_prompt 参数 (None 时使用 get_effective_prompt) |
+| `core/config.py` | 修改 (+2 行) | _DEFAULT_SETTINGS 新增 `llm_prompts: {}` 字段 |
+| `core/models.py` | 修改 (+5 行) | Timeline 新增 `llm_prompts: dict = Field(default_factory=dict)` 字段 |
+| `main.py` | 修改 (+90 行) | 新增 3 个 @expose: get_llm_prompts/update_llm_prompt/reset_llm_prompt + _load_settings_raw helper;4 个 LLM handler 全部传入 effective prompt |
+| `frontend/src/composables/useLlmSettings.ts` | 修改 (+60 行) | 新增 PromptDefaults/PromptOverride/LlmPromptsData 接口 + loadPrompts/updatePrompt/resetPrompt 方法 |
+| `frontend/src/components/workspace/SettingsModal.vue` | 修改 (+100 行) | LLM tab 新增提示词编辑子面板:功能选择器 + 简单/高级模式切换 + 参数 textarea + 全量 prompt textarea + 查看默认 + 保存/重置 |
+| `tests/test_llm_prompts.py` | **新增** (200 行) | 28 个测试:DEFAULT_PROMPTS 结构 + _format_param + _inject_placeholders + get_effective_prompt (分层优先级) + helper 函数 |
+
+### 架构决策
+
+#### 标记位格式 -- `{{param}}` 双花括号
+
+选择 `{{custom_fillers}}` 格式而非单花括号 `{custom_fillers}`,避免与 JSON 模板字符串冲突。Python 中 `{{{{{key}}}}}` (5 层花括号) 在 f-string 中正确求值为 `{{key}}` 字符串。
+
+#### 空值处理 -- 替换为空字符串而非移除行
+
+当参数为空时,标记位替换为 `""`,保留所在行结构 (变为空行)。这确保了不加参数时 prompt 结构与原始基本一致,只是多一个空行 -- 对 LLM 分析质量无影响。
+
+#### _format_param 的 strip 处理
+
+`_format_param` 对每个值调用 `strip()`,避免用户输入的纯空格项被判定为有内容。这是审计反馈的具体落实。
+
+#### 浅拷贝合并的安全性
+
+```python
+params = {**default["params"], **override.get("params", {})}
+```
+
+这是浅拷贝合并 (Shallow Merge)。当前参数结构仅一层 `list[str]`,浅拷贝是安全的。如果未来参数结构嵌套更深层,需改用 Deep Merge。
+
+#### system_override 优先级
+
+高级模式的 `system_override` 优先于简单模式参数。如果 `system_override` 非空且非纯空白,直接返回该文本,跳过标记位注入。空/纯空白的 `system_override` 被忽略,回退到简单模式。
+
+### 决策映射
+
+| 决策 | 实现 |
+|------|------|
+| D-05 (双模式编辑) | SettingsModal LLM tab 内功能选择 + 简单/高级模式 radio |
+| D-06 (参数化方案) | custom_fillers (smart_delete) / glossary (subtitle_correction) / focus_keywords (highlight) |
+| D-07 (重置为默认) | reset_llm_prompt @expose + 前端"重置为默认"按钮 |
+| D-08 (分层持久化) | settings.json 全局 + Timeline.llm_prompts 项目级 |
+| D-19 (标记位注入) | `{{param}}` 替换 + _format_param 格式化 + 空值→空串 |
+
+### 测试覆盖
+
+| 验证项 | 结果 |
+|--------|------|
+| `uv run pytest tests/test_llm_prompts.py` | 28 测试全部通过 |
+| `uv run pytest tests/` (全量,排除 whisper) | 231 测试全部通过 |
+| `bun run build` (前端构建) | 通过 -- 90 modules,JS 215.13 kB |
+| `bun run test` (147 前端测试) | 全部通过 |
+| TypeScript 类型检查 | 通过 -- vue-tsc --noEmit 无错误 |

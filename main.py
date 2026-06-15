@@ -685,12 +685,21 @@ class MiloCutApi(Bridge):
                 {"results": chunk_results},
             )
 
+        # Phase 3: resolve effective prompt (project > global > default)
+        from core.llm_prompts import get_effective_prompt
+
+        project_prompts = (
+            timeline.llm_prompts if hasattr(timeline, "llm_prompts") else None
+        )
+        effective_prompt = get_effective_prompt("smart_delete", project_prompts)
+
         result = analyze_smart_delete(
             segments,
             existing_flagged_ids=existing_ids,
             cancel_event=cancel_event,
             progress_cb=progress_cb,
             chunk_callback=_chunk_callback,
+            system_prompt=effective_prompt,
         )
 
         if not result.get("success"):
@@ -771,12 +780,27 @@ class MiloCutApi(Bridge):
         if not segments:
             raise ValueError("No subtitle segments to correct")
 
+        # Phase 3: resolve effective prompts for both modes
+        from core.llm_prompts import get_effective_prompt
+
+        project_prompts = (
+            timeline.llm_prompts if hasattr(timeline, "llm_prompts") else None
+        )
+        effective_prompt_a = get_effective_prompt(
+            "subtitle_correction_a", project_prompts
+        )
+        effective_prompt_b = get_effective_prompt(
+            "subtitle_correction_b", project_prompts
+        )
+
         result = analyze_subtitle_correction(
             segments,
             reference_text=reference_text if reference_text else None,
             context_window=context_window,
             cancel_event=cancel_event,
             progress_cb=progress_cb,
+            system_prompt_a=effective_prompt_a,
+            system_prompt_b=effective_prompt_b,
         )
 
         if not result.get("success"):
@@ -835,12 +859,21 @@ class MiloCutApi(Bridge):
                 {"results": chunk_results},
             )
 
+        # Phase 3: resolve effective prompt
+        from core.llm_prompts import get_effective_prompt
+
+        project_prompts = (
+            timeline.llm_prompts if hasattr(timeline, "llm_prompts") else None
+        )
+        effective_prompt = get_effective_prompt("highlight", project_prompts)
+
         result = analyze_highlights(
             segments,
             target_duration_minutes=target_minutes,
             cancel_event=cancel_event,
             progress_cb=progress_cb,
             chunk_callback=_chunk_callback,
+            system_prompt=effective_prompt,
         )
 
         if not result.get("success"):
@@ -1913,6 +1946,89 @@ class MiloCutApi(Bridge):
         return self.update_settings(filtered)
 
     @expose
+    def get_llm_prompts(self) -> dict:
+        """Read all LLM prompt configurations (defaults + user overrides).
+
+        Returns:
+            {"success": True, "data": {"defaults": {...}, "overrides": {...}}}
+            - defaults: hardcoded default prompts (read-only reference)
+            - overrides: user customizations from settings.json
+        """
+        from core.llm_prompts import DEFAULT_PROMPTS, get_default_params
+
+        defaults = {}
+        for key in DEFAULT_PROMPTS:
+            defaults[key] = {
+                "system": DEFAULT_PROMPTS[key]["system"],
+                "params": get_default_params(key),
+            }
+
+        settings = self._load_settings_raw()
+        overrides = settings.get("llm_prompts", {})
+
+        return {"success": True, "data": {"defaults": defaults, "overrides": overrides}}
+
+    @expose
+    def update_llm_prompt(self, func_key: str, updates: dict) -> dict:
+        """Update a single LLM prompt configuration.
+
+        Args:
+            func_key: One of DEFAULT_PROMPTS keys.
+            updates: {"system_override": str|None, "params": {...}}
+
+        Returns:
+            {"success": True, "data": {"func_key": str}}
+        """
+        from core.llm_prompts import DEFAULT_PROMPTS
+
+        if func_key not in DEFAULT_PROMPTS:
+            return {"success": False, "error": f"Unknown prompt key: {func_key}"}
+
+        settings = self._load_settings_raw()
+        prompts = settings.get("llm_prompts", {})
+
+        # Merge updates into existing override
+        existing = prompts.get(func_key, {})
+        if "system_override" in updates:
+            val = updates["system_override"]
+            existing["system_override"] = val if val and val.strip() else None
+        if "params" in updates:
+            existing["params"] = updates["params"]
+
+        prompts[func_key] = existing
+        settings["llm_prompts"] = prompts
+
+        return self.update_settings({"llm_prompts": prompts})
+
+    @expose
+    def reset_llm_prompt(self, func_key: str) -> dict:
+        """Reset a single LLM prompt to its hardcoded default.
+
+        Args:
+            func_key: One of DEFAULT_PROMPTS keys.
+
+        Returns:
+            {"success": True, "data": {"func_key": str}}
+        """
+        from core.llm_prompts import DEFAULT_PROMPTS
+
+        if func_key not in DEFAULT_PROMPTS:
+            return {"success": False, "error": f"Unknown prompt key: {func_key}"}
+
+        settings = self._load_settings_raw()
+        prompts = settings.get("llm_prompts", {})
+        prompts.pop(func_key, None)
+        settings["llm_prompts"] = prompts
+
+        return self.update_settings({"llm_prompts": prompts})
+
+    def _load_settings_raw(self) -> dict:
+        """Load raw settings dict (internal helper for prompt management)."""
+        from core.config import load_settings
+
+        return load_settings()
+
+    @expose
     def start_smart_delete(self, timeline_id: str = "") -> dict:
         """Start LLM smart-delete analysis as a background task.
 
@@ -2056,7 +2172,21 @@ class MiloCutApi(Bridge):
             if s.type == SegmentType.SUBTITLE
         ]
 
-        result = _search(query, segments, top_k=top_k, config=config)
+        # Phase 3: resolve effective prompt
+        from core.llm_prompts import get_effective_prompt
+
+        project_prompts = (
+            timeline.llm_prompts if hasattr(timeline, "llm_prompts") else None
+        )
+        effective_prompt = get_effective_prompt("search", project_prompts)
+
+        result = _search(
+            query,
+            segments,
+            top_k=top_k,
+            config=config,
+            system_prompt=effective_prompt,
+        )
         return result
 
     @expose

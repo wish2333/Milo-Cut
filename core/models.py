@@ -273,6 +273,10 @@ class Timeline(BaseModel, frozen=True):
     transcript: TranscriptData = Field(default_factory=TranscriptData)
     edits: list[EditDecision] = Field(default_factory=list)
     analysis: AnalysisData = Field(default_factory=AnalysisData)
+    # Phase 3: Project-level LLM prompt overrides (per-timeline).
+    # Structure: {"smart_delete": {"system_override": str, "params": {...}}}
+    # Empty dict = use global settings prompts.
+    llm_prompts: dict = Field(default_factory=dict)
 
 
 # ================================================================
