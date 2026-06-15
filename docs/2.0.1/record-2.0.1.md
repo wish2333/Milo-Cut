@@ -249,3 +249,75 @@ params = {**default["params"], **override.get("params", {})}
 | `bun run build` (前端构建) | 通过 -- 90 modules,JS 215.13 kB |
 | `bun run test` (147 前端测试) | 全部通过 |
 | TypeScript 类型检查 | 通过 -- vue-tsc --noEmit 无错误 |
+
+---
+
+## Phase 4: 设置页全屏化 (已完成)
+
+### 概要
+
+Phase 4 将 SettingsModal 从 640px 弹窗升级为全屏覆盖层,大幅增大内容空间:
+
+1. **全屏覆盖层** (D-09) -- `fixed inset-0 z-[9998] bg-white`,无遮罩,100vw x 100vh
+2. **Teleport to body** -- 避免被父容器 overflow-hidden 裁剪
+3. **Transition 过渡动画** -- 150ms 淡入淡出,避免突兀的白板闪现
+4. **ESC 快捷键关闭** -- 全屏覆盖层下意识按 ESC 退出的 UX 补齐
+5. **Tab 中文化** -- General/AI Engine/LLM/Export → 通用/AI 引擎/LLM/导出
+6. **保留现有 4 tab** (D-10) -- 内容区从 ~400px 扩展到 calc(100vh - 120px)
+
+### 变更文件 (共 1 个)
+
+| 文件 | 变更 | 说明 |
+|------|------|------|
+| `frontend/src/components/workspace/SettingsModal.vue` | 修改 (+30/-15 行) | 根元素从 Modal 改为全屏覆盖层 + Teleport + Transition + ESC 监听 + Tab 中文化 + overlay-fade CSS |
+
+> **设计决策**: 不重命名为 SettingsOverlay.vue,保持文件名不变。原因: (a) WelcomePage 和 WorkspacePage 都已 import SettingsModal,重命名需同步修改两处引用且增加 git diff 噪音; (b) 组件名与文件名的一致性比名称的精确性更重要; (c) 内部行为已通过根元素改造实现全屏化,外部 API (props/emit) 不变。
+
+### 架构决策
+
+#### 全屏 vs Modal -- 内容空间
+
+| 对比项 | Modal (改造前) | 全屏 (改造后) |
+|--------|---------------|--------------|
+| 宽度 | w-[640px] max-w-[90vw] | 100vw |
+| 高度 | max-h-[85vh] | 100vh |
+| 内容区高度 | ~400px (640px - header - footer - padding) | calc(100vh - 120px) |
+| 遮罩 | bg-black/40 (半透明黑) | 无 |
+| 层级 | z-50 | z-[9998] |
+
+全屏化后,Phase 3 的提示词编辑子面板 (含高级模式 textarea) 有充足的展示空间。
+
+#### Teleport 的必要性
+
+当前 SettingsModal 在 WelcomePage 和 WorkspacePage 中使用。WorkspacePage 的主容器有 `overflow-hidden`,如果不 Teleport,全屏覆盖层可能被裁剪。Teleport to body 确保覆盖层渲染在最顶层。
+
+#### Transition overlay-fade -- 150ms
+
+```css
+.overlay-fade-enter-active,
+.overlay-fade-leave-active {
+  transition: opacity 150ms ease;
+}
+.overlay-fade-enter-from,
+.overlay-fade-leave-to {
+  opacity: 0;
+}
+```
+
+150ms 是平衡点: 足够平滑 (人眼感知 ~100ms 以上的动画),又不过分迟缓 (不影响操作流畅度)。
+
+### 决策映射
+
+| 决策 | 实现 |
+|------|------|
+| D-09 (全屏覆盖层) | fixed inset-0 z-[9998] bg-white + Teleport + Transition |
+| D-10 (保留 4 tab) | 通用 / AI 引擎 / LLM / 导出 (中文化) |
+| D-11 (入口不变) | WelcomePage + WorkspacePage 的 SettingsModal 引用保持不变 |
+
+### 测试覆盖
+
+| 验证项 | 结果 |
+|--------|------|
+| `bun run build` (前端构建) | 通过 -- 91 modules,JS 215.62 kB,CSS 108.13 kB |
+| `bun run test` (147 测试) | 全部通过 |
+| TypeScript 类型检查 | 通过 -- vue-tsc --noEmit 无错误 |
