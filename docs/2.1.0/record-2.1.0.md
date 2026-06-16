@@ -451,6 +451,48 @@ keep_first/keep_last/keep_all -- 冲突解决的本质是"决策去重"，保留
 
 ---
 
+## 补丁修复: 真实 LLM 探针验证 + 提示词优化 (已完成)
+
+### 概要
+
+首次接入真实生产线 LLM (智谱 GLM-5-turbo) 对 4 个 AI 功能 (smart_delete / subtitle_correction / highlight / semantic_search) 进行端到端验证，使用项目 "20260514-潘多拉之心第二卷卷评" (111 段字幕) 作为测试数据。发现并修复 5 个问题。
+
+### 变更文件 (共 3 个)
+
+| 文件 | 类型 | 说明 |
+|------|------|------|
+| `core/llm_prompts.py` | 修改 (+21/-10 行) | subtitle_correction A/B 提示词: 明确职责边界 (只修 ASR 识别错误，不修口误/卡壳/重复)，改为只输出需修正的片段; smart_delete 提示词: 补充 confidence 字段说明 |
+| `core/llm_service.py` | 修改 (+32/-15 行) | subtitle_correction normalize 过滤 category=none + 原文相同结果; semantic_search 补回 token_usage 返回值; get_llm_config strip 配置前后空格; 清理未使用 import |
+| `tests/test_llm_phase4b.py` | 修改 (+2/-1 行) | test_mode_a_mock_llm 适配新的 none 过滤行为 |
+
+### 诊断与修复对照
+
+| # | 问题 | 根因 | 修复 | 验证 |
+|---|------|------|------|------|
+| 1 | semantic_search 返回值缺 token_usage | 返回 dict 漏了该字段 | 补上 `token_usage` 从 `result["data"]["usage"]` | 修复前 `{}`，修复后 `{total_tokens: 5518}` |
+| 2 | llm_model 配置有前导空格 `" glm-5-turbo"` | 用户输入未清洗 | `get_llm_config()` 对 base_url/api_key/model `.strip()` | 修复前 `' glm-5-turbo'`，修复后 `'glm-5-turbo'` |
+| 3 | subtitle_correction 产出大量无修改结果 | 提示词要求返回所有片段含 none | 提示词改为只输出需修正的 + 代码过滤 none | 20 条 -> 2 条 (仅真正修改的) |
+| 4 | **subtitle_correction 误改口误片段** | 提示词未区分 ASR 错误 vs 口误 | 提示词增加职责边界说明 | seg-0018 口误不再被误改，由 smart_delete 正确处理 |
+| 5 | smart_delete 提示词缺 confidence 字段说明 | 输出格式不完整 | 补充 confidence 说明 | 修复前全 0.8，修复后有区分度 (0.85~1.0) |
+
+### 提示词职责边界 (重要架构决策)
+
+subtitle_correction 和 smart_delete 存在职责重叠区: 口误/卡壳/重复的内容。
+
+- **修复前**: subtitle_correction 提示词只说"修正 ASR 错误"，未明确排除口误。LLM 把 "导致身边的人遭受，"(口误卡壳) 误改为 "导致身边的人，"(删除了"遭受")，破坏语义。
+- **修复后**: 提示词明确声明 "口误、卡壳、重复、语无伦次的内容保持原样 -- 这些由智能删除功能处理，不属于字幕纠错的范畴"。
+
+### 验证命令
+
+| 命令 | 结果 |
+|------|------|
+| `uv run pytest tests/ -m "not integration"` | 319 passed |
+| `uv run pytest -m integration` | 35 passed |
+| `uv run ruff check core/llm_service.py core/llm_prompts.py` | All checks passed |
+| 真实 LLM 探针 (4 功能 + test_connection) | 全部跑通，结果质量良好 |
+
+---
+
 ## 测试基线 (Phase 4 后)
 
 | 类别 | 数量 | 说明 |
