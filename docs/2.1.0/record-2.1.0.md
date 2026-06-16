@@ -546,6 +546,41 @@ subtitle_correction 和 smart_delete 存在职责重叠区: 口误/卡壳/重复
 
 ---
 
+## 补丁修复: 提示词第二轮调整 + 全功能探针报告 (已完成)
+
+### 概要
+
+基于用户审阅反馈，对默认提示词做三项调整，并编写全功能探针脚本生成可审阅的 markdown 报告。
+
+### 变更文件 (共 4 个)
+
+| 文件 | 类型 | 说明 |
+|------|------|------|
+| `core/llm_prompts.py` | 修改 (+15/-12 行) | 三项提示词调整 (见下) |
+| `tests/test_llm_prompts.py` | 修改 (+3/-3 行) | 适配 smart_delete 提示词开头文案变更 ("视频剪辑助手" -> "清理助手") |
+| `scripts/llm_full_probe.py` | **新增** (~290 行) | 全功能探针: 加载潘多拉项目 -> 调用 5 个 LLM 功能 -> 生成 markdown 分析报告 |
+| `scripts/llm_full_report.md` | **新增** (~220 行) | 探针报告: 配置/连接测试/smart_delete/subtitle_correction/highlight/semantic_search 逐条结果 + 分析 + 提示词附录 |
+
+### 三项提示词调整
+
+| # | 要求 | 修改内容 |
+|---|------|---------|
+| 1 | 不要在提示词里提到其他功能 | subtitle_correction A/B 移除 "这些由智能删除功能处理" 等跨功能引用; smart_delete 移除 "(规则引擎只能识别字面重复)" |
+| 2 | 智能删除强调重复片段仅保留最后一版 | smart_delete semantic_dup: "对于重复内容，只保留最后一版 (即最后一次表述的片段)，前面的重复片段标记为删除" |
+| 3 | 字幕修正强调上下文理解 + 标点规则 | subtitle_correction A/B: 新增 "必须结合前后片段的上下文"; 新增标点规则 "删除句尾标点 + 句中标点替换为空格" |
+
+### 探针报告关键结果 (glm-5-turbo, 111 段)
+
+| 功能 | 结果数 | 耗时 | 质量评估 |
+|------|--------|------|---------|
+| test_connection | PASS | 5.1s | 正常 |
+| smart_delete | 5 | 275s | semantic_dup 正确保留最后一版 (seg-0001 删保留 seg-0002) |
+| subtitle_correction | 20 | 301s | 标点规则 100% 生效 (0 残留); 的/地 修正正确; seg-0018 口误未被误改 |
+| highlights | 17 | 93s | 密度分布 high=13/medium=4，理由精准 |
+| semantic_search | 5 | 110s | 成长主题命中率良好，token_usage 正常返回 |
+
+---
+
 ## 测试基线 (Phase 4 后)
 
 | 类别 | 数量 | 说明 |

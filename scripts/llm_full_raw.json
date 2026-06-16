@@ -1,0 +1,449 @@
+{
+  "config": {
+    "provider": "custom",
+    "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+    "model": "glm-5-turbo",
+    "temperature": 0.3,
+    "timeout": 120
+  },
+  "segment_count": 111,
+  "subset_count": 20,
+  "test_connection": {
+    "wall_time_ms": 5125.0,
+    "success": true,
+    "data": {
+      "model": "glm-5-turbo",
+      "response_time_ms": 5031
+    },
+    "error": null
+  },
+  "smart_delete": {
+    "wall_time_s": 275.21899999998277,
+    "success": true,
+    "error": null,
+    "count": 5,
+    "token_usage": {
+      "prompt_tokens": 1549,
+      "completion_tokens": 2645,
+      "total_tokens": 4194
+    },
+    "results": [
+      {
+        "segment_id": "seg-0001",
+        "action": "delete",
+        "reason": "字面完全重复，保留最后一次表述(seg-0002)",
+        "category": "semantic_dup",
+        "confidence": 1.0,
+        "text": "他们本就是一片空白，"
+      },
+      {
+        "segment_id": "seg-0006",
+        "action": "delete",
+        "reason": "无触发词口误，重新表述前的残缺半句",
+        "category": "self_correct",
+        "confidence": 0.95,
+        "text": "他们都在此生仿佛，"
+      },
+      {
+        "segment_id": "seg-0009",
+        "action": "delete",
+        "reason": "无触发词口误，重新表述前的完整区域",
+        "category": "self_correct",
+        "confidence": 0.9,
+        "text": "他们在故事中，"
+      },
+      {
+        "segment_id": "seg-0010",
+        "action": "delete",
+        "reason": "与seg-0012字面完全重复，属于重新表述前的废稿",
+        "category": "semantic_dup",
+        "confidence": 1.0,
+        "text": "却也在不断的探寻。"
+      },
+      {
+        "segment_id": "seg-0018",
+        "action": "delete",
+        "reason": "未说完的半句卡顿，随后在seg-0019中重新进行了完整表述",
+        "category": "self_correct",
+        "confidence": 0.95,
+        "text": "导致身边的人遭受，"
+      }
+    ]
+  },
+  "subtitle_correction": {
+    "wall_time_s": 300.75,
+    "success": true,
+    "error": null,
+    "count": 20,
+    "token_usage": {
+      "prompt_tokens": 1193,
+      "completion_tokens": 4362,
+      "total_tokens": 5555
+    },
+    "results": [
+      {
+        "segment_id": "seg-0001",
+        "corrected_text": "他们本就是一片空白",
+        "changes": [
+          "删除句尾逗号"
+        ],
+        "category": "punctuation",
+        "confidence": 1.0,
+        "original_text": "他们本就是一片空白，"
+      },
+      {
+        "segment_id": "seg-0002",
+        "corrected_text": "他们本就是一片空白",
+        "changes": [
+          "删除句尾逗号"
+        ],
+        "category": "punctuation",
+        "confidence": 1.0,
+        "original_text": "他们本就是一片空白，"
+      },
+      {
+        "segment_id": "seg-0003",
+        "corrected_text": "没有父爱的他",
+        "changes": [
+          "删除句尾逗号"
+        ],
+        "category": "punctuation",
+        "confidence": 1.0,
+        "original_text": "没有父爱的他，"
+      },
+      {
+        "segment_id": "seg-0004",
+        "corrected_text": "流浪而成为仆人的他",
+        "changes": [
+          "删除句尾逗号"
+        ],
+        "category": "punctuation",
+        "confidence": 1.0,
+        "original_text": "流浪而成为仆人的他，"
+      },
+      {
+        "segment_id": "seg-0005",
+        "corrected_text": "失去记忆却背负巨大能量的他",
+        "changes": [
+          "删除句尾逗号"
+        ],
+        "category": "punctuation",
+        "confidence": 1.0,
+        "original_text": "失去记忆却背负巨大能量的他，"
+      },
+      {
+        "segment_id": "seg-0006",
+        "corrected_text": "他们都在此生仿佛",
+        "changes": [
+          "删除句尾逗号"
+        ],
+        "category": "punctuation",
+        "confidence": 1.0,
+        "original_text": "他们都在此生仿佛，"
+      },
+      {
+        "segment_id": "seg-0007",
+        "corrected_text": "他们在此生仿佛都被预设了模板",
+        "changes": [
+          "删除句尾逗号"
+        ],
+        "category": "punctuation",
+        "confidence": 1.0,
+        "original_text": "他们在此生仿佛都被预设了模板，"
+      },
+      {
+        "segment_id": "seg-0008",
+        "corrected_text": "却缺少一个内核",
+        "changes": [
+          "删除句尾句号"
+        ],
+        "category": "punctuation",
+        "confidence": 1.0,
+        "original_text": "却缺少一个内核。"
+      },
+      {
+        "segment_id": "seg-0009",
+        "corrected_text": "他们在故事中",
+        "changes": [
+          "删除句尾逗号"
+        ],
+        "category": "punctuation",
+        "confidence": 1.0,
+        "original_text": "他们在故事中，"
+      },
+      {
+        "segment_id": "seg-0010",
+        "corrected_text": "却也在不断地探寻",
+        "changes": [
+          "“的”修正为“地”",
+          "删除句尾句号"
+        ],
+        "category": "homophone",
+        "confidence": 0.95,
+        "original_text": "却也在不断的探寻。"
+      },
+      {
+        "segment_id": "seg-0011",
+        "corrected_text": "但他们在故事中",
+        "changes": [
+          "删除句尾逗号"
+        ],
+        "category": "punctuation",
+        "confidence": 1.0,
+        "original_text": "但他们在故事中，"
+      },
+      {
+        "segment_id": "seg-0012",
+        "corrected_text": "却也在不断地探寻",
+        "changes": [
+          "“的”修正为“地”",
+          "删除句尾句号"
+        ],
+        "category": "homophone",
+        "confidence": 0.95,
+        "original_text": "却也在不断的探寻。"
+      },
+      {
+        "segment_id": "seg-0013",
+        "corrected_text": "奥兹说",
+        "changes": [
+          "删除句尾冒号"
+        ],
+        "category": "punctuation",
+        "confidence": 1.0,
+        "original_text": "奥兹说："
+      },
+      {
+        "segment_id": "seg-0014",
+        "corrected_text": "和你们在一起是我自己的选择",
+        "changes": [
+          "前导引号替换为空格",
+          "删除句尾句号"
+        ],
+        "category": "punctuation",
+        "confidence": 1.0,
+        "original_text": "“和你们在一起是我自己的选择。"
+      },
+      {
+        "segment_id": "seg-0015",
+        "corrected_text": "我想知道发生了什么",
+        "changes": [
+          "删除句尾逗号"
+        ],
+        "category": "punctuation",
+        "confidence": 1.0,
+        "original_text": "我想知道发生了什么，"
+      },
+      {
+        "segment_id": "seg-0016",
+        "corrected_text": "不想再像曾经一样",
+        "changes": [
+          "删除句尾逗号"
+        ],
+        "category": "punctuation",
+        "confidence": 1.0,
+        "original_text": "不想再像曾经一样，"
+      },
+      {
+        "segment_id": "seg-0017",
+        "corrected_text": "因为恐惧而拒绝了解",
+        "changes": [
+          "删除句尾逗号"
+        ],
+        "category": "punctuation",
+        "confidence": 1.0,
+        "original_text": "因为恐惧而拒绝了解，"
+      },
+      {
+        "segment_id": "seg-0018",
+        "corrected_text": "导致身边的人遭受",
+        "changes": [
+          "删除句尾逗号"
+        ],
+        "category": "punctuation",
+        "confidence": 1.0,
+        "original_text": "导致身边的人遭受，"
+      },
+      {
+        "segment_id": "seg-0019",
+        "corrected_text": "导致身边的人遭受伤害",
+        "changes": [
+          "删除句尾句号"
+        ],
+        "category": "punctuation",
+        "confidence": 1.0,
+        "original_text": "导致身边的人遭受伤害。"
+      },
+      {
+        "segment_id": "seg-0020",
+        "corrected_text": "他是空白的",
+        "changes": [
+          "前导引号替换为空格",
+          "删除句尾逗号"
+        ],
+        "category": "punctuation",
+        "confidence": 1.0,
+        "original_text": "”他是空白的，"
+      }
+    ]
+  },
+  "highlights": {
+    "wall_time_s": 92.57800000003772,
+    "success": true,
+    "error": null,
+    "count": 17,
+    "total_duration": 40.712999999999994,
+    "token_usage": {
+      "prompt_tokens": 5090,
+      "completion_tokens": 3623,
+      "total_tokens": 8713
+    },
+    "results": [
+      {
+        "segment_id": "seg-0007",
+        "highlight_reason": "提出核心论点：角色被预设模板却缺少内核",
+        "density": "high",
+        "text": "他们在此生仿佛都被预设了模板，"
+      },
+      {
+        "segment_id": "seg-0014",
+        "highlight_reason": "角色核心动机：主动选择陪伴与了解",
+        "density": "high",
+        "text": "“和你们在一起是我自己的选择。"
+      },
+      {
+        "segment_id": "seg-0017",
+        "highlight_reason": "揭示角色曾经的成长痛点：因恐惧而拒绝",
+        "density": "medium",
+        "text": "因为恐惧而拒绝了解，"
+      },
+      {
+        "segment_id": "seg-0021",
+        "highlight_reason": "精彩转折与辩证：空白即自由",
+        "density": "high",
+        "text": "但也是自由的。"
+      },
+      {
+        "segment_id": "seg-0022",
+        "highlight_reason": "重要结论：肩负起生而为人的责任",
+        "density": "high",
+        "text": "他终于肩负起了生而为人的责任，"
+      },
+      {
+        "segment_id": "seg-0024",
+        "highlight_reason": "重要结论：打破棋子命运，完成自我觉醒",
+        "density": "high",
+        "text": "不再是被设计在局中的一枚棋子。"
+      },
+      {
+        "segment_id": "seg-0026",
+        "highlight_reason": "点明全篇核心主旨：关系中的自我确立",
+        "density": "high",
+        "text": "我才成为我。"
+      },
+      {
+        "segment_id": "seg-0029",
+        "highlight_reason": "关键案例：被他人的耀眼所触动而踏上旅途",
+        "density": "medium",
+        "text": "奥兹说觉得爱丽丝拼命寻找记忆的样子很耀眼，"
+      },
+      {
+        "segment_id": "seg-0052",
+        "highlight_reason": "关键剧情转折：决定成为真正的骑士",
+        "density": "medium",
+        "text": "让他终于决定要做一名真正勇敢的骑士。"
+      },
+      {
+        "segment_id": "seg-0054",
+        "highlight_reason": "核心论点深化：打破出身决定论",
+        "density": "high",
+        "text": "因为他从未认为出身决定了自己，"
+      },
+      {
+        "segment_id": "seg-0055",
+        "highlight_reason": "核心论点深化：在守护中确立自我",
+        "density": "high",
+        "text": "而是相信在守护中才能成为了自己。"
+      },
+      {
+        "segment_id": "seg-0062",
+        "highlight_reason": "重要结论：勇敢直面自己引爆的命运",
+        "density": "high",
+        "text": "直面这一场由我引爆的命运。"
+      },
+      {
+        "segment_id": "seg-0066",
+        "highlight_reason": "引出另一角色的核心论点：自我意识的最早觉醒",
+        "density": "high",
+        "text": "基尔是最早意识到我之为我的，"
+      },
+      {
+        "segment_id": "seg-0077",
+        "highlight_reason": "精彩比喻与升华：向悲剧之下的真相亮剑",
+        "density": "medium",
+        "text": "向着向着悲剧之下的真相亮剑。"
+      },
+      {
+        "segment_id": "seg-0088",
+        "highlight_reason": "重要结论：终结悲剧的终极使命",
+        "density": "high",
+        "text": "从未忘记要将悲剧的剧章终结。"
+      },
+      {
+        "segment_id": "seg-0091",
+        "highlight_reason": "总结性论点：因为完整所以最先成为自己",
+        "density": "high",
+        "text": "因为他最先完整。"
+      },
+      {
+        "segment_id": "seg-0102",
+        "highlight_reason": "提出了关于作品叙事手法与角色塑造的核心论点，明确指出了“误导性伏笔”在构筑角色完整性上的关键作用，属于重要结论。",
+        "density": "high",
+        "text": "这个误导性的伏笔才是构筑完整奥兹的核心。"
+      }
+    ]
+  },
+  "semantic_search": {
+    "wall_time_s": 109.71899999998277,
+    "success": true,
+    "error": null,
+    "count": 5,
+    "token_usage": {
+      "prompt_tokens": 4543,
+      "completion_tokens": 1568,
+      "total_tokens": 6111
+    },
+    "results": [
+      {
+        "segment_id": "seg-0022",
+        "relevance": 0.95,
+        "match_reason": "“终于肩负起了生而为人的责任”直接点明了主角从迷茫空白到觉醒的核心成长标志。",
+        "text": "他终于肩负起了生而为人的责任，"
+      },
+      {
+        "segment_id": "seg-0090",
+        "relevance": 0.9,
+        "match_reason": "“更先成为他自己”是对角色成长最终形态的总结，与“成长”的语义高度契合。",
+        "text": "他才比所以他在比奥兹和丽丽所以他在比奥兹和爱丽丝更先成为他自己，"
+      },
+      {
+        "segment_id": "seg-0055",
+        "relevance": 0.85,
+        "match_reason": "“在守护中才能成为了自己”阐述了主角实现自我成长的精神内核与路径。",
+        "text": "而是相信在守护中才能成为了自己。"
+      },
+      {
+        "segment_id": "seg-0024",
+        "relevance": 0.8,
+        "match_reason": "“不再是被设计在局中的一枚棋子”体现了主角挣脱命运束缚、获得独立人格的成长蜕变。",
+        "text": "不再是被设计在局中的一枚棋子。"
+      },
+      {
+        "segment_id": "seg-0052",
+        "relevance": 0.75,
+        "match_reason": "“决定要做一名真正勇敢的骑士”具体描述了角色克服自卑、坚定目标的成长转变过程。",
+        "text": "让他终于决定要做一名真正勇敢的骑士。"
+      }
+    ]
+  }
+}

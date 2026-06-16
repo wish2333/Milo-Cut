@@ -121,7 +121,7 @@ class TestGetEffectivePrompt:
         )
         result = get_effective_prompt("smart_delete")
         # Should contain the default system prompt with placeholder resolved
-        assert "视频剪辑助手" in result
+        assert "清理助手" in result
         assert "{{custom_fillers}}" not in result
 
     def test_global_params_injected(self, monkeypatch):
@@ -182,7 +182,7 @@ class TestGetEffectivePrompt:
             },
         )
         result = get_effective_prompt("smart_delete")
-        assert "视频剪辑助手" in result  # Default prompt used
+        assert "清理助手" in result  # Default prompt used
         assert "那个" in result  # Params still injected
 
     def test_unknown_key_returns_empty(self, monkeypatch):
@@ -203,7 +203,7 @@ class TestHelperFunctions:
 
     def test_get_default_prompt_text(self):
         text = get_default_prompt_text("smart_delete")
-        assert "视频剪辑助手" in text
+        assert "清理助手" in text
         assert "{{custom_fillers}}" in text  # Contains placeholder
 
     def test_get_default_prompt_text_unknown_key(self):
