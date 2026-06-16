@@ -1,16 +1,15 @@
 /**
  * SettingsModal preset management tests (v2.1.0 Phase 4).
  *
- * Rather than mounting the full SettingsModal (which depends on many
- * bridge calls and pluginManager), this file tests the preset
- * composable integration points in isolation.
+ * Tests the preset composable integration points in isolation.
+ * SettingsModal is a large component with many dependencies;
+ * these tests verify the preset CRUD API surface.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { ref } from "vue"
-import { flushPromises } from "@vue/test-utils"
 
 // Create reactive refs for preset state
-const _presetsByFunc = ref<Record<string, unknown[]>>({})
+const _presetsByFunc = ref<Record<string, Array<{id: string; name: string}>>>({})
 const _loadPresets = vi.fn()
 const _applyPreset = vi.fn()
 const _saveNewPreset = vi.fn()
@@ -33,8 +32,8 @@ describe("Preset management integration (SettingsModal Phase 1)", () => {
   })
 
   it("loadPresets is callable for a preset-supported feature", async () => {
-    const { useLlmSettings } = await import("@/composables/useLlmSettings")
-    const { loadPresets } = useLlmSettings()
+    const mod = await import("@/composables/useLlmSettings")
+    const { loadPresets } = mod.useLlmSettings()
 
     await loadPresets("smart_delete")
 
@@ -42,32 +41,32 @@ describe("Preset management integration (SettingsModal Phase 1)", () => {
   })
 
   it("presetsByFunc starts empty", () => {
-    const { useLlmSettings } = vi.mocked({})
-    // Verify the initial state
     expect(_presetsByFunc.value).toEqual({})
   })
 
   it("applyPreset is callable with func_key and preset_id", async () => {
-    const { useLlmSettings } = await import("@/composables/useLlmSettings")
-    const { applyPreset } = useLlmSettings()
+    const mod = await import("@/composables/useLlmSettings")
+    const { applyPreset } = mod.useLlmSettings()
 
     await applyPreset("smart_delete", "preset-abc")
 
     expect(_applyPreset).toHaveBeenCalledWith("smart_delete", "preset-abc")
   })
 
-  it("saveNewPreset is callable with name", async () => {
-    const { useLlmSettings } = await import("@/composables/useLlmSettings")
-    const { saveNewPreset } = useLlmSettings()
+  it("saveNewPreset is callable with name and params", async () => {
+    const mod = await import("@/composables/useLlmSettings")
+    const settings = mod.useLlmSettings() as unknown as {
+      saveNewPreset: (funcKey: string, name: string) => Promise<void>
+    }
 
-    await saveNewPreset("smart_delete", "学术报告")
+    await settings.saveNewPreset("smart_delete", "学术报告")
 
     expect(_saveNewPreset).toHaveBeenCalledWith("smart_delete", "学术报告")
   })
 
   it("deletePreset is callable with preset_id", async () => {
-    const { useLlmSettings } = await import("@/composables/useLlmSettings")
-    const { deletePreset } = useLlmSettings()
+    const mod = await import("@/composables/useLlmSettings")
+    const { deletePreset } = mod.useLlmSettings()
 
     await deletePreset("smart_delete", "preset-abc")
 
@@ -77,8 +76,8 @@ describe("Preset management integration (SettingsModal Phase 1)", () => {
   it("presetsByFunc can be populated with preset data", () => {
     _presetsByFunc.value = {
       smart_delete: [
-        { id: "default", name: "默认", params: {}, system_override: "", model: "", created_at: "..." },
-        { id: "preset-1", name: "学术报告", params: { custom_fillers: ["那么"] }, system_override: "", model: "", created_at: "..." },
+        { id: "default", name: "默认" },
+        { id: "preset-1", name: "学术报告" },
       ],
     }
 

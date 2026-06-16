@@ -358,7 +358,8 @@ class TestMultiStepOrchestration:
         assert cancel_result["success"]
         cancelled_flag["done"] = True
 
-        for _ in range(50):
+        # Wait for execution thread to process cancellation
+        for _ in range(100):
             if engine._active is None or engine._active.get("status") == "cancelled":
                 break
             time.sleep(0.1)

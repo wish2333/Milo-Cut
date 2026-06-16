@@ -86,7 +86,7 @@ import AIAssistantPanel from "./AIAssistantPanel.vue"
 
 const baseProps = {
   segments: [
-    { id: "s1", version: 1, type: "subtitle", start: 1.0, end: 5.0, text: "hello", speaker: "" },
+    { id: "s1", version: 1, type: "subtitle" as const, start: 1.0, end: 5.0, text: "hello", speaker: "" },
   ],
   llmConfigured: true,
   llmModel: "test-model",

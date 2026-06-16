@@ -271,37 +271,115 @@ difflib 字符级比较在中文句式重组时会产生细碎的 delete/insert 
 
 ---
 
-## Phase 3: 一键清理工作流 (未开始)
+## Phase 3: 一键清理工作流 (已完成)
 
-> 决策范围: D-10 ~ D-33
+> 决策范围: D-10 ~ D-33, D-63 ~ D-72
 
-**目标**: 新建独立 WorkflowEngine，支持配置任务链 (规则分析 + P0 + P1 + P2 任意串联)，管理步骤间数据传递、冲突检测、跨会话恢复。
+### 概要
 
-**计划内容**:
-- `core/workflow_engine.py` (新增 ~400 行) -- 任务链编排 (定义 CRUD + 执行 + 取消 + 冲突检测 + 快照管理)
-- 内存工作副本 (完整快照文件) + 悲观锁 (Timeline 编辑锁定)
-- 冲突检测 (segment id 维度，一次性快照) + 可选冲突解决视图
-- 9 个新 workflow:* 事件 (含 heartbeat 心跳检测)
-- AI 助手面板新增"工作流"模式 (与"单功能"并列)
+新建独立 WorkflowEngine，支持配置任务链 (规则分析 + P0 + P1 + P2 任意串联)，管理步骤间数据传递、冲突检测、跨会话恢复。WorkflowEngine 作为编排层通过 TaskManager 调度步骤，设置 `_workflow_accumulate` flag 让 handler 返回原始结果不写入 project。
+
+1. **工作流定义 CRUD** -- 保存在 settings.json，所有项目共享 (D-23)
+2. **串行执行 + 步骤隔离** -- 内存工作副本 (完整快照文件)，每步产出 EditDecision 不立即 apply
+3. **冲突检测** -- segment id 维度 (D-15)，同 segment 多决策标记冲突
+4. **冲突解决** -- 专用全屏视图 (keep_first/keep_last/keep_all)，可选流程 (D-17)
+5. **跨会话恢复** -- 快照存储在 `data/projects/<name>/_workflow_<instance_id>.json`
+6. **9 个 workflow:* 事件** + 心跳检测 (D-72: 每 15s emit，前端 45s 超时)
+7. **AI 助手面板新增"工作流"模式** -- 与"单功能"并列 (D-19)
+
+### 变更文件 (共 9 个)
+
+| 文件 | 变更 | 说明 |
+|------|------|------|
+| `core/workflow_engine.py` | **新增** (~1020 行) | WorkflowEngine -- 任务链编排 (定义 CRUD + 执行 + 取消 + 冲突检测 + 快照管理 + apply/discard) |
+| `core/config.py` | 修改 (+1 行) | `_DEFAULT_SETTINGS` 新增 `workflows: []` 字段 |
+| `core/events.py` | 修改 (+9 行) | 9 个 workflow:* 事件常量 (started/step_started/step_progress/step_completed/step_failed/completed/cancelled/conflicts_detected/heartbeat) |
+| `main.py` | 修改 (+60 行) | 4 个 handler 增加 `_workflow_accumulate` 模式; 新增 12 个 @expose workflow 方法; `__init__` 实例化 WorkflowEngine |
+| `frontend/src/utils/events.ts` | 修改 (+9 行) | 9 个 EVENT_WORKFLOW_* 常量 (与 core/events.py 同步) |
+| `frontend/src/composables/useWorkflow.ts` | **新增** (~362 行) | 单例 state + 9 事件监听 + 心跳检测 + 全部 API 方法 |
+| `frontend/src/components/workspace/AIAssistantPanel.vue` | 修改 (+200 行) | 模式切换 (单功能/工作流) + 工作流配置 UI + 执行进度 + 取消/apply/discard |
+| `frontend/src/components/workspace/ConflictResolutionView.vue` | **新增** (~193 行) | Teleport 全屏覆盖冲突解决视图 |
+| `tests/test_workflow_engine.py` | **新增** (~522 行) | 35 个单元测试 |
+
+### 架构决策
+
+#### 工作流不修改 TaskManager -- 编排层 (D-18)
+
+WorkflowEngine 不执行分析，作为编排层通过 `create_task` 调度步骤。handler 检查 `task.payload.get("_workflow_accumulate")` 跳过 `add_analysis_results` / `store_subtitle_corrections`。
+
+#### 快照持久化 -- 完整快照文件 (D-28, D-30)
+
+快照存储在 `data/projects/<name>/_workflow_<instance_id>.json`，包含 segments 快照 + segments_hash + accumulated_edits + step_results。每步更新快照 (原子写入 `.tmp` -> `os.replace`)。
+
+#### apply 前悲观锁 + hash 校验 (D-67)
+
+工作流启动后禁用 Timeline 手动编辑; apply 时计算 segments content hash (SHA256)，若与快照不一致则提示重新创建。
+
+#### source 命名规范 (D-65)
+
+`workflow:<wf_id>:<name>` -- 保留 ID 供程序唯一识别，保留 name 供 UI 展示。
+
+#### 冲突解决 -- 决策去重非合并 (D-66)
+
+keep_first/keep_last/keep_all -- 冲突解决的本质是"决策去重"，保留用户认为最重要的决策。
 
 ---
 
-## 测试基线 (Phase 2 后)
+## Phase 4: 规格补齐 (已完成)
+
+> 目标: 对照 spec-v2.1.0.md 审计，补齐规格中描述但 Phase 3 代码未实现的部分
+
+### 概要
+
+基于 spec 审计发现 6 个缺失项，全部补齐:
+
+1. **集成测试** -- `tests/integration/test_workflow_integration.py` (20 个 @pytest.mark.integration 测试)
+2. **每步预设选择器** (D-43) -- AIAssistantPanel.vue 步骤配置区新增 preset 下拉
+3. **步骤失败对话框** (D-11) -- retry/skip/abort 三按钮 Teleport overlay
+4. **悲观锁** (D-67) -- Timeline.vue 新增 `workflowLocked` prop + WorkspacePage.vue 锁定横幅
+5. **3 个前端测试文件** -- ConflictResolutionView + AIAssistantPanel + SettingsModal (22 个测试)
+
+### 变更文件 (共 7 个)
+
+| 文件 | 变更 | 说明 |
+|------|------|------|
+| `tests/integration/test_workflow_integration.py` | **新增** (~698 行) | 20 个集成测试: TestMultiStepOrchestration (5) + TestSnapshotPersistence (4) + TestEndToEndApply (5) + TestPresetDispatch (2) + TestStepTypeMapping (4) |
+| `frontend/src/components/workspace/AIAssistantPanel.vue` | 修改 (+90 行) | D-43 预设选择器 (STEP_TO_PRESET_KEY + loadStepPresets + getStepPresetId/setStepPresetId) + D-11 失败对话框 (Teleport overlay with retry/skip/abort) |
+| `frontend/src/components/workspace/Timeline.vue` | 修改 (+2 行) | 新增 `workflowLocked` prop (D-67 悲观锁) |
+| `frontend/src/pages/WorkspacePage.vue` | 修改 (+10 行) | 导入 useWorkflow + 传递 `workflow-locked` 到 Timeline + amber 锁定横幅 |
+| `frontend/src/components/workspace/ConflictResolutionView.test.ts` | **新增** (~153 行) | 9 个测试: 渲染 + keep_first/keep_all + skip + apply |
+| `frontend/src/components/workspace/AIAssistantPanel.test.ts` | **新增** (~165 行) | 7 个测试: 模式切换 + 步骤配置 + 执行进度 + queued + apply/discard |
+| `frontend/src/components/workspace/SettingsModal.test.ts` | **新增** (~90 行) | 6 个测试: 预设 CRUD composable 集成 |
+
+### 决策映射 (Phase 4)
+
+| 决策 | 实现 |
+|------|------|
+| D-11 (步骤失败交互式) | AIAssistantPanel.vue Teleport overlay: retry (重试) / skip (跳过) / abort (中止) 三按钮 |
+| D-43 (步骤可选预设) | AIAssistantPanel.vue STEP_TO_PRESET_KEY 映射 + loadStepPresets + 每步 preset 下拉 |
+| D-67 (悲观锁) | Timeline.vue workflowLocked prop + WorkspacePage.vue amber 横幅 "工作流执行中 -- Timeline 编辑已锁定" |
+
+---
+
+## 测试基线 (Phase 4 后)
 
 | 类别 | 数量 | 说明 |
 |------|------|------|
-| 后端单元测试 | ~290 | 含新增 test_diff_service.py 7 个 + test_subtitle_correction_review.py ~15 个 |
-| 前端测试 | 147 | 无新增 (Phase 2 为审阅 UI，无独立组件测试) |
-| ruff | 零错误 | |
-| ESLint | 零错误 | |
-| 排除 | test_transcription.py | 已知 ASR VadOptions 失败 |
+| 后端单元测试 | ~319 | 含 test_workflow_engine.py 35 个 |
+| 后端集成测试 | 20 | test_workflow_integration.py (Phase 4 新增) |
+| 前端测试 | 169 | 含 Phase 4 新增 22 个 (ConflictResolutionView 9 + AIAssistantPanel 7 + SettingsModal 6) |
+| ruff | 零错误 | (预存 core/llm_service.py import 排序问题除外) |
+| ESLint | 零错误 | (预存 v-html 警告除外) |
+| 排除 | test_transcription.py | 已知 ASR VadOptions 失败 (无关) |
 | 排除 | test_asr_gui_e2e.py | 需完整 GUI 环境 |
 
 ---
 
 ## 发布前待办
 
+- [x] Phase 1: 提示词风格预设
 - [x] Phase 2: P1 完整 diff 审阅
-- [ ] Phase 3: 一键清理工作流
+- [x] Phase 3: 一键清理工作流
+- [x] Phase 4: 规格补齐 (集成测试 + UI 缺失项 + 前端测试)
 - [ ] 版本号 bump (pyproject.toml 当前仍为 1.3.0，v2.0.0/v2.0.1 未合并 main)
 - [ ] build.py --onefile 实际产物验证 (需完整 GUI 环境)
