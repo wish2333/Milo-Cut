@@ -660,13 +660,60 @@ subtitle_correction 和 smart_delete 存在职责重叠区: 口误/卡壳/重复
 
 ---
 
+## 补丁修复: DaisyUI 样式迁移 + 工作流 UI 重构 + 取消功能 (已完成)
+
+### 概要
+
+4 项 UI/UX 修复，集中解决 DaisyUI 样式依赖移除、工作流模式操作效率优化、单功能模式取消功能缺失三大问题。
+
+### 变更清单
+
+| Commit | 文件 | 说明 |
+|--------|------|------|
+| `5320f87` | `HighlightModeView.vue` (+29/-25) | DaisyUI class 全部迁移为纯 Tailwind: `badge-*`→`bg-*/text-*`, `progress`→`div+h-*`, `btn`→`rounded bg-*`, `input-bordered`→`border px-2`, `base-content/70`→`text-gray-600`, `alert`→`rounded-lg border` |
+| `5320f87` | `HighlightModeView.test.ts` (+2/-2) | 适配新样式：`progress`→`[style*="width"]`, `link`→`/\d+:\d+/` |
+| `bc7e435` | `AIAssistantPanel.vue` (+5) | 工作流步骤勾选框添加 `getStepOrder()` 序号徽标 (蓝色圆形 1/2/3)；预设下拉 select 在勾选后始终可见 |
+| `bc7e435` | `Timeline.vue` (+2/-1) | 右侧栏 `p-2` 内边距填充 |
+| `93994c2` | `AIAssistantPanel.vue` (+1/-1) | 步骤序号从左侧移到右侧 |
+| `c9d5619` | `main.py` (+15) | 新增 `cancel_llm_tasks` @expose 方法 |
+| `c9d5619` | `AIAssistantPanel.vue` (+91/-30) | **工作流模式重构**: 大"启动"按钮置顶、保存/删除/下拉同行、选择已保存工作流自动填充步骤与预设、单功能模式进度条旁"取消"按钮、搜索卡片锁 icon |
+| `c9d5619` | `SemanticSearchBar.vue` (+7/-7) | DaisyUI 样式迁移完成 |
+| `c9d5619` | `Timeline.vue` (+2) | 新增 `cancel-single` emit |
+| `c9d5619` | `WorkspacePage.vue` (+6) | `handleCancelSingle` 调用 `cancel_llm_tasks` |
+| `c9d5619` | `AIAssistantPanel.test.ts` (+1/-1) | 测试断言更新 |
+
+### 架构决策
+
+#### 取消策略 -- 后端批量取消
+
+后端实现 `cancel_llm_tasks` 遍历 TaskManager 列表取消所有 queued/running 的 LLM 类型任务 (含未 start 的任务)，避免前端多次跨桥往返。
+
+#### 工作流 UI 重排 -- "选择即填充"
+
+选择已保存工作流时 watch 自动填充步骤勾选 + 预设 + 名称，大"启动"按钮置顶，保存/删除同行紧凑排列。
+
+#### DaisyUI 样式迁移模式
+
+渐进迁移：`badge`→`inline-flex items-center rounded-full px-2 py-0.5`，`alert`→`rounded-lg border bg-*/text-*`，`progress`→`div`，`btn`→`rounded bg-blue-500`，`base-content`→`text-gray-*`。
+
+### 测试覆盖
+
+| 命令 | 结果 |
+|------|------|
+| `uv run pytest tests/` (全量，排除 whisper/asr-gui) | 319 测试全部通过 |
+| `uv run ruff check main.py` | All checks passed |
+| `bun run build` | 通过 -- 94 modules，index.js 245.21 kB |
+| `bun run test` (169 前端测试) | 全部通过 |
+
+---
+
 ## 测试基线 (更新后)
 
 | 类别 | 数量 | 说明 |
 |------|------|------|
 | 后端单元测试 | ~319 | 含 test_workflow_engine.py 35 个; 供应商默认值变更后适配通过 |
 | 后端集成测试 | 35 | test_workflow_integration.py (Phase 4 新增 20 + 已有 15) |
-| 前端测试 | 169 | 含 SettingsModal 6 个; 供应商/thinking/custom 补丁后回归通过 |
+| 前端测试 | 169 | 含 AIAssistantPanel.test.ts 适配; 样式迁移后回归通过 |
 | ruff | 零错误 | |
 | ESLint | 零错误 | (预存 v-html 警告除外) |
 | 排除 | test_transcription.py | 已知 ASR VadOptions 失败 (无关) |
@@ -680,5 +727,6 @@ subtitle_correction 和 smart_delete 存在职责重叠区: 口误/卡壳/重复
 - [x] Phase 2: P1 完整 diff 审阅
 - [x] Phase 3: 一键清理工作流
 - [x] Phase 4: 规格补齐 (集成测试 + UI 缺失项 + 前端测试)
+- [x] UI 修复: DaisyUI 样式迁移 + 工作流 UI 重构 + 取消功能
 - [ ] 版本号 bump (pyproject.toml 当前仍为 1.3.0，v2.0.0/v2.0.1 未合并 main)
 - [ ] build.py --onefile 实际产物验证 (需完整 GUI 环境)
