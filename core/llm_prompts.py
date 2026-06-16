@@ -32,31 +32,42 @@ _SMART_DELETE_SYSTEM = """你是视频剪辑助手。用户以 JSON 格式提供
 3. filler_phrase: 上下文口头禅 -- 无实义过渡句如"然后接下来就是我们要讲的那个"
 {{custom_fillers}}
 输出格式: JSON 数组
-[{"segment_id": "片段ID", "action": "delete", "reason": "删除理由", "category": "semantic_dup|self_correct|filler_phrase"}]
-只输出建议删除的片段，无需删除的不要输出。
+[{"segment_id": "片段ID", "action": "delete", "reason": "删除理由", "category": "semantic_dup|self_correct|filler_phrase", "confidence": 0.0到1.0}]
+只输出建议删除的片段，无需删除的不要输出。confidence 表示删除必要性 (1.0=非常确定该删，0.5=模棱两可)。
 """
 
 _SUBTITLE_CORRECTION_SYSTEM_A = """你是视频字幕纠错专家。用户以 JSON 格式提供转录片段列表。
-请修正每个片段中的 ASR 识别错误:
-- 同音错字 (如"由于"误识为"优化")
+请只修正每个片段中的 ASR (语音识别) 错误:
+- 同音错字 (如"由于"误识为"优化"、"的地得"混用)
 - 专有名词错误 (如人名、地名、术语)
 - 断句/标点问题
+
+重要职责边界:
+- 口误、卡壳、重复、语无伦次的内容保持原样 -- 这些由"智能删除"功能处理，不属于字幕纠错的范畴。
+- 不要"改善"或"润色"原文措辞，只修正明确的识别错误。
+- 如果一个片段的文本本身通顺无识别错误，即使口语化也不要改动。
+
 {{glossary}}
 注意: 不要改变片段的原始时间戳 (start/end)。只修正文本内容。
 
-输出格式: JSON 数组，每个元素对应输入中的一个片段:
-[{"segment_id": "片段ID", "corrected_text": "修正后的文本", "changes": ["变更说明1", "变更说明2"], "category": "homophone|proper_noun|punctuation|none"}]
-如果某片段无需修正，corrected_text 设为与原文相同，category 设为 "none"。
+输出格式: JSON 数组，仅包含需要修正的片段:
+[{"segment_id": "片段ID", "corrected_text": "修正后的文本", "changes": ["变更说明1", "变更说明2"], "category": "homophone|proper_noun|punctuation", "confidence": 0.0到1.0}]
+无需修正的片段不要出现在输出中。
 """
 
 _SUBTITLE_CORRECTION_SYSTEM_B = """你是视频字幕对齐专家。用户以 JSON 格式提供 ASR 转录片段和参考稿全文。
 请将每个 ASR 片段与参考稿内容对齐，用参考稿内容修正 ASR 文本错误。
+
+重要职责边界:
+- 只修正 ASR 识别错误 (同音字、专有名词、断句)，使其与参考稿一致。
+- 不要补充、删减或重排内容。如果 ASR 文本与参考稿对应部分一致，不要改动。
+
 {{glossary}}
 注意: 不要改变片段的原始时间戳 (start/end)。只修正文本内容使其与参考稿一致。
 
-输出格式: JSON 数组:
-[{"segment_id": "片段ID", "corrected_text": "修正后的文本", "changes": ["变更说明"], "category": "reference_aligned|none", "confidence": 0.0到1.0}]
-如果某片段无需修正，corrected_text 设为与原文相同，category 设为 "none"。
+输出格式: JSON 数组，仅包含需要修正的片段:
+[{"segment_id": "片段ID", "corrected_text": "修正后的文本", "changes": ["变更说明"], "category": "reference_aligned", "confidence": 0.0到1.0}]
+无需修正的片段不要出现在输出中。
 """
 
 _HIGHLIGHT_SYSTEM = """你是演讲视频内容分析师。用户以 JSON 格式提供转录片段列表。

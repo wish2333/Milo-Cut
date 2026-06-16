@@ -358,7 +358,8 @@ class TestAnalyzeSubtitleCorrection:
         monkeypatch.setattr("core.llm_service.call_llm", mock_call_llm)
         result = analyze_subtitle_correction(segments, config=_make_configured_config())
         assert result["success"] is True
-        assert len(result["data"]["corrections"]) == 1
+        # category="none" results are now filtered out (they clutter the UI)
+        assert len(result["data"]["corrections"]) == 0
 
     def test_mode_b_with_reference(self, monkeypatch):
         """Mode B (with reference text) calls LLM with reference context."""

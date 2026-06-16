@@ -16,15 +16,7 @@ from typing import Any
 from openai import APIError, APITimeoutError, OpenAI, RateLimitError
 
 from core.config import load_settings
-from core.llm_prompts import (
-    DEFAULT_PROMPTS,
-    _SMART_DELETE_SYSTEM,
-    _SUBTITLE_CORRECTION_SYSTEM_A,
-    _SUBTITLE_CORRECTION_SYSTEM_B,
-    _HIGHLIGHT_SYSTEM,
-    _SEARCH_SYSTEM,
-    get_effective_prompt,
-)
+from core.llm_prompts import get_effective_prompt
 from core.logging import get_logger
 from core.models import LlmConfig, LlmProvider
 
@@ -69,9 +61,9 @@ def get_llm_config() -> LlmConfig:
     settings = load_settings()
     return LlmConfig(
         provider=LlmProvider(settings.get("llm_provider", "custom")),
-        base_url=settings.get("llm_base_url", ""),
-        api_key=settings.get("llm_api_key", ""),
-        model=settings.get("llm_model", ""),
+        base_url=settings.get("llm_base_url", "").strip(),
+        api_key=settings.get("llm_api_key", "").strip(),
+        model=settings.get("llm_model", "").strip(),
         temperature=settings.get("llm_temperature", 0.3),
         timeout=settings.get("llm_timeout", 120),
     )
@@ -686,19 +678,33 @@ def analyze_subtitle_correction(
             logger.warning(f"Subtitle correction batch {batch_idx + 1}: parse returned None")
             continue
 
-        # Normalize: only keep results for target segment IDs
+        # Normalize: only keep results for target segment IDs that need changes
+        # Build a quick lookup for original text so we can skip no-op results.
+        orig_text_by_id = {
+            str(s.get("id", "")): str(s.get("text", "")).strip()
+            for s in batch_with_context
+        }
         for item in parsed:
             if not isinstance(item, dict):
                 continue
             seg_id = str(item.get("segment_id", ""))
             if not seg_id or seg_id not in target_ids:
                 continue
+            category = str(item.get("category", "none"))
+            corrected = str(item.get("corrected_text", "")).strip()
+            # Skip "no change" results -- they clutter the review UI.
+            # The prompt asks the model to return category="none" or identical
+            # corrected_text when nothing needs fixing; we don't surface those.
+            if category == "none":
+                continue
+            if corrected == orig_text_by_id.get(seg_id, ""):
+                continue
             all_corrections.append(
                 {
                     "segment_id": seg_id,
-                    "corrected_text": str(item.get("corrected_text", "")),
+                    "corrected_text": corrected,
                     "changes": item.get("changes", []),
-                    "category": str(item.get("category", "none")),
+                    "category": category,
                     "confidence": min(1.0, max(0.0, float(item.get("confidence", 0.9)))),
                 }
             )
@@ -1026,6 +1032,7 @@ def semantic_search(
         return result
 
     content = result["data"]["content"]
+    usage = result["data"].get("usage", {})
     parsed = _parse_json_response_layers(content)
     if not parsed:
         return {
@@ -1062,5 +1069,13 @@ def semantic_search(
 
     return {
         "success": True,
-        "data": {"results": normalized[:top_k], "query": query.strip()},
+        "data": {
+            "results": normalized[:top_k],
+            "query": query.strip(),
+            "token_usage": {
+                "prompt_tokens": usage.get("prompt_tokens", 0),
+                "completion_tokens": usage.get("completion_tokens", 0),
+                "total_tokens": usage.get("total_tokens", 0),
+            },
+        },
     }
