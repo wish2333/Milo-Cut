@@ -168,6 +168,11 @@ function isStepChecked(stepType: WorkflowStep["type"]) {
   return newWorkflowSteps.value.some((s) => s.type === stepType)
 }
 
+/** Returns 1-based execution order for a checked step, or 0 if unchecked. */
+function getStepOrder(stepType: WorkflowStep["type"]): number {
+  return newWorkflowSteps.value.findIndex((s) => s.type === stepType) + 1
+}
+
 async function handleSaveWorkflow() {
   if (!newWorkflowName.value.trim()) return
   const steps = newWorkflowSteps.value
@@ -444,6 +449,10 @@ function handleSearchSeek(time: number) {
                   class="h-3.5 w-3.5"
                   @change="toggleStep(step.type)"
                 />
+                <span
+                  v-if="isStepChecked(step.type)"
+                  class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-blue-500 text-[10px] font-bold text-white"
+                >{{ getStepOrder(step.type) }}</span>
                 <span class="text-xs text-gray-700">{{ step.label }}</span>
               </div>
               <!-- D-43: per-step preset picker -->
