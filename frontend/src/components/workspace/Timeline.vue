@@ -62,6 +62,7 @@ const emit = defineEmits<{
   "open-subtitle-fullscreen": []
   "start-highlight": [targetMinutes: number]
   "go-to-settings": []
+  "cancel-single": []
 }>()
 
 // Phase 2: right panel tab state (D-18). Using ref + v-show preserves
@@ -233,6 +234,7 @@ watch(
             @open-subtitle-fullscreen="emit('open-subtitle-fullscreen')"
             @go-to-settings="emit('go-to-settings')"
             @seek="(t) => emit('seek-suggestion', t)"
+            @cancel-single="emit('cancel-single')"
           />
 
           <HighlightModeView

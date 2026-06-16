@@ -102,7 +102,7 @@ function relevancePercent(relevance: number): number {
 <template>
   <div class="flex flex-col gap-2">
     <!-- Not configured warning -->
-    <div v-if="!llmConfigured" class="alert alert-warning text-xs">
+    <div v-if="!llmConfigured" class="rounded-lg border border-yellow-200 bg-yellow-50 p-2 text-xs text-yellow-800">
       <span>请先在设置中配置 LLM 连接</span>
     </div>
 
@@ -111,23 +111,23 @@ function relevancePercent(relevance: number): number {
       <input
         v-model="query"
         type="text"
-        class="input input-bordered input-sm flex-1 text-xs"
+        class="flex-1 rounded border border-gray-300 px-2 py-1 text-xs"
         placeholder="输入自然语言查询，如 '讲性能优化的那段'"
         :disabled="!llmConfigured || loading"
         @keydown.enter="handleSearch"
       />
       <button
-        class="btn btn-primary btn-sm"
+        class="rounded bg-blue-500 px-3 py-1 text-xs text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
         :disabled="!llmConfigured || loading || !query.trim()"
         @click="handleSearch"
       >
-        <span v-if="loading" class="loading loading-spinner loading-xs"></span>
+        <span v-if="loading" class="inline-block h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent"></span>
         搜索
       </button>
     </div>
 
     <!-- Error -->
-    <div v-if="error" class="alert alert-error text-xs">
+    <div v-if="error" class="rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-700">
       <span>{{ error }}</span>
     </div>
 
@@ -136,15 +136,15 @@ function relevancePercent(relevance: number): number {
       <div
         v-for="item in sortedResults"
         :key="item.result.segment_id"
-        class="cursor-pointer rounded-lg border border-base-300 bg-base-100 p-2 text-xs transition-colors hover:bg-base-200"
+        class="cursor-pointer rounded-lg border border-gray-200 bg-white p-2 text-xs transition-colors hover:bg-gray-50"
         @click="handleSeek(item.startTime)"
       >
         <div class="flex items-start gap-2">
           <div class="flex-1">
-            <p class="line-clamp-2 text-base-content/70">{{ item.textPreview }}</p>
-            <p class="mt-1 text-base-content/40">{{ item.result.match_reason }}</p>
+            <p class="line-clamp-2 text-gray-600">{{ item.textPreview }}</p>
+            <p class="mt-1 text-gray-400">{{ item.result.match_reason }}</p>
           </div>
-          <span class="badge badge-sm badge-primary shrink-0">
+          <span class="inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-medium text-blue-700 shrink-0">
             {{ relevancePercent(item.result.relevance) }}%
           </span>
         </div>
@@ -154,7 +154,7 @@ function relevancePercent(relevance: number): number {
     <!-- Empty state (searched but no results) -->
     <div
       v-else-if="hasSearched && !loading && !error"
-      class="py-4 text-center text-xs text-base-content/40"
+      class="py-4 text-center text-xs text-gray-400"
     >
       未找到相关片段
     </div>
@@ -162,7 +162,7 @@ function relevancePercent(relevance: number): number {
     <!-- Initial empty state -->
     <div
       v-else-if="!hasSearched && !loading"
-      class="py-2 text-center text-xs text-base-content/40"
+      class="py-2 text-center text-xs text-gray-400"
     >
       输入自然语言查询，如 "讲性能优化的那段"
     </div>

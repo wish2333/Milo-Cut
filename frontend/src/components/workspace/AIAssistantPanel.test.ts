@@ -127,7 +127,7 @@ describe("AIAssistantPanel -- workflow mode", () => {
     await workflowTab?.trigger("click")
 
     expect(wrapper.text()).toContain("选择已保存工作流")
-    expect(wrapper.text()).toContain("新建工作流")
+    expect(wrapper.text()).toContain("步骤 (按勾选顺序执行)")
   })
 
   it("shows step checkboxes in workflow config", async () => {

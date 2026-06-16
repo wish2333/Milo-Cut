@@ -1285,6 +1285,21 @@ class MiloCutApi(Bridge):
         return self._task_manager.cancel_task(task_id)
 
     @expose
+    def cancel_llm_tasks(self) -> dict:
+        """Cancel all currently running/queued LLM tasks (single-function mode)."""
+        llm_types = {
+            "llm_smart_delete", "llm_subtitle_correction",
+            "llm_highlight", "llm_semantic_search",
+        }
+        tasks = self._task_manager.list_tasks()
+        cancelled = 0
+        for t in tasks.get("data", []):
+            if t.get("type") in llm_types and t.get("status") in ("queued", "running"):
+                self._task_manager.cancel_task(t["id"])
+                cancelled += 1
+        return {"success": True, "data": {"cancelled": cancelled}}
+
+    @expose
     def get_task(self, task_id: str) -> dict:
         return self._task_manager.get_task(task_id)
 

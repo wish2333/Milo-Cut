@@ -12,7 +12,7 @@
  * Feature cards show 场景名 (primary) + 功能名 (subtitle) per D-14.
  * When LLM is not configured, cards are greyed out per D-12.
  */
-import { computed, onMounted, ref } from "vue"
+import { computed, onMounted, ref, watch } from "vue"
 import SemanticSearchBar from "@/components/workspace/SemanticSearchBar.vue"
 import { useWorkflow } from "@/composables/useWorkflow"
 import type { WorkflowStep } from "@/composables/useWorkflow"
@@ -40,6 +40,7 @@ const emit = defineEmits<{
   "open-subtitle-fullscreen": []
   "go-to-settings": []
   seek: [time: number]
+  "cancel-single": []
 }>()
 
 // v2.1.0 Phase 3: workflow composable
@@ -52,12 +53,16 @@ const STEP_TO_PRESET_KEY: Record<string, string> = {
   llm_smart_delete: "smart_delete",
   llm_subtitle_correction: "subtitle_correction_a",
   llm_highlight: "highlight",
+  // Single-function mode keys
+  smart_delete: "smart_delete",
+  subtitle_correction: "subtitle_correction_a",
   // full_analysis has no presets
 }
 
 const panelMode = ref<PanelMode>("single")
 const selectedFeature = ref<FeatureKey | null>(null)
 const referenceText = ref("")
+const currentPresetId = ref("")           // shared preset for single-function ops
 
 // Workflow config state
 const newWorkflowName = ref("")
@@ -209,6 +214,30 @@ async function handleDiscardWorkflow() {
 
 onMounted(() => {
   wf.loadWorkflows()
+  // Load presets for ALL available workflow step types so their config
+  // dropdowns appear immediately (even for unchecked steps).
+  availableSteps.forEach((s) => loadStepPresets(s.type))
+  // Load presets for single-function mode (smart_delete + subtitle_correction)
+  loadStepPresets("smart_delete")
+  loadStepPresets("subtitle_correction")
+})
+
+// When user selects a saved workflow from the dropdown, populate the step checkboxes
+// so they can see/verify the steps before launching.
+watch(selectedWorkflowId, (id) => {
+  if (!id) return
+  const saved = wf.workflows.value.find((w) => w.id === id)
+  if (!saved) return
+  // Replace newWorkflowSteps with the saved workflow's steps,
+  // preserving the order from the saved definition.
+  newWorkflowSteps.value = saved.steps.map((s: any) => ({
+    type: s.type,
+    preset_id: s.preset_id ?? null,
+  }))
+  // Also fill the workflow name field
+  newWorkflowName.value = saved.name
+  // Load presets for each step
+  saved.steps.forEach((s: any) => loadStepPresets(s.type))
 })
 
 async function handleStartSmartDelete() {
@@ -217,6 +246,10 @@ async function handleStartSmartDelete() {
 
 function handleStartSubtitleCorrection() {
   emit("start-subtitle-correction", referenceText.value)
+}
+
+function handleCancelSingle() {
+  emit("cancel-single")
 }
 
 function handleOpenFullscreen() {
@@ -397,103 +430,103 @@ function handleSearchSeek(time: number) {
 
       <!-- Config view (when not active and no instance) -->
       <div v-else class="flex flex-1 flex-col gap-3 overflow-y-auto">
-        <!-- Saved workflows -->
-        <div class="flex flex-col gap-2">
-          <div class="flex items-center gap-2">
-            <select
-              v-model="selectedWorkflowId"
-              class="flex-1 rounded-md border border-gray-200 px-2 py-1.5 text-xs"
-            >
-              <option value="">-- 选择已保存工作流 --</option>
-              <option v-for="w in wf.workflows.value" :key="w.id" :value="w.id">
-                {{ w.name }} ({{ w.steps.length }} 步)
-              </option>
-            </select>
-            <button
-              class="rounded-md bg-blue-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600 disabled:opacity-50"
-              :disabled="!selectedWorkflowId"
-              @click="handleStartWorkflow"
-            >启动</button>
-            <button
-              class="rounded-md border border-red-300 px-2 py-1.5 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
-              :disabled="!selectedWorkflowId"
-              @click="handleDeleteWorkflow"
-            >删除</button>
-          </div>
-        </div>
+        <!-- Big "启动" button at top -->
+        <button
+          class="w-full rounded-md bg-blue-600 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          :disabled="!selectedWorkflowId"
+          @click="handleStartWorkflow"
+        >工作流启动</button>
 
-        <div class="border-t border-gray-100 pt-2">
-          <p class="mb-2 text-xs font-medium text-gray-500">-- 或新建工作流 --</p>
-        </div>
-
-        <!-- New workflow config -->
-        <div class="flex flex-col gap-2">
-          <input
-            v-model="newWorkflowName"
-            class="w-full rounded-md border border-gray-200 px-2 py-1.5 text-xs"
-            placeholder="工作流名称"
-          />
-
-          <div class="flex flex-col gap-1.5">
-            <p class="text-xs text-gray-500">步骤 (按勾选顺序执行):</p>
-            <label
-              v-for="step in availableSteps"
-              :key="step.type"
-              class="flex flex-col gap-1 rounded-md border border-gray-100 px-2 py-1.5"
-              :class="{ 'bg-blue-50 border-blue-200': isStepChecked(step.type) }"
-            >
-              <div class="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  :checked="isStepChecked(step.type)"
-                  class="h-3.5 w-3.5"
-                  @change="toggleStep(step.type)"
-                />
-                <span class="flex-1 text-xs text-gray-700">{{ step.label }}</span>
-                <span
-                  v-if="isStepChecked(step.type)"
-                  class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-blue-500 text-[10px] font-bold text-white"
-                >{{ getStepOrder(step.type) }}</span>
-              </div>
-              <!-- D-43: per-step preset picker -->
-              <select
-                v-if="isStepChecked(step.type) && stepPresetOptions[step.type]"
-                :value="getStepPresetId(step.type)"
-                class="ml-5.5 w-full rounded border border-gray-200 px-1.5 py-1 text-xs text-gray-600"
-                @change="setStepPresetId(step.type, ($event.target as HTMLSelectElement).value)"
-              >
-                <option value="">(使用当前配置)</option>
-                <option
-                  v-for="p in stepPresetOptions[step.type]"
-                  :key="p.id"
-                  :value="p.id"
-                >
-                  {{ p.name }}
-                </option>
-              </select>
-            </label>
-          </div>
-
+        <!-- Saved workflow select + save + delete in one row -->
+        <div class="flex items-center gap-2">
+          <select
+            v-model="selectedWorkflowId"
+            class="flex-1 rounded-md border border-gray-200 px-2 py-1.5 text-xs"
+          >
+            <option value="">-- 选择已保存工作流 --</option>
+            <option v-for="w in wf.workflows.value" :key="w.id" :value="w.id">
+              {{ w.name }} ({{ w.steps.length }} 步)
+            </option>
+          </select>
           <button
-            class="rounded-md bg-gray-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800 disabled:opacity-50"
+            class="shrink-0 rounded-md bg-gray-700 px-2 py-1.5 text-xs font-medium text-white hover:bg-gray-800 disabled:opacity-50"
             :disabled="!newWorkflowName.trim() || newWorkflowSteps.length === 0"
             @click="handleSaveWorkflow"
-          >保存工作流</button>
+          >保存</button>
+          <button
+            class="shrink-0 rounded-md border border-red-300 px-2 py-1.5 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
+            :disabled="!selectedWorkflowId"
+            @click="handleDeleteWorkflow"
+          >删除</button>
         </div>
+
+        <!-- New workflow name -->
+        <input
+          v-model="newWorkflowName"
+          class="w-full rounded-md border border-gray-200 px-2 py-1.5 text-xs"
+          placeholder="工作流名称"
+        />
+
+        <!-- Steps checkboxes -->
+        <div class="flex flex-col gap-1.5">
+          <p class="text-xs text-gray-500">步骤 (按勾选顺序执行):</p>
+          <label
+            v-for="step in availableSteps"
+            :key="step.type"
+            class="flex flex-col gap-1 rounded-md border border-gray-100 px-2 py-1.5"
+            :class="{ 'bg-blue-50 border-blue-200': isStepChecked(step.type) }"
+          >
+            <div class="flex items-center gap-2">
+              <input
+                type="checkbox"
+                :checked="isStepChecked(step.type)"
+                class="h-3.5 w-3.5"
+                @change="toggleStep(step.type)"
+              />
+              <span class="flex-1 text-xs text-gray-700">{{ step.label }}</span>
+              <span
+                v-if="isStepChecked(step.type)"
+                class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-blue-500 text-[10px] font-bold text-white"
+              >{{ getStepOrder(step.type) }}</span>
+            </div>
+            <!-- D-43: per-step preset picker (always visible if presets exist) -->
+            <select
+              v-if="stepPresetOptions[step.type]"
+              :value="getStepPresetId(step.type)"
+              class="w-full rounded border border-gray-200 px-1.5 py-1 text-xs text-gray-600"
+              @change="setStepPresetId(step.type, ($event.target as HTMLSelectElement).value)"
+            >
+              <option value="">(使用当前配置)</option>
+              <option
+                v-for="p in stepPresetOptions[step.type]"
+                :key="p.id"
+                :value="p.id"
+              >
+                {{ p.name }}
+              </option>
+            </select>
+          </label>
+        </div>
+
       </div>
     </template>
 
     <!-- ============ Single Function Mode (existing) ============ -->
     <template v-else>
     <!-- Progress bar (shared) -->
-    <div v-if="isRunning" class="flex flex-col gap-1">
-      <div class="h-1.5 w-full overflow-hidden rounded-full bg-gray-200">
-        <div
-          class="h-full bg-blue-500 transition-all duration-300"
-          :style="{ width: `${progress}%` }"
-        ></div>
+    <div v-if="isRunning" class="flex items-center gap-2">
+      <div class="flex-1">
+        <div class="h-1.5 w-full overflow-hidden rounded-full bg-gray-200">
+          <div
+            class="h-full bg-blue-500 transition-all duration-300"
+            :style="{ width: `${progress}%` }"
+          ></div>
+        </div>
       </div>
-      <p class="text-center text-xs text-gray-500">分析中...</p>
+      <button
+        class="shrink-0 rounded-md border border-red-300 px-2 py-1 text-[10px] font-medium text-red-600 hover:bg-red-50"
+        @click="handleCancelSingle"
+      >取消</button>
     </div>
 
     <!-- Feature cards (D-14) -->
@@ -538,8 +571,9 @@ function handleSearchSeek(time: number) {
         <span class="text-xs text-gray-400">({{ feat.subtitle }})</span>
       </button>
     </div>
+    <!-- Search card (full-width under grid) -->
     <button
-      class="flex items-center justify-between rounded-lg border p-2 text-left transition-colors"
+      class="relative flex items-start rounded-lg border p-2 text-left transition-colors"
       :class="[
         llmConfigured
           ? selectedFeature === 'search'
@@ -550,9 +584,20 @@ function handleSearchSeek(time: number) {
       :disabled="!llmConfigured"
       @click="selectFeature('search')"
     >
+      <svg
+        v-if="!llmConfigured"
+        class="absolute right-1 top-1 h-3 w-3 text-gray-400"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
+        stroke-width="2"
+      >
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+      </svg>
+      <span v-if="!llmConfigured" class="absolute right-1 top-1 text-[10px] text-gray-400">未配置</span>
       <div class="flex items-center gap-1.5">
         <svg
-          class="h-4 w-4 text-gray-500"
+          class="h-4 w-4 shrink-0 text-gray-500"
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
@@ -560,8 +605,10 @@ function handleSearchSeek(time: number) {
         >
           <path stroke-linecap="round" stroke-linejoin="round" :d="features[2].icon" />
         </svg>
-        <span class="text-sm font-medium text-gray-800">内容搜索</span>
-        <span class="text-xs text-gray-400">(语义搜索)</span>
+        <div class="flex flex-col">
+          <span class="text-sm font-medium text-gray-800">内容搜索</span>
+          <span class="text-xs text-gray-400">语义搜索</span>
+        </div>
       </div>
     </button>
 
@@ -570,6 +617,19 @@ function handleSearchSeek(time: number) {
       <!-- Smart delete (P0) -->
       <div v-if="selectedFeature === 'smart_delete'" class="flex flex-col gap-2">
         <p class="text-xs text-gray-600">{{ features[0].description }}</p>
+        <select
+          v-model="currentPresetId"
+          class="w-full rounded border border-gray-200 px-1.5 py-1 text-xs text-gray-600"
+        >
+          <option value="">(使用当前配置)</option>
+          <option
+            v-for="p in stepPresetOptions['smart_delete'] ?? []"
+            :key="p.id"
+            :value="p.id"
+          >
+            {{ p.name }}
+          </option>
+        </select>
         <button
           class="rounded-md bg-blue-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600 disabled:opacity-50"
           :disabled="isRunning"
@@ -585,6 +645,19 @@ function handleSearchSeek(time: number) {
       <!-- Subtitle correction (P1) -->
       <div v-if="selectedFeature === 'subtitle_correction'" class="flex flex-col gap-2">
         <p class="text-xs text-gray-600">{{ features[1].description }}</p>
+        <select
+          v-model="currentPresetId"
+          class="w-full rounded border border-gray-200 px-1.5 py-1 text-xs text-gray-600"
+        >
+          <option value="">(使用当前配置)</option>
+          <option
+            v-for="p in stepPresetOptions['subtitle_correction'] ?? []"
+            :key="p.id"
+            :value="p.id"
+          >
+            {{ p.name }}
+          </option>
+        </select>
         <textarea
           v-model="referenceText"
           class="w-full rounded-md border border-gray-200 p-2 text-xs"

@@ -952,6 +952,11 @@ async function handleStartHighlight(targetMinutes: number) {
   showToast("精华提取已启动", "info", 2000)
 }
 
+async function handleCancelSingle() {
+  await call("cancel_llm_tasks")
+  showToast("已取消", "info", 2000)
+}
+
 async function handleOpenSubtitleFullscreen() {
   showSubtitleFullscreen.value = true
   // v2.1.0 Phase 2: load pending corrections from backend on open
@@ -1858,6 +1863,7 @@ onUnmounted(() => {
             @open-subtitle-fullscreen="handleOpenSubtitleFullscreen"
             @start-highlight="handleStartHighlight"
             @go-to-settings="handleGoToSettings"
+            @cancel-single="handleCancelSingle"
           />
           </div>
         </template>
