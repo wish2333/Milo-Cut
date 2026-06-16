@@ -851,11 +851,18 @@ def analyze_highlights(
 
     target_seconds = target_duration_minutes * 60
 
-    chunks = chunk_transcript(segments)
+    # Highlight needs full context for structure understanding -- use large
+    # chunks (30 min) so most videos are analyzed in a single LLM call and
+    # multi-sentence arguments stay intact. Only 30+ min recordings split.
+    chunks = chunk_transcript(segments, chunk_duration=1800.0, overlap_duration=60.0)
     total_chunks = len(chunks)
 
     # Resolve effective system prompt (caller override > layered default)
     effective_system = system_prompt or get_effective_prompt("highlight")
+
+    # Full-transcript analysis produces long output -- extend the timeout so
+    # large inputs don't fail before the model finishes generating.
+    highlight_config = config.model_copy(update={"timeout": max(config.timeout, 300)})
 
     all_results: list[dict] = []
     total_usage: dict[str, int] = {
@@ -881,7 +888,7 @@ def analyze_highlights(
             prompt,
             system=effective_system,
             json_mode=True,
-            config=config,
+            config=highlight_config,
             cancel_event=cancel_event,
         )
 
