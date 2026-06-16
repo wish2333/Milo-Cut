@@ -449,11 +449,11 @@ function handleSearchSeek(time: number) {
                   class="h-3.5 w-3.5"
                   @change="toggleStep(step.type)"
                 />
+                <span class="flex-1 text-xs text-gray-700">{{ step.label }}</span>
                 <span
                   v-if="isStepChecked(step.type)"
                   class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-blue-500 text-[10px] font-bold text-white"
                 >{{ getStepOrder(step.type) }}</span>
-                <span class="text-xs text-gray-700">{{ step.label }}</span>
               </div>
               <!-- D-43: per-step preset picker -->
               <select
