@@ -114,6 +114,11 @@ class MiloCutApi(Bridge):
             get_project_fn=self._bridge_get_project,
             start_analysis_fn=self._bridge_start_analysis,
         )
+        # v2.1.0 Phase 3: workflow engine
+        from core.workflow_engine import WorkflowEngine
+        self._workflow_engine = WorkflowEngine(
+            self._task_manager, self._project, self._emit,
+        )
 
     def _register_task_handlers(self) -> None:
         """Register handlers for each task type."""
@@ -373,9 +378,23 @@ class MiloCutApi(Bridge):
         if self._project.current is None:
             raise ValueError("No project open")
         settings = load_settings()
-        segments = list(self._project.current.transcript.segments)
+        # v2.1.0 Phase 3: workflow passes timeline_id in payload
+        timeline_id = task.payload.get("timeline_id", "")
+        project = self._project.current
+        if timeline_id:
+            timeline = project.get_timeline(timeline_id)
+            if timeline is None:
+                raise ValueError(f"Timeline {timeline_id} not found")
+            segments = list(timeline.transcript.segments)
+        else:
+            segments = list(project.transcript.segments)
         results = run_full_analysis(segments, settings)
         results_dicts = [r.model_dump() for r in results]
+
+        # v2.1.0 Phase 3: workflow accumulation mode -- skip project write
+        if task.payload.get("_workflow_accumulate"):
+            return {"results": results_dicts}
+
         store = self._project.add_analysis_results(results_dicts, source="full_analysis")
         if not store["success"]:
             raise RuntimeError(store.get("error", "Failed to store analysis results"))
@@ -745,9 +764,11 @@ class MiloCutApi(Bridge):
                 for r in all_results
                 if r["segment_id"] in seg_map
             ]
-            store = self._project.add_analysis_results(analysis_results, source="llm_smart")
-            if not store["success"]:
-                raise RuntimeError(store.get("error", "Failed to store smart-delete results"))
+            # v2.1.0 Phase 3: workflow accumulation mode -- skip project write
+            if not task.payload.get("_workflow_accumulate"):
+                store = self._project.add_analysis_results(analysis_results, source="llm_smart")
+                if not store["success"]:
+                    raise RuntimeError(store.get("error", "Failed to store smart-delete results"))
 
         self._emit("llm:smart_delete_completed", {"results": all_results, "edits": edits})
         self._emit("llm:token_usage", token_usage)
@@ -810,6 +831,16 @@ class MiloCutApi(Bridge):
 
         corrections = result["data"]["corrections"]
         token_usage = result["data"]["token_usage"]
+
+        # v2.1.0 Phase 3: workflow accumulation mode -- skip project write,
+        # return raw corrections for the engine to accumulate.
+        if task.payload.get("_workflow_accumulate"):
+            self._emit("llm:token_usage", token_usage)
+            return {
+                "corrections": corrections,
+                "stored_count": len(corrections),
+                "token_usage": token_usage,
+            }
 
         # v2.1.0 Phase 2: store corrections for review instead of auto-applying.
         store_result = self._project.store_subtitle_corrections(
@@ -922,9 +953,11 @@ class MiloCutApi(Bridge):
                 for r in all_results
                 if r["segment_id"] in seg_map
             ]
-            store = self._project.add_analysis_results(analysis_results, source="llm_highlight")
-            if not store["success"]:
-                raise RuntimeError(store.get("error", "Failed to store highlight results"))
+            # v2.1.0 Phase 3: workflow accumulation mode -- skip project write
+            if not task.payload.get("_workflow_accumulate"):
+                store = self._project.add_analysis_results(analysis_results, source="llm_highlight")
+                if not store["success"]:
+                    raise RuntimeError(store.get("error", "Failed to store highlight results"))
 
         self._emit(
             "llm:highlight_completed",
@@ -2434,9 +2467,72 @@ class MiloCutApi(Bridge):
             },
         }
 
+    # ================================================================
+    # region Workflow (v2.1.0 Phase 3)
+    # ================================================================
+
+    @expose
+    def get_workflows(self) -> dict:
+        """Get all saved workflow definitions."""
+        return self._workflow_engine.get_workflows()
+
+    @expose
+    def save_workflow(self, name: str, steps: list[dict], workflow_id: str = "") -> dict:
+        """Create or update a workflow definition."""
+        return self._workflow_engine.save_workflow(name, steps, workflow_id)
+
+    @expose
+    def delete_workflow(self, workflow_id: str) -> dict:
+        """Delete a workflow definition."""
+        return self._workflow_engine.delete_workflow(workflow_id)
+
+    @expose
+    def start_workflow(self, workflow_id: str, timeline_id: str = "") -> dict:
+        """Start a workflow execution."""
+        return self._workflow_engine.start_workflow(workflow_id, timeline_id)
+
+    @expose
+    def cancel_workflow(self, mode: str = "immediate") -> dict:
+        """Cancel the active workflow (immediate | after_current)."""
+        return self._workflow_engine.cancel_workflow(mode)
+
+    @expose
+    def handle_step_failure(self, action: str) -> dict:
+        """Respond to a workflow step failure (retry | skip | abort)."""
+        return self._workflow_engine.handle_step_failure(action)
+
+    @expose
+    def get_workflow_status(self) -> dict:
+        """Get current workflow execution status."""
+        return self._workflow_engine.get_workflow_status()
+
+    @expose
+    def detect_workflow_conflicts(self) -> dict:
+        """Run conflict detection on the active workflow snapshot."""
+        return self._workflow_engine.detect_conflicts()
+
+    @expose
+    def resolve_workflow_conflict(self, segment_id: str, resolution: str) -> dict:
+        """Resolve a single conflict (keep_first | keep_last | keep_all)."""
+        return self._workflow_engine.resolve_conflict(segment_id, resolution)
+
+    @expose
+    def apply_workflow(self) -> dict:
+        """Apply accumulated workflow edits to the real project."""
+        return self._workflow_engine.apply_workflow()
+
+    @expose
+    def discard_workflow(self) -> dict:
+        """Discard the active workflow without applying."""
+        return self._workflow_engine.discard_workflow()
+
+    @expose
+    def find_resumable_workflows(self) -> dict:
+        """Find workflow snapshots that can be resumed (cross-session recovery)."""
+        return {"success": True, "data": self._workflow_engine.find_resumable_snapshots()}
 
     # ================================================================
-    # endregion LLM
+    # endregion Workflow
 
 
 if __name__ == "__main__":
