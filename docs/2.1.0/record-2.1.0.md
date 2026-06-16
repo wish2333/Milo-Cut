@@ -389,13 +389,75 @@ keep_first/keep_last/keep_all -- 冲突解决的本质是"决策去重"，保留
 
 ---
 
+## 补丁修复: 空白区域 + 自动保存机制 (已完成)
+
+### 概要
+
+修复两个关联 bug：
+1. **Bug1 (空白区域)**: 新建项目时 Timeline 和右侧边栏下方出现大片空白，缩小窗口时空白不消失。
+2. **Bug2 (删除失败 + 自动保存缺失)**: 删除字幕报 "Failed to delete segment"，手动保存后才能删除。根因是后端从未 emit `PROJECT_DIRTY` 事件，前端 `isDirty` 永远为 false，2 秒 debounce 自动保存从不触发。
+
+### 根因分析
+
+#### Bug1: SplitPanel 槽缺少 display:flex
+
+开发者工具检查确认：SplitPanel 右槽 `<div class="h-full min-w-0 flex-1 overflow-hidden">` 是 **block 容器**（无 `display: flex`），其子元素 WorkspacePage `<div class="relative flex flex-1 flex-col ...">` 的 `flex-1` **无效**（父非 flex container），子元素按内容高度收缩。新建项目内容少（"暂无分析结果"/"No segments loaded"），下方大片留白；导入字幕后内容增多撑满，空白"消失"。
+
+缩小窗口时空白不消失：block 容器高度由 `h-full`（=父高度）决定，父高度不变则空白不变。
+
+#### Bug2: PROJECT_DIRTY 事件从未 emit
+
+`grep -r "PROJECT_DIRTY\|_emit.*dirty" main.py` 零结果。前端 `isDirty` 仅在 `onEvent(EVENT_PROJECT_DIRTY)` 中设 true（WorkspacePage.vue:348），该事件从未触发，故 `watch(isDirty)` 的 2 秒 debounce 保存逻辑从不执行。所有修改操作（delete/add/update/merge/split/confirm/reject 等）只更新内存 (`_update_active_timeline`)，落盘仅在 `save_project()`。
+
+删除失败：UI 与后端状态不同步时 `delete_segment` 返回 `success: False`，但前端 `handleDeleteSegment` 只显示通用 "Failed to delete segment"，丢失后端 error。手动 Ctrl+S 后状态重新同步才能删除。
+
+### 变更文件 (共 5 个)
+
+| 文件 | 类型 | 说明 |
+|------|------|------|
+| `frontend/src/components/common/SplitPanel.vue` | 修改 (+2/-2 行) | 左右槽 div 从 `h-full overflow-hidden` 改为 `flex h-full flex-col overflow-hidden`，使子元素 `flex-1`/`h-full` 生效 |
+| `frontend/src/App.vue` | 修改 (+1/-1 行) | 根容器 `min-h-screen` -> `h-screen`，防止根容器溢出产生空白 (额外保险) |
+| `main.py` | 修改 (+35/-20 行) | import `PROJECT_DIRTY`；新增 `_mark_dirty(result)` helper (成功时 emit 事件)；包装 20+ 个修改类 @expose 方法 + 5 个 task handler 调用 + 字幕修正相关方法 |
+| `frontend/src/composables/useEdit.ts` | 修改 (+4/-4 行) | `deleteSegment` 返回类型 `boolean` -> `string \| null` (null=成功，string=错误信息)，不丢失后端 error |
+| `frontend/src/pages/WorkspacePage.vue` | 修改 (+3/-3 行) | `handleDeleteSegment` 显示后端返回的具体错误信息 |
+
+### 架构决策
+
+#### _mark_dirty 集中化 (非各方法手动 emit)
+
+新增 `_mark_dirty(self, result: dict) -> dict` helper：检查 `result["success"]` 后 emit `PROJECT_DIRTY` 并返回原 result。所有修改类方法统一用 `return self._mark_dirty(self._project.xxx())`，避免每个方法手动写 emit 逻辑，也防止遗漏。
+
+已包装的方法清单：
+- **段落编辑**: update_segment, update_segment_text, merge_segments, split_segment, add_segment, delete_segment, delete_silence_segments, clear_subtitles, delete_subtitle_trim_edits, search_replace, mark_segments
+- **建议操作**: confirm_all_suggestions, reject_all_suggestions, generate_subtitle_keep_ranges, confirm_all_from_source
+- **Timeline CRUD**: create_timeline, delete_timeline, rename_timeline, duplicate_timeline (switch_timeline 是切换不修改数据，不包装)
+- **字幕**: import_srt, add_analysis_results
+- **字幕修正**: accept_correction, reject_correction, accept_high_confidence_corrections, clear_subtitle_corrections
+- **Task handler (后台线程)**: filler_detection, error_detection, full_analysis, llm_smart, llm_highlight, store_subtitle_corrections
+
+#### deleteSegment 返回错误字符串 (非 boolean)
+
+原 `Promise<boolean>` 丢失后端 error。改为 `Promise<string | null>`：null=成功，string=错误信息。唯一调用方 `handleDeleteSegment` 相应调整。这样用户能看到具体错误（如 "No project is open" / "Segment not found: xxx"）而非通用消息。
+
+### 测试覆盖
+
+| 命令 | 结果 |
+|------|------|
+| `uv run pytest tests/` (全量，排除 whisper/asr-gui) | 319 测试全部通过 |
+| `uv run pytest -m integration` | 35 测试全部通过 |
+| `uv run ruff check main.py` | 全部通过 |
+| `bun run build` (前端构建) | 通过 -- 94 modules，index.js 243.84 kB |
+| `bun run test` (169 前端测试) | 全部通过 (含 SplitPanel 10 个) |
+
+---
+
 ## 测试基线 (Phase 4 后)
 
 | 类别 | 数量 | 说明 |
 |------|------|------|
 | 后端单元测试 | ~319 | 含 test_workflow_engine.py 35 个 |
-| 后端集成测试 | 20 | test_workflow_integration.py (Phase 4 新增) |
-| 前端测试 | 169 | 含 Phase 4 新增 22 个 (ConflictResolutionView 9 + AIAssistantPanel 7 + SettingsModal 6); Test Connection 补丁后回归通过 |
+| 后端集成测试 | 35 | test_workflow_integration.py (Phase 4 新增 20 + 已有 15) |
+| 前端测试 | 169 | 含 Phase 4 新增 22 个; Test Connection + 空白区域 + 自动保存补丁后回归通过 |
 | ruff | 零错误 | (预存 core/llm_service.py import 排序问题除外) |
 | ESLint | 零错误 | (预存 v-html 警告除外) |
 | 排除 | test_transcription.py | 已知 ASR VadOptions 失败 (无关) |

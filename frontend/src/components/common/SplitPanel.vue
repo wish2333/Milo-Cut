@@ -119,7 +119,7 @@ defineExpose({ ratio: clampedRatio })
 
 <template>
   <div ref="containerRef" class="flex h-full w-full overflow-hidden">
-    <div class="h-full min-w-0 overflow-hidden" :style="leftStyle">
+    <div class="flex h-full min-w-0 flex-col overflow-hidden" :style="leftStyle">
       <slot name="left" />
     </div>
 
@@ -137,7 +137,7 @@ defineExpose({ ratio: clampedRatio })
       ></div>
     </div>
 
-    <div class="h-full min-w-0 flex-1 overflow-hidden" :style="rightStyle">
+    <div class="flex h-full min-w-0 flex-1 flex-col overflow-hidden" :style="rightStyle">
       <slot name="right" />
     </div>
   </div>

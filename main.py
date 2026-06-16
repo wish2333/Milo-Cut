@@ -54,7 +54,7 @@ _fix_macos_path()
 from core.analysis_service import detect_errors, detect_fillers, run_full_analysis
 from core.bridge_service import BridgeService
 from core.config import load_settings
-from core.events import EDIT_SUMMARY_UPDATED, ENCODER_FALLBACK
+from core.events import EDIT_SUMMARY_UPDATED, ENCODER_FALLBACK, PROJECT_DIRTY
 from core.export_service import export_audio, export_srt, export_video, export_vtt
 from core.ffmpeg_presets import ENCODER_METADATA, get_fallback_codec
 from core.ffmpeg_service import _find_ffmpeg, detect_silence, generate_waveform, probe_media
@@ -119,6 +119,17 @@ class MiloCutApi(Bridge):
         self._workflow_engine = WorkflowEngine(
             self._task_manager, self._project, self._emit,
         )
+
+    def _mark_dirty(self, result: dict) -> dict:
+        """Emit PROJECT_DIRTY if the wrapped mutation succeeded.
+
+        Centralizes auto-save signaling: every @expose method that mutates the
+        project state should ``return self._mark_dirty(self._project.xxx())``.
+        The frontend listens for ``project:dirty`` and debounce-saves (2s).
+        """
+        if result.get("success"):
+            self._emit(PROJECT_DIRTY)
+        return result
 
     def _register_task_handlers(self) -> None:
         """Register handlers for each task type."""
@@ -355,7 +366,7 @@ class MiloCutApi(Bridge):
         segments = list(self._project.current.transcript.segments)
         results = detect_fillers(segments, settings.get("filler_words", []))
         results_dicts = [r.model_dump() for r in results]
-        store = self._project.add_analysis_results(results_dicts, source="filler_detection")
+        store = self._mark_dirty(self._project.add_analysis_results(results_dicts, source="filler_detection"))
         if not store["success"]:
             raise RuntimeError(store.get("error", "Failed to store analysis results"))
         return {"project": store["data"], "results": results_dicts}
@@ -368,7 +379,7 @@ class MiloCutApi(Bridge):
         segments = list(self._project.current.transcript.segments)
         results = detect_errors(segments, settings.get("error_trigger_words", []))
         results_dicts = [r.model_dump() for r in results]
-        store = self._project.add_analysis_results(results_dicts, source="error_detection")
+        store = self._mark_dirty(self._project.add_analysis_results(results_dicts, source="error_detection"))
         if not store["success"]:
             raise RuntimeError(store.get("error", "Failed to store analysis results"))
         return {"project": store["data"], "results": results_dicts}
@@ -395,7 +406,7 @@ class MiloCutApi(Bridge):
         if task.payload.get("_workflow_accumulate"):
             return {"results": results_dicts}
 
-        store = self._project.add_analysis_results(results_dicts, source="full_analysis")
+        store = self._mark_dirty(self._project.add_analysis_results(results_dicts, source="full_analysis"))
         if not store["success"]:
             raise RuntimeError(store.get("error", "Failed to store analysis results"))
         return {"project": store["data"], "results": results_dicts}
@@ -766,7 +777,7 @@ class MiloCutApi(Bridge):
             ]
             # v2.1.0 Phase 3: workflow accumulation mode -- skip project write
             if not task.payload.get("_workflow_accumulate"):
-                store = self._project.add_analysis_results(analysis_results, source="llm_smart")
+                store = self._mark_dirty(self._project.add_analysis_results(analysis_results, source="llm_smart"))
                 if not store["success"]:
                     raise RuntimeError(store.get("error", "Failed to store smart-delete results"))
 
@@ -843,8 +854,8 @@ class MiloCutApi(Bridge):
             }
 
         # v2.1.0 Phase 2: store corrections for review instead of auto-applying.
-        store_result = self._project.store_subtitle_corrections(
-            corrections, timeline_id
+        store_result = self._mark_dirty(
+            self._project.store_subtitle_corrections(corrections, timeline_id)
         )
 
         if not store_result["success"]:
@@ -955,7 +966,7 @@ class MiloCutApi(Bridge):
             ]
             # v2.1.0 Phase 3: workflow accumulation mode -- skip project write
             if not task.payload.get("_workflow_accumulate"):
-                store = self._project.add_analysis_results(analysis_results, source="llm_highlight")
+                store = self._mark_dirty(self._project.add_analysis_results(analysis_results, source="llm_highlight"))
                 if not store["success"]:
                     raise RuntimeError(store.get("error", "Failed to store highlight results"))
 
@@ -1138,7 +1149,7 @@ class MiloCutApi(Bridge):
     def create_timeline(
         self, label: str, source: str = "manual", fork_from: str | None = None
     ) -> dict:
-        return self._project.create_timeline(label, source, fork_from)
+        return self._mark_dirty(self._project.create_timeline(label, source, fork_from))
 
     @expose
     def switch_timeline(self, timeline_id: str) -> dict:
@@ -1146,15 +1157,15 @@ class MiloCutApi(Bridge):
 
     @expose
     def delete_timeline(self, timeline_id: str) -> dict:
-        return self._project.delete_timeline(timeline_id)
+        return self._mark_dirty(self._project.delete_timeline(timeline_id))
 
     @expose
     def rename_timeline(self, timeline_id: str, new_label: str) -> dict:
-        return self._project.rename_timeline(timeline_id, new_label)
+        return self._mark_dirty(self._project.rename_timeline(timeline_id, new_label))
 
     @expose
     def duplicate_timeline(self, timeline_id: str, new_label: str) -> dict:
-        return self._project.duplicate_timeline(timeline_id, new_label)
+        return self._mark_dirty(self._project.duplicate_timeline(timeline_id, new_label))
 
     # ================================================================
     # endregion Timeline
@@ -1182,6 +1193,8 @@ class MiloCutApi(Bridge):
             if vdata.get("error_count", 0) > 0 or vdata.get("warning_count", 0) > 0:
                 update_result["warnings"] = vdata.get("issues", [])
 
+        # SRT import mutates transcript -- signal auto-save
+        self._mark_dirty(update_result)
         return update_result
 
     # ================================================================
@@ -1418,59 +1431,60 @@ class MiloCutApi(Bridge):
             results: List of AnalysisResult dicts.
             source: Source label for the generated edits.
         """
-        return self._project.add_analysis_results(results, source=source)
+        return self._mark_dirty(self._project.add_analysis_results(results, source=source))
 
     @expose
     def update_segment(self, segment_id: str, updates: dict) -> dict:
-        return self._project.update_segment(segment_id, updates)
+        return self._mark_dirty(self._project.update_segment(segment_id, updates))
 
     @expose
     def update_segment_text(self, segment_id: str, text: str) -> dict:
-        return self._project.update_segment_text(segment_id, text)
+        return self._mark_dirty(self._project.update_segment_text(segment_id, text))
 
     @expose
     def merge_segments(self, segment_ids: list[str]) -> dict:
-        return self._project.merge_segments(segment_ids)
+        return self._mark_dirty(self._project.merge_segments(segment_ids))
 
     @expose
     def split_segment(self, segment_id: str, position: float) -> dict:
-        return self._project.split_segment(segment_id, position)
+        return self._mark_dirty(self._project.split_segment(segment_id, position))
 
     @expose
     def add_segment(
         self, start: float, end: float, text: str = "", seg_type: str = "subtitle"
     ) -> dict:
-        return self._project.add_segment(start, end, text, seg_type)
+        return self._mark_dirty(self._project.add_segment(start, end, text, seg_type))
 
     @expose
     def delete_segment(self, segment_id: str) -> dict:
-        return self._project.delete_segment(segment_id)
+        return self._mark_dirty(self._project.delete_segment(segment_id))
 
     @expose
     def delete_silence_segments(self) -> dict:
-        return self._project.delete_silence_segments()
+        return self._mark_dirty(self._project.delete_silence_segments())
 
     @expose
     def clear_subtitles(self) -> dict:
-        return self._project.clear_subtitles()
+        return self._mark_dirty(self._project.clear_subtitles())
 
     @expose
     def delete_subtitle_trim_edits(self) -> dict:
-        return self._project.delete_subtitle_trim_edits()
+        return self._mark_dirty(self._project.delete_subtitle_trim_edits())
 
     @expose
     def search_replace(self, query: str, replacement: str, scope: str = "all") -> dict:
-        return self._project.search_replace(query, replacement, scope)
+        return self._mark_dirty(self._project.search_replace(query, replacement, scope))
 
     @expose
     def mark_segments(self, segment_ids: list[str], action: str, status: str = "pending") -> dict:
-        return self._project.mark_segments(segment_ids, action, status)
+        return self._mark_dirty(self._project.mark_segments(segment_ids, action, status))
 
     @expose
     def confirm_all_suggestions(self) -> dict:
         result = self._project.confirm_all_suggestions()
         if result["success"]:
             self._emit(EDIT_SUMMARY_UPDATED, self._project.get_edit_summary().get("data", {}))
+            self._emit(PROJECT_DIRTY)
         return result
 
     @expose
@@ -1478,6 +1492,7 @@ class MiloCutApi(Bridge):
         result = self._project.reject_all_suggestions()
         if result["success"]:
             self._emit(EDIT_SUMMARY_UPDATED, self._project.get_edit_summary().get("data", {}))
+            self._emit(PROJECT_DIRTY)
         return result
 
     @expose
@@ -1485,6 +1500,7 @@ class MiloCutApi(Bridge):
         result = self._project.generate_subtitle_keep_ranges(padding)
         if result["success"]:
             self._emit(EDIT_SUMMARY_UPDATED, self._project.get_edit_summary().get("data", {}))
+            self._emit(PROJECT_DIRTY)
         return result
 
     @expose
@@ -2218,7 +2234,7 @@ class MiloCutApi(Bridge):
         Returns:
             {"success": True, "data": {"segment_id": str}}
         """
-        return self._project.accept_subtitle_correction(result_id)
+        return self._mark_dirty(self._project.accept_subtitle_correction(result_id))
 
     @expose
     def reject_correction(self, result_id: str) -> dict:
@@ -2227,7 +2243,7 @@ class MiloCutApi(Bridge):
         Returns:
             {"success": True, "data": {"segment_id": str}}
         """
-        return self._project.reject_subtitle_correction(result_id)
+        return self._mark_dirty(self._project.reject_subtitle_correction(result_id))
 
     @expose
     def accept_high_confidence_corrections(
@@ -2243,7 +2259,7 @@ class MiloCutApi(Bridge):
             {"success": True, "data": {"accepted_count", "remaining_count"}}
         """
         tid = self._resolve_timeline_id(timeline_id)
-        return self._project.accept_high_confidence_corrections(tid, threshold)
+        return self._mark_dirty(self._project.accept_high_confidence_corrections(tid, threshold))
 
     @expose
     def clear_subtitle_corrections(self, timeline_id: str = "") -> dict:
@@ -2253,7 +2269,7 @@ class MiloCutApi(Bridge):
             {"success": True, "data": {"cleared_count": int}}
         """
         tid = self._resolve_timeline_id(timeline_id)
-        return self._project.clear_subtitle_corrections(tid)
+        return self._mark_dirty(self._project.clear_subtitle_corrections(tid))
 
     @expose
     def start_smart_delete(self, timeline_id: str = "") -> dict:
@@ -2334,8 +2350,10 @@ class MiloCutApi(Bridge):
             {"success": True, "data": {"confirmed_count": int, "project": dict}}
         """
         result = self._project.confirm_all_from_source(source, min_confidence)
-        if result["success"] and self._project.current:
-            result["data"]["project"] = self._project.current.model_dump()
+        if result["success"]:
+            self._emit(PROJECT_DIRTY)
+            if self._project.current:
+                result["data"]["project"] = self._project.current.model_dump()
         return result
 
     @expose

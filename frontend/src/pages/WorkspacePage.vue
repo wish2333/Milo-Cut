@@ -1185,9 +1185,9 @@ async function handleAddSegment(start: number, end: number) {
 
 async function handleDeleteSegment(segmentId: string) {
   errorMessage.value = ""
-  const ok = await deleteSegment(segmentId)
-  if (!ok) {
-    errorMessage.value = "Failed to delete segment"
+  const err = await deleteSegment(segmentId)
+  if (err) {
+    errorMessage.value = err
   }
 }
 

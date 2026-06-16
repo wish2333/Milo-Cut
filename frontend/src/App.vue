@@ -178,7 +178,7 @@ function handleRelinkCancel() {
 
 <template>
   <div
-    class="relative min-h-screen overflow-x-hidden overflow-y-hidden"
+    class="relative h-screen overflow-x-hidden overflow-y-hidden"
     @dragenter="handleWindowDragEnter"
     @dragover="handleWindowDragOver"
     @dragleave="handleWindowDragLeave"
