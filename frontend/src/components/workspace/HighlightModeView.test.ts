@@ -92,7 +92,7 @@ describe("HighlightModeView", () => {
       },
     })
     expect(wrapper.text()).toContain("正在提取")
-    expect(wrapper.find("progress").exists()).toBe(true)
+    expect(wrapper.find('[style*="width"]').exists()).toBe(true)
   })
 
   it("emits start-highlight with target minutes", async () => {
@@ -112,7 +112,7 @@ describe("HighlightModeView", () => {
       props: { highlights, segments, llmConfigured: true },
     })
     const timeLinks = wrapper.findAll("button").filter((b) =>
-      b.classes().some((c) => c.includes("link")),
+      /\d+:\d+/.test(b.text()),
     )
     expect(timeLinks.length).toBeGreaterThan(0)
     await timeLinks[0].trigger("click")
