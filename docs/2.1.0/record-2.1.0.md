@@ -361,13 +361,41 @@ keep_first/keep_last/keep_all -- 冲突解决的本质是"决策去重"，保留
 
 ---
 
+## 补丁修复: Test Connection 先保存再测试 (已完成)
+
+### 概要
+
+修复 LLM 配置面板 "Test Connection" 按钮的测试结果与表单内容不一致问题。
+
+**根因**: `testConnection()` 直接调用后端 `test_llm_connection`，测试的是后端已持久化的配置。用户在表单中修改 Provider/Base URL/API Key/Model 后，未点 Save 直接点 Test Connection，后端仍测试旧配置。
+
+**修复**: 点击 Test Connection 后，先静默调用 `update_settings` 保存表单，再发起测试。保存失败则显示错误并不执行测试。
+
+### 变更文件 (共 1 个)
+
+| 文件 | 类型 | 说明 |
+|------|------|------|
+| `frontend/src/components/workspace/SettingsModal.vue` | 修改 (+20/-3 行) | 新增 `handleTestConnection()` 包装函数 (先 `update_settings` 保存，再 `testConnection()` 测试); `handleSave()` 返回 boolean 便于复用; 按钮 `@click` 改为 `handleTestConnection`; `:disabled` 增加 `saving` 状态; 按钮文案三态切换 (Saving.../Testing.../Test Connection) |
+
+### 行为变化
+
+| 操作 | 修复前 | 修复后 |
+|------|--------|--------|
+| 修改 API Key 后点 Test Connection | 测试旧 key | 先保存新 key，再测试 |
+| 修改 Base URL 后点 Test Connection | 测试旧 URL | 先保存新 URL，再测试 |
+| 保存失败时点 Test Connection | 仍执行测试 (测试旧配置) | 显示 "Failed to save settings before test" 并中止 |
+| 按钮禁用条件 | `llmTesting \|\| !api_key` | `llmTesting \|\| saving \|\| !api_key` |
+| 按钮文案 | Testing.../Test Connection | Saving.../Testing.../Test Connection |
+
+---
+
 ## 测试基线 (Phase 4 后)
 
 | 类别 | 数量 | 说明 |
 |------|------|------|
 | 后端单元测试 | ~319 | 含 test_workflow_engine.py 35 个 |
 | 后端集成测试 | 20 | test_workflow_integration.py (Phase 4 新增) |
-| 前端测试 | 169 | 含 Phase 4 新增 22 个 (ConflictResolutionView 9 + AIAssistantPanel 7 + SettingsModal 6) |
+| 前端测试 | 169 | 含 Phase 4 新增 22 个 (ConflictResolutionView 9 + AIAssistantPanel 7 + SettingsModal 6); Test Connection 补丁后回归通过 |
 | ruff | 零错误 | (预存 core/llm_service.py import 排序问题除外) |
 | ESLint | 零错误 | (预存 v-html 警告除外) |
 | 排除 | test_transcription.py | 已知 ASR VadOptions 失败 (无关) |
