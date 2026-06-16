@@ -493,6 +493,59 @@ subtitle_correction 和 smart_delete 存在职责重叠区: 口误/卡壳/重复
 
 ---
 
+## 补丁修复: 自动保存 UI 状态 + PROJECT_SAVED 事件 (已完成)
+
+### 概要
+
+修复自动保存机制的两个遗留问题：
+1. **自动保存弹通知窗**: 每次 debounce 自动保存都弹出 toast 通知窗，干扰用户。应改为 Save 按钮旁内联显示状态。
+2. **红点不消失**: 新建/删除 timeline 后自动保存成功，但 isDirty 永远为 true，Save 按钮旁的未保存红点 ● 不消失。
+
+### 根因分析
+
+#### 根因: save_project 从未 emit PROJECT_SAVED
+
+`grep -r "PROJECT_SAVED\|project:saved" main.py` 零结果（仅 import 后未使用）。前端 `isDirty` 的重置路径只有 `onEvent(EVENT_PROJECT_SAVED)`（WorkspacePage.vue:351），该事件从不发出，所以 `isDirty` 永远 true，红点不消失。
+
+自动保存虽然成功执行了 `save_project()`，但因前端只在事件回调里重置 `isDirty`，保存后红点仍停留。
+
+### 变更文件 (共 2 个)
+
+| 文件 | 类型 | 说明 |
+|------|------|------|
+| `main.py` | 修改 (+5/-3 行) | import `PROJECT_SAVED`；`save_project` 成功后 `self._emit(PROJECT_SAVED)` 通知前端项目已落盘；publish_edit_timeline 逻辑挪到 if success 块内 |
+| `frontend/src/pages/WorkspacePage.vue` | 修改 (+18/-7 行) | (1) 去掉自动保存 `showToast("Auto-saved")` 弹窗；(2) 新增 `lastSavedAt` ref；(3) Save 按钮旁加内联三态指示器: isSaving="Saving..." / isDirty="●" / lastSavedAt="Saved"；(4) 自动保存成功后兜底重置 `isDirty.value = false`（双保险）；(5) handleSaveProject 成功后更新 lastSavedAt |
+
+### 架构决策
+
+#### 内联状态指示器 vs Toast 通知
+
+- **自动保存** (debounce 2s): 去掉 toast，用内联指示器。自动保存是后台行为，不应弹窗打断用户。
+- **手动保存** (Ctrl+S / 点击 Save): 保留 toast "Project saved"。用户主动操作需要明确反馈。
+
+内联指示器三种状态：
+| isSaving | isDirty | lastSavedAt | 显示 |
+|----------|---------|-------------|------|
+| true | - | - | "Saving..." (蓝色) |
+| false | true | - | "●" (灰色，未保存) |
+| false | false | 有值 | "Saved" (绿色) |
+
+#### PROJECT_SAVED + isDirty 双保险
+
+即使后端 PROJECT_SAVED 事件因 tick 时序问题没到达前端，自动保存成功后前端也直接 `isDirty.value = false`。两个路径都重置，确保红点一定消失。
+
+### 测试覆盖
+
+| 命令 | 结果 |
+|------|------|
+| `uv run pytest tests/` (全量，排除 whisper/asr-gui) | 319 测试全部通过 |
+| `uv run pytest -m integration` | 35 测试全部通过 |
+| `uv run ruff check main.py` | All checks passed |
+| `bun run build` (前端构建) | 通过 -- 94 modules，index.js 244.14 kB |
+| `bun run test` (169 前端测试) | 全部通过 |
+
+---
+
 ## 测试基线 (Phase 4 后)
 
 | 类别 | 数量 | 说明 |
