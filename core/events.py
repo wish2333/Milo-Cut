@@ -43,3 +43,14 @@ LLM_HIGHLIGHT_COMPLETED = "llm:highlight_completed"
 
 # P3: Semantic search
 LLM_SEMANTIC_SEARCH_COMPLETED = "llm:semantic_search_completed"
+
+# Workflow (v2.1.0 Phase 3)
+WORKFLOW_STARTED = "workflow:started"
+WORKFLOW_STEP_STARTED = "workflow:step_started"
+WORKFLOW_STEP_PROGRESS = "workflow:step_progress"
+WORKFLOW_STEP_COMPLETED = "workflow:step_completed"
+WORKFLOW_STEP_FAILED = "workflow:step_failed"
+WORKFLOW_COMPLETED = "workflow:completed"
+WORKFLOW_CANCELLED = "workflow:cancelled"
+WORKFLOW_CONFLICTS_DETECTED = "workflow:conflicts_detected"
+WORKFLOW_HEARTBEAT = "workflow:heartbeat"

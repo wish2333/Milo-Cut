@@ -32,3 +32,14 @@ export const EVENT_LLM_HIGHLIGHT_COMPLETED = "llm:highlight_completed"
 
 // P3: Semantic search
 export const EVENT_LLM_SEMANTIC_SEARCH_COMPLETED = "llm:semantic_search_completed"
+
+// Workflow (v2.1.0 Phase 3)
+export const EVENT_WORKFLOW_STARTED = "workflow:started"
+export const EVENT_WORKFLOW_STEP_STARTED = "workflow:step_started"
+export const EVENT_WORKFLOW_STEP_PROGRESS = "workflow:step_progress"
+export const EVENT_WORKFLOW_STEP_COMPLETED = "workflow:step_completed"
+export const EVENT_WORKFLOW_STEP_FAILED = "workflow:step_failed"
+export const EVENT_WORKFLOW_COMPLETED = "workflow:completed"
+export const EVENT_WORKFLOW_CANCELLED = "workflow:cancelled"
+export const EVENT_WORKFLOW_CONFLICTS_DETECTED = "workflow:conflicts_detected"
+export const EVENT_WORKFLOW_HEARTBEAT = "workflow:heartbeat"

@@ -84,6 +84,8 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     "llm_prompts": {},
     # LLM prompt presets (v2.1.0 Phase 1: per-feature saved parameter snapshots)
     "llm_prompt_presets": {},
+    # Workflows (v2.1.0 Phase 3: saved workflow definitions, shared across projects)
+    "workflows": [],
 }
 
 
