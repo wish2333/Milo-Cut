@@ -54,7 +54,7 @@ _fix_macos_path()
 from core.analysis_service import detect_errors, detect_fillers, run_full_analysis
 from core.bridge_service import BridgeService
 from core.config import load_settings
-from core.events import EDIT_SUMMARY_UPDATED, ENCODER_FALLBACK, PROJECT_DIRTY
+from core.events import EDIT_SUMMARY_UPDATED, ENCODER_FALLBACK, PROJECT_DIRTY, PROJECT_SAVED
 from core.export_service import export_audio, export_srt, export_video, export_vtt
 from core.ffmpeg_presets import ENCODER_METADATA, get_fallback_codec
 from core.ffmpeg_service import _find_ffmpeg, detect_silence, generate_waveform, probe_media
@@ -1124,11 +1124,13 @@ class MiloCutApi(Bridge):
     def save_project(self) -> dict:
         result = self._project.save_project()
         # Publish edit timeline to file protocol on save
-        if result.get("success") and self._project.current is not None:
-            project = self._project.current
-            segments = [s.model_dump() for s in project.active_timeline.transcript.segments]
-            edits = [e.model_dump() for e in project.active_timeline.edits]
-            self._file_protocol.publish_edit_timeline(segments, edits)
+        if result.get("success"):
+            if self._project.current is not None:
+                project = self._project.current
+                segments = [s.model_dump() for s in project.active_timeline.transcript.segments]
+                edits = [e.model_dump() for e in project.active_timeline.edits]
+                self._file_protocol.publish_edit_timeline(segments, edits)
+            self._emit(PROJECT_SAVED)  # tell frontend the project is clean
         return result
 
     @expose

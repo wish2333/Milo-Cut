@@ -342,6 +342,7 @@ watch(statusMessage, (msg) => {
 // Auto-save state
 const isDirty = ref(false)
 const isSaving = ref(false)
+const lastSavedAt = ref<number | null>(null)
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 
 onEvent<void>(EVENT_PROJECT_DIRTY, () => {
@@ -360,7 +361,8 @@ watch(isDirty, (dirty) => {
     try {
       const res = await call<void>("save_project")
       if (res.success) {
-        showToast("Auto-saved", "success", 1500)
+        isDirty.value = false
+        lastSavedAt.value = Date.now()
       }
     } finally {
       isSaving.value = false
@@ -786,6 +788,7 @@ async function handleCreateTimeline() {
   )
   if (res.success && res.data) {
     emit("project-updated", res.data)
+    isDirty.value = true  // trigger auto-save
     showToast(`Created timeline: ${label}`, "success")
   } else {
     showToast(res.error ?? "Failed to create timeline", "error")
@@ -797,6 +800,7 @@ async function handleDeleteTimeline(timelineId: string) {
   const res = await call<Project>("delete_timeline", timelineId)
   if (res.success && res.data) {
     emit("project-updated", res.data)
+    isDirty.value = true  // trigger auto-save
     showToast("Timeline deleted", "success")
   } else {
     showToast(res.error ?? "Failed to delete timeline", "error")
@@ -1112,6 +1116,7 @@ async function handleSaveProject() {
     const res = await call("save_project")
     if (res.success) {
       isDirty.value = false
+      lastSavedAt.value = Date.now()
       showToast("Project saved", "success", 2000)
     } else {
       showToast("Save failed", "error", 3000)
@@ -1325,6 +1330,10 @@ onUnmounted(() => {
         <span v-if="confirmedEdits.length > 0" class="text-xs text-yellow-300">
           {{ confirmedEdits.length }} edits | -{{ formatTimeShort(estimatedSaving) }}
         </span>
+        <!-- Inline auto-save indicator -->
+        <span v-if="isSaving" class="text-xs text-blue-300">Saving...</span>
+        <span v-else-if="isDirty" class="text-xs text-gray-400">●</span>
+        <span v-else-if="lastSavedAt" class="text-xs text-green-400">Saved</span>
         <button
           class="rounded px-2 py-1 text-xs text-gray-400 hover:text-white transition-colors"
           title="Save project (Ctrl+S)"
