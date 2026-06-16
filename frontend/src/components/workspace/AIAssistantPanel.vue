@@ -17,6 +17,7 @@ import SemanticSearchBar from "@/components/workspace/SemanticSearchBar.vue"
 import { useWorkflow } from "@/composables/useWorkflow"
 import type { WorkflowStep } from "@/composables/useWorkflow"
 import type { Segment } from "@/types/project"
+import { useLlmSettings } from "@/composables/useLlmSettings"
 
 type FeatureKey = "smart_delete" | "subtitle_correction" | "search"
 type PanelMode = "single" | "workflow"
@@ -43,6 +44,16 @@ const emit = defineEmits<{
 
 // v2.1.0 Phase 3: workflow composable
 const wf = useWorkflow()
+// v2.1.0 Phase 4: preset loading for workflow steps (D-43)
+const llmSettings = useLlmSettings()
+
+// Step type -> preset func_key mapping (D-43)
+const STEP_TO_PRESET_KEY: Record<string, string> = {
+  llm_smart_delete: "smart_delete",
+  llm_subtitle_correction: "subtitle_correction_a",
+  llm_highlight: "highlight",
+  // full_analysis has no presets
+}
 
 const panelMode = ref<PanelMode>("single")
 const selectedFeature = ref<FeatureKey | null>(null)
@@ -69,6 +80,36 @@ const availableSteps = [
   { type: "llm_subtitle_correction" as const, label: "P1 字幕修正" },
   { type: "llm_highlight" as const, label: "P2 精华提取" },
 ]
+
+// Preset options per step type (D-43)
+const stepPresetOptions = ref<Record<string, Array<{id: string; name: string}>>>({})
+
+function getPresetKey(stepType: string): string | null {
+  return STEP_TO_PRESET_KEY[stepType] || null
+}
+
+async function loadStepPresets(stepType: string) {
+  const funcKey = getPresetKey(stepType)
+  if (!funcKey) return
+  await llmSettings.loadPresets(funcKey)
+  const presets = llmSettings.presetsByFunc.value[funcKey] || []
+  stepPresetOptions.value = {
+    ...stepPresetOptions.value,
+    [stepType]: presets.map((p) => ({ id: p.id, name: p.name })),
+  }
+}
+
+function getStepPresetId(stepType: string): string {
+  const step = newWorkflowSteps.value.find((s) => s.type === stepType)
+  return step?.preset_id || ""
+}
+
+function setStepPresetId(stepType: string, presetId: string) {
+  const step = newWorkflowSteps.value.find((s) => s.type === stepType)
+  if (step) {
+    step.preset_id = presetId || null
+  }
+}
 
 interface FeatureCard {
   key: FeatureKey
@@ -118,6 +159,8 @@ function toggleStep(stepType: WorkflowStep["type"]) {
     newWorkflowSteps.value.splice(idx, 1)
   } else {
     newWorkflowSteps.value.push({ type: stepType, preset_id: null })
+    // Load presets for this step type (D-43)
+    loadStepPresets(stepType)
   }
 }
 
@@ -302,6 +345,38 @@ function handleSearchSeek(time: number) {
           @click="handleCancelWorkflow('immediate')"
         >立即取消 (不等待)</button>
 
+        <!-- D-11: Step failure dialog -->
+        <Teleport to="body">
+          <div
+            v-if="wf.showFailureDialog.value && wf.failureInfo.value"
+            class="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+          >
+            <div class="w-[360px] rounded-xl bg-white p-5 shadow-xl">
+              <h3 class="mb-1 text-sm font-semibold text-gray-800">步骤执行失败</h3>
+              <p class="mb-1 text-xs text-gray-500">
+                {{ wf.failureInfo.value?.stepName || "未知步骤" }}
+              </p>
+              <p class="mb-4 text-xs text-red-600">
+                {{ wf.failureInfo.value?.error || "未知错误" }}
+              </p>
+              <div class="flex gap-2">
+                <button
+                  class="flex-1 rounded-md bg-blue-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600"
+                  @click="wf.handleStepFailure('retry')"
+                >重试</button>
+                <button
+                  class="flex-1 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
+                  @click="wf.handleStepFailure('skip')"
+                >跳过</button>
+                <button
+                  class="flex-1 rounded-md border border-red-300 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50"
+                  @click="wf.handleStepFailure('abort')"
+                >中止</button>
+              </div>
+            </div>
+          </div>
+        </Teleport>
+
         <!-- Apply / Discard (after completion, D-10, D-17) -->
         <div v-if="!wf.isActive.value && wf.instanceId.value" class="flex flex-col gap-2">
           <button
@@ -359,16 +434,34 @@ function handleSearchSeek(time: number) {
             <label
               v-for="step in availableSteps"
               :key="step.type"
-              class="flex items-center gap-2 rounded-md border border-gray-100 px-2 py-1.5"
+              class="flex flex-col gap-1 rounded-md border border-gray-100 px-2 py-1.5"
               :class="{ 'bg-blue-50 border-blue-200': isStepChecked(step.type) }"
             >
-              <input
-                type="checkbox"
-                :checked="isStepChecked(step.type)"
-                class="h-3.5 w-3.5"
-                @change="toggleStep(step.type)"
-              />
-              <span class="text-xs text-gray-700">{{ step.label }}</span>
+              <div class="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  :checked="isStepChecked(step.type)"
+                  class="h-3.5 w-3.5"
+                  @change="toggleStep(step.type)"
+                />
+                <span class="text-xs text-gray-700">{{ step.label }}</span>
+              </div>
+              <!-- D-43: per-step preset picker -->
+              <select
+                v-if="isStepChecked(step.type) && stepPresetOptions[step.type]"
+                :value="getStepPresetId(step.type)"
+                class="ml-5.5 w-full rounded border border-gray-200 px-1.5 py-1 text-xs text-gray-600"
+                @change="setStepPresetId(step.type, ($event.target as HTMLSelectElement).value)"
+              >
+                <option value="">(使用当前配置)</option>
+                <option
+                  v-for="p in stepPresetOptions[step.type]"
+                  :key="p.id"
+                  :value="p.id"
+                >
+                  {{ p.name }}
+                </option>
+              </select>
             </label>
           </div>
 
