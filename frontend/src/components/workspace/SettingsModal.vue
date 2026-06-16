@@ -387,6 +387,23 @@ async function handleSave() {
   } else {
     statusMsg.value = "Save failed"
   }
+  return res.success
+}
+
+// Test Connection: persist current form to backend first, then run the test.
+// Without saving, the backend would test the previously-stored config rather
+// than what the user just typed into the form.
+async function handleTestConnection() {
+  if (!settings.value) return
+  // Persist silently -- we don't want "Settings saved" flashing before the test
+  saving.value = true
+  const res = await call<AppSettings>("update_settings", settings.value)
+  saving.value = false
+  if (!res.success) {
+    llmTestResult.value = { success: false, message: "Failed to save settings before test" }
+    return
+  }
+  await testConnection()
 }
 
 async function handleBrowseFfmpeg() {
@@ -1225,11 +1242,11 @@ async function loadPluginDataDir() {
             <section class="flex items-center gap-3">
               <button
                 type="button"
-                :disabled="llmTesting || !settings.llm_api_key"
+                :disabled="llmTesting || saving || !settings.llm_api_key"
                 class="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                @click="testConnection"
+                @click="handleTestConnection"
               >
-                {{ llmTesting ? 'Testing...' : 'Test Connection' }}
+                {{ llmTesting ? 'Testing...' : (saving ? 'Saving...' : 'Test Connection') }}
               </button>
               <span v-if="llmTestResult" :class="llmTestResult.success ? 'text-green-600' : 'text-red-600'" class="text-sm">
                 {{ llmTestResult.message }}
