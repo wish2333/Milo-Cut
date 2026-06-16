@@ -581,14 +581,93 @@ subtitle_correction 和 smart_delete 存在职责重叠区: 口误/卡壳/重复
 
 ---
 
-## 测试基线 (Phase 4 后)
+## 补丁修复: Highlight 上下文连贯性优化 + 超时修复 (已完成)
+
+### 概要
+
+根据真实探针结果，Highlight 精华提取功能存在上下文碎片化问题（选中片段跳跃大、孤立金句无上下文）。优化提示词要求优先选择连续片段组，并将 chunk 时长从 5 分钟改为 30 分钟，配合 300 秒超时，确保大部分视频单次调用完成。
+
+### 变更文件 (共 5 个)
+
+| 文件 | 类型 | 说明 |
+|------|------|------|
+| `core/llm_prompts.py` | 修改 (+9/-2 行) | highlight 提示词新增上下文连贯性要求：依赖前文的片段需一并标记、优先连续片段组、避免碎片跳跃 |
+| `core/llm_service.py` | 修改 (+9/-2 行) | chunk_duration 300s -> 1800s (30 分钟); highlight 调用使用 `max(config.timeout, 300)` 超时; 新增 `highlight_config` 副本 |
+| `scripts/highlight_report.md` | **新增** | 探针报告 (111 段全量分析) |
+| `scripts/probe_highlight_report.py` | **新增** | highlight 专属探针脚本 |
+| `scripts/llm_full_probe_report.py` | 改名 | 从 `llm_full_probe.py` 重命名 |
+
+### 效果对比
+
+| 指标 | 修改前 (5min chunk) | 修改后 (30min chunk) |
+|------|---------------------|----------------------|
+| 选中片段 | 17（孤立金句） | **81**（含上下文依赖） |
+| 大跳转 (>5s) | 大量 | **仅 6 处** |
+| 排比段落 | 只选首尾 | **完整保留** (seg-0083~0088 连续 6 段) |
+| 上下文标注 | 无 | 每条理由标注"上下文依赖" |
+| 调用次数 | 2 次 | **1 次** |
+
+---
+
+## 补丁修复: 供应商默认值重构 + 深度思考开关 + 配置持久化 (已完成)
+
+### 概要
+
+三项联动改动：(1) 重构供应商排序与默认模型，DeepSeek 为默认供应商；(2) 新增深度思考开关 (thinking mode)；(3) 每个供应商的 API Key / Base URL / Model 独立持久化，切换不丢失。
+
+### 变更文件 (共 6 个)
+
+| 文件 | 类型 | 说明 |
+|------|------|------|
+| `core/models.py` | 修改 (+47/-12 行) | LlmProvider 新增 GLM; DEEPSEEK 排首位; 默认模型更新 (ds-v4-flash/gpt-5.4-mini/qwen-plus/glm-5-turbo); LlmConfig 新增 `thinking_enabled`, `supports_thinking`, `thinking_extra_body()` |
+| `core/config.py` | 修改 (+7/-1 行) | 默认供应商改为 `deepseek`; 新增 `llm_thinking_enabled: False`; 新增 `llm_provider_configs: {}` 持久化缓存 |
+| `core/llm_service.py` | 修改 (+8/-1 行) | `get_llm_config()` 读取 `thinking_enabled`; `call_llm()` 在启用时通过 `extra_body={"thinking": {"type": "enabled"}}` 传递深度思考参数 |
+| `frontend/src/types/edit.ts` | 修改 (+4/-1 行) | 新增 `glm` 到 provider 联合类型; 新增 `llm_thinking_enabled: boolean`; 新增 `llm_provider_configs` |
+| `frontend/src/components/workspace/SettingsModal.vue` | 修改 (+92/-7 行) | 供应商下拉列表重排 (DeepSeek/OpenAI/Qwen/GLM/Custom); 原生 Tailwind 复选框替代 daisyUI toggle; Custom 选中时显示蓝框使用教程; `onLlmProviderChange` 读写 `llm_provider_configs` 持久化各供应商配置 |
+| `tests/test_llm_service.py` | 修改 (+4/-4 行) | 适配新默认模型断言 (`deepseek-v4-flash`, `gpt-5.4-mini`) |
+
+### 深度思考 (Thinking Mode) 支持矩阵
+
+| 供应商 | 支持 | 实现方式 | 说明 |
+|--------|------|---------|------|
+| DeepSeek | yes | `extra_body={"thinking": {"type": "enabled"}}` | 官方文档确认，ds-v4-flash 支持 |
+| OpenAI | **no** | — | GPT 系列不支持深度思考 |
+| Qwen | yes | `extra_body={"thinking": {"type": "enabled"}}` | qwen-plus 及以上支持 |
+| GLM (智谱) | yes | `extra_body={"thinking": {"type": "enabled"}}` | glm-5 系列支持思考模式 |
+| Custom | yes (假设) | `extra_body={"thinking": {"type": "enabled"}}` | 兼容 OpenAI 格式的供应商 |
+
+### 供应商配置持久化机制
+
+`llm_provider_configs` 字典结构:
+```
+{
+  "deepseek": {"base_url": "...", "api_key": "...", "model": "..."},
+  "openai":   {"base_url": "...", "api_key": "...", "model": "..."},
+  ...
+}
+```
+- 切换供应商时: 当前值存入 `configs[oldProvider]`，目标值从 `configs[newProvider]` 恢复
+- 随 `settings.json` 持久化到磁盘，重启不丢失
+- 首次使用的供应商回退到 `_PROVIDER_DEFAULTS` 的默认值
+
+### 决策映射
+
+| 决策 ID | 决策 | 理由 |
+|---------|------|------|
+| D-201 | DeepSeek 为默认供应商 | 性价比高，deepseek-v4-flash 综合能力强 |
+| D-202 | extra_body 传递 thinking 参数 | OpenAI SDK 原生支持，无需更换客户端库 |
+| D-203 | llm_provider_configs 持久化 | 用户切换供应商后重启应用不丢失配置 |
+
+---
+
+## 测试基线 (更新后)
 
 | 类别 | 数量 | 说明 |
 |------|------|------|
-| 后端单元测试 | ~319 | 含 test_workflow_engine.py 35 个 |
+| 后端单元测试 | ~319 | 含 test_workflow_engine.py 35 个; 供应商默认值变更后适配通过 |
 | 后端集成测试 | 35 | test_workflow_integration.py (Phase 4 新增 20 + 已有 15) |
-| 前端测试 | 169 | 含 Phase 4 新增 22 个; Test Connection + 空白区域 + 自动保存补丁后回归通过 |
-| ruff | 零错误 | (预存 core/llm_service.py import 排序问题除外) |
+| 前端测试 | 169 | 含 SettingsModal 6 个; 供应商/thinking/custom 补丁后回归通过 |
+| ruff | 零错误 | |
 | ESLint | 零错误 | (预存 v-html 警告除外) |
 | 排除 | test_transcription.py | 已知 ASR VadOptions 失败 (无关) |
 | 排除 | test_asr_gui_e2e.py | 需完整 GUI 环境 |
