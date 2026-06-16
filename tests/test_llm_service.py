@@ -51,13 +51,13 @@ class TestLlmConfig:
     def test_deepseek_defaults(self) -> None:
         config = LlmConfig(provider=LlmProvider.DEEPSEEK, api_key="sk-test")
         assert config.resolved_base_url() == "https://api.deepseek.com/v1"
-        assert config.resolved_model() == "deepseek-chat"
+        assert config.resolved_model() == "deepseek-v4-flash"
         assert config.is_configured()
 
     def test_openai_defaults(self) -> None:
         config = LlmConfig(provider=LlmProvider.OPENAI, api_key="sk-test")
         assert config.resolved_base_url() == "https://api.openai.com/v1"
-        assert config.resolved_model() == "gpt-4o-mini"
+        assert config.resolved_model() == "gpt-5.4-mini"
 
     def test_custom_with_explicit_values(self) -> None:
         config = LlmConfig(

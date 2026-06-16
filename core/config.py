@@ -74,12 +74,13 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     "proxy_resolution": "720p",
     "proxy_auto_generate": False,
     # LLM
-    "llm_provider": "custom",
+    "llm_provider": "deepseek",
     "llm_base_url": "",
     "llm_api_key": "",
     "llm_model": "",
     "llm_temperature": 0.3,
     "llm_timeout": 120,
+    "llm_thinking_enabled": False,
     # LLM prompts (Phase 3: parameterized prompt customization)
     "llm_prompts": {},
     # LLM prompt presets (v2.1.0 Phase 1: per-feature saved parameter snapshots)

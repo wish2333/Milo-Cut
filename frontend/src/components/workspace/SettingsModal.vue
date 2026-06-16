@@ -284,11 +284,16 @@ async function handleDeletePreset() {
 }
 
 const llmProviders = [
-  { id: "openai" as const, label: "OpenAI", baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini" },
-  { id: "deepseek" as const, label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat" },
-  { id: "qwen" as const, label: "Qwen", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-turbo" },
-  { id: "custom" as const, label: "Custom", baseUrl: "", model: "" },
+  { id: "deepseek" as const, label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-v4-flash" },
+  { id: "openai" as const, label: "OpenAI", baseUrl: "https://api.openai.com/v1", model: "gpt-5.4-mini" },
+  { id: "qwen" as const, label: "Qwen", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus" },
+  { id: "glm" as const, label: "GLM (智谱)", baseUrl: "https://open.bigmodel.cn/api/paas/v4", model: "glm-5-turbo" },
+  { id: "custom" as const, label: "Custom (自定义)", baseUrl: "", model: "" },
 ]
+
+// Providers that do NOT support thinking mode (OpenAI GPT series).
+// DeepSeek, Qwen, GLM, Custom all support thinking via extra_body.
+const _NO_THINK_PROVIDERS = new Set(["openai"])
 
 function onLlmProviderChange(provider: string) {
   if (!settings.value) return
@@ -299,6 +304,10 @@ function onLlmProviderChange(provider: string) {
     llm_base_url: info?.baseUrl ?? "",
     llm_model: info?.model ?? "",
   }
+}
+
+function providerSupportsThinking(providerId: string): boolean {
+  return !_NO_THINK_PROVIDERS.has(providerId)
 }
 
 function isOllamaUrl(url: string): boolean {
@@ -1182,18 +1191,6 @@ async function loadPluginDataDir() {
             </section>
 
             <section>
-              <label class="block text-sm font-medium text-gray-700 mb-1">Base URL</label>
-              <input
-                type="text"
-                :value="settings.llm_base_url"
-                placeholder="https://api.openai.com/v1"
-                class="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                @input="settings = { ...settings!, llm_base_url: ($event.target as HTMLInputElement).value }"
-              />
-              <p v-if="isOllamaUrl(settings.llm_base_url)" class="mt-1 text-xs text-green-600">Ollama detected</p>
-            </section>
-
-            <section>
               <label class="block text-sm font-medium text-gray-700 mb-1">API Key</label>
               <div class="flex gap-2">
                 <input
@@ -1213,15 +1210,58 @@ async function loadPluginDataDir() {
               </div>
             </section>
 
+            <!-- Base URL --- visible for all, editable for power users -->
+            <section>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Base URL</label>
+              <input
+                type="text"
+                :value="settings.llm_base_url"
+                placeholder="https://api.openai.com/v1"
+                class="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                @input="settings = { ...settings!, llm_base_url: ($event.target as HTMLInputElement).value }"
+              />
+              <p v-if="isOllamaUrl(settings.llm_base_url)" class="mt-1 text-xs text-green-600">Ollama detected</p>
+
+              <!-- Custom provider tutorial -->
+              <div v-if="settings.llm_provider === 'custom'" class="mt-2 rounded border border-blue-100 bg-blue-50 p-2 text-xs text-blue-700 space-y-1">
+                <p><strong>自定义供应商说明:</strong></p>
+                <p>1. 在 <strong>Base URL</strong> 填入 API 的完整地址，以 <code>/v1</code> 结尾</p>
+                <p>2. 在 <strong>Model</strong> 填入你想要使用的模型名称</p>
+                <p>3. 确保 API 兼容 OpenAI 格式 (如 Ollama、vLLM、LiteLLM 等)</p>
+              </div>
+            </section>
+
             <section>
               <label class="block text-sm font-medium text-gray-700 mb-1">Model</label>
               <input
                 type="text"
                 :value="settings.llm_model"
-                placeholder="gpt-4o-mini"
+                :placeholder="providerSupportsThinking(settings.llm_provider) ? 'deepseek-v4-flash' : 'gpt-5.4-mini'"
                 class="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                 @input="settings = { ...settings!, llm_model: ($event.target as HTMLInputElement).value }"
               />
+            </section>
+
+            <!-- Thinking mode toggle (not supported by OpenAI GPT models) -->
+            <section>
+              <label class="relative flex items-center gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  :checked="settings.llm_thinking_enabled ?? false"
+                  :disabled="!providerSupportsThinking(settings.llm_provider)"
+                  class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                  @change="settings = { ...settings!, llm_thinking_enabled: ($event.target as HTMLInputElement).checked }"
+                />
+                <span class="text-sm font-medium text-gray-700 select-none" :class="{ 'opacity-40': !providerSupportsThinking(settings.llm_provider) }">
+                  深度思考 (Thinking)
+                </span>
+              </label>
+              <p v-if="!providerSupportsThinking(settings.llm_provider)" class="mt-1 text-xs text-gray-400">
+                OpenAI GPT 系列模型不支持深度思考模式
+              </p>
+              <p v-else class="mt-1 text-xs text-gray-400">
+                启用链式推理 (Chain-of-Thought)，让模型在回答前进行深度思考。适合复杂推理任务，但会增加响应时间和 Token 消耗
+              </p>
             </section>
 
             <section>

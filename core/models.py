@@ -193,25 +193,31 @@ class ModelInfo(BaseModel, frozen=True):
 class LlmProvider(StrEnum):
     """Supported LLM API providers (all OpenAI-compatible)."""
 
-    OPENAI = "openai"
     DEEPSEEK = "deepseek"
+    OPENAI = "openai"
     QWEN = "qwen"
+    GLM = "glm"
     CUSTOM = "custom"
 
 
 # Provider-specific defaults
+# Ordered by recommended priority (DeepSeek first as default).
 _PROVIDER_DEFAULTS: dict[LlmProvider, dict[str, str]] = {
-    LlmProvider.OPENAI: {
-        "base_url": "https://api.openai.com/v1",
-        "model": "gpt-4o-mini",
-    },
     LlmProvider.DEEPSEEK: {
         "base_url": "https://api.deepseek.com/v1",
-        "model": "deepseek-chat",
+        "model": "deepseek-v4-flash",
+    },
+    LlmProvider.OPENAI: {
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-5.4-mini",
     },
     LlmProvider.QWEN: {
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "model": "qwen-turbo",
+        "model": "qwen-plus",
+    },
+    LlmProvider.GLM: {
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "model": "glm-5-turbo",
     },
     LlmProvider.CUSTOM: {
         "base_url": "",
@@ -229,6 +235,7 @@ class LlmConfig(BaseModel, frozen=True):
     model: str = ""
     temperature: float = 0.3
     timeout: int = 120
+    thinking_enabled: bool = False
 
     def resolved_base_url(self) -> str:
         """Return configured base_url or provider default."""
@@ -245,6 +252,32 @@ class LlmConfig(BaseModel, frozen=True):
     def is_configured(self) -> bool:
         """Check if the minimum required fields are set."""
         return bool(self.resolved_base_url() and self.api_key and self.resolved_model())
+
+    @property
+    def supports_thinking(self) -> bool:
+        """Check if this provider supports thinking mode.
+
+        DeepSeek: yes (deepseek-v4-flash and above).
+        OpenAI: no (GPT models don't support thinking).
+        Qwen: yes (qwen-plus and above, via extra_body).
+        GLM: yes (glm-5 and above, via extra_body).
+        Custom: unknown -- default to True if base_url is non-empty.
+        """
+        if self.provider == LlmProvider.OPENAI:
+            return False
+        if self.provider == LlmProvider.CUSTOM:
+            return bool(self.resolved_base_url())
+        return True
+
+    def thinking_extra_body(self) -> dict | None:
+        """Return extra_body dict for thinking mode, or None if disabled.
+
+        Most OpenAI-compatible APIs (DeepSeek, Qwen, GLM) accept the
+        ``{"thinking": {"type": "enabled"}}`` payload in extra_body.
+        """
+        if not self.thinking_enabled or not self.supports_thinking:
+            return None
+        return {"thinking": {"type": "enabled"}}
 
 
 # ================================================================

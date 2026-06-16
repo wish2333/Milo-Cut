@@ -60,12 +60,13 @@ def get_llm_config() -> LlmConfig:
     """Read LLM config from settings file."""
     settings = load_settings()
     return LlmConfig(
-        provider=LlmProvider(settings.get("llm_provider", "custom")),
+        provider=LlmProvider(settings.get("llm_provider", "deepseek")),
         base_url=settings.get("llm_base_url", "").strip(),
         api_key=settings.get("llm_api_key", "").strip(),
         model=settings.get("llm_model", "").strip(),
         temperature=settings.get("llm_temperature", 0.3),
         timeout=settings.get("llm_timeout", 120),
+        thinking_enabled=settings.get("llm_thinking_enabled", False),
     )
 
 
@@ -132,6 +133,11 @@ def call_llm(
     }
     if json_mode and config.provider in (LlmProvider.OPENAI, LlmProvider.DEEPSEEK):
         request_kwargs["response_format"] = {"type": "json_object"}
+
+    # Thinking mode: pass extra_body for providers that support it
+    extra_body = config.thinking_extra_body()
+    if extra_body:
+        request_kwargs["extra_body"] = extra_body
 
     last_error: str = ""
     for attempt in range(_MAX_RETRIES):
