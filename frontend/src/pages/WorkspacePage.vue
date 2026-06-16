@@ -48,6 +48,15 @@ const {
   progress: llmProgress,
   errorMsg: llmErrorMsg,
   subtitleCorrectionResult,
+  // v2.1.0 Phase 2: P1 correction review
+  pendingCorrections,
+  correctionsLoading,
+  loadCorrections,
+  computeDiff,
+  acceptCorrection,
+  rejectCorrection,
+  acceptHighConfidenceCorrections,
+  clearCorrections,
   highlightResults,
   highlightTotalDuration,
   highlightTargetDuration,
@@ -62,9 +71,16 @@ const showSubtitleFullscreen = ref(false)
 // Settings modal (opened from AI assistant "go to settings")
 const showSettingsModal = ref(false)
 
-// P1 subtitle correction result count (for "view results" button)
-const subtitleCorrectionCount = computed(() =>
-  subtitleCorrectionResult.value?.corrected_count ?? null,
+// v2.1.0 Phase 2: P1 review -- corrections come from backend pending list.
+// subtitleCorrectionResult now only carries stored_count metadata.
+const subtitleCorrectionCount = computed(
+  () => subtitleCorrectionResult.value?.stored_count ?? pendingCorrections.value.length,
+)
+const highConfidenceCorrections = computed(() =>
+  pendingCorrections.value.filter((c) => c.confidence >= 0.8),
+)
+const lowConfidenceCorrections = computed(() =>
+  pendingCorrections.value.filter((c) => c.confidence < 0.8),
 )
 
 const projectRef = computed({
@@ -928,8 +944,135 @@ async function handleStartHighlight(targetMinutes: number) {
   showToast("精华提取已启动", "info", 2000)
 }
 
-function handleOpenSubtitleFullscreen() {
+async function handleOpenSubtitleFullscreen() {
   showSubtitleFullscreen.value = true
+  // v2.1.0 Phase 2: load pending corrections from backend on open
+  const tlId = props.project.active_timeline_id
+  if (tlId) {
+    await loadCorrections(tlId)
+  }
+}
+
+// v2.1.0 Phase 2: diff token aggregation (D-69) + accept/reject handlers
+interface DiffToken { text: string; type: "equal" | "delete" | "insert" }
+interface AggregatedToken {
+  type: "equal" | "delete" | "insert" | "replace"
+  text?: string
+  deleteText?: string
+  insertText?: string
+}
+
+function aggregateDiffTokens(tokens: DiffToken[]): AggregatedToken[] {
+  // D-69: merge adjacent delete+insert (gap <2 equal chars) into replace blocks
+  const result: AggregatedToken[] = []
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i]
+    const prev = result[result.length - 1]
+    if ((prev?.type === "delete" && tok.type === "insert") ||
+        (prev?.type === "insert" && tok.type === "delete")) {
+      result[result.length - 1] = {
+        type: "replace",
+        deleteText: prev.type === "delete" ? prev.text : tok.text,
+        insertText: prev.type === "insert" ? prev.text : tok.text,
+      }
+    } else {
+      result.push({ type: tok.type, text: tok.text })
+    }
+  }
+  return result
+}
+
+// Cache computed diffs per correction id to avoid recompute
+const diffCache = ref<Record<string, AggregatedToken[]>>({})
+
+function renderDiff(corr: { id: string; original_text: string; corrected_text: string }): string {
+  const cached = diffCache.value[corr.id]
+  if (!cached) {
+    // Fallback: simple original -> corrected display while diff computes
+    return `<span class="text-gray-400 line-through">${escapeHtml(corr.original_text)}</span>` +
+      ` <span class="text-gray-400">→</span> ` +
+      `<span class="text-green-700">${escapeHtml(corr.corrected_text)}</span>`
+  }
+  return cached.map(tok => {
+    if (tok.type === "equal") return `<span>${escapeHtml(tok.text ?? "")}</span>`
+    if (tok.type === "delete") return `<span class="line-through bg-red-100 text-red-700">${escapeHtml(tok.text ?? "")}</span>`
+    if (tok.type === "insert") return `<span class="bg-green-100 text-green-700">${escapeHtml(tok.text ?? "")}</span>`
+    // replace (aggregated D-69)
+    return `<span class="line-through bg-red-100 text-red-700">${escapeHtml(tok.deleteText ?? "")}</span>` +
+      `<span class="bg-green-100 text-green-700">${escapeHtml(tok.insertText ?? "")}</span>`
+  }).join("")
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+}
+
+// Preload diffs whenever the pending corrections list changes
+watch(pendingCorrections, async (list) => {
+  for (const corr of list) {
+    if (!diffCache.value[corr.id]) {
+      await ensureDiff(corr)
+    }
+  }
+}, { immediate: true })
+
+async function ensureDiff(corr: { id: string; original_text: string; corrected_text: string }) {
+  if (diffCache.value[corr.id]) return
+  const diff = await computeDiff(corr.original_text, corr.corrected_text)
+  if (diff?.tokens) {
+    diffCache.value[corr.id] = aggregateDiffTokens(diff.tokens as DiffToken[])
+  }
+}
+
+function categoryLabel(category: string): string {
+  const labels: Record<string, string> = {
+    homophone: "同音错字",
+    proper_noun: "专有名词",
+    punctuation: "标点断句",
+    reference_aligned: "参考稿对齐",
+    none: "无变更",
+  }
+  return labels[category] ?? category
+}
+
+async function handleAcceptCorrection(resultId: string) {
+  const ok = await acceptCorrection(resultId)
+  if (ok) {
+    delete diffCache.value[resultId]
+    // Refresh project so transcript reflects the applied correction
+    const res = await call<Project>("switch_timeline", props.project.active_timeline_id)
+    if (res.success && res.data) emit("project-updated", res.data)
+  }
+}
+
+async function handleRejectCorrection(resultId: string) {
+  const ok = await rejectCorrection(resultId)
+  if (ok) {
+    delete diffCache.value[resultId]
+  }
+}
+
+async function handleAcceptHighConfidence() {
+  const tlId = props.project.active_timeline_id
+  if (!tlId) return
+  const res = await acceptHighConfidenceCorrections(tlId, 0.8)
+  if (res) {
+    diffCache.value = {}
+    const projRes = await call<Project>("switch_timeline", tlId)
+    if (projRes.success && projRes.data) emit("project-updated", projRes.data)
+    showToast(`已接受 ${res.accepted} 条高置信度修正`, "success", 2000)
+  }
+}
+
+async function handleClearCorrections() {
+  if (!window.confirm("确认清除所有待审阅的修正？")) return
+  const tlId = props.project.active_timeline_id
+  if (!tlId) return
+  const ok = await clearCorrections(tlId)
+  if (ok) {
+    diffCache.value = {}
+    showToast("已清除全部修正", "info", 2000)
+  }
 }
 
 function handleGoToSettings() {
@@ -1669,6 +1812,7 @@ onUnmounted(() => {
             :llm-progress="llmProgress"
             :llm-error-msg="llmErrorMsg"
             :subtitle-correction-count="subtitleCorrectionCount"
+            :pending-correction-count="pendingCorrections.length"
             :highlight-items="highlightResults"
             :highlight-total-duration="highlightTotalDuration"
             :highlight-target-duration="highlightTargetDuration"
@@ -1765,13 +1909,97 @@ onUnmounted(() => {
             </button>
           </div>
           <div class="flex-1 overflow-y-auto p-6">
-            <p v-if="subtitleCorrectionCount !== null" class="mb-4 text-sm text-gray-600">
-              共修正 {{ subtitleCorrectionCount }} 条字幕
-              <span v-if="subtitleCorrectionResult">
-                (未覆盖 {{ subtitleCorrectionResult.uncovered_count }} 条)
-              </span>
+            <!-- Loading -->
+            <div v-if="correctionsLoading" class="flex items-center gap-2 text-sm text-gray-500">
+              <span class="loading loading-spinner loading-sm"></span>
+              加载修正列表...
+            </div>
+
+            <!-- Empty -->
+            <p v-else-if="pendingCorrections.length === 0" class="text-sm text-gray-500">
+              暂无待审阅的修正。运行 P1 字幕修正后，修正建议将在此显示供逐条审阅。
             </p>
-            <p v-else class="text-sm text-gray-500">暂无修正结果</p>
+
+            <!-- Correction list -->
+            <template v-else>
+              <!-- Batch action bar -->
+              <div class="mb-4 flex items-center gap-3">
+                <button
+                  class="rounded-md bg-green-600 px-3 py-1.5 text-xs text-white hover:bg-green-700 disabled:opacity-50"
+                  :disabled="highConfidenceCorrections.length === 0"
+                  @click="handleAcceptHighConfidence"
+                >
+                  信任全部高置信度 ({{ highConfidenceCorrections.length }})
+                </button>
+                <button
+                  class="rounded-md border border-gray-300 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50"
+                  @click="handleClearCorrections"
+                >清除全部</button>
+                <span class="text-xs text-gray-400">
+                  共 {{ pendingCorrections.length }} 条
+                </span>
+              </div>
+
+              <!-- High confidence section -->
+              <div v-if="highConfidenceCorrections.length > 0" class="mb-6">
+                <h3 class="mb-2 text-xs font-semibold text-green-700">
+                  高置信度修正 ({{ highConfidenceCorrections.length }})
+                </h3>
+                <div
+                  v-for="corr in highConfidenceCorrections"
+                  :key="corr.id"
+                  class="mb-2 rounded-lg border border-gray-200 bg-white p-3 text-sm"
+                >
+                  <div class="mb-1 flex items-center gap-2 text-xs text-gray-500">
+                    <span>{{ formatTimeShort(corr.start) }}</span>
+                    <span class="rounded bg-blue-50 px-1.5 py-0.5 text-blue-700">{{ categoryLabel(corr.category) }}</span>
+                    <span>置信度 {{ corr.confidence.toFixed(2) }}</span>
+                  </div>
+                  <!-- Inline diff -->
+                  <div class="leading-relaxed" v-html="renderDiff(corr)"></div>
+                  <!-- Actions -->
+                  <div class="mt-2 flex gap-2">
+                    <button
+                      class="rounded bg-green-600 px-2 py-1 text-xs text-white hover:bg-green-700"
+                      @click="handleAcceptCorrection(corr.id)"
+                    >接受</button>
+                    <button
+                      class="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50"
+                      @click="handleRejectCorrection(corr.id)"
+                    >拒绝</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Low confidence section (collapsed) -->
+              <details v-if="lowConfidenceCorrections.length > 0" class="mb-4">
+                <summary class="cursor-pointer text-xs font-semibold text-amber-700">
+                  低置信度修正 ({{ lowConfidenceCorrections.length }}) -- 需手动确认
+                </summary>
+                <div
+                  v-for="corr in lowConfidenceCorrections"
+                  :key="corr.id"
+                  class="mb-2 mt-2 rounded-lg border border-amber-200 bg-amber-50/40 p-3 text-sm"
+                >
+                  <div class="mb-1 flex items-center gap-2 text-xs text-gray-500">
+                    <span>{{ formatTimeShort(corr.start) }}</span>
+                    <span class="rounded bg-blue-50 px-1.5 py-0.5 text-blue-700">{{ categoryLabel(corr.category) }}</span>
+                    <span>置信度 {{ corr.confidence.toFixed(2) }}</span>
+                  </div>
+                  <div class="leading-relaxed" v-html="renderDiff(corr)"></div>
+                  <div class="mt-2 flex gap-2">
+                    <button
+                      class="rounded bg-green-600 px-2 py-1 text-xs text-white hover:bg-green-700"
+                      @click="handleAcceptCorrection(corr.id)"
+                    >接受</button>
+                    <button
+                      class="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50"
+                      @click="handleRejectCorrection(corr.id)"
+                    >拒绝</button>
+                  </div>
+                </div>
+              </details>
+            </template>
           </div>
         </div>
       </Transition>

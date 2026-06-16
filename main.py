@@ -811,20 +811,22 @@ class MiloCutApi(Bridge):
         corrections = result["data"]["corrections"]
         token_usage = result["data"]["token_usage"]
 
-        # Apply corrections to project
-        apply_result = self._project.apply_subtitle_corrections(corrections)
+        # v2.1.0 Phase 2: store corrections for review instead of auto-applying.
+        store_result = self._project.store_subtitle_corrections(
+            corrections, timeline_id
+        )
 
-        if not apply_result["success"]:
+        if not store_result["success"]:
             raise RuntimeError(
-                apply_result.get("error", "Failed to apply subtitle corrections")
+                store_result.get("error", "Failed to store subtitle corrections")
             )
 
-        self._emit("llm:subtitle_correction_completed", apply_result["data"])
+        self._emit("llm:subtitle_correction_completed", store_result["data"])
         self._emit("llm:token_usage", token_usage)
 
         return {
             "corrections": corrections,
-            "apply_result": apply_result["data"],
+            "stored_count": store_result["data"].get("stored_count", 0),
             "token_usage": token_usage,
         }
 
@@ -2028,6 +2030,15 @@ class MiloCutApi(Bridge):
 
         return load_settings()
 
+    def _resolve_timeline_id(self, timeline_id: str) -> str:
+        """Resolve a timeline id, falling back to the active timeline.
+
+        Raises ValueError if no project is open.
+        """
+        if self._project.current is None:
+            raise ValueError("No project is open")
+        return timeline_id or self._project.current.active_timeline_id
+
     # ------------------------------------------------------------------
     # LLM prompt presets (v2.1.0 Phase 1: per-feature parameter snapshots)
     # ------------------------------------------------------------------
@@ -2138,6 +2149,78 @@ class MiloCutApi(Bridge):
             "success": True,
             "data": {"func_key": func_key, "preset_id": preset_id},
         }
+
+    # ------------------------------------------------------------------
+    # v2.1.0 Phase 2: P1 subtitle correction review @expose methods
+    # ------------------------------------------------------------------
+
+    @expose
+    def get_subtitle_corrections(self, timeline_id: str = "") -> dict:
+        """Get pending P1 corrections for a timeline (parsed detail JSON).
+
+        Args:
+            timeline_id: Target timeline (defaults to active).
+
+        Returns:
+            {"success": True, "data": [correction, ...]}
+        """
+        tid = self._resolve_timeline_id(timeline_id)
+        return self._project.get_subtitle_corrections(tid)
+
+    @expose
+    def compute_diff(self, original: str, corrected: str) -> dict:
+        """Compute an inline diff between original and corrected text.
+
+        Returns:
+            {"success": True, "data": {"tokens": [{"text", "type"}, ...]}}
+        """
+        from core.diff_service import compute_inline_diff
+
+        return {"success": True, "data": compute_inline_diff(original, corrected)}
+
+    @expose
+    def accept_correction(self, result_id: str) -> dict:
+        """Accept one subtitle correction (apply to segment + remove result).
+
+        Returns:
+            {"success": True, "data": {"segment_id": str}}
+        """
+        return self._project.accept_subtitle_correction(result_id)
+
+    @expose
+    def reject_correction(self, result_id: str) -> dict:
+        """Reject one subtitle correction (remove result, text untouched).
+
+        Returns:
+            {"success": True, "data": {"segment_id": str}}
+        """
+        return self._project.reject_subtitle_correction(result_id)
+
+    @expose
+    def accept_high_confidence_corrections(
+        self, timeline_id: str = "", threshold: float = 0.8
+    ) -> dict:
+        """Batch-accept corrections with confidence >= threshold (D-52).
+
+        Args:
+            timeline_id: Target timeline (defaults to active).
+            threshold: Minimum confidence (default 0.8 per D-68).
+
+        Returns:
+            {"success": True, "data": {"accepted_count", "remaining_count"}}
+        """
+        tid = self._resolve_timeline_id(timeline_id)
+        return self._project.accept_high_confidence_corrections(tid, threshold)
+
+    @expose
+    def clear_subtitle_corrections(self, timeline_id: str = "") -> dict:
+        """Clear all pending P1 corrections for a timeline (D-50).
+
+        Returns:
+            {"success": True, "data": {"cleared_count": int}}
+        """
+        tid = self._resolve_timeline_id(timeline_id)
+        return self._project.clear_subtitle_corrections(tid)
 
     @expose
     def start_smart_delete(self, timeline_id: str = "") -> dict:

@@ -32,6 +32,20 @@ interface SubtitleCorrectionResult {
   orphaned_count: number
   rolled_back_count: number
   partial: boolean
+  stored_count?: number
+}
+
+// v2.1.0 Phase 2: pending correction item (parsed from AnalysisResult detail)
+interface SubtitleCorrection {
+  id: string
+  segment_id: string
+  confidence: number
+  original_text: string
+  corrected_text: string
+  changes: string[]
+  category: string
+  start: number
+  end: number
 }
 
 interface HighlightResult {
@@ -50,6 +64,9 @@ interface JumpCut {
 // Singleton state shared across all useLlmTasks() callers
 const smartDeleteResults = ref<SmartDeleteResult[]>([])
 const subtitleCorrectionResult = ref<SubtitleCorrectionResult | null>(null)
+// v2.1.0 Phase 2: pending corrections awaiting user review
+const pendingCorrections = ref<SubtitleCorrection[]>([])
+const correctionsLoading = ref(false)
 const highlightResults = ref<HighlightResult[]>([])
 const highlightTotalDuration = ref(0)
 const highlightTargetDuration = ref(600) // 10 min default
@@ -102,13 +119,15 @@ function ensureListeners() {
     },
   )
 
-  // P1 subtitle correction: completed
-  onEvent<SubtitleCorrectionResult>(
+  // P1 subtitle correction: completed -> load pending corrections for review
+  onEvent<{ stored_count?: number } & Partial<SubtitleCorrectionResult>>(
     EVENT_LLM_SUBTITLE_CORRECTION_COMPLETED,
-    (detail) => {
+    async (detail) => {
       isRunning.value = false
       if (detail) {
-        subtitleCorrectionResult.value = detail
+        subtitleCorrectionResult.value = detail as SubtitleCorrectionResult
+        // v2.1.0 Phase 2: auto-load stored corrections for the review UI.
+        // The caller must pass the active timeline_id via loadCorrections.
       }
     },
   )
@@ -202,6 +221,7 @@ export function useLlmTasks() {
 
   function resetSubtitleCorrection() {
     subtitleCorrectionResult.value = null
+    pendingCorrections.value = []
     progress.value = 0
     errorMsg.value = null
   }
@@ -268,6 +288,79 @@ export function useLlmTasks() {
     return null
   }
 
+  // v2.1.0 Phase 2: P1 correction review methods
+  async function loadCorrections(timelineId: string): Promise<void> {
+    correctionsLoading.value = true
+    const res = await call<SubtitleCorrection[]>("get_subtitle_corrections", timelineId)
+    correctionsLoading.value = false
+    if (res.success && res.data) {
+      pendingCorrections.value = res.data
+    }
+  }
+
+  async function computeDiff(
+    original: string,
+    corrected: string,
+  ): Promise<{ tokens: { text: string; type: string }[] } | null> {
+    const res = await call<{ tokens: { text: string; type: string }[] }>(
+      "compute_diff",
+      original,
+      corrected,
+    )
+    return res.success && res.data ? res.data : null
+  }
+
+  async function acceptCorrection(resultId: string): Promise<boolean> {
+    const res = await call<{ segment_id: string }>("accept_correction", resultId)
+    if (res.success) {
+      pendingCorrections.value = pendingCorrections.value.filter(
+        (c) => c.id !== resultId,
+      )
+      return true
+    }
+    return false
+  }
+
+  async function rejectCorrection(resultId: string): Promise<boolean> {
+    const res = await call<{ segment_id: string }>("reject_correction", resultId)
+    if (res.success) {
+      pendingCorrections.value = pendingCorrections.value.filter(
+        (c) => c.id !== resultId,
+      )
+      return true
+    }
+    return false
+  }
+
+  async function acceptHighConfidenceCorrections(
+    timelineId: string,
+    threshold = 0.8,
+  ): Promise<{ accepted: number; remaining: number } | null> {
+    const res = await call<{ accepted_count: number; remaining_count: number }>(
+      "accept_high_confidence_corrections",
+      timelineId,
+      threshold,
+    )
+    if (res.success && res.data) {
+      // Reload to reflect the remaining low-confidence items
+      await loadCorrections(timelineId)
+      return { accepted: res.data.accepted_count, remaining: res.data.remaining_count }
+    }
+    return null
+  }
+
+  async function clearCorrections(timelineId: string): Promise<boolean> {
+    const res = await call<{ cleared_count: number }>(
+      "clear_subtitle_corrections",
+      timelineId,
+    )
+    if (res.success) {
+      pendingCorrections.value = []
+      return true
+    }
+    return false
+  }
+
   return {
     // P0 smart-delete
     smartDeleteResults,
@@ -278,6 +371,15 @@ export function useLlmTasks() {
     subtitleCorrectionResult,
     startSubtitleCorrection,
     resetSubtitleCorrection,
+    // v2.1.0 Phase 2: P1 correction review
+    pendingCorrections,
+    correctionsLoading,
+    loadCorrections,
+    computeDiff,
+    acceptCorrection,
+    rejectCorrection,
+    acceptHighConfidenceCorrections,
+    clearCorrections,
     // P2 highlight
     highlightResults,
     hasHighlightResults,

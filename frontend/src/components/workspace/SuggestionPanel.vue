@@ -7,6 +7,8 @@ const props = defineProps<{
   analysisResults: AnalysisResult[]
   edits: EditDecision[]
   segments: Segment[]
+  /** v2.1.0 Phase 2: pending P1 corrections count (0 = none) */
+  pendingCorrectionCount?: number
 }>()
 
 const emit = defineEmits<{
@@ -15,6 +17,8 @@ const emit = defineEmits<{
   "confirm-all": []
   "reject-all": []
   "seek": [time: number]
+  /** v2.1.0 Phase 2: open the P1 fullscreen review view */
+  "review-corrections": []
 }>()
 
 const expandedGroups = ref<Set<string>>(new Set(["filler", "error", "llm_smart"]))
@@ -153,6 +157,18 @@ function handleSeek(item: SuggestionItem) {
         </template>
       </span>
     </div>
+
+    <!-- v2.1.0 Phase 2: P1 correction review entry (D-57 summary entry) -->
+    <button
+      v-if="(pendingCorrectionCount ?? 0) > 0"
+      class="flex w-full items-center justify-between border-b border-blue-100 bg-blue-50 px-3 py-2 text-left transition-colors hover:bg-blue-100"
+      @click="emit('review-corrections')"
+    >
+      <span class="text-sm font-medium text-blue-700">
+        P1 字幕修正待审 ({{ pendingCorrectionCount }} 条)
+      </span>
+      <span class="text-xs text-blue-500">查看详情 →</span>
+    </button>
 
     <div v-if="groups.length === 0" class="px-3 py-4 text-center text-sm text-gray-400">
       暂无分析结果

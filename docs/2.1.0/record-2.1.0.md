@@ -173,18 +173,101 @@ def load_settings() -> dict[str, Any]:
 
 ---
 
-## Phase 2: P1 完整 diff 审阅 (未开始)
+## Phase 2: P1 完整 diff 审阅 (已完成)
 
-> 决策范围: D-50 ~ D-57
+> 决策范围: D-50 ~ D-57, D-68, D-69
 
-**目标**: 将 P1 字幕修正从"自动 apply 全部修正"改为"生成 AnalysisResult → 用户逐条审阅 diff → 接受的修正才 apply"。
+### 概要
 
-**计划内容**:
-- `core/diff_service.py` (新增) -- difflib 字符级 diff 计算
-- corrections 持久化为 AnalysisResult (type=llm_subtitle_correction，detail 存 JSON)
-- 6 个新 @expose: get_subtitle_corrections / compute_diff / accept_correction / reject_correction / accept_high_confidence_corrections / clear_subtitle_corrections
-- 全屏 diff 审阅 UI (行内 diff + 置信度分组 + 批量"信任高置信度"，默认阈值 0.8 per D-68)
-- `_handle_subtitle_correction` 不再自动 apply
+将 P1 字幕修正从"自动 apply 全部修正"改为"生成 AnalysisResult → 用户逐条审阅 diff → 接受的修正才 apply"。核心变更: LLM 修正结果不再直接写入 segment.text，而是作为 AnalysisResult 持久化到项目文件，前端提供全屏 diff 审阅视图支持逐条 accept/reject 和批量操作。
+
+### 变更文件 (共 10 个)
+
+| 文件 | 变更 | 说明 |
+|------|------|------|
+| `core/diff_service.py` | **新增** (~68 行) | difflib 字符级 diff 计算: `compute_inline_diff(original, corrected)` 返回 `[{text, type}]` token 列表，供前端行内渲染 |
+| `core/project_service.py` | 修改 (+333 行) | 7 个新方法: `_update_timeline_by_id` / `store_subtitle_corrections` / `get_subtitle_corrections` / `accept_subtitle_correction` / `reject_subtitle_correction` / `accept_high_confidence_corrections` / `clear_subtitle_corrections`; accept 路径复用 `_check_correction_confidence` + `_assert_timestamps_unchanged` 防御 |
+| `main.py` | 修改 (+95 行) | `_handle_subtitle_correction` 改为调用 `store_subtitle_corrections` 而非 `apply_subtitle_corrections`; 新增 6 个 @expose: get_subtitle_corrections / compute_diff / accept_correction / reject_correction / accept_high_confidence_corrections / clear_subtitle_corrections; 新增 `_resolve_timeline_id` 辅助方法 |
+| `frontend/src/composables/useLlmTasks.ts` | 修改 (+110 行) | SubtitleCorrection 接口 + pendingCorrections/correctionsLoading state + 6 个方法: loadCorrections/computeDiff/acceptCorrection/rejectCorrection/acceptHighConfidenceCorrections/clearCorrections; 事件监听改为 store 模式 |
+| `frontend/src/pages/WorkspacePage.vue` | 修改 (+248 行) | 全屏 diff 审阅 UI: 置信度分组 (高/低，0.8 阈值 D-68)、行内 diff 渲染 (红删绿增 + replace 聚合 D-69)、批量"信任高置信度"/清除、逐条接受/拒绝; diff 缓存 + 异步预加载; categoryLabel 中文分类映射 |
+| `frontend/src/components/workspace/SuggestionPanel.vue` | 修改 (+16 行) | 新增 pendingCorrectionCount prop + "P1 字幕修正待审"摘要条目 + review-corrections emit (D-57 双入口之一) |
+| `frontend/src/components/workspace/Timeline.vue` | 修改 (+4 行) | 透传 pendingCorrectionCount prop + review-corrections 事件 |
+| `tests/test_diff_service.py` | **新增** (~108 行) | diff_service 单元测试: 基本比较、空字符串、纯替换、纯插入、纯删除、中文字符级 diff |
+| `tests/test_subtitle_correction_review.py` | **新增** (~283 行) | Phase 2 端到端测试: store/get/accept/reject/batch-accept/clear + 置信度分组 + 无操作跳过 + re-run 清除旧数据 |
+
+### 架构决策
+
+#### corrections 持久化 -- 扩展 AnalysisResult (D-54)
+
+修正不再直接修改 segment.text，而是存储为 `AnalysisResult`:
+```python
+AnalysisResult(
+    id=f"corr-{seg_id}-{uuid4().hex[:8]}",
+    type="llm_subtitle_correction",
+    segment_ids=[seg_id],
+    confidence=float(corr.get("confidence", 0.8)),
+    detail=json.dumps({
+        "original_text": original_text,
+        "corrected_text": corrected_text,
+        "changes": corr.get("changes", []),
+        "category": corr.get("category", "none"),
+    }, ensure_ascii=False),
+)
+```
+存储在 `Timeline.analysis.results` 中，复用现有持久化路径 (项目保存时自动跟随)。审阅完成后从列表移除 (D-50)。
+
+#### re-run 清除策略
+
+`store_subtitle_corrections` 在写入新 corrections 前清除所有 type=llm_subtitle_correction 的旧结果，确保重复运行 P1 不会累积过期审阅条目。
+
+#### accept 路径安全性
+
+`accept_subtitle_correction` 复用 v2.0.0 引入的 `_check_correction_confidence` (置信度异常检测) 和 `_assert_timestamps_unchanged` (时间戳完整性断言)，确保 LLM 修正不会意外篡改时间轴。
+
+#### 前端 diff 碎片优化 (D-69)
+
+difflib 字符级比较在中文句式重组时会产生细碎的 delete/insert 交替。前端 `aggregateDiffTokens` 将相邻 delete+insert 块聚合为单个 replace 块，视觉上红删绿增紧邻显示，减少认知负担。
+
+#### 双入口设计 (D-57)
+
+- SuggestionPanel: 摘要条目 "P1 字幕修正待审 (N 条)"，点击触发全屏审阅
+- AI 助手面板: 全屏 diff 审阅视图 (原有的字幕修正全屏模式改造)
+
+### 决策映射
+
+| 决策 | 实现 |
+|------|------|
+| D-50 (持久化后审阅清除) | accept/reject 从 analysis.results 移除; clear 批量移除 |
+| D-51 (行内 diff) | 后端 difflib 字符级 + 前端 HTML 渲染 (line-through + bg 颜色) |
+| D-52 (批量信任高置信度) | accept_high_confidence_corrections(threshold=0.8) |
+| D-53 (直接更新 segment.text) | accept 时 model_copy 更新 segment.text + dirty_flags |
+| D-54 (扩展 AnalysisResult) | type=llm_subtitle_correction, detail 存 JSON |
+| D-55 (后端 difflib) | core/diff_service.py |
+| D-56 (字符级 diff) | difflib.SequenceMatcher 对中文字符逐字比较 |
+| D-57 (双入口) | SuggestionPanel 摘要 + 全屏 diff 审阅 |
+| D-68 (默认阈值 0.8) | accept_high_confidence_corrections 默认 threshold=0.8 |
+| D-69 (碎片优化) | aggregateDiffTokens 聚合相邻 delete/insert 为 replace |
+
+### API 契约 (新增 6 个 @expose)
+
+| 方法 | 签名 | 返回 data |
+|------|------|-----------|
+| `get_subtitle_corrections(timeline_id)` | 读取待审修正列表 | `[correction_dict, ...]` |
+| `compute_diff(original, corrected)` | 计算行内 diff | `{"tokens": [{text, type}, ...]}` |
+| `accept_correction(result_id)` | 接受单条修正 | `{"segment_id": str}` |
+| `reject_correction(result_id)` | 拒绝单条修正 | `{"segment_id": str}` |
+| `accept_high_confidence_corrections(timeline_id, threshold)` | 批量接受高置信度 | `{"accepted_count", "remaining_count"}` |
+| `clear_subtitle_corrections(timeline_id)` | 清除全部待审修正 | `{"cleared_count": int}` |
+
+### 测试覆盖
+
+| 验证项 | 结果 |
+|--------|------|
+| `uv run pytest tests/test_diff_service.py` | 7 测试全部通过 |
+| `uv run pytest tests/test_subtitle_correction_review.py` | ~15 测试全部通过 |
+| `uv run pytest tests/` (全量，排除 whisper/asr-gui) | 全部通过 |
+| `bun run build` (前端构建) | 通过 |
+| `bun run test` (前端测试) | 全部通过 |
 
 ---
 
@@ -203,14 +286,14 @@ def load_settings() -> dict[str, Any]:
 
 ---
 
-## 测试基线 (Phase 1 后)
+## 测试基线 (Phase 2 后)
 
 | 类别 | 数量 | 说明 |
 |------|------|------|
-| 后端单元测试 | 268 | 含新增 test_llm_presets.py 21 个 |
-| 前端测试 | 147 | 无新增 (Phase 1 为设置页 UI，无独立组件测试) |
-| ruff | 零错误 | 本次改动 4 文件全部通过 |
-| ESLint | 零错误 | useLlmSettings.ts + SettingsModal.vue |
+| 后端单元测试 | ~290 | 含新增 test_diff_service.py 7 个 + test_subtitle_correction_review.py ~15 个 |
+| 前端测试 | 147 | 无新增 (Phase 2 为审阅 UI，无独立组件测试) |
+| ruff | 零错误 | |
+| ESLint | 零错误 | |
 | 排除 | test_transcription.py | 已知 ASR VadOptions 失败 |
 | 排除 | test_asr_gui_e2e.py | 需完整 GUI 环境 |
 
@@ -218,7 +301,7 @@ def load_settings() -> dict[str, Any]:
 
 ## 发布前待办
 
-- [ ] Phase 2: P1 完整 diff 审阅
+- [x] Phase 2: P1 完整 diff 审阅
 - [ ] Phase 3: 一键清理工作流
 - [ ] 版本号 bump (pyproject.toml 当前仍为 1.3.0，v2.0.0/v2.0.1 未合并 main)
 - [ ] build.py --onefile 实际产物验证 (需完整 GUI 环境)

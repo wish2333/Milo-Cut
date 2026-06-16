@@ -23,6 +23,8 @@ const props = defineProps<{
   llmProgress?: number
   llmErrorMsg?: string | null
   subtitleCorrectionCount?: number | null
+  /** v2.1.0 Phase 2: pending P1 corrections count for SuggestionPanel banner */
+  pendingCorrectionCount?: number
   highlightItems?: Array<{
     segment_id: string
     highlight_reason: string
@@ -205,11 +207,13 @@ watch(
             :analysis-results="analysisResults"
             :edits="edits"
             :segments="segments"
+            :pending-correction-count="pendingCorrectionCount ?? 0"
             @confirm-edit="(editId) => emit('confirm-suggestion', editId)"
             @reject-edit="(editId) => emit('reject-suggestion', editId)"
             @confirm-all="emit('confirm-all')"
             @reject-all="emit('reject-all')"
             @seek="(t) => emit('seek-suggestion', t)"
+            @review-corrections="emit('open-subtitle-fullscreen')"
           />
 
           <AIAssistantPanel
