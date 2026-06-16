@@ -5,6 +5,7 @@ import WorkspacePage from "@/pages/WorkspacePage.vue"
 import ExportPage from "@/pages/ExportPage.vue"
 import ToastContainer from "@/components/common/ToastContainer.vue"
 import RelinkMediaDialog from "@/components/workspace/RelinkMediaDialog.vue"
+import ConflictResolutionView from "@/components/workspace/ConflictResolutionView.vue"
 import { waitForPyWebView, call, onEvent } from "./bridge"
 import { useUvAvailability } from "@/composables/useUvAvailability"
 import { EVENT_TASK_COMPLETED } from "@/utils/events"
@@ -246,5 +247,8 @@ function handleRelinkCancel() {
     />
 
     <ToastContainer />
+
+    <!-- v2.1.0 Phase 3: workflow conflict resolution overlay -->
+    <ConflictResolutionView />
   </div>
 </template>

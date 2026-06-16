@@ -12,11 +12,14 @@
  * Feature cards show 场景名 (primary) + 功能名 (subtitle) per D-14.
  * When LLM is not configured, cards are greyed out per D-12.
  */
-import { computed, ref } from "vue"
+import { computed, onMounted, ref } from "vue"
 import SemanticSearchBar from "@/components/workspace/SemanticSearchBar.vue"
+import { useWorkflow } from "@/composables/useWorkflow"
+import type { WorkflowStep } from "@/composables/useWorkflow"
 import type { Segment } from "@/types/project"
 
 type FeatureKey = "smart_delete" | "subtitle_correction" | "search"
+type PanelMode = "single" | "workflow"
 
 const props = defineProps<{
   segments: Segment[]
@@ -38,8 +41,34 @@ const emit = defineEmits<{
   seek: [time: number]
 }>()
 
+// v2.1.0 Phase 3: workflow composable
+const wf = useWorkflow()
+
+const panelMode = ref<PanelMode>("single")
 const selectedFeature = ref<FeatureKey | null>(null)
 const referenceText = ref("")
+
+// Workflow config state
+const newWorkflowName = ref("")
+const newWorkflowSteps = ref<WorkflowStep[]>([
+  { type: "full_analysis", preset_id: null },
+  { type: "llm_smart_delete", preset_id: null },
+])
+const selectedWorkflowId = ref("")
+
+const stepLabels: Record<string, string> = {
+  full_analysis: "规则分析",
+  llm_smart_delete: "P0 智能删除",
+  llm_subtitle_correction: "P1 字幕修正",
+  llm_highlight: "P2 精华提取",
+}
+
+const availableSteps = [
+  { type: "full_analysis" as const, label: "规则分析" },
+  { type: "llm_smart_delete" as const, label: "P0 智能删除" },
+  { type: "llm_subtitle_correction" as const, label: "P1 字幕修正" },
+  { type: "llm_highlight" as const, label: "P2 精华提取" },
+]
 
 interface FeatureCard {
   key: FeatureKey
@@ -81,6 +110,58 @@ function selectFeature(key: FeatureKey) {
   if (!props.llmConfigured) return
   selectedFeature.value = selectedFeature.value === key ? null : key
 }
+
+// Workflow helpers
+function toggleStep(stepType: WorkflowStep["type"]) {
+  const idx = newWorkflowSteps.value.findIndex((s) => s.type === stepType)
+  if (idx >= 0) {
+    newWorkflowSteps.value.splice(idx, 1)
+  } else {
+    newWorkflowSteps.value.push({ type: stepType, preset_id: null })
+  }
+}
+
+function isStepChecked(stepType: WorkflowStep["type"]) {
+  return newWorkflowSteps.value.some((s) => s.type === stepType)
+}
+
+async function handleSaveWorkflow() {
+  if (!newWorkflowName.value.trim()) return
+  const steps = newWorkflowSteps.value
+  if (steps.length === 0) return
+  const res = await wf.saveWorkflow(newWorkflowName.value, steps)
+  if (res.success) {
+    newWorkflowName.value = ""
+    selectedWorkflowId.value = res.data?.id || ""
+  }
+}
+
+async function handleStartWorkflow() {
+  if (!selectedWorkflowId.value) return
+  await wf.startWorkflow(selectedWorkflowId.value)
+}
+
+async function handleDeleteWorkflow() {
+  if (!selectedWorkflowId.value) return
+  await wf.deleteWorkflow(selectedWorkflowId.value)
+  selectedWorkflowId.value = ""
+}
+
+async function handleCancelWorkflow(mode: "immediate" | "after_current") {
+  await wf.cancelWorkflow(mode)
+}
+
+async function handleApplyWorkflow() {
+  await wf.applyWorkflow()
+}
+
+async function handleDiscardWorkflow() {
+  await wf.discardWorkflow()
+}
+
+onMounted(() => {
+  wf.loadWorkflows()
+})
 
 async function handleStartSmartDelete() {
   emit("start-smart-delete")
@@ -129,6 +210,179 @@ function handleSearchSeek(time: number) {
       {{ errorMsg }}
     </div>
 
+    <!-- Workflow error message -->
+    <div v-if="wf.errorMsg.value" class="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">
+      {{ wf.errorMsg.value }}
+    </div>
+
+    <!-- Mode switch (D-19) -->
+    <div class="flex gap-1 rounded-lg bg-gray-100 p-0.5">
+      <button
+        class="flex-1 rounded-md px-3 py-1 text-xs font-medium transition-colors"
+        :class="panelMode === 'single' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500'"
+        @click="panelMode = 'single'"
+      >单功能</button>
+      <button
+        class="flex-1 rounded-md px-3 py-1 text-xs font-medium transition-colors"
+        :class="panelMode === 'workflow' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500'"
+        @click="panelMode = 'workflow'"
+      >工作流</button>
+    </div>
+
+    <!-- ============ Workflow Mode (Phase 3) ============ -->
+    <template v-if="panelMode === 'workflow'">
+      <!-- Execution view (when active or completed pending review) -->
+      <div v-if="wf.isActive.value || wf.instanceId.value" class="flex flex-col gap-3">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-medium text-gray-700">
+            {{ wf.workflowName.value }}
+          </span>
+          <span v-if="wf.cancelMode.value === 'after_current'" class="text-xs text-amber-600">
+            Cancelling...
+          </span>
+        </div>
+
+        <!-- Overall progress (D-20) -->
+        <div class="flex flex-col gap-1">
+          <div class="flex justify-between text-xs text-gray-500">
+            <span>总进度</span>
+            <span>{{ wf.currentStepIndex.value }}/{{ wf.totalSteps.value }}</span>
+          </div>
+          <div class="h-1.5 w-full overflow-hidden rounded-full bg-gray-200">
+            <div
+              class="h-full bg-blue-500 transition-all duration-300"
+              :style="{ width: `${wf.overallProgress.value}%` }"
+            ></div>
+          </div>
+        </div>
+
+        <!-- Step list (D-70: queued/running/pending distinction) -->
+        <div class="flex flex-col gap-1.5">
+          <div
+            v-for="step in wf.stepResults.value"
+            :key="step.index"
+            class="flex items-center gap-2 rounded-md px-2 py-1 text-xs"
+            :class="{
+              'bg-green-50 text-green-700': step.status === 'completed',
+              'bg-blue-50 text-blue-700': step.status === 'running',
+              'bg-gray-50 text-gray-400': step.status === 'pending',
+            }"
+          >
+            <span v-if="step.status === 'completed'">&#10003;</span>
+            <span v-else-if="step.status === 'running'" class="animate-pulse">&#9679;</span>
+            <span v-else-if="step.status === 'queued'" class="text-amber-500">&#9203;</span>
+            <span v-else>&#9675;</span>
+            <span>{{ stepLabels[step.type] || step.type }}</span>
+            <span v-if="step.status === 'running' && wf.stepProgress.value[step.index]" class="ml-auto text-gray-400">
+              {{ Math.round(wf.stepProgress.value[step.index].percent) }}%
+            </span>
+            <span v-else-if="step.status === 'completed'" class="ml-auto">
+              {{ step.edits_count }} 条
+            </span>
+            <span v-else-if="step.status === 'queued'" class="ml-auto text-amber-500">
+              等待系统资源...
+            </span>
+          </div>
+        </div>
+
+        <!-- Cancel buttons (D-22) -->
+        <div v-if="wf.isActive.value && !wf.cancelMode.value" class="flex gap-2">
+          <button
+            class="flex-1 rounded-md border border-red-300 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50"
+            @click="handleCancelWorkflow('immediate')"
+          >立即取消</button>
+          <button
+            class="flex-1 rounded-md border border-amber-300 px-3 py-1.5 text-xs font-medium text-amber-600 hover:bg-amber-50"
+            @click="handleCancelWorkflow('after_current')"
+          >当前步骤后停</button>
+        </div>
+        <button
+          v-else-if="wf.cancelMode.value === 'after_current'"
+          class="rounded-md border border-red-300 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50"
+          @click="handleCancelWorkflow('immediate')"
+        >立即取消 (不等待)</button>
+
+        <!-- Apply / Discard (after completion, D-10, D-17) -->
+        <div v-if="!wf.isActive.value && wf.instanceId.value" class="flex flex-col gap-2">
+          <button
+            class="rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700"
+            @click="handleApplyWorkflow"
+          >应用结果到项目</button>
+          <button
+            class="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
+            @click="handleDiscardWorkflow"
+          >放弃</button>
+        </div>
+      </div>
+
+      <!-- Config view (when not active and no instance) -->
+      <div v-else class="flex flex-1 flex-col gap-3 overflow-y-auto">
+        <!-- Saved workflows -->
+        <div class="flex flex-col gap-2">
+          <div class="flex items-center gap-2">
+            <select
+              v-model="selectedWorkflowId"
+              class="flex-1 rounded-md border border-gray-200 px-2 py-1.5 text-xs"
+            >
+              <option value="">-- 选择已保存工作流 --</option>
+              <option v-for="w in wf.workflows.value" :key="w.id" :value="w.id">
+                {{ w.name }} ({{ w.steps.length }} 步)
+              </option>
+            </select>
+            <button
+              class="rounded-md bg-blue-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600 disabled:opacity-50"
+              :disabled="!selectedWorkflowId"
+              @click="handleStartWorkflow"
+            >启动</button>
+            <button
+              class="rounded-md border border-red-300 px-2 py-1.5 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
+              :disabled="!selectedWorkflowId"
+              @click="handleDeleteWorkflow"
+            >删除</button>
+          </div>
+        </div>
+
+        <div class="border-t border-gray-100 pt-2">
+          <p class="mb-2 text-xs font-medium text-gray-500">-- 或新建工作流 --</p>
+        </div>
+
+        <!-- New workflow config -->
+        <div class="flex flex-col gap-2">
+          <input
+            v-model="newWorkflowName"
+            class="w-full rounded-md border border-gray-200 px-2 py-1.5 text-xs"
+            placeholder="工作流名称"
+          />
+
+          <div class="flex flex-col gap-1.5">
+            <p class="text-xs text-gray-500">步骤 (按勾选顺序执行):</p>
+            <label
+              v-for="step in availableSteps"
+              :key="step.type"
+              class="flex items-center gap-2 rounded-md border border-gray-100 px-2 py-1.5"
+              :class="{ 'bg-blue-50 border-blue-200': isStepChecked(step.type) }"
+            >
+              <input
+                type="checkbox"
+                :checked="isStepChecked(step.type)"
+                class="h-3.5 w-3.5"
+                @change="toggleStep(step.type)"
+              />
+              <span class="text-xs text-gray-700">{{ step.label }}</span>
+            </label>
+          </div>
+
+          <button
+            class="rounded-md bg-gray-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800 disabled:opacity-50"
+            :disabled="!newWorkflowName.trim() || newWorkflowSteps.length === 0"
+            @click="handleSaveWorkflow"
+          >保存工作流</button>
+        </div>
+      </div>
+    </template>
+
+    <!-- ============ Single Function Mode (existing) ============ -->
+    <template v-else>
     <!-- Progress bar (shared) -->
     <div v-if="isRunning" class="flex flex-col gap-1">
       <div class="h-1.5 w-full overflow-hidden rounded-full bg-gray-200">
@@ -269,5 +523,8 @@ function handleSearchSeek(time: number) {
     >
       选择一个功能开始
     </div>
+    </template>
+    <!-- ============ End Single Function Mode ============ -->
+
   </div>
 </template>
