@@ -297,12 +297,26 @@ const _NO_THINK_PROVIDERS = new Set(["openai"])
 
 function onLlmProviderChange(provider: string) {
   if (!settings.value) return
+  const oldProvider = settings.value.llm_provider
+
+  // Persist current provider's values before switching
+  const configs = { ...(settings.value.llm_provider_configs ?? {}) }
+  configs[oldProvider] = {
+    base_url: settings.value.llm_base_url,
+    api_key: settings.value.llm_api_key,
+    model: settings.value.llm_model,
+  }
+
+  // Restore target provider's persisted values, or fall back to defaults
   const info = llmProviders.find(p => p.id === provider)
+  const cached = configs[provider]
   settings.value = {
     ...settings.value,
     llm_provider: provider as AppSettings["llm_provider"],
-    llm_base_url: info?.baseUrl ?? "",
-    llm_model: info?.model ?? "",
+    llm_base_url: cached?.base_url ?? info?.baseUrl ?? "",
+    llm_api_key: cached?.api_key ?? "",
+    llm_model: cached?.model ?? info?.model ?? "",
+    llm_provider_configs: configs,
   }
 }
 

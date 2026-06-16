@@ -81,6 +81,10 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     "llm_temperature": 0.3,
     "llm_timeout": 120,
     "llm_thinking_enabled": False,
+    # Per-provider config cache (v2.1.0): preserves base_url/api_key/model
+    # across provider switches so the user never loses what they typed.
+    # Structure: {provider_id: {base_url, api_key, model}}
+    "llm_provider_configs": {},
     # LLM prompts (Phase 3: parameterized prompt customization)
     "llm_prompts": {},
     # LLM prompt presets (v2.1.0 Phase 1: per-feature saved parameter snapshots)

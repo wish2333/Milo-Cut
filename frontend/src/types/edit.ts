@@ -69,4 +69,5 @@ export interface AppSettings {
   llm_temperature: number
   llm_timeout: number
   llm_thinking_enabled: boolean
+  llm_provider_configs: Record<string, { base_url: string; api_key: string; model: string }>
 }
