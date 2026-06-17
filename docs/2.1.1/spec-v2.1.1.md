@@ -737,6 +737,11 @@ function handleSplitSegment(segmentId: string) {
 | D-311 | 分割默认从中间分 | 用户用 ±0.1s 微调 |
 | D-312 | Timeline 右键加重命名 | rename API 已存在，补 UI 入口 |
 | D-313 | 清除操作后 toast 提示 | 不自动重跑，用户手动决定 |
+| D-314 | _get_target_timeline 封装 | 消除全部 handler timeline 获取重复 (AR-1) |
+| D-315 | 429 限流专用退避 5/10/20s | 比通用退避更长，适配免费 API (AR-2) |
+| D-316 | 连续 3 次 429 自动降级串行 | 防止免费额度耗尽 (AR-2) |
+| D-317 | TranscriptRow v-memo 优化 | 选择模式长视频性能保障 (AR-3) |
+| D-318 | 取消后 Token 消耗为已知局限 | daemon 线程无法中断 HTTP (AR-4) |
 
 ---
 
@@ -746,11 +751,11 @@ function handleSplitSegment(segmentId: string) {
 
 | 文件 | 模块 | 变更 |
 |------|------|------|
-| `main.py` | M1 | _handle_filler_detection / _handle_error_detection / _handle_full_analysis 改为 active_timeline |
+| `main.py` | M1 | 新增 `_get_target_timeline` helper (AR-1)；三个规则 handler + 三个 LLM handler 统一调用 |
 | `core/task_manager.py` | M1 | _execute_task 区分 Cancelled / FAILED |
 | `core/events.py` | M1 | 新增 TASK_CANCELLED 事件常量 |
 | `core/config.py` | M2 | _DEFAULT_SETTINGS 新增 7 个 LLM 参数字段 |
-| `core/llm_service.py` | M2+M3 | 3 个 analyze 函数读取参数 + smart_delete/correction 改 ThreadPoolExecutor |
+| `core/llm_service.py` | M2+M3+AR | 3 个 analyze 函数读取参数 + smart_delete/correction 改 ThreadPoolExecutor + call_llm 429 专用退避 (AR-2) + 并发自适应降级 |
 | `frontend/src/utils/events.ts` | M1 | 同步 TASK_CANCELLED 事件 |
 
 ### 前端 (8 文件)
@@ -760,7 +765,7 @@ function handleSplitSegment(segmentId: string) {
 | `frontend/src/components/workspace/SettingsModal.vue` | M2 | LLM Tab 新增「高级参数」折叠区 |
 | `frontend/src/composables/useSegmentEdit.ts` | M4 | 新增 selectionMode / selectedSegmentIds / handleSegmentClick |
 | `frontend/src/components/workspace/TranscriptRow.vue` | M4 | 选择模式样式 + ±0.1s 按钮 + 右键菜单分割 + 键盘微调 |
-| `frontend/src/components/workspace/Timeline.vue` | M4 | 选择模式按钮 + 搜索图标 + 合并按钮 + Timeline 右键菜单 |
+| `frontend/src/components/workspace/Timeline.vue` | M4+AR | 选择模式按钮 + 搜索图标 + 合并按钮 + Timeline 右键菜单 + TranscriptRow v-memo (AR-3) |
 | `frontend/src/pages/WorkspacePage.vue` | M4 | handleMergeSelected / handleSplitSegment / 搜索入口 / Timeline 重命名 |
 | `frontend/src/composables/useEdit.ts` | M4 | mergeSegments / splitSegment 接入 |
 | `frontend/src/types/edit.ts` | M2 | 新增 7 个 settings 字段到 TS 类型 |
@@ -805,6 +810,156 @@ M1 (P0 bug) → M2 (参数) → M3 (并发，依赖 M2 参数) → M4 (交互) �
 ```
 
 M1 必须最先完成 (阻断核心功能)。M2 先于 M3 (并发数参数在 M2 定义)。M4 独立于 M1-M3，可并行。M5 最后。
+
+---
+
+## 审计报告整合
+
+> 基于 v2.1.1 spec 技术评审反馈，以下建议已整合进实施方案。
+
+### AR-1: Analysis handler 封装 _get_target_timeline (来自 M1-1 建议)
+
+**建议**: 三个 handler 获取 timeline 的逻辑重复，封装私有方法减少重复。
+
+**采纳**: 新增 `_get_target_timeline` helper。
+
+```python
+# main.py -- 新增 helper
+def _get_target_timeline(self, task) -> Timeline:
+    """从 task payload 或 active timeline 获取目标 timeline。
+    
+    payload 有 timeline_id 时用它；否则回退到 project.active_timeline_id。
+    所有规则分析和 LLM handler 统一使用此方法。
+    """
+    if self._project.current is None:
+        raise ValueError("No project open")
+    project = self._project.current
+    timeline_id = task.payload.get("timeline_id", "") or project.active_timeline_id
+    timeline = project.get_timeline(timeline_id)
+    if timeline is None:
+        raise ValueError(f"Timeline {timeline_id} not found")
+    return timeline
+```
+
+修复后三个 handler 统一调用:
+
+```python
+def _handle_filler_detection(self, task, cancel_event, progress_cb):
+    timeline = self._get_target_timeline(task)  # ← 一行替代 5 行
+    segments = list(timeline.transcript.segments)
+    ...
+```
+
+同时 `_handle_smart_delete` / `_handle_subtitle_correction` / `_handle_highlight` 也改用此 helper，消除全部 handler 的 timeline 获取重复。
+
+### AR-2: 429 限流自适应降并发 (来自风险点 1)
+
+**风险**: 并发数 5 对 DeepSeek 免费版 / Tier 1 账号可能频繁触发 429。
+
+**采纳**: call_llm 退避逻辑增强 + 并发层自适应。
+
+#### call_llm 退避增强 (现有逻辑位于 llm_service.py:176-200)
+
+```python
+# 现有: RateLimitError 统一退避 1s/2s/4s
+except RateLimitError:
+    last_error = f"Rate limited (attempt {attempt + 1})"
+    logger.warning(last_error)
+
+# 改为: 429 使用更长退避 (5s/10s/20s)
+except RateLimitError:
+    last_error = f"Rate limited (attempt {attempt + 1})"
+    logger.warning(last_error)
+    # Rate limit 专用退避 -- 比普通错误更长
+    if attempt < _MAX_RETRIES - 1:
+        delay = 5.0 * (2 ** attempt)  # 5s, 10s, 20s
+        if cancel_event:
+            cancel_event.wait(timeout=delay)
+        else:
+            time.sleep(delay)
+        continue  # 跳过底部的通用退避
+```
+
+#### 并发层自适应降级 (analyze_smart_delete / analyze_subtitle_correction)
+
+```python
+# 在 ThreadPoolExecutor 循环中追踪 429
+consecutive_429 = 0
+max_consecutive_429 = 3
+
+for future in as_completed(futures):
+    idx, normalized, usage, error = future.result()
+
+    if error and "Rate limited" in error:
+        consecutive_429 += 1
+        if consecutive_429 >= max_consecutive_429:
+            # 连续 3 次 429 → 动态降低并发: 剩余 chunk 改串行
+            logger.warning(f"Rate limited {consecutive_429}x, switching remaining chunks to serial")
+            # 取消未开始的 futures，剩余 chunk 串行处理
+            executor.shutdown(wait=False, cancel_futures=True)
+            for remaining_idx in range(idx + 1, total_chunks):
+                if cancel_event and cancel_event.is_set():
+                    return {"success": False, "error": "Cancelled"}
+                # 串行调用，每次间隔 2s
+                ...
+                time.sleep(2)
+            break
+    else:
+        consecutive_429 = 0  # 成功则重置计数
+```
+
+### AR-3: TranscriptRow 渲染优化 (来自风险点 2)
+
+**风险**: 长视频 (1h+) 选择模式切换/选中状态变化导致 TranscriptRow 大量重绘。
+
+**采纳**: `v-memo` + `selectedSegmentIds` 改用 reactive Set 的浅比较。
+
+#### Timeline.vue v-memo
+
+```vue
+<TranscriptRow
+  v-if="seg.type === 'subtitle'"
+  v-memo="[seg, getSegmentState(seg).displayStatus, selectedSegmentIds.has(seg.id), globalEditMode]"
+  :segment="seg"
+  :display-status="getSegmentState(seg).displayStatus"
+  :style-class="getSegmentState(seg).styleClass"
+  :is-selected="selectedSegmentIds.has(seg.id)"
+  :is-adjacent-highlighted="seg.id === adjacentSubtitleIds.prev || seg.id === adjacentSubtitleIds.next"
+  :global-edit-mode="globalEditMode"
+  ...
+/>
+```
+
+`v-memo` 的依赖数组只有这 4 项变化时才触发重渲染:
+- `seg` -- 段落数据本身变化 (文本/时间)
+- `displayStatus` -- 标注状态变化
+- `selectedSegmentIds.has(seg.id)` -- 本段选中状态变化 (布尔值)
+- `globalEditMode` -- 全局编辑模式切换
+
+当用户在选择模式下选中段 A 时，只有段 A 的 `selectedSegmentIds.has(seg.id)` 从 false→true，其他段的该值不变，因此不会重绘。
+
+> **注意**: `selectedSegmentIds` 必须是 `reactive(new Set())` 或 `ref(new Set())`。Vue 3 对 Set 的 `.has()` 能正确追踪。但 `.add()` / `.delete()` 触发的重渲染范围取决于 v-memo 的 shallow 比较。
+
+### AR-4: 取消后 Token 消耗 (来自风险点 3，已知局限)
+
+**现状**: 取消后主任务立即返回 CANCELLED，但已发出的 5 个 HTTP 请求在 daemon 线程中继续执行直到服务器响应，仍会消耗 Token。
+
+**接受为已知局限**: 在不引入 asyncio 重构的前提下，这是最佳折中。
+
+**缓解措施**: 
+- Settings UI 高级参数区注明: "取消后已发出的请求仍会消耗少量 Token"
+- call_llm 的 config.timeout (默认 120s) 限制了单个请求最长存活时间，daemon 线程不会无限占用
+
+### AR-5: 审计确认项 (无需改动)
+
+| 审计点 | 结论 |
+|--------|------|
+| M1-2 daemon 线程方案 | 确认为不引入 asyncio 的最佳实践 |
+| M2 默认值调整 (25→60s, ctx 3→5) | 确认合理，减少 60% 请求数 + 提升修正质量 |
+| M3 results_by_index 顺序保证 | 确认有效，range 迭代确保时间轴一致 |
+| M3 chunk 故障隔离 | 确认 catch 块有效，单块失败不影响整体 |
+| M4-1 Set<string> 管理 | 确认高效 |
+| M4-1 Shift-click 范围选算法 | 确认逻辑正确 |
 
 ---
 
