@@ -181,13 +181,47 @@ SettingsModal LLM Tab 新增「高级参数」折叠区（`<details>`），含 7
 
 | ID | 问题 | 状态 |
 |----|------|------|
-| A-01 | Timeline/Waveform 右键菜单互不关闭 | **待修复** |
-| A-02 | Timeline 右键时间戳误进编辑模式 | **待修复** |
-| A-03 | 编辑模式/选择模式下 Waveform/Timeline 操作行为混乱 | **待修复** |
+| A-01 | Timeline/Waveform 右键菜单互不关闭 | **完成** |
+| A-02 | Timeline 右键时间戳误进编辑模式 | **完成** |
+| A-03 | 编辑模式/选择模式下 Waveform/Timeline 操作行为混乱 | **完成** |
 
-### 修复规格概要
+### 修复实施
 
-参见 `docs/2.1.1/audit-report-2.1.1-1.md`。
+**日期**: 2026-06-17
+**依据**: `docs/2.1.1/audit-report-2.1.1-1.md` + 深度审计报告
+
+#### A-01: 右键菜单互关
+
+- `contextMenuManager.ts`: `openContextMenu()` 打开前 `dispatchEvent('closeallcontextmenus')` 广播 → 关闭 Waveform 菜单；`setTimeout` 内注册 `window` 级监听器响应外部关闭；`cleanupDocument` 中一起清理
+- `SegmentBlocksLayer.vue`: `handleBlockContextMenu` 打开前广播关闭 Timeline 菜单；`onMounted` 注册 `handleGlobalClose` 监听 → `onUnmounted` 注销
+
+#### A-02: 时间戳右键不进编辑
+
+- `TranscriptRow.vue`: 模板 `<span @mousedown="onTimeMouseDown(...)">` 移除 `.stop.prevent`；`onTimeMouseDown` 检查 `e.button !== 0`（右键）直接 return 不阻止冒泡，`contextmenu` 事件正常触发
+
+#### A-03: 编辑模式行为统一
+
+- `WaveformEditor.vue`: `editingActive` prop 拆分为 `globalEditMode` + `selectionMode`；时间尺点击三态：`globalEditMode` → 无反应、`selectionMode` → `emit set-time`（不播放）、普通 → `emit seek`（播放）；方向键统一 `emit set-time`；新增 `set-time` / `toast` emits
+- `SegmentBlocksLayer.vue`: 新增 `globalEditMode` prop；方向键 `emit set-time` 替代 `seek`；`splitSelectedAtCursor` / `splitSelectedAtMidpoint` / `deleteSelected` 检查 `globalEditMode` → 拦截时 `emit toast` + `closeContextMenu()`
+- `TranscriptRow.vue`: `handleSplitAtPointer` / `handleSplitAtMidpoint` / `handleDeleteSegment` 检查 `globalEditMode` → 拦截时 `emit toast` + `closeContextMenu()`
+- `Timeline.vue`: emits 新增 `toast` 透传
+- `WorkspacePage.vue`: 新增 `handleSetTime(time)`（seek 不 play）；WaveformEditor 绑定改为 `:global-edit-mode` + `:selection-mode` + `@set-time` + `@toast`；Timeline 新增 `@toast`
+
+#### split-segment 边界修复
+
+- `core/project_service.py`: `split_segment` 边界检查 `<=` / `>=` → `<` / `>`（修复播放指针在 0.0 时 `position <= target.start` 被误拒）
+
+### 变更文件 (本审计)
+
+| 文件 | 模块 |
+|------|------|
+| `frontend/src/utils/contextMenuManager.ts` | A-01 |
+| `frontend/src/components/waveform/SegmentBlocksLayer.vue` | A-01, A-03 |
+| `frontend/src/components/workspace/TranscriptRow.vue` | A-02, A-03 |
+| `frontend/src/components/waveform/WaveformEditor.vue` | A-03 |
+| `frontend/src/components/workspace/Timeline.vue` | A-03 |
+| `frontend/src/pages/WorkspacePage.vue` | A-03 |
+| `core/project_service.py` | split 边界修复 |
 
 ## 后续审计 (AUD-2)
 
