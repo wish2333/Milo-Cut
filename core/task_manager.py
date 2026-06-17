@@ -19,7 +19,7 @@ from typing import Any
 
 from loguru import logger
 
-from core.events import TASK_COMPLETED, TASK_FAILED, TASK_PROGRESS
+from core.events import TASK_CANCELLED, TASK_COMPLETED, TASK_FAILED, TASK_PROGRESS
 from core.models import MiloTask, TaskProgress, TaskStatus, TaskType
 
 
@@ -281,25 +281,49 @@ class TaskManager:
             )
 
         except Exception as e:
-            logger.exception("Task {} failed", task_id)
-            with self._lock:
-                current = self._tasks.get(task_id)
-                if current:
-                    self._tasks[task_id] = current.model_copy(
-                        update={
-                            "status": TaskStatus.FAILED,
-                            "error": str(e),
-                            "completed_at": datetime.now().isoformat(),
-                        }
-                    )
+            # Distinguish cancellation from real failure (v2.1.1 M1-2a).
+            # Handlers raise RuntimeError("Cancelled") when cancel_event fires;
+            # task_manager must not emit TASK_FAILED or log a stack trace for
+            # an intentional cancel.
+            is_cancelled = (
+                isinstance(e, RuntimeError) and str(e) == "Cancelled"
+            ) or cancel_event.is_set()
 
-            self._emit(
-                TASK_FAILED,
-                {
-                    "task_id": task_id,
-                    "error": str(e),
-                },
-            )
+            if is_cancelled:
+                with self._lock:
+                    current = self._tasks.get(task_id)
+                    if current:
+                        self._tasks[task_id] = current.model_copy(
+                            update={
+                                "status": TaskStatus.CANCELLED,
+                                "completed_at": datetime.now().isoformat(),
+                            }
+                        )
+                # No TASK_FAILED event for cancellation -- dedicated one.
+                self._emit(
+                    TASK_CANCELLED,
+                    {"task_id": task_id, "task_type": task.type.value},
+                )
+            else:
+                logger.exception("Task {} failed", task_id)
+                with self._lock:
+                    current = self._tasks.get(task_id)
+                    if current:
+                        self._tasks[task_id] = current.model_copy(
+                            update={
+                                "status": TaskStatus.FAILED,
+                                "error": str(e),
+                                "completed_at": datetime.now().isoformat(),
+                            }
+                        )
+
+                self._emit(
+                    TASK_FAILED,
+                    {
+                        "task_id": task_id,
+                        "error": str(e),
+                    },
+                )
 
         finally:
             with self._lock:

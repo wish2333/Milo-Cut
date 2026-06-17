@@ -15,6 +15,7 @@ import {
   EVENT_LLM_SUBTITLE_CORRECTION_COMPLETED,
   EVENT_LLM_HIGHLIGHT_PROGRESS,
   EVENT_LLM_HIGHLIGHT_COMPLETED,
+  EVENT_TASK_CANCELLED,
 } from "@/utils/events"
 
 interface SmartDeleteResult {
@@ -180,6 +181,14 @@ function ensureListeners() {
   onEvent<{ error?: string }>(EVENT_LLM_ANALYSIS_FAILED, (detail) => {
     isRunning.value = false
     errorMsg.value = detail?.error ?? "LLM analysis failed"
+  })
+
+  // v2.1.1 M1-2: task cancelled (single-function cancel button). The backend
+  // emits TASK_CANCELLED instead of TASK_FAILED; reset the running state so
+  // the UI stops spinning and shows the cancel as a clean stop.
+  onEvent<{ task_id?: string }>(EVENT_TASK_CANCELLED, () => {
+    isRunning.value = false
+    progress.value = 0
   })
 }
 

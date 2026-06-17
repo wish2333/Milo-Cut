@@ -13,6 +13,14 @@ export interface UseSegmentEditReturn {
   selectRange: (start: number, end: number) => void
   clearSelection: () => void
 
+  // v2.1.1 M4-1: multi-select mode
+  selectionMode: Ref<boolean>
+  selectedSegmentIds: Ref<Set<string>>
+  selectedCount: ComputedRef<number>
+  toggleSelectionMode: () => void
+  handleSegmentClick: (segId: string, event: MouseEvent, orderedIds: string[]) => void
+  clearMultiSelection: () => void
+
   updateSegmentTime: (segmentId: string, field: "start" | "end", value: number) => void
   updateSegmentText: (segmentId: string, text: string) => Promise<boolean>
   toggleEditStatus: (segment: Segment, nextStatus?: string) => Promise<void>
@@ -60,6 +68,12 @@ export function useSegmentEdit(
   const selectedSegmentId = ref<string | null>(null)
   const selectedRange = ref<{ start: number; end: number } | null>(null)
 
+  // v2.1.1 M4-1: multi-select mode state
+  const selectionMode = ref(false)
+  const selectedSegmentIds = ref<Set<string>>(new Set())
+  const lastSelectedId = ref<string | null>(null)
+  const selectedCount = computed(() => selectedSegmentIds.value.size)
+
   const pendingMap = new Map<string, { timer: ReturnType<typeof setTimeout>; callback: () => void }>()
   const pendingCount = computed(() => pendingMap.size)
 
@@ -76,6 +90,50 @@ export function useSegmentEdit(
   function clearSelection() {
     selectedSegmentId.value = null
     selectedRange.value = null
+  }
+
+  // v2.1.1 M4-1: multi-select mode ------------------------------------
+
+  function toggleSelectionMode() {
+    selectionMode.value = !selectionMode.value
+    if (!selectionMode.value) {
+      clearMultiSelection()
+    }
+  }
+
+  function clearMultiSelection() {
+    selectedSegmentIds.value = new Set()
+    lastSelectedId.value = null
+  }
+
+  function handleSegmentClick(segId: string, event: MouseEvent, orderedIds: string[]) {
+    if (!selectionMode.value) return // play mode: caller handles seek
+    const set = selectedSegmentIds.value
+    if (event.ctrlKey || event.metaKey) {
+      // Ctrl/Cmd: toggle single
+      const next = new Set(set)
+      if (next.has(segId)) next.delete(segId)
+      else next.add(segId)
+      selectedSegmentIds.value = next
+    } else if (event.shiftKey && lastSelectedId.value) {
+      // Shift: range select from last to current
+      const startIdx = orderedIds.indexOf(lastSelectedId.value)
+      const endIdx = orderedIds.indexOf(segId)
+      const next = new Set(set)
+      if (startIdx >= 0 && endIdx >= 0) {
+        const from = Math.min(startIdx, endIdx)
+        const to = Math.max(startIdx, endIdx)
+        for (let i = from; i <= to; i++) next.add(orderedIds[i])
+      }
+      selectedSegmentIds.value = next
+    } else {
+      // Plain click in selection mode: toggle
+      const next = new Set(set)
+      if (next.has(segId)) next.delete(segId)
+      else next.add(segId)
+      selectedSegmentIds.value = next
+    }
+    lastSelectedId.value = segId
   }
 
   // -- Status queries ---------------------------------------------------
@@ -183,6 +241,14 @@ export function useSegmentEdit(
     selectSegment,
     selectRange,
     clearSelection,
+
+    // v2.1.1 M4-1
+    selectionMode,
+    selectedSegmentIds,
+    selectedCount,
+    toggleSelectionMode,
+    handleSegmentClick,
+    clearMultiSelection,
 
     updateSegmentTime,
     updateSegmentText,

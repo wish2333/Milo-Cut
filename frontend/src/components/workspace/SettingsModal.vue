@@ -1293,6 +1293,100 @@ async function loadPluginDataDir() {
               />
             </section>
 
+            <!-- v2.1.1 M2: Advanced LLM parameters (chunking / batching / concurrency) -->
+            <section class="border-t border-gray-200 pt-4">
+              <details class="group">
+                <summary class="flex cursor-pointer items-center gap-1 text-sm font-medium text-gray-700 select-none">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" /></svg>
+                  高级参数
+                </summary>
+                <div class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <label class="block">
+                    <span class="text-xs text-gray-600">智能删除窗口 (秒)</span>
+                    <input
+                      type="number"
+                      step="1"
+                      min="5"
+                      :value="settings.llm_smart_window_duration"
+                      class="mt-0.5 w-full rounded border border-gray-300 px-2 py-1 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                      @change="settings = { ...settings!, llm_smart_window_duration: parseFloat(($event.target as HTMLInputElement).value) || 60.0 }"
+                    />
+                  </label>
+                  <label class="block">
+                    <span class="text-xs text-gray-600">智能删除重叠 (秒)</span>
+                    <input
+                      type="number"
+                      step="1"
+                      min="0"
+                      :value="settings.llm_smart_overlap_duration"
+                      class="mt-0.5 w-full rounded border border-gray-300 px-2 py-1 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                      @change="settings = { ...settings!, llm_smart_overlap_duration: parseFloat(($event.target as HTMLInputElement).value) || 10.0 }"
+                    />
+                  </label>
+                  <label class="block">
+                    <span class="text-xs text-gray-600">字幕修正批次大小</span>
+                    <input
+                      type="number"
+                      step="1"
+                      min="1"
+                      :value="settings.llm_correction_batch_size"
+                      class="mt-0.5 w-full rounded border border-gray-300 px-2 py-1 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                      @change="settings = { ...settings!, llm_correction_batch_size: parseInt(($event.target as HTMLInputElement).value) || 30 }"
+                    />
+                  </label>
+                  <label class="block">
+                    <span class="text-xs text-gray-600">字幕修正上下文窗口</span>
+                    <input
+                      type="number"
+                      step="1"
+                      min="0"
+                      :value="settings.llm_correction_context_window"
+                      class="mt-0.5 w-full rounded border border-gray-300 px-2 py-1 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                      @change="settings = { ...settings!, llm_correction_context_window: parseInt(($event.target as HTMLInputElement).value) || 5 }"
+                    />
+                  </label>
+                  <label class="block">
+                    <span class="text-xs text-gray-600">精华提取窗口 (秒)</span>
+                    <input
+                      type="number"
+                      step="10"
+                      min="60"
+                      :value="settings.llm_highlight_chunk_duration"
+                      class="mt-0.5 w-full rounded border border-gray-300 px-2 py-1 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                      @change="settings = { ...settings!, llm_highlight_chunk_duration: parseFloat(($event.target as HTMLInputElement).value) || 1800.0 }"
+                    />
+                  </label>
+                  <label class="block">
+                    <span class="text-xs text-gray-600">精华提取重叠 (秒)</span>
+                    <input
+                      type="number"
+                      step="1"
+                      min="0"
+                      :value="settings.llm_highlight_overlap_duration"
+                      class="mt-0.5 w-full rounded border border-gray-300 px-2 py-1 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                      @change="settings = { ...settings!, llm_highlight_overlap_duration: parseFloat(($event.target as HTMLInputElement).value) || 60.0 }"
+                    />
+                  </label>
+                  <label class="block">
+                    <span class="text-xs text-gray-600">LLM 并发数</span>
+                    <input
+                      type="number"
+                      step="1"
+                      min="1"
+                      max="20"
+                      :value="settings.llm_concurrency"
+                      class="mt-0.5 w-full rounded border border-gray-300 px-2 py-1 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                      @change="settings = { ...settings!, llm_concurrency: parseInt(($event.target as HTMLInputElement).value) || 5 }"
+                    />
+                  </label>
+                </div>
+                <p class="mt-2 text-xs text-gray-400">
+                  较大窗口减少 API 调用次数但单次耗时更长。并发数过高可能触发 API 限流。
+                  取消后已发出的请求仍会消耗少量 Token。
+                </p>
+              </details>
+            </section>
+
             <section class="flex items-center gap-3">
               <button
                 type="button"

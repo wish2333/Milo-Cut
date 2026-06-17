@@ -16,6 +16,8 @@ const props = defineProps<{
   currentTime: number
   waveformPath?: string
   updateTime?: (segmentId: string, field: "start" | "end", value: number) => void
+  /** v2.1.1: suppress waveform seek when editing (edit mode or selection mode) */
+  editingActive?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -25,6 +27,7 @@ const emit = defineEmits<{
   "delete-segment": [segmentId: string]
   "seek-segment": [segment: Segment]
   "regenerate-waveform": []
+  "split-segment": [segmentId: string, position: number]
 }>()
 
 const durationRef = toRef(props, "duration")
@@ -54,6 +57,8 @@ onUnmounted(() => {
 })
 
 function handleSeek(time: number) {
+  // v2.1.1: suppress seek when editing (edit mode / selection mode)
+  if (props.editingActive) return
   emit("seek", time)
 }
 
@@ -70,8 +75,20 @@ function handleDeleteSegment(segmentId: string) {
 }
 
 function handleSeekSegment(segment: Segment) {
+  // v2.1.1: suppress seek when editing (edit mode / selection mode)
+  if (props.editingActive) return
   emit("seek-segment", segment)
 }
+
+function handleSplitSegment(segmentId: string, position: number) {
+  emit("split-segment", segmentId, position)
+}
+
+function handleWaveformSeek(time: number) {
+  // Arrow keys from SegmentBlocksLayer always seek (bypass editingActive check)
+  emit("seek", time)
+}
+
 </script>
 
 <template>
@@ -109,11 +126,15 @@ function handleSeekSegment(segment: Segment) {
         :segments="segments"
         :edits="edits"
         :update-time="updateTime"
+        :current-time="currentTime"
+        :duration="duration"
         style="z-index: 2"
         @select-range="handleSelectRange"
         @add-segment="handleAddSegment"
         @delete-segment="handleDeleteSegment"
         @seek-segment="handleSeekSegment"
+        @split-segment="handleSplitSegment"
+        @seek="handleWaveformSeek"
       />
       <PlayheadOverlay style="z-index: 10; pointer-events: none" />
     </div>

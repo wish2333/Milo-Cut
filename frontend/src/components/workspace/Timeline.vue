@@ -16,6 +16,14 @@ const props = defineProps<{
   silenceCount: number
   selectedSegmentId?: string | null
   globalEditMode?: boolean
+  // v2.1.1 M4-1: multi-select mode
+  selectionMode?: boolean
+  selectedSegmentIds?: Set<string>
+  selectedCount?: number
+  // v2.1.1 M4-4: search bar visibility
+  showSearchBar?: boolean
+  /** v2.1.1: waveform playhead position for split-at-cursor */
+  currentTime?: number
   // Phase 2: LLM integration props (passed through to AIAssistantPanel)
   llmConfigured?: boolean
   llmModel?: string
@@ -63,6 +71,16 @@ const emit = defineEmits<{
   "start-highlight": [targetMinutes: number]
   "go-to-settings": []
   "cancel-single": []
+  // v2.1.1 M4-1: selection mode
+  "toggle-selection-mode": []
+  "merge-selected": []
+  "segment-click": [segmentId: string, event: MouseEvent]
+  "clear-selection": []
+  // v2.1.1 M4-3: split
+  "split-segment": [segmentId: string]
+  "split-at-pointer": [segmentId: string, position: number]
+  // v2.1.1 M4-4: search bar toggle
+  "toggle-search-bar": []
 }>()
 
 // Phase 2: right panel tab state (D-18). Using ref + v-show preserves
@@ -120,21 +138,46 @@ watch(
     <div class="flex items-center justify-between border-b border-gray-200 px-4 py-2">
       <span class="text-sm font-medium">Timeline</span>
       <div class="flex items-center gap-2">
+        <!-- v2.1.1 M4-1: selection mode toggle -->
         <button
-          v-if="!globalEditMode"
-          class="text-xs px-2 py-1 rounded bg-amber-100 text-amber-700 hover:bg-amber-200 transition-colors"
-          title="Edit all subtitles"
-          @click="emit('toggle-edit-mode')"
+          class="rounded p-1.5 transition-colors"
+          :class="selectionMode ? 'bg-blue-100 text-blue-700' : 'text-gray-500 hover:bg-gray-100'"
+          :title="selectionMode ? '退出选择模式' : '选择模式 (框选字幕)'"
+          @click="emit('toggle-selection-mode')"
         >
-          编辑字幕
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        </button>
+        <!-- v2.1.1 M4-4: search toggle -->
+        <button
+          class="rounded p-1.5 transition-colors"
+          :class="showSearchBar ? 'bg-blue-100 text-blue-700' : 'text-gray-500 hover:bg-gray-100'"
+          title="搜索替换 (Ctrl+F)"
+          @click="emit('toggle-search-bar')"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+        </button>
+        <!-- v2.1.1 M4-1: selected count + merge button -->
+        <span v-if="selectionMode && (selectedCount ?? 0) > 0" class="text-xs text-blue-600">
+          已选 {{ selectedCount }} 段
+        </span>
+        <button
+          v-if="selectionMode && (selectedCount ?? 0) >= 2"
+          class="rounded bg-blue-500 px-2 py-1 text-xs text-white hover:bg-blue-600 transition-colors"
+          @click="emit('merge-selected')"
+        >
+          合并选中
         </button>
         <button
-          v-else
-          class="text-xs px-2 py-1 rounded bg-amber-500 text-white hover:bg-amber-600 transition-colors"
-          title="Exit edit mode"
+          class="text-xs px-2 py-1 rounded transition-colors"
+          :class="globalEditMode ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-amber-100 text-amber-700 hover:bg-amber-200'"
+          :title="globalEditMode ? 'Exit edit mode' : 'Edit all subtitles'"
           @click="emit('toggle-edit-mode')"
         >
-          退出编辑
+          {{ globalEditMode ? '退出编辑' : '编辑字幕' }}
         </button>
         <span class="text-xs text-gray-500">{{ subtitleCount }} subtitles + {{ silenceCount }} silence</span>
       </div>
@@ -143,6 +186,14 @@ watch(
     <div class="flex flex-1 overflow-hidden">
       <!-- Transcript list -->
       <div ref="listContainer" class="flex-1 overflow-y-auto">
+        <!-- v2.1.1 M4-1: selection mode banner -->
+        <div
+          v-if="selectionMode"
+          class="sticky top-0 z-10 flex items-center gap-2 bg-blue-50 px-4 py-2 text-xs text-blue-700 border-b border-blue-100"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+          <span>选择模式 — 点击多选 Ctrl 切换 Shift 范围选 Enter 合并 Delete 删除</span>
+        </div>
         <div v-if="segments.length === 0" class="flex h-full items-center justify-center">
           <div class="text-center">
             <p class="text-sm text-gray-500">No segments loaded</p>
@@ -154,12 +205,16 @@ watch(
           <template v-for="seg in segments" :key="seg.id">
             <TranscriptRow
               v-if="seg.type === 'subtitle'"
+              v-memo="[seg, getSegmentState(seg).displayStatus, selectedSegmentIds?.has(seg.id) ?? false, selectedSegmentId === seg.id, globalEditMode, selectionMode]"
               :segment="seg"
               :display-status="getSegmentState(seg).displayStatus"
               :style-class="getSegmentState(seg).styleClass"
               :is-selected="selectedSegmentId === seg.id"
               :is-adjacent-highlighted="seg.id === adjacentSubtitleIds.prev || seg.id === adjacentSubtitleIds.next"
               :global-edit-mode="globalEditMode"
+              :selection-mode="selectionMode ?? false"
+              :is-multi-selected="selectedSegmentIds?.has(seg.id) ?? false"
+              :current-time="currentTime ?? 0"
               @seek="(t) => emit('seek', t)"
               @update-text="(id, text) => emit('update-text', id, text)"
               @update-time="(id, field, val) => emit('update-time', id, field, val)"
@@ -167,6 +222,9 @@ watch(
               @confirm-edit="emit('confirm-segment', seg)"
               @reject-edit="emit('reject-segment', seg)"
               @delete="emit('delete-segment', seg)"
+              @segment-click="(id, ev) => emit('segment-click', id, ev)"
+              @split="emit('split-segment', seg.id)"
+              @split-at-pointer="(pos) => emit('split-at-pointer', seg.id, pos)"
             />
             <SilenceRow
               v-else

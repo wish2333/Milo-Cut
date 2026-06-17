@@ -14,6 +14,7 @@ import { useUvAvailability } from "@/composables/useUvAvailability"
 import { useLlmTasks } from "@/composables/useLlmTasks"
 import {
   EVENT_TASK_COMPLETED,
+  EVENT_TASK_CANCELLED,
   EVENT_PROJECT_DIRTY,
   EVENT_PROJECT_SAVED,
 } from "@/utils/events"
@@ -121,6 +122,8 @@ const {
 
 const {
   searchReplace,
+  mergeSegments,
+  splitSegment,
   confirmAllSuggestions,
   rejectAllSuggestions,
   generateSubtitleKeepRanges,
@@ -136,6 +139,13 @@ const {
   updateSegmentText,
   toggleEditStatus,
   flushPendingUpdates,
+  // v2.1.1 M4-1: multi-select mode
+  selectionMode,
+  selectedSegmentIds,
+  selectedCount,
+  toggleSelectionMode,
+  handleSegmentClick,
+  clearMultiSelection,
 } = useSegmentEdit(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   projectRef as any,
@@ -325,6 +335,13 @@ const globalEditMode = ref(false)
 const showConfirmDeleteSilence = ref(false)
 const subtitleTrimPadding = ref(0.3)
 const showSubtitleTrimSettings = ref(false)
+// v2.1.1 M4-4: search bar visibility (driven by toolbar button + Ctrl+F)
+const showSearchBar = ref(false)
+// v2.1.1 M4-5: timeline rename inline-edit state
+const renamingTimelineId = ref<string | null>(null)
+const renameValue = ref("")
+// v2.1.1 M4-4: search bar component ref (to focus on open)
+const searchBarRef = ref<{ show: () => void; hide: () => void } | null>(null)
 
 watch(statusMessage, (msg) => {
   if (statusTimer) {
@@ -498,6 +515,22 @@ onEvent<{ task_id: string; task_type?: string; result?: { project?: Project } }>
       if (data.result?.project) {
         emit("project-updated", data.result.project)
       }
+    }
+  },
+)
+
+// v2.1.1 M1-2: LLM single-function cancel completed cleanly.
+// Show the "已取消" toast only once the backend confirms the cancel.
+onEvent<{ task_id: string; task_type?: string }>(
+  EVENT_TASK_CANCELLED,
+  (data) => {
+    if (
+      data.task_type === "llm_smart_delete" ||
+      data.task_type === "llm_subtitle_correction" ||
+      data.task_type === "llm_highlight" ||
+      data.task_type === "llm_semantic_search"
+    ) {
+      showToast("已取消", "info", 2000)
     }
   },
 )
@@ -954,7 +987,102 @@ async function handleStartHighlight(targetMinutes: number) {
 
 async function handleCancelSingle() {
   await call("cancel_llm_tasks")
-  showToast("已取消", "info", 2000)
+  // v2.1.1 M1-2c: don't claim success yet -- the in-flight HTTP request may
+  // still be running. The TASK_CANCELLED event confirms the actual stop.
+  showToast("取消中...", "info", 2000)
+}
+
+// v2.1.1 M4-1: segment click in selection mode (toggle / ctrl / shift range)
+function handleSegmentClickInSelection(segId: string, event: MouseEvent) {
+  const orderedIds = mergedSegments.value
+    .filter(s => s.type === "subtitle")
+    .map(s => s.id)
+  handleSegmentClick(segId, event, orderedIds)
+}
+
+// v2.1.1 M4-1: merge currently-selected segments
+async function handleMergeSelected() {
+  const ids = Array.from(selectedSegmentIds.value)
+  if (ids.length < 2) return
+  const ok = await mergeSegments(ids)
+  if (ok) {
+    clearMultiSelection()
+    showToast(`已合并 ${ids.length} 段`, "success", 2000)
+  } else {
+    showToast("合并失败 (需选中连续的字幕段)", "error", 3000)
+  }
+}
+
+// v2.1.1 M4-3: split a segment at its midpoint
+async function handleSplitSegment(segmentId: string, position?: number) {
+  const seg = mergedSegments.value.find(s => s.id === segmentId)
+  if (!seg) return
+  // If position is provided (from waveform context menu split), use it;
+  // otherwise use midpoint (from TranscriptRow right-click).
+  const pos = position !== undefined ? position : (seg.start + seg.end) / 2
+  const ok = await splitSegment(segmentId, pos)
+  if (ok) {
+    showToast(position !== undefined ? "已按时间指针分割" : "已从中点分割", "success", 1500)
+  } else {
+    showToast("分割失败", "error", 3000)
+  }
+}
+
+// v2.1.1 M4-1: toggle selection mode (clear selection on exit)
+function handleToggleSelectionMode() {
+  toggleSelectionMode()
+}
+
+// v2.1.1 M4-1: batch mark selected segments for deletion (toggle-status)
+async function markSelectedForDeletion() {
+  const ids = Array.from(selectedSegmentIds.value)
+  if (ids.length === 0) return
+  const res = await call<Project>("mark_segments", ids, "delete")
+  if (res.success && res.data) {
+    pushSnapshot(res.data)
+    emit("project-updated", res.data)
+    showToast(`已标记 ${ids.length} 段删除`, "info", 2000)
+    clearMultiSelection()
+  } else {
+    showToast(res.error ?? "批量标记失败", "error", 3000)
+  }
+}
+
+// v2.1.1 M4-4: toggle search bar visibility (toolbar button)
+function handleToggleSearchBar() {
+  showSearchBar.value = !showSearchBar.value
+  if (showSearchBar.value) {
+    searchBarRef.value?.show()
+  } else {
+    searchBarRef.value?.hide()
+  }
+}
+
+// v2.1.1 M4-5: timeline rename
+function startRenameTimeline(timelineId: string) {
+  const tl = props.project.timelines.find(t => t.id === timelineId)
+  if (!tl) return
+  renamingTimelineId.value = timelineId
+  renameValue.value = tl.label
+}
+
+async function confirmRenameTimeline() {
+  const id = renamingTimelineId.value
+  const label = renameValue.value.trim()
+  renamingTimelineId.value = null
+  if (!id || !label) return
+  const res = await call<Project>("rename_timeline", id, label)
+  if (res.success && res.data) {
+    emit("project-updated", res.data)
+    showToast("已重命名", "success", 1500)
+  } else {
+    showToast(res.error ?? "重命名失败", "error", 3000)
+  }
+}
+
+function cancelRenameTimeline() {
+  renamingTimelineId.value = null
+  renameValue.value = ""
 }
 
 async function handleOpenSubtitleFullscreen() {
@@ -1249,6 +1377,30 @@ function handleGlobalKeydown(e: KeyboardEvent) {
   if (e.ctrlKey && (e.key === "y" || (e.key === "z" && e.shiftKey))) {
     e.preventDefault()
     handleRedo()
+    return
+  }
+  // v2.1.1 M4-1: selection-mode keyboard shortcuts
+  if (selectionMode.value) {
+    if (e.key === "Escape") {
+      e.preventDefault()
+      if (selectedCount.value > 0) {
+        clearMultiSelection()
+      } else {
+        toggleSelectionMode()
+      }
+      return
+    }
+    if (e.key === "Enter" && selectedCount.value >= 2) {
+      e.preventDefault()
+      handleMergeSelected()
+      return
+    }
+    if (e.key === "Delete" && selectedCount.value > 0) {
+      e.preventDefault()
+      // batch mark selected segments for deletion (toggle-status, not erase)
+      void markSelectedForDeletion()
+      return
+    }
   }
 }
 
@@ -1317,9 +1469,15 @@ onUnmounted(() => {
         <TimelineSwitcher
           :timelines="props.project.timelines"
           :active-timeline-id="props.project.active_timeline_id"
+          :renaming-id="renamingTimelineId"
+          :rename-val="renameValue"
           @switch="handleSwitchTimeline"
           @create="handleCreateTimeline"
           @delete="handleDeleteTimeline"
+          @rename-start="startRenameTimeline"
+          @rename-input="(_id: string, val: string) => (renameValue = val)"
+          @rename-confirm="confirmRenameTimeline"
+          @rename-cancel="cancelRenameTimeline"
         />
         <button
           v-if="!props.project.media?.proxy_path"
@@ -1735,8 +1893,8 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Search replace bar -->
-    <SearchReplaceBar @search-replace="handleSearchReplace" />
+    <!-- Search replace bar (v2.1.1 M4-4: also toggled via toolbar button) -->
+    <SearchReplaceBar ref="searchBarRef" @search-replace="handleSearchReplace" @close="showSearchBar = false" />
 
     <!-- Status messages -->
     <div v-if="statusMessage" class="flex items-center border-b border-gray-200 bg-blue-50 px-4 py-1 text-xs text-blue-600">
@@ -1833,6 +1991,11 @@ onUnmounted(() => {
             :silence-count="silenceCount"
             :selected-segment-id="editSelectedSegmentId"
             :global-edit-mode="globalEditMode"
+            :selection-mode="selectionMode"
+            :selected-segment-ids="selectedSegmentIds"
+            :selected-count="selectedCount"
+            :show-search-bar="showSearchBar"
+            :current-time="currentTime"
             :workflow-locked="wf.isActive.value"
             :llm-configured="llmConfig.configured"
             :llm-model="llmConfig.model"
@@ -1864,6 +2027,13 @@ onUnmounted(() => {
             @start-highlight="handleStartHighlight"
             @go-to-settings="handleGoToSettings"
             @cancel-single="handleCancelSingle"
+            @toggle-selection-mode="handleToggleSelectionMode"
+            @segment-click="handleSegmentClickInSelection"
+            @merge-selected="handleMergeSelected"
+            @clear-selection="clearMultiSelection"
+            @split-segment="handleSplitSegment"
+            @split-at-pointer="handleSplitSegment"
+            @toggle-search-bar="handleToggleSearchBar"
           />
           </div>
         </template>
@@ -1878,12 +2048,14 @@ onUnmounted(() => {
       :current-time="currentTime"
       :waveform-path="waveformUrl"
       :update-time="updateSegmentTime"
+      :editing-active="globalEditMode || selectionMode"
       @seek="handleSeek"
       @select-range="handleSelectRange"
       @add-segment="handleAddSegment"
       @delete-segment="handleDeleteSegment"
       @seek-segment="handleSeekSegment"
       @regenerate-waveform="handleRegenerateWaveform"
+      @split-segment="handleSplitSegment"
     />
 
     <!-- Delete silence confirmation dialog -->

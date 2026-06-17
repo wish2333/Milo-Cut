@@ -7,6 +7,7 @@ Must stay in sync with frontend src/utils/events.ts.
 TASK_PROGRESS = "task:progress"
 TASK_COMPLETED = "task:completed"
 TASK_FAILED = "task:failed"
+TASK_CANCELLED = "task:cancelled"
 
 # Project-level
 PROJECT_SAVED = "project:saved"

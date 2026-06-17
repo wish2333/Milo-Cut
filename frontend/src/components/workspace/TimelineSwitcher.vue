@@ -15,10 +15,23 @@
           <a
             class="flex items-center justify-between"
             :class="{ 'active': tl.id === activeTimelineId }"
-            @click="$emit('switch', tl.id)"
+            @click="onSwitch(tl.id)"
+            @contextmenu.prevent.stop="onContextMenu($event, tl.id)"
           >
             <div class="flex flex-col min-w-0">
-              <span class="truncate text-sm font-medium">{{ tl.label }}</span>
+              <!-- v2.1.1 M4-5: inline rename -->
+              <input
+                v-if="renamingId === tl.id"
+                :value="renameVal"
+                class="text-sm font-medium bg-transparent border-b border-blue-400 outline-none w-full"
+                @click.stop
+                @input="$emit('rename-input', tl.id, ($event.target as HTMLInputElement).value)"
+                @keydown.enter.stop.prevent="$emit('rename-confirm', tl.id)"
+                @keydown.escape.stop.prevent="$emit('rename-cancel')"
+                @blur="$emit('rename-confirm', tl.id)"
+                @vue:mounted="(el: HTMLElement) => el.querySelector?.('input')?.focus?.()"
+              />
+              <span v-else class="truncate text-sm font-medium">{{ tl.label }}</span>
               <span v-if="tl.source !== 'default'" class="text-xs opacity-60">{{ tl.source }}</span>
             </div>
             <div v-if="tl.id === activeTimelineId" class="text-success">
@@ -47,23 +60,60 @@
         </li>
       </ul>
     </div>
+
+    <!-- v2.1.1 M4-5: timeline right-click context menu -->
+    <Teleport to="body">
+      <div
+        v-if="contextMenu"
+        class="fixed z-[9999] bg-white rounded-md shadow-lg border border-gray-200 py-1 min-w-[140px]"
+        :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
+        @click.stop="contextMenu = null"
+      >
+        <button
+          class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+          @click="onContextRename"
+        >
+          重命名
+        </button>
+        <div class="border-t border-gray-100 my-1" />
+        <button
+          class="w-full text-left px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
+          :disabled="!canDelete"
+          @click="onContextDelete"
+        >
+          删除
+        </button>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue"
+import { computed, ref } from "vue"
 import type { Timeline } from "@/types/project"
+import { openContextMenu } from "@/utils/contextMenuManager"
 
 const props = defineProps<{
   timelines: Timeline[]
   activeTimelineId: string
+  /** v2.1.1 M4-5: id of the timeline currently being renamed */
+  renamingId?: string | null
+  /** v2.1.1 M4-5: current rename input value */
+  renameVal?: string
 }>()
 
-defineEmits<{
+const emit = defineEmits<{
   switch: [timelineId: string]
   create: []
   delete: [timelineId: string]
+  // v2.1.1 M4-5: rename
+  "rename-start": [timelineId: string]
+  "rename-input": [timelineId: string, value: string]
+  "rename-confirm": [timelineId: string]
+  "rename-cancel": []
 }>()
+
+const contextMenu = ref<{ x: number; y: number; id: string } | null>(null)
 
 const activeLabel = computed(() => {
   const tl = props.timelines.find(t => t.id === props.activeTimelineId)
@@ -71,4 +121,34 @@ const activeLabel = computed(() => {
 })
 
 const canDelete = computed(() => props.timelines.length > 1)
+
+function onSwitch(id: string) {
+  // Don't switch if the clicked row is in rename-edit mode
+  if (props.renamingId === id) return
+  emit("switch", id)
+}
+
+function onContextMenu(e: MouseEvent, id: string) {
+  contextMenu.value = { x: e.clientX, y: e.clientY, id }
+  openContextMenu(() => { contextMenu.value = null })
+}
+
+function onContextRename() {
+  const id = contextMenu.value?.id
+  contextMenu.value = null
+  if (id) {
+    // 先切换到目标 Timeline，再进入重命名
+    if (id !== props.activeTimelineId) emit("switch", id)
+    emit("rename-start", id)
+  }
+}
+
+function onContextDelete() {
+  const id = contextMenu.value?.id
+  contextMenu.value = null
+  if (id && canDelete.value) emit("delete", id)
+}
+
+// Autofocus the inline rename input when it mounts
+// (handled inline via @vue:mounted now)
 </script>

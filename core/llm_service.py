@@ -10,7 +10,9 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from openai import APIError, APITimeoutError, OpenAI, RateLimitError
@@ -25,6 +27,8 @@ logger = get_logger()
 # Retry configuration
 _MAX_RETRIES = 3
 _RETRY_BASE_DELAY = 1.0  # seconds
+# AR-2: RateLimitError (429) uses a longer dedicated backoff than generic errors.
+_RATE_LIMIT_BASE_DELAY = 5.0  # -> 5s, 10s, 20s
 
 
 # ------------------------------------------------------------------
@@ -179,6 +183,15 @@ def call_llm(
         except RateLimitError:
             last_error = f"Rate limited (attempt {attempt + 1})"
             logger.warning(last_error)
+            # AR-2: 429 uses a longer dedicated backoff (5s/10s/20s) before the
+            # generic exponential backoff at the bottom of the loop runs.
+            if attempt < _MAX_RETRIES - 1:
+                delay = _RATE_LIMIT_BASE_DELAY * (2 ** attempt)
+                if cancel_event:
+                    cancel_event.wait(timeout=delay)
+                else:
+                    time.sleep(delay)
+                continue
         except APIError as e:
             last_error = f"API error: {e}"
             logger.error(last_error)
@@ -195,8 +208,6 @@ def call_llm(
             if cancel_event:
                 cancel_event.wait(timeout=delay)
             else:
-                import time
-
                 time.sleep(delay)
 
     return {"success": False, "error": last_error}
@@ -214,8 +225,6 @@ def test_connection(config: LlmConfig | None = None) -> dict[str, Any]:
         {"success": True, "data": {"model": str, "response_time_ms": int}}
         {"success": False, "error": str}
     """
-    import time
-
     if config is None:
         config = get_llm_config()
 
@@ -306,6 +315,11 @@ def chunk_transcript_short(
     overlap_duration: float = 5.0,
 ) -> list[list[dict]]:
     """Split transcript into short overlapping windows for local-phenomenon analysis.
+
+    .. deprecated:: v2.1.1
+        Smart-delete now uses :func:`chunk_transcript` directly with
+        configurable window/overlap from settings (``llm_smart_window_duration``
+        / ``llm_smart_overlap_duration``). Kept for backward compatibility.
 
     Used by P0 smart-delete where the phenomena (semantic dup, self-correction,
     filler phrases) are local -- 15-30s windows catch them better than 5min chunks.
@@ -442,6 +456,27 @@ def _parse_json_response_layers(content: str) -> list[dict] | None:
 # ------------------------------------------------------------------
 
 
+def _normalize_smart_delete_items(chunk_results: list[dict]) -> list[dict]:
+    """Normalize parsed smart-delete results into a stable schema."""
+    normalized: list[dict] = []
+    for item in chunk_results:
+        if not isinstance(item, dict):
+            continue
+        seg_id = str(item.get("segment_id", ""))
+        if not seg_id:
+            continue
+        normalized.append(
+            {
+                "segment_id": seg_id,
+                "action": str(item.get("action", "delete")),
+                "reason": str(item.get("reason", "")),
+                "category": str(item.get("category", "filler_phrase")),
+                "confidence": min(1.0, max(0.0, float(item.get("confidence", 0.8)))),
+            }
+        )
+    return normalized
+
+
 def analyze_smart_delete(
     segments: list[dict],
     existing_flagged_ids: set[str] | None = None,
@@ -488,27 +523,28 @@ def analyze_smart_delete(
             "data": {"results": [], "token_usage": {}, "skipped": len(segments)},
         }
 
-    chunks = chunk_transcript_short(to_analyze)
+    # v2.1.1 M2: window/overlap/concurrency are configurable (settings.json).
+    settings = load_settings()
+    window = float(settings.get("llm_smart_window_duration", 60.0))
+    overlap = float(settings.get("llm_smart_overlap_duration", 10.0))
+    concurrency = max(1, int(settings.get("llm_concurrency", 5)))
+    chunks = chunk_transcript(to_analyze, chunk_duration=window, overlap_duration=overlap)
     total_chunks = len(chunks)
 
     # Resolve effective system prompt (caller override > layered default)
     effective_system = system_prompt or get_effective_prompt("smart_delete")
 
-    all_results: list[dict] = []
+    results_by_index: dict[int, list[dict]] = {}
     total_usage: dict[str, int] = {
         "prompt_tokens": 0,
         "completion_tokens": 0,
         "total_tokens": 0,
     }
 
-    for idx, chunk in enumerate(chunks):
+    def _process_chunk(idx: int, chunk: list[dict]) -> tuple[int, list[dict] | None, dict, str | None]:
+        """Process a single smart-delete window. Returns (index, normalized, usage, error)."""
         if cancel_event and cancel_event.is_set():
-            return {"success": False, "error": "Cancelled"}
-
-        if progress_cb:
-            pct = (idx / total_chunks) * 100 if total_chunks > 0 else 0
-            progress_cb(pct, f"Smart-delete analyzing window {idx + 1}/{total_chunks}...")
-
+            return (idx, None, {}, "Cancelled")
         prompt = _build_structured_user_message(chunk)
         result = call_llm(
             prompt,
@@ -517,43 +553,98 @@ def analyze_smart_delete(
             config=config,
             cancel_event=cancel_event,
         )
-
         if not result.get("success"):
             error = result.get("error", "LLM call failed")
             logger.warning(f"Smart-delete window {idx + 1} failed: {error}")
-            continue
-
+            return (idx, None, {}, error)
         content = result["data"]["content"]
         usage = result["data"].get("usage", {})
-        for key in total_usage:
-            total_usage[key] += usage.get(key, 0)
-
         chunk_results = _parse_json_response_layers(content)
         if not chunk_results:
             logger.warning(f"Smart-delete window {idx + 1}: JSON parse returned None")
-            continue
+            return (idx, None, usage, None)
+        normalized = _normalize_smart_delete_items(chunk_results)
+        return (idx, normalized or None, usage, None)
 
-        # Normalize: ensure each result has required fields
-        normalized = []
-        for item in chunk_results:
-            if not isinstance(item, dict):
-                continue
-            seg_id = str(item.get("segment_id", ""))
-            if not seg_id:
-                continue
-            normalized.append(
-                {
-                    "segment_id": seg_id,
-                    "action": str(item.get("action", "delete")),
-                    "reason": str(item.get("reason", "")),
-                    "category": str(item.get("category", "filler_phrase")),
-                    "confidence": min(1.0, max(0.0, float(item.get("confidence", 0.8)))),
-                }
-            )
+    # AR-2: track consecutive 429s; after 3 in a row, finish remaining chunks
+    # serially to avoid hammering a rate-limited (free-tier) endpoint.
+    consecutive_429 = 0
+    _MAX_CONSECUTIVE_429 = 3
+    serial_fallback = False
+    pending_indices: set[int] = set(range(total_chunks))
+    completed = 0
 
-        if normalized and chunk_callback:
-            chunk_callback(normalized)
-        all_results.extend(normalized)
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = {
+            executor.submit(_process_chunk, idx, chunk): idx
+            for idx, chunk in enumerate(chunks)
+        }
+
+        try:
+            for future in as_completed(futures):
+                if cancel_event and cancel_event.is_set():
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    return {"success": False, "error": "Cancelled"}
+
+                idx, normalized, usage, error = future.result()
+                completed += 1
+                pending_indices.discard(idx)
+
+                for key in total_usage:
+                    total_usage[key] += usage.get(key, 0)
+
+                if error == "Cancelled":
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    return {"success": False, "error": "Cancelled"}
+
+                # AR-2 adaptive downgrade on sustained 429
+                if error and "Rate limited" in error:
+                    consecutive_429 += 1
+                    if consecutive_429 >= _MAX_CONSECUTIVE_429 and not serial_fallback and pending_indices:
+                        logger.warning(
+                            f"Rate limited {consecutive_429}x, switching remaining "
+                            f"{len(pending_indices)} chunks to serial"
+                        )
+                        serial_fallback = True
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        break
+                else:
+                    consecutive_429 = 0
+
+                if normalized:
+                    results_by_index[idx] = normalized
+                    if chunk_callback:
+                        chunk_callback(normalized)
+
+                if progress_cb:
+                    pct = (completed / total_chunks) * 100 if total_chunks > 0 else 0
+                    progress_cb(pct, f"Smart-delete window {completed}/{total_chunks}...")
+        except Exception:
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise
+
+    # Serial fallback for remaining chunks after sustained 429 (AR-2)
+    if serial_fallback:
+        for idx in sorted(pending_indices):
+            if cancel_event and cancel_event.is_set():
+                return {"success": False, "error": "Cancelled"}
+            if progress_cb:
+                pct = (completed / total_chunks) * 100 if total_chunks > 0 else 0
+                progress_cb(pct, f"Smart-delete window {completed}/{total_chunks} (serial)...")
+            idx_, normalized, usage, _ = _process_chunk(idx, chunks[idx])
+            completed += 1
+            for key in total_usage:
+                total_usage[key] += usage.get(key, 0)
+            if normalized:
+                results_by_index[idx] = normalized
+                if chunk_callback:
+                    chunk_callback(normalized)
+
+    # Merge results in original chunk order for timeline consistency
+    all_results: list[dict] = []
+    for idx in range(total_chunks):
+        if idx in results_by_index:
+            all_results.extend(results_by_index[idx])
 
     # Deduplicate by segment_id, keeping the last occurrence
     seen: dict[str, dict] = {}
@@ -626,41 +717,37 @@ def analyze_subtitle_correction(
     else:
         system = system_prompt_a or get_effective_prompt("subtitle_correction_a")
 
-    # Build context-rich segment windows
-    # Each LLM call gets a batch of segments + their neighbors for context
-    batch_size = 20  # segments per LLM call
-    all_corrections: list[dict] = []
-    total_usage: dict[str, int] = {
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
-        "total_tokens": 0,
-    }
+    # v2.1.1 M2: batch_size/context_window are configurable (settings.json).
+    settings = load_settings()
+    batch_size = max(1, int(settings.get("llm_correction_batch_size", 30)))
+    # Caller-supplied context_window wins over settings for back-compat.
+    effective_ctx = context_window if context_window != 3 else int(
+        settings.get("llm_correction_context_window", 5)
+    )
+    concurrency = max(1, int(settings.get("llm_concurrency", 5)))
 
     total_batches = (len(segments) + batch_size - 1) // batch_size
 
+    # Pre-compute each batch's payload (batch_with_context, target_ids, prompt).
+    batch_payloads: list[tuple[set[str], str]] = []
     for batch_idx in range(total_batches):
-        if cancel_event and cancel_event.is_set():
-            return {"success": False, "error": "Cancelled"}
-
-        if progress_cb:
-            pct = (batch_idx / total_batches) * 100 if total_batches > 0 else 0
-            progress_cb(pct, f"Subtitle correction batch {batch_idx + 1}/{total_batches}...")
-
-        # Select batch + context window
         start_i = batch_idx * batch_size
         end_i = min(start_i + batch_size, len(segments))
-        ctx_start = max(0, start_i - context_window)
-        ctx_end = min(len(segments), end_i + context_window)
-
+        ctx_start = max(0, start_i - effective_ctx)
+        ctx_end = min(len(segments), end_i + effective_ctx)
         batch_with_context = segments[ctx_start:ctx_end]
-        # Mark which ones are the "target" segments (the batch itself)
         target_ids = {str(segments[i].get("id", "")) for i in range(start_i, end_i)}
-
         extra_ctx: dict[str, Any] = {"target_segment_ids": sorted(target_ids)}
         if is_mode_b:
             extra_ctx["reference_text"] = reference_text
-
         prompt = _build_structured_user_message(batch_with_context, extra_context=extra_ctx)
+        batch_payloads.append((target_ids, prompt))
+
+    def _process_batch(batch_idx: int) -> tuple[int, list[dict], dict, str | None]:
+        """Process one correction batch. Returns (idx, corrections, usage, error)."""
+        if cancel_event and cancel_event.is_set():
+            return (batch_idx, [], {}, "Cancelled")
+        target_ids, prompt = batch_payloads[batch_idx]
         result = call_llm(
             prompt,
             system=system,
@@ -668,28 +755,27 @@ def analyze_subtitle_correction(
             config=config,
             cancel_event=cancel_event,
         )
-
         if not result.get("success"):
             error = result.get("error", "LLM call failed")
             logger.warning(f"Subtitle correction batch {batch_idx + 1} failed: {error}")
-            continue
-
+            return (batch_idx, [], {}, error)
         content = result["data"]["content"]
         usage = result["data"].get("usage", {})
-        for key in total_usage:
-            total_usage[key] += usage.get(key, 0)
-
         parsed = _parse_json_response_layers(content)
         if not parsed:
             logger.warning(f"Subtitle correction batch {batch_idx + 1}: parse returned None")
-            continue
+            return (batch_idx, [], usage, None)
 
-        # Normalize: only keep results for target segment IDs that need changes
-        # Build a quick lookup for original text so we can skip no-op results.
+        # Normalize: only keep results for target segment IDs that changed.
+        start_i = batch_idx * batch_size
+        end_i = min(start_i + batch_size, len(segments))
+        ctx_start = max(0, start_i - effective_ctx)
+        ctx_end = min(len(segments), end_i + effective_ctx)
         orig_text_by_id = {
             str(s.get("id", "")): str(s.get("text", "")).strip()
-            for s in batch_with_context
+            for s in segments[ctx_start:ctx_end]
         }
+        corrections: list[dict] = []
         for item in parsed:
             if not isinstance(item, dict):
                 continue
@@ -698,14 +784,11 @@ def analyze_subtitle_correction(
                 continue
             category = str(item.get("category", "none"))
             corrected = str(item.get("corrected_text", "")).strip()
-            # Skip "no change" results -- they clutter the review UI.
-            # The prompt asks the model to return category="none" or identical
-            # corrected_text when nothing needs fixing; we don't surface those.
             if category == "none":
                 continue
             if corrected == orig_text_by_id.get(seg_id, ""):
                 continue
-            all_corrections.append(
+            corrections.append(
                 {
                     "segment_id": seg_id,
                     "corrected_text": corrected,
@@ -714,6 +797,86 @@ def analyze_subtitle_correction(
                     "confidence": min(1.0, max(0.0, float(item.get("confidence", 0.9)))),
                 }
             )
+        return (batch_idx, corrections, usage, None)
+
+    corrections_by_index: dict[int, list[dict]] = {}
+    total_usage: dict[str, int] = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+    }
+
+    # AR-2: sustained 429 -> finish remaining batches serially.
+    consecutive_429 = 0
+    _MAX_CONSECUTIVE_429 = 3
+    serial_fallback = False
+    pending: set[int] = set(range(total_batches))
+    completed = 0
+
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = {
+            executor.submit(_process_batch, batch_idx): batch_idx
+            for batch_idx in range(total_batches)
+        }
+        try:
+            for future in as_completed(futures):
+                if cancel_event and cancel_event.is_set():
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    return {"success": False, "error": "Cancelled"}
+
+                batch_idx, corrections, usage, error = future.result()
+                completed += 1
+                pending.discard(batch_idx)
+
+                for key in total_usage:
+                    total_usage[key] += usage.get(key, 0)
+
+                if error == "Cancelled":
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    return {"success": False, "error": "Cancelled"}
+
+                if error and "Rate limited" in error:
+                    consecutive_429 += 1
+                    if consecutive_429 >= _MAX_CONSECUTIVE_429 and not serial_fallback and pending:
+                        logger.warning(
+                            f"Rate limited {consecutive_429}x, switching remaining "
+                            f"{len(pending)} batches to serial"
+                        )
+                        serial_fallback = True
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        break
+                else:
+                    consecutive_429 = 0
+
+                if corrections:
+                    corrections_by_index[batch_idx] = corrections
+
+                if progress_cb:
+                    pct = (completed / total_batches) * 100 if total_batches > 0 else 0
+                    progress_cb(pct, f"Subtitle correction batch {completed}/{total_batches}...")
+        except Exception:
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise
+
+    if serial_fallback:
+        for batch_idx in sorted(pending):
+            if cancel_event and cancel_event.is_set():
+                return {"success": False, "error": "Cancelled"}
+            if progress_cb:
+                pct = (completed / total_batches) * 100 if total_batches > 0 else 0
+                progress_cb(pct, f"Subtitle correction batch {completed}/{total_batches} (serial)...")
+            _, corrections, usage, _ = _process_batch(batch_idx)
+            completed += 1
+            for key in total_usage:
+                total_usage[key] += usage.get(key, 0)
+            if corrections:
+                corrections_by_index[batch_idx] = corrections
+
+    # Merge in original batch order
+    all_corrections: list[dict] = []
+    for batch_idx in range(total_batches):
+        if batch_idx in corrections_by_index:
+            all_corrections.extend(corrections_by_index[batch_idx])
 
     if progress_cb:
         progress_cb(100.0, f"Completed: {len(all_corrections)} corrections")
@@ -860,7 +1023,11 @@ def analyze_highlights(
     # Highlight needs full context for structure understanding -- use large
     # chunks (30 min) so most videos are analyzed in a single LLM call and
     # multi-sentence arguments stay intact. Only 30+ min recordings split.
-    chunks = chunk_transcript(segments, chunk_duration=1800.0, overlap_duration=60.0)
+    # v2.1.1 M2: chunk/overlap durations are configurable (settings.json).
+    settings = load_settings()
+    chunk_dur = float(settings.get("llm_highlight_chunk_duration", 1800.0))
+    overlap_dur = float(settings.get("llm_highlight_overlap_duration", 60.0))
+    chunks = chunk_transcript(segments, chunk_duration=chunk_dur, overlap_duration=overlap_dur)
     total_chunks = len(chunks)
 
     # Resolve effective system prompt (caller override > layered default)

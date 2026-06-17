@@ -358,12 +358,29 @@ class MiloCutApi(Bridge):
             fade_mode=fade_mode,
         )
 
-    def _handle_filler_detection(self, task, cancel_event, progress_cb):
-        """Run filler word detection and store results."""
+    def _get_target_timeline(self, task):
+        """Resolve target timeline from task payload or active timeline.
+
+        All rule analysis and LLM handlers use this helper to get segments,
+        eliminating the repeated timeline-lookup boilerplate (v2.1.1 AR-1).
+
+        payload carries ``timeline_id`` -> use it; otherwise fall back to
+        ``project.active_timeline_id``.
+        """
         if self._project.current is None:
             raise ValueError("No project open")
+        project = self._project.current
+        timeline_id = task.payload.get("timeline_id", "") or project.active_timeline_id
+        timeline = project.get_timeline(timeline_id)
+        if timeline is None:
+            raise ValueError(f"Timeline {timeline_id} not found")
+        return timeline
+
+    def _handle_filler_detection(self, task, cancel_event, progress_cb):
+        """Run filler word detection and store results."""
         settings = load_settings()
-        segments = list(self._project.current.transcript.segments)
+        timeline = self._get_target_timeline(task)
+        segments = list(timeline.transcript.segments)
         results = detect_fillers(segments, settings.get("filler_words", []))
         results_dicts = [r.model_dump() for r in results]
         store = self._mark_dirty(self._project.add_analysis_results(results_dicts, source="filler_detection"))
@@ -373,10 +390,9 @@ class MiloCutApi(Bridge):
 
     def _handle_error_detection(self, task, cancel_event, progress_cb):
         """Run error trigger detection and store results."""
-        if self._project.current is None:
-            raise ValueError("No project open")
         settings = load_settings()
-        segments = list(self._project.current.transcript.segments)
+        timeline = self._get_target_timeline(task)
+        segments = list(timeline.transcript.segments)
         results = detect_errors(segments, settings.get("error_trigger_words", []))
         results_dicts = [r.model_dump() for r in results]
         store = self._mark_dirty(self._project.add_analysis_results(results_dicts, source="error_detection"))
@@ -386,19 +402,9 @@ class MiloCutApi(Bridge):
 
     def _handle_full_analysis(self, task, cancel_event, progress_cb):
         """Run full analysis (filler + error) and store results."""
-        if self._project.current is None:
-            raise ValueError("No project open")
         settings = load_settings()
-        # v2.1.0 Phase 3: workflow passes timeline_id in payload
-        timeline_id = task.payload.get("timeline_id", "")
-        project = self._project.current
-        if timeline_id:
-            timeline = project.get_timeline(timeline_id)
-            if timeline is None:
-                raise ValueError(f"Timeline {timeline_id} not found")
-            segments = list(timeline.transcript.segments)
-        else:
-            segments = list(project.transcript.segments)
+        timeline = self._get_target_timeline(task)
+        segments = list(timeline.transcript.segments)
         results = run_full_analysis(segments, settings)
         results_dicts = [r.model_dump() for r in results]
 
@@ -687,13 +693,7 @@ class MiloCutApi(Bridge):
 
         from core.llm_service import analyze_smart_delete
 
-        project = self._project.current
-        timeline_id = task.payload.get(
-            "timeline_id", project.active_timeline_id
-        )
-        timeline = project.get_timeline(timeline_id)
-        if timeline is None:
-            raise ValueError(f"Timeline {timeline_id} not found")
+        timeline = self._get_target_timeline(task)
 
         segments = [
             s.model_dump()
@@ -793,15 +793,10 @@ class MiloCutApi(Bridge):
 
         from core.llm_service import analyze_subtitle_correction
 
-        project = self._project.current
-        timeline_id = task.payload.get(
-            "timeline_id", project.active_timeline_id
-        )
-        timeline = project.get_timeline(timeline_id)
-        if timeline is None:
-            raise ValueError(f"Timeline {timeline_id} not found")
+        timeline = self._get_target_timeline(task)
 
         reference_text = task.payload.get("reference_text", "")
+        # v2.1.1 M2: context_window defaults from settings; payload may override.
         context_window = task.payload.get("context_window", 3)
 
         segments = [
@@ -879,13 +874,7 @@ class MiloCutApi(Bridge):
 
         from core.llm_service import analyze_highlights
 
-        project = self._project.current
-        timeline_id = task.payload.get(
-            "timeline_id", project.active_timeline_id
-        )
-        timeline = project.get_timeline(timeline_id)
-        if timeline is None:
-            raise ValueError(f"Timeline {timeline_id} not found")
+        timeline = self._get_target_timeline(task)
 
         target_minutes = task.payload.get("target_duration_minutes", 10)
 
@@ -995,13 +984,7 @@ class MiloCutApi(Bridge):
 
         from core.llm_service import semantic_search
 
-        project = self._project.current
-        timeline_id = task.payload.get(
-            "timeline_id", project.active_timeline_id
-        )
-        timeline = project.get_timeline(timeline_id)
-        if timeline is None:
-            raise ValueError(f"Timeline {timeline_id} not found")
+        timeline = self._get_target_timeline(task)
 
         query = task.payload.get("query", "")
         top_k = task.payload.get("top_k", 5)

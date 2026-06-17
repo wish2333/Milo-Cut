@@ -81,6 +81,17 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     "llm_temperature": 0.3,
     "llm_timeout": 120,
     "llm_thinking_enabled": False,
+    # v2.1.1 M2: tunable LLM chunking / batching / concurrency parameters.
+    # Window/overlap control smart-delete + highlight chunking; batch/context
+    # control subtitle-correction batching; concurrency enables parallel LLM
+    # calls (M3). All have safe defaults so existing behavior is preserved.
+    "llm_smart_window_duration": 60.0,
+    "llm_smart_overlap_duration": 10.0,
+    "llm_correction_batch_size": 30,
+    "llm_correction_context_window": 5,
+    "llm_highlight_chunk_duration": 1800.0,
+    "llm_highlight_overlap_duration": 60.0,
+    "llm_concurrency": 5,
     # Per-provider config cache (v2.1.0): preserves base_url/api_key/model
     # across provider switches so the user never loses what they typed.
     # Structure: {provider_id: {base_url, api_key, model}}

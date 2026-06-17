@@ -1,6 +1,6 @@
 import { ref, computed } from "vue"
 import { call, onEvent } from "@/bridge"
-import { EVENT_TASK_PROGRESS, EVENT_TASK_COMPLETED, EVENT_TASK_FAILED } from "@/utils/events"
+import { EVENT_TASK_PROGRESS, EVENT_TASK_COMPLETED, EVENT_TASK_FAILED, EVENT_TASK_CANCELLED } from "@/utils/events"
 import type { MiloTask, TaskType } from "@/types/task"
 
 const tasks = ref<MiloTask[]>([])
@@ -59,6 +59,19 @@ function ensureListeners() {
         ...tasks.value[idx],
         status: "failed",
         error,
+      }
+    }
+  })
+
+  // v2.1.1 M1-2: cancellation is a first-class outcome (not FAILED).
+  // The backend emits TASK_CANCELLED once the handler unwinds after a cancel.
+  onEvent<{ task_id: string }>(EVENT_TASK_CANCELLED, ({ task_id }) => {
+    taskStartTimes.delete(task_id)
+    const idx = tasks.value.findIndex((t) => t.id === task_id)
+    if (idx >= 0) {
+      tasks.value[idx] = {
+        ...tasks.value[idx],
+        status: "cancelled",
       }
     }
   })

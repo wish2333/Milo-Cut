@@ -57,6 +57,7 @@ quote-style = "double"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--ignore=tests/integration -q"
 markers = [
     "integration: end-to-end tests requiring full task pipeline",
 ]
