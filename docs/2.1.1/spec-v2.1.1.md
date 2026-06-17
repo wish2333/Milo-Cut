@@ -805,3 +805,730 @@ M1 (P0 bug) → M2 (参数) → M3 (并发，依赖 M2 参数) → M4 (交互) �
 ```
 
 M1 必须最先完成 (阻断核心功能)。M2 先于 M3 (并发数参数在 M2 定义)。M4 独立于 M1-M3，可并行。M5 最后。
+
+---
+
+## 附录 A: M1 当前运行逻辑与代码
+
+### A-1: Analysis Handler 的 segment 读取 (当前 bug 代码)
+
+三个规则分析 handler 当前通过 `self._project.current.transcript.segments` 读取字幕段。v2.0.0 多 Timeline 重构后 `Project` 模型已无 `transcript` 属性，改为 `timelines[].transcript`。
+
+**当前代码** (`main.py:361-412`):
+
+```python
+# _handle_filler_detection (line 361-372)
+def _handle_filler_detection(self, task, cancel_event, progress_cb):
+    if self._project.current is None:
+        raise ValueError("No project open")
+    settings = load_settings()
+    segments = list(self._project.current.transcript.segments)  # ← BUG: Project 无 transcript
+    results = detect_fillers(segments, settings.get("filler_words", []))
+    results_dicts = [r.model_dump() for r in results]
+    store = self._mark_dirty(self._project.add_analysis_results(results_dicts, source="filler_detection"))
+    if not store["success"]:
+        raise RuntimeError(store.get("error", "Failed to store analysis results"))
+    return {"project": store["data"], "results": results_dicts}
+
+# _handle_error_detection (line 374-385) -- 同样的 bug
+def _handle_error_detection(self, task, cancel_event, progress_cb):
+    ...
+    segments = list(self._project.current.transcript.segments)  # ← BUG
+    results = detect_errors(segments, settings.get("error_trigger_words", []))
+    ...
+
+# _handle_full_analysis (line 387-412) -- if 分支已修，else 分支遗漏
+def _handle_full_analysis(self, task, cancel_event, progress_cb):
+    ...
+    timeline_id = task.payload.get("timeline_id", "")
+    project = self._project.current
+    if timeline_id:
+        timeline = project.get_timeline(timeline_id)
+        if timeline is None:
+            raise ValueError(f"Timeline {timeline_id} not found")
+        segments = list(timeline.transcript.segments)  # ← 正确 (v2.1.0 Phase 3 已修)
+    else:
+        segments = list(project.transcript.segments)  # ← BUG: Project 无 transcript
+    results = run_full_analysis(segments, settings)
+    ...
+```
+
+**对比**: LLM handler (`_handle_smart_delete` line 690-702) 已正确使用 `project.active_timeline_id`:
+
+```python
+# _handle_smart_delete (line 690-702) -- 正确写法
+project = self._project.current
+timeline_id = task.payload.get("timeline_id", project.active_timeline_id)
+timeline = project.get_timeline(timeline_id)
+if timeline is None:
+    raise ValueError(f"Timeline {timeline_id} not found")
+segments = [s.model_dump() for s in timeline.transcript.segments if s.type == SegmentType.SUBTITLE]
+```
+
+### A-2: TaskManager 任务执行与取消 (当前代码)
+
+**任务生命周期**:
+
+```
+create_task() → PriorityQueue → _process_queue() dispatch → _threaded_execution_wrapper()
+  → semaphore.acquire() → _execute_task() → handler() → COMPLETED / FAILED
+```
+
+**并发控制** (`task_manager.py:29-55`):
+
+```python
+HEAVY_TASKS: set[TaskType] = {
+    TaskType.EXPORT_VIDEO, TaskType.EXPORT_AUDIO,
+    TaskType.TRANSCRIPTION, TaskType.SILENCE_DETECTION,
+}
+LIGHT_TASKS: set[TaskType] = {
+    TaskType.WAVEFORM_GENERATION, TaskType.PROXY_GENERATION,
+}
+# LLM_* 任务类型不在两者中，走 else 分支 → _light_semaphore
+
+self._heavy_semaphore = threading.Semaphore(1)   # GPU/CPU 密集
+self._light_semaphore = threading.Semaphore(3)   # I/O 密集 (LLM 走这里)
+```
+
+**取消逻辑** (`task_manager.py:124-148`):
+
+```python
+def cancel_task(self, task_id: str) -> dict:
+    with self._lock:
+        task = self._tasks.get(task_id)
+        if task is None:
+            return {"success": False, "error": f"Task not found: {task_id}"}
+
+        # Case A: 任务还在队列 → 标记 CANCELLED，worker 会跳过
+        if task.status == TaskStatus.QUEUED:
+            self._tasks[task_id] = task.model_copy(update={"status": TaskStatus.CANCELLED})
+            return {"success": True, "data": self._tasks[task_id].model_dump()}
+
+        # Case B: 任务正在运行 → 触发 cancel_event
+        if task.status == TaskStatus.RUNNING:
+            event = self._cancel_events.get(task_id)
+            if event:
+                event.set()
+            self._tasks[task_id] = task.model_copy(update={"status": TaskStatus.CANCELLED})
+            return {"success": True, "data": self._tasks[task_id].model_dump()}
+
+    return {"success": False, "error": f"Task {task_id} is {task.status}, cannot cancel"}
+```
+
+**执行与异常处理** (`task_manager.py:228-306`):
+
+```python
+def _execute_task(self, task_id: str, task: MiloTask) -> None:
+    handler = self._handlers.get(task.type)
+    ...
+    cancel_event = threading.Event()
+    with self._lock:
+        self._cancel_events[task_id] = cancel_event
+        self._tasks[task_id] = current.model_copy(update={"status": TaskStatus.RUNNING, ...})
+
+    try:
+        def progress_cb(percent: float, message: str = "") -> None:
+            self._update_progress(task_id, percent, message)
+
+        result = handler(task, cancel_event, progress_cb)  # ← handler 执行
+
+        # 成功路径
+        with self._lock:
+            self._tasks[task_id] = current.model_copy(update={"status": TaskStatus.COMPLETED, ...})
+        self._emit(TASK_COMPLETED, {"task_id": task_id, "task_type": ..., "result": result})
+
+    except Exception as e:
+        # ← BUG: 不区分取消和失败，统一走 FAILED
+        logger.exception("Task {} failed", task_id)
+        with self._lock:
+            self._tasks[task_id] = current.model_copy(update={
+                "status": TaskStatus.FAILED,
+                "error": str(e),
+                "completed_at": datetime.now().isoformat(),
+            })
+        self._emit(TASK_FAILED, {"task_id": task_id, "error": str(e)})
+
+    finally:
+        with self._lock:
+            self._cancel_events.pop(task_id, None)
+```
+
+**事件定义** (`core/events.py`):
+
+```python
+TASK_PROGRESS = "task:progress"
+TASK_COMPLETED = "task:completed"
+TASK_FAILED = "task:failed"
+# 缺少 TASK_CANCELLED
+```
+
+**前端监听** (`frontend/src/composables/useTask.ts:54-64`):
+
+```typescript
+onEvent<{ task_id: string; error: string }>(EVENT_TASK_FAILED, ({ task_id, error }) => {
+  taskStartTimes.delete(task_id)
+  const idx = tasks.value.findIndex((t) => t.id === task_id)
+  if (idx >= 0) {
+    tasks.value[idx] = { ...tasks.value[idx], status: "failed", error }
+  }
+})
+// 没有 TASK_CANCELLED 监听
+```
+
+### A-3: call_llm 取消检查点 (当前代码)
+
+`call_llm` (`llm_service.py:88-202`) 在以下位置检查 cancel_event:
+
+```python
+def call_llm(prompt, system, *, json_mode=False, config=None, cancel_event=None, progress_cb=None):
+    ...
+    for attempt in range(_MAX_RETRIES):  # 默认 3 次
+        if cancel_event and cancel_event.is_set():       # ← 检查点 1: 每次重试前
+            return {"success": False, "error": "Cancelled"}
+
+        try:
+            response = client.chat.completions.create(**request_kwargs)  # ← 阻塞调用，无法中断
+            ...
+            return {"success": True, "data": {"content": content, "usage": usage}}
+
+        except APITimeoutError:
+            last_error = f"LLM request timed out (attempt {attempt + 1})"
+        except RateLimitError:
+            last_error = f"Rate limited (attempt {attempt + 1})"
+        except APIError as e:
+            last_error = f"API error: {e}"
+            break  # 不可重试，立即退出
+        except Exception as e:
+            last_error = f"Unexpected error: {e}"
+            break
+
+        # 指数退避
+        if attempt < _MAX_RETRIES - 1:
+            delay = _RETRY_BASE_DELAY * (2**attempt)
+            if cancel_event:
+                cancel_event.wait(timeout=delay)   # ← 检查点 2: 退避等待时
+            else:
+                time.sleep(delay)
+
+    return {"success": False, "error": last_error}
+```
+
+**关键限制**: `client.chat.completions.create()` 是同步 HTTP 请求，一旦发出，只有以下情况会返回:
+1. 服务器响应到达
+2. 客户端 timeout (config.timeout，默认 120s)
+3. 网络异常
+
+cancel_event 无法中断已发出的 HTTP 请求。
+
+### A-4: 前端取消按钮调用链 (当前代码)
+
+```
+AIAssistantPanel.vue:handleCancelSingle()
+  → emit("cancel-single")
+  → Timeline.vue 透传 emit("cancel-single")
+  → WorkspacePage.vue:handleCancelSingle()
+  → call("cancel_llm_tasks")
+  → main.py:MiloCutApi.cancel_llm_tasks()
+```
+
+**后端批量取消** (`main.py:1287-1301`):
+
+```python
+@expose
+def cancel_llm_tasks(self) -> dict:
+    """Cancel all currently running/queued LLM tasks (single-function mode)."""
+    llm_types = {
+        "llm_smart_delete", "llm_subtitle_correction",
+        "llm_highlight", "llm_semantic_search",
+    }
+    tasks = self._task_manager.list_tasks()
+    cancelled = 0
+    for t in tasks.get("data", []):
+        if t.get("type") in llm_types and t.get("status") in ("queued", "running"):
+            self._task_manager.cancel_task(t["id"])
+            cancelled += 1
+    return {"success": True, "data": {"cancelled": cancelled}}
+```
+
+**前端 toast** (`WorkspacePage.vue:955-958`):
+
+```typescript
+async function handleCancelSingle() {
+  await call("cancel_llm_tasks")
+  showToast("已取消", "info", 2000)  // ← 立即弹 toast，但任务可能还在跑
+}
+```
+
+---
+
+## 附录 B: M2/M3 当前运行逻辑与代码
+
+### B-1: LLM 配置读取 (当前代码)
+
+**get_llm_config** (`llm_service.py:59-70`):
+
+```python
+def get_llm_config() -> LlmConfig:
+    settings = load_settings()
+    return LlmConfig(
+        provider=LlmProvider(settings.get("llm_provider", "deepseek")),
+        base_url=settings.get("llm_base_url", "").strip(),
+        api_key=settings.get("llm_api_key", "").strip(),
+        model=settings.get("llm_model", "").strip(),
+        temperature=settings.get("llm_temperature", 0.3),
+        timeout=settings.get("llm_timeout", 120),
+        thinking_enabled=settings.get("llm_thinking_enabled", False),
+    )
+```
+
+**_DEFAULT_SETTINGS 中 LLM 相关字段** (`config.py:76-93`):
+
+```python
+"llm_provider": "deepseek",
+"llm_base_url": "",
+"llm_api_key": "",
+"llm_model": "",
+"llm_temperature": 0.3,
+"llm_timeout": 120,
+"llm_thinking_enabled": False,
+"llm_provider_configs": {},    # v2.1.0 供应商配置缓存
+"llm_prompts": {},             # Phase 3 提示词
+"llm_prompt_presets": {},      # v2.1.0 Phase 1 预设
+"workflows": [],               # v2.1.0 Phase 3 工作流
+# 缺少窗口/批次/并发参数
+```
+
+### B-2: 字幕分窗函数 (当前代码)
+
+**chunk_transcript** (`llm_service.py:257-300`) -- 按时间切:
+
+```python
+def chunk_transcript(segments, chunk_duration=300.0, overlap_duration=30.0):
+    """按时间切分，每个 chunk 覆盖 chunk_duration 秒，相邻 chunk 有 overlap_duration 秒重叠。"""
+    chunks = []
+    i = 0
+    while i < len(segments):
+        chunk_start = segments[i]["start"]
+        chunk_end_time = chunk_start + chunk_duration
+        chunk = []
+        while i < len(segments) and segments[i]["start"] < chunk_end_time:
+            chunk.append(segments[i])
+            i += 1
+        if chunk:
+            chunks.append(chunk)
+            # 回退创建重叠
+            if i < len(segments):
+                overlap_start = chunk_end_time - overlap_duration
+                while i > 0 and segments[i - 1]["start"] >= overlap_start:
+                    i -= 1
+    return chunks
+```
+
+**chunk_transcript_short** (`llm_service.py:303-325`) -- smart_delete 专用:
+
+```python
+def chunk_transcript_short(segments, window_duration=25.0, overlap_duration=5.0):
+    """smart_delete 用的短窗口，默认 25s 窗口 + 5s 重叠。"""
+    return chunk_transcript(segments, chunk_duration=window_duration, overlap_duration=overlap_duration)
+```
+
+### B-3: analyze_smart_delete 串行循环 (当前代码)
+
+**核心循环** (`llm_service.py:491-562`):
+
+```python
+def analyze_smart_delete(segments, existing_flagged_ids=None, *, config=None,
+                          cancel_event=None, progress_cb=None, chunk_callback=None,
+                          system_prompt=None):
+    ...
+    # 过滤已标注段
+    flagged = existing_flagged_ids or set()
+    to_analyze = [s for s in segments if str(s.get("id", "")) not in flagged]
+
+    chunks = chunk_transcript_short(to_analyze)  # ← 硬编码 25s/5s
+    total_chunks = len(chunks)
+
+    all_results = []
+    total_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+    # ← 串行 for 循环，逐 chunk 调用 LLM
+    for idx, chunk in enumerate(chunks):
+        if cancel_event and cancel_event.is_set():       # ← chunk 边界检查取消
+            return {"success": False, "error": "Cancelled"}
+
+        if progress_cb:
+            pct = (idx / total_chunks) * 100
+            progress_cb(pct, f"Smart-delete analyzing window {idx + 1}/{total_chunks}...")
+
+        prompt = _build_structured_user_message(chunk)
+        result = call_llm(prompt, system=effective_system, json_mode=True,
+                          config=config, cancel_event=cancel_event)
+
+        if not result.get("success"):
+            continue  # ← 单 chunk 失败跳过
+
+        chunk_results = _parse_json_response_layers(content)
+        ...
+        if normalized and chunk_callback:
+            chunk_callback(normalized)   # ← 实时推送给前端
+        all_results.extend(normalized)
+
+    # 按 segment_id 去重
+    seen = {}
+    for r in all_results:
+        seen[r["segment_id"]] = r
+    deduped = list(seen.values())
+    ...
+```
+
+### B-4: analyze_subtitle_correction 串行循环 (当前代码)
+
+**核心循环** (`llm_service.py:582-720`):
+
+```python
+def analyze_subtitle_correction(segments, reference_text=None, context_window=3, *,
+                                 config=None, cancel_event=None, progress_cb=None,
+                                 system_prompt_a=None, system_prompt_b=None):
+    ...
+    batch_size = 20  # ← 硬编码
+    total_batches = (len(segments) + batch_size - 1) // batch_size
+
+    for batch_idx in range(total_batches):
+        if cancel_event and cancel_event.is_set():
+            return {"success": False, "error": "Cancelled"}
+
+        # 选批 + 上下文窗口
+        start_i = batch_idx * batch_size
+        end_i = min(start_i + batch_size, len(segments))
+        ctx_start = max(0, start_i - context_window)   # ← context_window 硬编码 3
+        ctx_end = min(len(segments), end_i + context_window)
+
+        batch_with_context = segments[ctx_start:ctx_end]
+        target_ids = {str(segments[i].get("id", "")) for i in range(start_i, end_i)}
+
+        prompt = _build_structured_user_message(batch_with_context, extra_context=...)
+        result = call_llm(prompt, system=system, json_mode=True, config=config, cancel_event=cancel_event)
+        ...
+```
+
+### B-5: analyze_highlight (不并发，当前代码)
+
+**核心循环** (`llm_service.py:863-895`):
+
+```python
+def analyze_highlight(segments, target_duration_minutes, *, config=None, ...):
+    ...
+    # 大窗口 30 分钟，通常单次调用
+    chunks = chunk_transcript(segments, chunk_duration=1800.0, overlap_duration=60.0)  # ← 硬编码
+
+    highlight_config = config.model_copy(update={"timeout": max(config.timeout, 300)})
+
+    for idx, chunk in enumerate(chunks):
+        if cancel_event and cancel_event.is_set():
+            return {"success": False, "error": "Cancelled"}
+        ...
+        result = call_llm(prompt, system=effective_system, json_mode=True,
+                          config=highlight_config, cancel_event=cancel_event)
+        ...
+```
+
+### B-6: SettingsModal LLM Tab (当前代码)
+
+**LLM Tab 结构** (`SettingsModal.vue:1190-1308`):
+
+```
+Provider: [下拉选择 DeepSeek/OpenAI/Qwen/GLM/Custom]
+API Key:  [输入框]
+Model:    [输入框]
+深度思考: [复选框] (不支持的 Provider 禁用)
+Temperature: [range 滑块 0-1]
+[Test Connection 按钮]
+```
+
+缺少: 窗口/批次/上下文/并发数等高级参数区域。
+
+---
+
+## 附录 C: M4 当前运行逻辑与代码
+
+### C-1: TranscriptRow 点击行为 (当前代码)
+
+**handleRowClick** (`TranscriptRow.vue:117-124`):
+
+```typescript
+// 点击 = seek (跳转播放)，没有选择逻辑
+function handleRowClick() {
+  if (editingTimeField.value) return         // 正在编辑时间则不触发
+  if (isEditingText.value && !props.globalEditMode) {
+    saveEdit()                                // 编辑中则保存
+  }
+  emit("seek", props.segment.start)          // ← 跳转播放
+}
+```
+
+**模板绑定** (`TranscriptRow.vue:138-143`):
+
+```vue
+<div
+  class="flex items-start gap-2 px-3 py-2 cursor-pointer hover:bg-gray-50 ..."
+  :class="[statusClass, { 'ring-1 ring-blue-500': isSelected }]"
+  @click="handleRowClick"
+  @contextmenu="handleContextMenu"
+>
+```
+
+### C-2: 右键菜单 (当前代码)
+
+**contextMenu** (`TranscriptRow.vue:26-39, 265-293`):
+
+```typescript
+const contextMenu = ref<{ x: number; y: number } | null>(null)
+
+function handleContextMenu(e: MouseEvent) {
+  e.preventDefault()
+  e.stopPropagation()
+  contextMenu.value = { x: e.clientX, y: e.clientY }
+  openContextMenu(() => { contextMenu.value = null })
+}
+```
+
+```vue
+<!-- 右键菜单: 编辑文本 / 标记删除 / 删除段落 (无合并、无分割) -->
+<Teleport to="body">
+  <div v-if="contextMenu" ...>
+    <button @click="startEdit">编辑文本</button>
+    <button @click="emit('toggle-status')">
+      {{ displayStatus === 'confirmed' ? '取消删除' : '标记删除' }}
+    </button>
+    <div class="border-t border-gray-100 my-1" />
+    <button class="text-red-600" @click="emit('delete')">删除段落</button>
+  </div>
+</Teleport>
+```
+
+### C-3: 时间编辑 (当前代码)
+
+**时间点击 → 输入框** (`TranscriptRow.vue:46-73, 146-174`):
+
+```typescript
+const editingTimeField = ref<"start" | "end" | null>(null)
+const editingTimeValue = ref("")
+
+function startTimeEdit(field: "start" | "end", e: MouseEvent) {
+  e.stopPropagation()
+  editingTimeValue.value = formatTime(field === "start" ? props.segment.start : props.segment.end)
+  editingTimeField.value = field
+  nextTick(() => timeInputRef.value?.select())
+}
+
+function applyTimeEdit() {
+  const parsed = parseTime(editingTimeValue.value)
+  if (parsed !== null && editingTimeField.value) {
+    emit("update-time", props.segment.id, editingTimeField.value, parsed)
+  }
+  editingTimeField.value = null
+}
+
+function handleTimeEditKeydown(e: KeyboardEvent) {
+  if (e.key === "Enter") applyTimeEdit()
+  else if (e.key === "Escape") cancelTimeEdit()
+  // ← 无方向键微调
+}
+```
+
+```vue
+<!-- 时间列: 点击数字变输入框，无 ±0.1s 按钮 -->
+<template v-if="editingTimeField === 'start'">
+  <input v-model="editingTimeValue" @keydown="handleTimeEditKeydown" @blur="applyTimeEdit" />
+</template>
+<template v-else>
+  <span @mousedown.stop.prevent="startTimeEdit('start', $event)">{{ formatTime(segment.start) }}</span>
+</template>
+```
+
+### C-4: useSegmentEdit 选择状态 (当前代码)
+
+**单选，无多选** (`useSegmentEdit.ts:60-79`):
+
+```typescript
+const selectedSegmentId = ref<string | null>(null)
+const selectedRange = ref<{ start: number; end: number } | null>(null)
+
+function selectSegment(id: string | null) {
+  selectedSegmentId.value = id  // ← 仅单选
+}
+
+function selectRange(start: number, end: number) {
+  selectedRange.value = { start, end }  // ← 时间范围选，从未被调用
+}
+
+function clearSelection() {
+  selectedSegmentId.value = null
+  selectedRange.value = null
+}
+```
+
+### C-5: useEdit 合并/分割/搜索 (当前代码，已定义但前端未接入)
+
+**useEdit.ts:36-73**:
+
+```typescript
+// 已定义，但 WorkspacePage.vue 未解构使用
+async function mergeSegments(segmentIds: string[]): Promise<boolean> {
+  const res = await call<Project>("merge_segments", segmentIds)
+  if (res.success && res.data) {
+    snapshot()
+    project.value = res.data
+    return true
+  }
+  return false
+}
+
+async function splitSegment(segmentId: string, position: number): Promise<boolean> {
+  const res = await call<Project>("split_segment", segmentId, position)
+  if (res.success && res.data) {
+    snapshot()
+    project.value = res.data
+    return true
+  }
+  return false
+}
+
+async function searchReplace(query: string, replacement: string, scope: string = "all") {
+  const res = await call("search_replace", query, replacement, scope)
+  ...
+}
+```
+
+**WorkspacePage.vue 解构** (`WorkspacePage.vue:125-130`):
+
+```typescript
+const {
+  deleteSegment,
+  deleteSilenceSegments,
+  deleteSubtitleTrimEdits,
+} = useEdit(projectRef, pushSnapshot)
+// ← mergeSegments / splitSegment 未解构
+// ← searchReplace 单独解构 (line 123)
+```
+
+### C-6: 后端 merge_segments / split_segment / rename_timeline (已实现)
+
+**project_service.py:838-925**:
+
+```python
+def merge_segments(self, segment_ids: list[str]) -> dict:
+    """合并连续字幕段: 按 start 排序，拼接文本，移除孤立 EditDecision。"""
+    targets = [s for s in segments if s.id in segment_ids and s.type == SegmentType.SUBTITLE]
+    if len(targets) < 2:
+        return {"success": False, "error": "Need at least 2 subtitle segments to merge"}
+    targets.sort(key=lambda s: s.start)
+    merged_text = "".join(s.text for s in targets)
+    merged_seg = targets[0].model_copy(update={"end": targets[-1].end, "text": merged_text, ...})
+    ...
+
+def split_segment(self, segment_id: str, position: float) -> dict:
+    """在指定时间点分割: 创建 {id}-a 和 {id}-b，文本按时长比例分割。"""
+    target = next((s for s in segments if s.id == segment_id), None)
+    if position <= target.start or position >= target.end:
+        return {"success": False, "error": "Split position must be within segment bounds"}
+    ratio = (position - target.start) / (target.end - target.start)
+    split_idx = int(len(target.text) * ratio)
+    seg_a = target.model_copy(update={"id": f"{segment_id}-a", "end": position, "text": target.text[:split_idx].strip()})
+    seg_b = target.model_copy(update={"id": f"{segment_id}-b", "start": position, "text": target.text[split_idx:].strip()})
+    ...
+
+def rename_timeline(self, timeline_id: str, new_label: str) -> dict:
+    """重命名 Timeline。"""
+    new_timelines = [t.model_copy(update={"label": new_label}) if t.id == timeline_id else t
+                     for t in self._current.timelines]
+    self._current = self._current.model_copy(update={"timelines": new_timelines})
+    ...
+```
+
+### C-7: SearchReplaceBar (当前代码)
+
+**Ctrl+F 触发** (`SearchReplaceBar.vue:30-46`):
+
+```typescript
+// 组件自身监听 Ctrl+F，显示搜索栏
+function handleKeydown(e: KeyboardEvent) {
+  if (e.ctrlKey && e.key === "f") {
+    e.preventDefault()
+    show()  // isVisible.value = true
+  }
+  if (e.key === "Escape" && isVisible.value) {
+    hide()
+  }
+}
+
+onMounted(() => {
+  document.addEventListener("keydown", handleKeydown)
+})
+```
+
+**无可见触发按钮**: SearchReplaceBar 默认 `isVisible = false`，只能 Ctrl+F 打开，没有工具栏图标。
+
+---
+
+## 附录 D: Timeline 组件事件透传与工具栏 (当前代码)
+
+### D-1: Timeline.vue 工具栏 (当前代码)
+
+**现有工具栏** (`Timeline.vue:118-141`):
+
+```vue
+<div class="flex items-center justify-between border-b border-gray-200 px-4 py-2">
+  <span class="text-sm font-medium">Timeline</span>
+  <div class="flex items-center gap-2">
+    <!-- 编辑字幕 / 退出编辑 切换按钮 -->
+    <button v-if="!globalEditMode" @click="emit('toggle-edit-mode')">编辑字幕</button>
+    <button v-else @click="emit('toggle-edit-mode')">退出编辑</button>
+    <span>{{ subtitleCount }} subtitles + {{ silenceCount }} silence</span>
+  </div>
+</div>
+<!-- 缺少: 选择模式按钮、搜索图标、合并按钮 -->
+```
+
+### D-2: Timeline.vue emit 定义 (当前代码)
+
+**事件列表** (`Timeline.vue:12-66`):
+
+```typescript
+const emit = defineEmits<{
+  seek: [time: number]
+  "update-text": [segmentId: string, text: string]
+  "update-time": [segmentId: string, field: "start" | "end", value: number]
+  "toggle-status": [segment: Segment]
+  "confirm-segment": [segment: Segment]
+  "reject-segment": [segment: Segment]
+  "delete-segment": [segment: Segment]
+  "toggle-edit-mode": []
+  // SuggestionPanel 透传
+  "confirm-suggestion": [editId: string]
+  "reject-suggestion": [editId: string]
+  "confirm-all": []
+  "reject-all": []
+  // AIAssistantPanel 透传
+  "start-smart-delete": []
+  "start-subtitle-correction": [referenceText: string]
+  "open-subtitle-fullscreen": []
+  "start-highlight": [targetMinutes: number]
+  "go-to-settings": []
+  "cancel-single": []          // v2.1.0 新增
+  "seek-suggestion": [time: number]
+}>()
+```
+
+缺少: `toggle-selection-mode`、`merge-selected`、`split-segment`、`toggle-search-bar`、`rename-timeline` 等 M4 新增事件。
+
+### D-3: Timeline 标签区 (当前代码)
+
+Timeline 切换标签区域目前只有点击切换 active timeline，无右键菜单:
+
+```vue
+<!-- 当前: 标签仅点击切换，无右键重命名/删除 -->
+<div v-for="tl in timelines" @click="emit('switch-timeline', tl.id)">
+  {{ tl.label }}
+</div>
+```
