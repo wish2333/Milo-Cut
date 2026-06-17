@@ -16,18 +16,22 @@ const props = defineProps<{
   currentTime: number
   waveformPath?: string
   updateTime?: (segmentId: string, field: "start" | "end", value: number) => void
-  /** v2.1.1: suppress waveform seek when editing (edit mode or selection mode) */
-  editingActive?: boolean
+  /** v2.1.1 A-03: full-text edit mode — blocks structural ops */
+  globalEditMode?: boolean
+  /** v2.1.1 A-03: multi-select mode — move pointer without playing */
+  selectionMode?: boolean
 }>()
 
 const emit = defineEmits<{
   seek: [time: number]
+  "set-time": [time: number]
   "select-range": [start: number, end: number]
   "add-segment": [start: number, end: number]
   "delete-segment": [segmentId: string]
   "seek-segment": [segment: Segment]
   "regenerate-waveform": []
   "split-segment": [segmentId: string, position: number]
+  toast: [msg: string]
 }>()
 
 const durationRef = toRef(props, "duration")
@@ -57,8 +61,14 @@ onUnmounted(() => {
 })
 
 function handleSeek(time: number) {
-  // v2.1.1: suppress seek when editing (edit mode / selection mode)
-  if (props.editingActive) return
+  // v2.1.1 A-03: globalEditMode blocks time-axis clicks entirely
+  if (props.globalEditMode) return
+  // selectionMode: move pointer without playing
+  if (props.selectionMode) {
+    emit("set-time", time)
+    return
+  }
+  // normal mode: seek and play
   emit("seek", time)
 }
 
@@ -75,18 +85,17 @@ function handleDeleteSegment(segmentId: string) {
 }
 
 function handleSeekSegment(segment: Segment) {
-  // v2.1.1: suppress seek when editing (edit mode / selection mode)
-  if (props.editingActive) return
+  // v2.1.1 A-03: same logic as handleSeek
+  if (props.globalEditMode) return
+  if (props.selectionMode) {
+    emit("set-time", segment.start)
+    return
+  }
   emit("seek-segment", segment)
 }
 
 function handleSplitSegment(segmentId: string, position: number) {
   emit("split-segment", segmentId, position)
-}
-
-function handleWaveformSeek(time: number) {
-  // Arrow keys from SegmentBlocksLayer always seek (bypass editingActive check)
-  emit("seek", time)
 }
 
 </script>
@@ -128,13 +137,15 @@ function handleWaveformSeek(time: number) {
         :update-time="updateTime"
         :current-time="currentTime"
         :duration="duration"
+        :global-edit-mode="globalEditMode"
         style="z-index: 2"
         @select-range="handleSelectRange"
         @add-segment="handleAddSegment"
         @delete-segment="handleDeleteSegment"
         @seek-segment="handleSeekSegment"
         @split-segment="handleSplitSegment"
-        @seek="handleWaveformSeek"
+        @set-time="emit('set-time', $event)"
+        @toast="emit('toast', $event)"
       />
       <PlayheadOverlay style="z-index: 10; pointer-events: none" />
     </div>

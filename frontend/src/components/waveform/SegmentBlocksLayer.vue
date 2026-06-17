@@ -12,6 +12,8 @@ const props = defineProps<{
   updateTime?: (segmentId: string, field: "start" | "end", value: number) => void
   currentTime?: number
   duration?: number
+  /** v2.1.1 A-03: edit mode interception for structural ops */
+  globalEditMode?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -20,7 +22,10 @@ const emit = defineEmits<{
   "delete-segment": [segmentId: string]
   "seek-segment": [segment: Segment]
   "split-segment": [segmentId: string, position: number]
-  seek: [time: number]
+  /** v2.1.1 A-03: move playhead without playing (arrow keys, selection mode) */
+  "set-time": [time: number]
+  /** v2.1.1 A-03: edit mode toast notification */
+  toast: [msg: string]
 }>()
 
 const metrics = inject<TimelineMetrics>(TIMELINE_METRICS_KEY)!
@@ -179,6 +184,8 @@ function handleBlockMouseDown(
 function handleBlockContextMenu(block: Block, e: MouseEvent) {
   e.preventDefault()
   e.stopPropagation()
+  // v2.1.1 A-01: broadcast close to Timeline menu before opening own
+  window.dispatchEvent(new CustomEvent("closeallcontextmenus"))
   selectedBlockId.value = block.seg.id
   contextMenu.value = { x: e.clientX, y: e.clientY, segmentId: block.seg.id }
   // Use local document listener (not shared contextMenuManager) to avoid
@@ -214,6 +221,12 @@ function closeContextMenu() {
 }
 
 function splitSelectedAtCursor() {
+  // v2.1.1 A-03: block structural ops in edit mode
+  if (props.globalEditMode) {
+    emit("toast", "请退出编辑模式后重试")
+    closeContextMenu()
+    return
+  }
   const id = contextMenu.value?.segmentId
   if (!id) return
   const seg = props.segments.find(s => s.id === id)
@@ -224,6 +237,12 @@ function splitSelectedAtCursor() {
 }
 
 function splitSelectedAtMidpoint() {
+  // v2.1.1 A-03: block structural ops in edit mode
+  if (props.globalEditMode) {
+    emit("toast", "请退出编辑模式后重试")
+    closeContextMenu()
+    return
+  }
   const id = contextMenu.value?.segmentId
   if (!id) return
   const seg = props.segments.find(s => s.id === id)
@@ -234,6 +253,12 @@ function splitSelectedAtMidpoint() {
 }
 
 function deleteSelected() {
+  // v2.1.1 A-03: block structural ops in edit mode
+  if (props.globalEditMode) {
+    emit("toast", "请退出编辑模式后重试")
+    closeContextMenu()
+    return
+  }
   if (selectedBlockId.value) {
     emit("delete-segment", selectedBlockId.value)
     selectedBlockId.value = null
@@ -252,18 +277,18 @@ function handleKeyDown(e: KeyboardEvent) {
     selectedBlockId.value = null
     closeContextMenu()
   }
-  // v2.1.1: ←/→ 微调时间指针
+  // v2.1.1 A-03: ←/→ move playhead without playing (arrow keys are positioning tools)
   if (e.key === "ArrowLeft") {
     e.preventDefault()
     const step = e.shiftKey ? 1.0 : 0.1
     const t = Math.max(0, (props.currentTime ?? 0) - step)
-    emit("seek", t)
+    emit("set-time", t)
   }
   if (e.key === "ArrowRight") {
     e.preventDefault()
     const step = e.shiftKey ? 1.0 : 0.1
     const t = Math.min(props.duration ?? 99999, (props.currentTime ?? 0) + step)
-    emit("seek", t)
+    emit("set-time", t)
   }
 }
 
@@ -278,12 +303,21 @@ function handleDocKeyCapture(e: KeyboardEvent) {
   }
 }
 
+// v2.1.1 A-01: listen for Timeline menu close broadcasts
+const handleGlobalClose = () => {
+  if (contextMenu.value) {
+    contextMenu.value = null
+  }
+}
+
 onMounted(() => {
   document.addEventListener("keydown", handleDocKeyCapture, { capture: true })
+  window.addEventListener("closeallcontextmenus", handleGlobalClose)
 })
 
 onUnmounted(() => {
   document.removeEventListener("keydown", handleDocKeyCapture, { capture: true })
+  window.removeEventListener("closeallcontextmenus", handleGlobalClose)
 })
 
 </script>

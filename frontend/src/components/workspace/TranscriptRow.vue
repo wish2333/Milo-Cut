@@ -31,6 +31,8 @@ const emit = defineEmits<{
   "toggle-multi-selected": []
   "split": []
   "split-at-pointer": [position: number]
+  /** v2.1.1 A-03: edit mode toast notification */
+  toast: [msg: string]
 }>()
 
 // Context menu
@@ -43,9 +45,53 @@ function handleContextMenu(e: MouseEvent) {
   openContextMenu(() => { contextMenu.value = null })
 }
 
+// v2.1.1 A-02: distinguish left-click edit from right-click menu on time stamps
+function onTimeMouseDown(field: "start" | "end", e: MouseEvent) {
+  // e.button === 0 is left, e.button === 2 is right
+  if (e.button !== 0) {
+    // Right-click: do nothing, let contextmenu event fire normally
+    return
+  }
+  // Left-click: stop propagation and enter time edit mode
+  e.stopPropagation()
+  e.preventDefault()
+  startTimeEdit(field, e)
+}
+
 function closeContextMenu() {
   contextMenu.value = null
   closeContextMenuManager()
+}
+
+// v2.1.1 A-03: menu handlers that check globalEditMode before structural ops
+function handleSplitAtPointer() {
+  if (props.globalEditMode) {
+    emit("toast", "请退出编辑模式后重试")
+    closeContextMenu()
+    return
+  }
+  emit("split-at-pointer", props.currentTime ?? 0)
+  closeContextMenu()
+}
+
+function handleSplitAtMidpoint() {
+  if (props.globalEditMode) {
+    emit("toast", "请退出编辑模式后重试")
+    closeContextMenu()
+    return
+  }
+  emit("split")
+  closeContextMenu()
+}
+
+function handleDeleteSegment() {
+  if (props.globalEditMode) {
+    emit("toast", "请退出编辑模式后重试")
+    closeContextMenu()
+    return
+  }
+  emit("delete")
+  closeContextMenu()
 }
 
 // Text editing
@@ -209,7 +255,7 @@ const statusClass = computed(() => {
         </div>
       </template>
       <template v-else>
-        <span class="cursor-pointer hover:text-blue-500 hover:underline" title="Click to edit (Arrows = ±0.1s)" @mousedown.stop.prevent="startTimeEdit('start', $event)">{{ formatTime(segment.start) }}</span>
+        <span class="cursor-pointer hover:text-blue-500 hover:underline" title="Click to edit (Arrows = ±0.1s)" @mousedown="onTimeMouseDown('start', $event)">{{ formatTime(segment.start) }}</span>
       </template>
       <span class="mx-0.5">&rarr;</span>
       <template v-if="editingTimeField === 'end'">
@@ -235,7 +281,7 @@ const statusClass = computed(() => {
         </div>
       </template>
       <template v-else>
-        <span class="cursor-pointer hover:text-blue-500 hover:underline" title="Click to edit (Arrows = ±0.1s)" @mousedown.stop.prevent="startTimeEdit('end', $event)">{{ formatTime(segment.end) }}</span>
+        <span class="cursor-pointer hover:text-blue-500 hover:underline" title="Click to edit (Arrows = ±0.1s)" @mousedown="onTimeMouseDown('end', $event)">{{ formatTime(segment.end) }}</span>
       </template>
     </div>
 
@@ -352,21 +398,21 @@ const statusClass = computed(() => {
         <button
           class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
           title="在时间指针位置分割"
-          @click="emit('split-at-pointer', props.currentTime ?? 0)"
+          @click="handleSplitAtPointer"
         >
           从时间指针分割
         </button>
         <button
           class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
           title="从此段中间分为两段"
-          @click="emit('split')"
+          @click="handleSplitAtMidpoint"
         >
           从中点分割
         </button>
         <div class="border-t border-gray-100 my-1" />
         <button
           class="w-full text-left px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
-          @click="emit('delete')"
+          @click="handleDeleteSegment"
         >
           删除段落
         </button>

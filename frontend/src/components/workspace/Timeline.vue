@@ -81,6 +81,8 @@ const emit = defineEmits<{
   "split-at-pointer": [segmentId: string, position: number]
   // v2.1.1 M4-4: search bar toggle
   "toggle-search-bar": []
+  // v2.1.1 A-03: toast notification from child components
+  toast: [msg: string]
 }>()
 
 // Phase 2: right panel tab state (D-18). Using ref + v-show preserves
@@ -225,6 +227,7 @@ watch(
               @segment-click="(id, ev) => emit('segment-click', id, ev)"
               @split="emit('split-segment', seg.id)"
               @split-at-pointer="(pos) => emit('split-at-pointer', seg.id, pos)"
+              @toast="(msg) => emit('toast', msg)"
             />
             <SilenceRow
               v-else

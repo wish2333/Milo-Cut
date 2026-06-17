@@ -885,7 +885,8 @@ class ProjectService:
             return {"success": False, "error": f"Segment not found: {segment_id}"}
         if target.type != SegmentType.SUBTITLE:
             return {"success": False, "error": "Can only split subtitle segments"}
-        if position <= target.start or position >= target.end:
+        # Allow split at exact boundaries (e.g. playhead at 0.0 for a segment starting at 0.0)
+        if position < target.start or position > target.end:
             return {"success": False, "error": "Split position must be within segment bounds"}
 
         # Split text proportionally by duration ratio

@@ -750,6 +750,13 @@ function handleSeek(time: number) {
   }
 }
 
+// v2.1.1 A-03: move playhead without playing (arrow keys, selection mode)
+function handleSetTime(time: number) {
+  if (videoRef.value) {
+    videoRef.value.currentTime = time
+  }
+}
+
 function handleVideoLoaded() {
   if (videoRef.value) {
     videoRef.value.volume = 0.25
@@ -2034,6 +2041,7 @@ onUnmounted(() => {
             @split-segment="handleSplitSegment"
             @split-at-pointer="handleSplitSegment"
             @toggle-search-bar="handleToggleSearchBar"
+            @toast="(msg: string) => showToast(msg, 'info', 3000)"
           />
           </div>
         </template>
@@ -2048,14 +2056,17 @@ onUnmounted(() => {
       :current-time="currentTime"
       :waveform-path="waveformUrl"
       :update-time="updateSegmentTime"
-      :editing-active="globalEditMode || selectionMode"
+      :global-edit-mode="globalEditMode"
+      :selection-mode="selectionMode"
       @seek="handleSeek"
+      @set-time="handleSetTime"
       @select-range="handleSelectRange"
       @add-segment="handleAddSegment"
       @delete-segment="handleDeleteSegment"
       @seek-segment="handleSeekSegment"
       @regenerate-waveform="handleRegenerateWaveform"
       @split-segment="handleSplitSegment"
+      @toast="(msg) => showToast(msg, 'info', 3000)"
     />
 
     <!-- Delete silence confirmation dialog -->
