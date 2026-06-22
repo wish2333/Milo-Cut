@@ -223,7 +223,17 @@ SettingsModal LLM Tab 新增「高级参数」折叠区（`<details>`），含 7
 | `frontend/src/pages/WorkspacePage.vue` | A-03 |
 | `core/project_service.py` | split 边界修复 |
 
-## 后续审计 (AUD-2)
+### AUD-2: 导出编码器列表硬编码 (check-report-2.1.1-2 #1)
+
+**根因**: `SettingsModal.vue` Export section 的 Video codec 下拉框硬编码了 10 个编码器选项 (nvenc/qsv/amf)，未使用 `detect_gpu_encoders` API 返回的 `gpuEncoders` 动态渲染。macOS 上错误显示 Intel/AMD/NVIDIA 编码器且缺失 videotoolbox；无硬件编码器的 Win 设备同样受影响。
+- 后端 `detect_gpu_encoders` 本身工作正常（设置页 Hardware Encoders 徽章正确只显示 videotoolbox 即为证）。
+
+**修复**: `SettingsModal.vue` Export section 改为动态渲染：
+- 新增 `encoderMeta` ref + `availableVideoCodecs` computed：libx264/libx265 永远显示；libsvtav1 按 `gpuEncoders` 判断；硬件编码器按 `gpuEncoders` 过滤
+- `onMounted` 并发调用 `get_encoder_metadata` 获取友好 label（单一事实来源）
+- 当前已保存 codec 即使检测漏了也保留显示（防御性 fallback）
+
+## 后续审计 (AUD-3)
 
 > 待定
 

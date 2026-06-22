@@ -22,10 +22,47 @@ function handleEsc(e: KeyboardEvent) {
 onMounted(() => window.addEventListener("keydown", handleEsc))
 onUnmounted(() => window.removeEventListener("keydown", handleEsc))
 
+interface EncoderMeta {
+  label: string
+  qualityMode: string
+  recommendedQuality: number
+  qualityRange: [number, number]
+}
+
 const settings = ref<AppSettings | null>(null)
 const ffmpegInfo = ref<{ ffmpeg_path: string; ffprobe_path: string; version: string }>({ ffmpeg_path: "", ffprobe_path: "", version: "" })
 const gpuEncoders = ref<string[]>([])
+const encoderMeta = ref<Record<string, EncoderMeta>>({})
 const saving = ref(false)
+
+// Display order for hardware encoders; CPU encoders are always available.
+const HW_ENCODER_ORDER = [
+  "h264_nvenc", "hevc_nvenc", "av1_nvenc",
+  "h264_qsv", "hevc_qsv", "av1_qsv",
+  "h264_amf", "hevc_amf",
+  "h264_videotoolbox", "hevc_videotoolbox",
+]
+
+const availableVideoCodecs = computed(() => {
+  const list: { value: string; label: string }[] = [
+    { value: "libx264", label: encoderMeta.value["libx264"]?.label ?? "libx264 (CPU)" },
+    { value: "libx265", label: encoderMeta.value["libx265"]?.label ?? "libx265 (CPU)" },
+  ]
+  if (gpuEncoders.value.includes("libsvtav1")) {
+    list.push({ value: "libsvtav1", label: encoderMeta.value["libsvtav1"]?.label ?? "libsvtav1 (CPU)" })
+  }
+  for (const enc of HW_ENCODER_ORDER) {
+    if (gpuEncoders.value.includes(enc)) {
+      list.push({ value: enc, label: encoderMeta.value[enc]?.label ?? enc })
+    }
+  }
+  // Preserve persisted selection even if detection missed it (e.g. custom ffmpeg build)
+  const selected = settings.value?.export_video_codec
+  if (selected && !list.some(c => c.value === selected)) {
+    list.unshift({ value: selected, label: encoderMeta.value[selected]?.label ?? selected })
+  }
+  return list
+})
 const statusMsg = ref("")
 const activeTab = ref<"general" | "ai-engine" | "llm" | "export">("general")
 
@@ -360,10 +397,11 @@ function refreshInstalledLists() {
 }
 
 onMounted(async () => {
-  const [settingsRes, ffmpegRes, encodersRes] = await Promise.all([
+  const [settingsRes, ffmpegRes, encodersRes, metaRes] = await Promise.all([
     call<AppSettings>("get_settings"),
     call<{ ffmpeg_path: string; ffprobe_path: string; version: string }>("get_ffmpeg_info"),
     call<{ encoders: string[] }>("detect_gpu_encoders"),
+    call<Record<string, EncoderMeta>>("get_encoder_metadata"),
   ])
   if (settingsRes.success && settingsRes.data) {
     settings.value = settingsRes.data
@@ -373,6 +411,9 @@ onMounted(async () => {
   }
   if (encodersRes.success && encodersRes.data) {
     gpuEncoders.value = encodersRes.data.encoders
+  }
+  if (metaRes.success && metaRes.data) {
+    encoderMeta.value = metaRes.data
   }
   // Load plugins and models
   pluginList.value = await pluginManager.listPlugins()
@@ -1702,16 +1743,9 @@ async function loadPluginDataDir() {
                 class="px-2 py-1 text-sm border border-gray-300 rounded"
                 @change="updateField('export_video_codec', ($event.target as HTMLSelectElement).value)"
               >
-                <option value="libx264">libx264 (CPU)</option>
-                <option value="libx265">libx265 (CPU)</option>
-                <option value="libsvtav1">libsvtav1 (CPU)</option>
-                <option value="h264_nvenc">h264_nvenc (NVIDIA)</option>
-                <option value="hevc_nvenc">hevc_nvenc (NVIDIA)</option>
-                <option value="av1_nvenc">av1_nvenc (NVIDIA)</option>
-                <option value="h264_qsv">h264_qsv (Intel)</option>
-                <option value="hevc_qsv">hevc_qsv (Intel)</option>
-                <option value="h264_amf">h264_amf (AMD)</option>
-                <option value="hevc_amf">hevc_amf (AMD)</option>
+                <option v-for="codec in availableVideoCodecs" :key="codec.value" :value="codec.value">
+                  {{ codec.label }}
+                </option>
               </select>
             </div>
             <div class="flex items-center justify-between">
