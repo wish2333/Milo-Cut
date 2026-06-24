@@ -156,7 +156,7 @@ class TestProjectService:
         results = [
             {
                 "id": "ar-1",
-                "type": "filler",
+                "type": "llm_smart_delete",
                 "segment_ids": ["seg-0001"],
                 "confidence": 0.9,
                 "detail": "test",
@@ -181,7 +181,7 @@ class TestProjectService:
         svc = self._create_service(tmp_dir, monkeypatch)
         result = svc.get_settings()
         assert result["success"] is True
-        assert "filler_words" in result["data"]
+        assert "silence_threshold_db" in result["data"]
 
     def test_get_recent_projects_empty(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)

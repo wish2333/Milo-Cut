@@ -76,7 +76,6 @@ class _BridgeHandler(BaseHTTPRequestHandler):
     # Injected by BridgeService before starting
     get_projects_fn: Callable[[], list[dict]] | None = None
     get_project_fn: Callable[[str], dict | None] | None = None
-    start_analysis_fn: Callable[[str, str | None], dict | None] | None = None
 
     def log_message(self, format, *args):
         """Suppress default stderr logging."""
@@ -115,9 +114,6 @@ class _BridgeHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         clean = self.path.split("?", 1)[0]
 
-        if clean == "/api/v1/analyze":
-            return self._handle_start_analysis()
-
         _json_response(self, 404, error="Not found")
 
     # --- Route handlers ---
@@ -152,34 +148,6 @@ class _BridgeHandler(BaseHTTPRequestHandler):
             logger.error("Bridge API error: {}", e)
             _json_response(self, 500, error=str(e))
 
-    def _handle_start_analysis(self) -> None:
-        if not self.start_analysis_fn:
-            return _json_response(self, 503, error="Service not available")
-
-        # Parse request body
-        body: dict[str, Any] = {}
-        content_length = int(self.headers.get("Content-Length", 0))
-        if content_length > 0:
-            try:
-                raw = self.rfile.read(content_length)
-                body = json.loads(raw)
-            except (json.JSONDecodeError, ValueError):
-                return _json_response(self, 400, error="Invalid JSON body")
-
-        project_name = body.get("project_name", "")
-        analysis_type = body.get("type")
-        if not project_name:
-            return _json_response(self, 400, error="Missing 'project_name'")
-
-        try:
-            result = self.start_analysis_fn(project_name, analysis_type)
-            if result is None:
-                return _json_response(self, 404, error=f"Project not found: {project_name}")
-            _json_response(self, 202, data=result)
-        except Exception as e:
-            logger.error("Bridge API error: {}", e)
-            _json_response(self, 500, error=str(e))
-
 
 # ------------------------------------------------------------------
 # BridgeService
@@ -194,7 +162,6 @@ class BridgeService:
         *,
         get_projects_fn: Callable[[], list[dict]] | None = None,
         get_project_fn: Callable[[str], dict | None] | None = None,
-        start_analysis_fn: Callable[[str, str | None], dict | None] = None,
     ) -> None:
         self._server: _QuietHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -202,7 +169,6 @@ class BridgeService:
         self._enabled: bool = False
         self._get_projects_fn = get_projects_fn
         self._get_project_fn = get_project_fn
-        self._start_analysis_fn = start_analysis_fn
 
     @property
     def port(self) -> int:
@@ -226,9 +192,6 @@ class BridgeService:
             if self._get_projects_fn
             else None,
             "get_project_fn": staticmethod(self._get_project_fn) if self._get_project_fn else None,
-            "start_analysis_fn": staticmethod(self._start_analysis_fn)
-            if self._start_analysis_fn
-            else None,
         }
         handler_cls = type("BoundBridgeHandler", (_BridgeHandler,), handler_attrs)
 

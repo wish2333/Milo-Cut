@@ -51,7 +51,6 @@ def _fix_macos_path() -> None:
 
 _fix_macos_path()
 
-from core.analysis_service import detect_errors, detect_fillers, run_full_analysis
 from core.bridge_service import BridgeService
 from core.config import load_settings
 from core.events import EDIT_SUMMARY_UPDATED, ENCODER_FALLBACK, PROJECT_DIRTY, PROJECT_SAVED
@@ -112,7 +111,6 @@ class MiloCutApi(Bridge):
         self._bridge_service = BridgeService(
             get_projects_fn=self._bridge_get_projects,
             get_project_fn=self._bridge_get_project,
-            start_analysis_fn=self._bridge_start_analysis,
         )
         # v2.1.0 Phase 3: workflow engine
         from core.workflow_engine import WorkflowEngine
@@ -133,18 +131,11 @@ class MiloCutApi(Bridge):
 
     def _register_task_handlers(self) -> None:
         """Register handlers for each task type."""
-        self._task_manager.register_handler(
-            TaskType.SILENCE_DETECTION, self._handle_silence_detection
-        )
+        self._task_manager.register_handler(TaskType.SILENCE_DETECTION, self._handle_silence_detection)
         self._task_manager.register_handler(TaskType.EXPORT_VIDEO, self._handle_export_video)
         self._task_manager.register_handler(TaskType.EXPORT_SUBTITLE, self._handle_export_subtitle)
         self._task_manager.register_handler(TaskType.EXPORT_AUDIO, self._handle_export_audio)
         self._task_manager.register_handler(TaskType.EXPORT_VTT, self._handle_export_vtt)
-        self._task_manager.register_handler(
-            TaskType.FILLER_DETECTION, self._handle_filler_detection
-        )
-        self._task_manager.register_handler(TaskType.ERROR_DETECTION, self._handle_error_detection)
-        self._task_manager.register_handler(TaskType.FULL_ANALYSIS, self._handle_full_analysis)
         self._task_manager.register_handler(
             TaskType.WAVEFORM_GENERATION, self._handle_waveform_generation
         )
@@ -375,47 +366,6 @@ class MiloCutApi(Bridge):
         if timeline is None:
             raise ValueError(f"Timeline {timeline_id} not found")
         return timeline
-
-    def _handle_filler_detection(self, task, cancel_event, progress_cb):
-        """Run filler word detection and store results."""
-        settings = load_settings()
-        timeline = self._get_target_timeline(task)
-        segments = list(timeline.transcript.segments)
-        results = detect_fillers(segments, settings.get("filler_words", []))
-        results_dicts = [r.model_dump() for r in results]
-        store = self._mark_dirty(self._project.add_analysis_results(results_dicts, source="filler_detection"))
-        if not store["success"]:
-            raise RuntimeError(store.get("error", "Failed to store analysis results"))
-        return {"project": store["data"], "results": results_dicts}
-
-    def _handle_error_detection(self, task, cancel_event, progress_cb):
-        """Run error trigger detection and store results."""
-        settings = load_settings()
-        timeline = self._get_target_timeline(task)
-        segments = list(timeline.transcript.segments)
-        results = detect_errors(segments, settings.get("error_trigger_words", []))
-        results_dicts = [r.model_dump() for r in results]
-        store = self._mark_dirty(self._project.add_analysis_results(results_dicts, source="error_detection"))
-        if not store["success"]:
-            raise RuntimeError(store.get("error", "Failed to store analysis results"))
-        return {"project": store["data"], "results": results_dicts}
-
-    def _handle_full_analysis(self, task, cancel_event, progress_cb):
-        """Run full analysis (filler + error) and store results."""
-        settings = load_settings()
-        timeline = self._get_target_timeline(task)
-        segments = list(timeline.transcript.segments)
-        results = run_full_analysis(segments, settings)
-        results_dicts = [r.model_dump() for r in results]
-
-        # v2.1.0 Phase 3: workflow accumulation mode -- skip project write
-        if task.payload.get("_workflow_accumulate"):
-            return {"results": results_dicts}
-
-        store = self._mark_dirty(self._project.add_analysis_results(results_dicts, source="full_analysis"))
-        if not store["success"]:
-            raise RuntimeError(store.get("error", "Failed to store analysis results"))
-        return {"project": store["data"], "results": results_dicts}
 
     def _handle_waveform_generation(self, task, cancel_event, progress_cb):
         """Generate waveform peak data for the project media."""
@@ -1960,13 +1910,6 @@ class MiloCutApi(Bridge):
             if p.get("name") == name:
                 return self._project.open_project(p["path"])
         return None
-
-    def _bridge_start_analysis(self, project_name: str, analysis_type: str | None) -> dict | None:
-        """Callback for BridgeService: trigger analysis."""
-        result = self._bridge_get_project(project_name)
-        if result is None:
-            return None
-        return self.create_task("full_analysis", {})
 
     @expose
     def get_bridge_status(self) -> dict:

@@ -8,9 +8,6 @@ import type { TaskType } from "@/types/task"
 
 const ANALYSIS_TASKS: TaskType[] = [
   "silence_detection",
-  "filler_detection",
-  "error_detection",
-  "full_analysis",
   "transcription",
 ]
 
@@ -44,24 +41,6 @@ export function useAnalysis(
 
   async function runSilenceDetection(): Promise<boolean> {
     const task = await createTask("silence_detection")
-    if (!task) return false
-    return await startTask(task.id)
-  }
-
-  async function runFillerDetection(): Promise<boolean> {
-    const task = await createTask("filler_detection")
-    if (!task) return false
-    return await startTask(task.id)
-  }
-
-  async function runErrorDetection(): Promise<boolean> {
-    const task = await createTask("error_detection")
-    if (!task) return false
-    return await startTask(task.id)
-  }
-
-  async function runFullAnalysis(): Promise<boolean> {
-    const task = await createTask("full_analysis")
     if (!task) return false
     return await startTask(task.id)
   }
@@ -148,9 +127,6 @@ export function useAnalysis(
     detectionProgress,
     activeTask,
     runSilenceDetection,
-    runFillerDetection,
-    runErrorDetection,
-    runFullAnalysis,
     runTranscription,
     confirmEdit,
     rejectEdit,

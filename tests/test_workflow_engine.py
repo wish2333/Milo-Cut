@@ -112,7 +112,7 @@ class TestWorkflowCRUD:
 
     def test_save_and_get(self, engine):
         steps = [
-            {"type": "full_analysis", "preset_id": None},
+            {"type": "llm_smart_delete", "preset_id": None},
             {"type": "llm_smart_delete", "preset_id": None},
         ]
         result = engine.save_workflow("深度清理", steps)
@@ -128,7 +128,7 @@ class TestWorkflowCRUD:
         assert all_wf["data"][0]["name"] == "深度清理"
 
     def test_save_empty_name_fails(self, engine):
-        result = engine.save_workflow("", [{"type": "full_analysis"}])
+        result = engine.save_workflow("", [{"type": "llm_smart_delete"}])
         assert not result["success"]
 
     def test_save_empty_steps_fails(self, engine):
@@ -147,19 +147,19 @@ class TestWorkflowCRUD:
 
     def test_update_existing(self, engine):
         # Create
-        result = engine.save_workflow("v1", [{"type": "full_analysis"}])
+        result = engine.save_workflow("v1", [{"type": "llm_smart_delete"}])
         wf_id = result["data"]["id"]
 
         # Update
         result2 = engine.save_workflow(
-            "v2", [{"type": "full_analysis"}, {"type": "llm_highlight"}], workflow_id=wf_id,
+            "v2", [{"type": "llm_smart_delete"}, {"type": "llm_highlight"}], workflow_id=wf_id,
         )
         assert result2["success"]
         assert result2["data"]["name"] == "v2"
         assert len(result2["data"]["steps"]) == 2
 
     def test_delete(self, engine):
-        result = engine.save_workflow("test", [{"type": "full_analysis"}])
+        result = engine.save_workflow("test", [{"type": "llm_smart_delete"}])
         wf_id = result["data"]["id"]
 
         del_result = engine.delete_workflow(wf_id)
@@ -173,14 +173,14 @@ class TestWorkflowCRUD:
         assert not result["success"]
 
     def test_valid_step_types_complete(self):
-        """All 4 valid step types are present (D-29)."""
+        """All 3 valid step types are present."""
         assert VALID_STEP_TYPES == {
-            "full_analysis", "llm_smart_delete",
+            "llm_smart_delete",
             "llm_subtitle_correction", "llm_highlight",
         }
 
     def test_llm_step_types(self):
-        """LLM steps excluded search/full_analysis (D-26, D-31)."""
+        """LLM steps excluded search/llm_smart_delete (D-26, D-31)."""
         assert LLM_STEP_TYPES == {
             "llm_smart_delete", "llm_subtitle_correction", "llm_highlight",
         }
@@ -463,7 +463,7 @@ class TestStatus:
             "current_step_index": 1,
             "total_steps": 3,
             "step_results": [
-                {"index": 0, "type": "full_analysis", "status": "completed", "edits_count": 5},
+                {"index": 0, "type": "llm_smart_delete", "status": "completed", "edits_count": 5},
                 {"index": 1, "type": "llm_smart_delete", "status": "running", "edits_count": 0},
                 {"index": 2, "type": "llm_highlight", "status": "pending", "edits_count": 0},
             ],

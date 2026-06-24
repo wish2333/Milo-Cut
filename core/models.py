@@ -32,9 +32,6 @@ class TaskType(StrEnum):
     EXPORT_AUDIO = "export_audio"
     EXPORT_VTT = "export_vtt"
     # P1
-    FILLER_DETECTION = "filler_detection"
-    ERROR_DETECTION = "error_detection"
-    FULL_ANALYSIS = "full_analysis"
     TRANSCRIPTION = "transcription"
     VAD_ANALYSIS = "vad_analysis"
     WAVEFORM_GENERATION = "waveform_generation"
@@ -150,8 +147,7 @@ class TranscriptData(BaseModel, frozen=True):
 
 class AnalysisResult(BaseModel, frozen=True):
     id: str
-    type: Literal["filler", "error", "duplicate", "punctuation",
-                  "llm_smart_delete", "llm_subtitle_correction", "llm_highlight"]
+    type: Literal["llm_smart_delete", "llm_subtitle_correction", "llm_highlight"]
     segment_ids: list[str] = Field(default_factory=list)
     confidence: float = 1.0
     detail: str = ""

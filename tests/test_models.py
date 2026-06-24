@@ -21,12 +21,6 @@ class TestTaskType:
         assert TaskType.EXPORT_VIDEO == "export_video"
         assert TaskType.EXPORT_SUBTITLE == "export_subtitle"
 
-    def test_phase1_types_exist(self):
-        assert TaskType.FILLER_DETECTION == "filler_detection"
-        assert TaskType.ERROR_DETECTION == "error_detection"
-        assert TaskType.FULL_ANALYSIS == "full_analysis"
-
-
 class TestSegment:
     def test_frozen(self, sample_segment):
         with pytest.raises(ValidationError):
@@ -61,18 +55,18 @@ class TestAnalysisResult:
     def test_create(self):
         ar = AnalysisResult(
             id="ar-1",
-            type="filler",
+            type="llm_smart_delete",
             segment_ids=["seg-0001"],
             confidence=0.9,
             detail="test",
         )
-        assert ar.type == "filler"
+        assert ar.type == "llm_smart_delete"
         assert ar.confidence == 0.9
 
     def test_frozen(self):
-        ar = AnalysisResult(id="ar-1", type="filler")
+        ar = AnalysisResult(id="ar-1", type="llm_smart_delete")
         with pytest.raises(ValidationError):
-            ar.type = "error"
+            ar.type = "llm_highlight"
 
 
 class TestAnalysisData:
@@ -82,7 +76,7 @@ class TestAnalysisData:
         assert ad.last_run is None
 
     def test_with_results(self):
-        ar = AnalysisResult(id="ar-1", type="filler")
+        ar = AnalysisResult(id="ar-1", type="llm_smart_delete")
         ad = AnalysisData(results=[ar])
         assert len(ad.results) == 1
 

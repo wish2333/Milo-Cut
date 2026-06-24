@@ -167,9 +167,9 @@ class TestMultiStepOrchestration:
     """Verify serial step execution, progress events, and snapshot updates."""
 
     def test_two_steps_complete_successfully(self, engine, project_deps):
-        """Two-step workflow: full_analysis + llm_smart_delete."""
+        """Two-step workflow: llm_smart_delete + llm_smart_delete."""
         wf_def = engine.save_workflow("two-step", [
-            {"type": "full_analysis", "preset_id": None},
+            {"type": "llm_smart_delete", "preset_id": None},
             {"type": "llm_smart_delete", "preset_id": None},
         ])
         assert wf_def["success"]
@@ -214,7 +214,7 @@ class TestMultiStepOrchestration:
     def test_step_failure_triggers_failed_event(self, engine, project_deps):
         """When a step fails, workflow:step_failed event is emitted."""
         wf_def = engine.save_workflow("fail-test", [
-            {"type": "full_analysis", "preset_id": None},
+            {"type": "llm_smart_delete", "preset_id": None},
         ])
         wf_id = wf_def["data"]["id"]
 
@@ -242,7 +242,7 @@ class TestMultiStepOrchestration:
     def test_step_failure_skip_continues(self, engine, project_deps):
         """Skip a failed step, subsequent steps still execute."""
         wf_def = engine.save_workflow("skip-test", [
-            {"type": "full_analysis", "preset_id": None},
+            {"type": "llm_smart_delete", "preset_id": None},
             {"type": "llm_smart_delete", "preset_id": None},
         ])
         wf_id = wf_def["data"]["id"]
@@ -289,7 +289,7 @@ class TestMultiStepOrchestration:
     def test_step_failure_retry(self, engine, project_deps):
         """Retry a failed step: first attempt fails, retry succeeds."""
         wf_def = engine.save_workflow("retry-test", [
-            {"type": "full_analysis", "preset_id": None},
+            {"type": "llm_smart_delete", "preset_id": None},
         ])
         wf_id = wf_def["data"]["id"]
 
@@ -326,7 +326,7 @@ class TestMultiStepOrchestration:
     def test_cancel_immediate_stops_execution(self, engine, project_deps):
         """Immediate cancel: current step cancelled, workflow stops."""
         wf_def = engine.save_workflow("cancel-test", [
-            {"type": "full_analysis", "preset_id": None},
+            {"type": "llm_smart_delete", "preset_id": None},
             {"type": "llm_smart_delete", "preset_id": None},
         ])
         wf_id = wf_def["data"]["id"]
@@ -382,7 +382,7 @@ class TestSnapshotPersistence:
     def test_snapshot_file_created_on_start(self, engine, project_deps):
         """Starting a workflow creates a _workflow_*.json snapshot file."""
         wf_def = engine.save_workflow("snapshot-test", [
-            {"type": "full_analysis", "preset_id": None},
+            {"type": "llm_smart_delete", "preset_id": None},
         ])
         wf_id = wf_def["data"]["id"]
 
@@ -435,7 +435,7 @@ class TestSnapshotPersistence:
         expected_hash = _segments_hash(segments)
 
         wf_def = engine.save_workflow("hash-test", [
-            {"type": "full_analysis", "preset_id": None},
+            {"type": "llm_smart_delete", "preset_id": None},
         ])
         wf_id = wf_def["data"]["id"]
 
@@ -630,7 +630,7 @@ class TestPresetDispatch:
     def test_no_preset_id_when_none(self, engine, project_deps):
         """Steps without preset_id do not include _workflow_preset_id in payload."""
         wf_def = engine.save_workflow("no-preset", [
-            {"type": "full_analysis", "preset_id": None},
+            {"type": "llm_smart_delete", "preset_id": None},
         ])
         wf_id = wf_def["data"]["id"]
 
@@ -680,7 +680,7 @@ class TestStepTypeMapping:
     def test_single_workflow_constraint(self, engine, project_deps):
         """Cannot start a second workflow while one is active (D-27)."""
         wf_def = engine.save_workflow("exclusive-test", [
-            {"type": "full_analysis", "preset_id": None},
+            {"type": "llm_smart_delete", "preset_id": None},
         ])
         wf_id = wf_def["data"]["id"]
 

@@ -50,9 +50,8 @@ from core.paths import get_projects_dir
 # Constants
 # ---------------------------------------------------------------------------
 
-#: Valid step types for workflow definitions (D-29: includes rule analysis).
+#: Valid step types for workflow definitions (D-29).
 VALID_STEP_TYPES: set[str] = {
-    "full_analysis",
     "llm_smart_delete",
     "llm_subtitle_correction",
     "llm_highlight",
@@ -60,7 +59,6 @@ VALID_STEP_TYPES: set[str] = {
 
 #: Mapping from step type to TaskType for dispatch.
 STEP_TO_TASK_TYPE: dict[str, TaskType] = {
-    "full_analysis": TaskType.FULL_ANALYSIS,
     "llm_smart_delete": TaskType.LLM_SMART_DELETE,
     "llm_subtitle_correction": TaskType.LLM_SUBTITLE_CORRECTION,
     "llm_highlight": TaskType.LLM_HIGHLIGHT,
@@ -75,7 +73,6 @@ LLM_STEP_TYPES: set[str] = {
 
 #: Human-readable names for step types (used in events and UI).
 STEP_DISPLAY_NAMES: dict[str, str] = {
-    "full_analysis": "规则分析",
     "llm_smart_delete": "P0 智能删除",
     "llm_subtitle_correction": "P1 字幕修正",
     "llm_highlight": "P2 精华提取",
@@ -741,7 +738,6 @@ class WorkflowEngine:
         """Extract EditDecision dicts from a step's task result.
 
         Different step types return results in different shapes:
-        - full_analysis: ``{"results": [AnalysisResult dicts]}`` -- build edits from segment_ids
         - smart_delete / highlight: ``{"edits": [edit dicts], ...}`` -- use directly
         - subtitle_correction: ``{"corrections": [...]}`` -- no segment-level edits (text fix)
         """
@@ -763,31 +759,6 @@ class WorkflowEngine:
                 edit["step_type"] = step_type
                 edit["step_index"] = step_index
                 edits.append(edit)
-
-        elif step_type == "full_analysis":
-            # Build edits from AnalysisResult segment_ids
-            seg_map = {s["id"]: s for s in self._active.get("segments_snapshot", [])} \
-                if self._active else {}
-            for ar in result.get("results", []):
-                seg_ids = ar.get("segment_ids", [])
-                matching = [seg_map[sid] for sid in seg_ids if sid in seg_map]
-                if not matching:
-                    continue
-                edits.append({
-                    "id": f"wf-edit-{step_index}-{ar.get('id', uuid.uuid4().hex[:8])}",
-                    "start": min(s["start"] for s in matching),
-                    "end": max(s["end"] for s in matching),
-                    "action": "delete",
-                    "source": "full_analysis",
-                    "analysis_id": ar.get("id"),
-                    "status": "pending",
-                    "priority": 100,
-                    "target_type": "segment",
-                    "target_id": seg_ids[0] if seg_ids else None,
-                    "reason": ar.get("detail", ""),
-                    "step_type": step_type,
-                    "step_index": step_index,
-                })
 
         # subtitle_correction produces no segment-level EditDecisions
         return edits

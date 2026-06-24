@@ -24,10 +24,10 @@ const emit = defineEmits<{
   "review-corrections": []
 }>()
 
-const expandedGroups = ref<Set<string>>(new Set(["filler", "error", "llm_smart", "partial_delete"]))
+const expandedGroups = ref<Set<string>>(new Set(["llm_smart", "partial_delete"]))
 
 type ItemStatus = "pending" | "confirmed" | "rejected"
-type ItemKind = "filler" | "error" | "silence" | "llm_smart" | "partial_delete"
+type ItemKind = "silence" | "llm_smart" | "partial_delete"
 
 interface SuggestionItem {
   id: string
@@ -52,15 +52,6 @@ function statusOf(edit: EditDecision | undefined): ItemStatus {
   return edit?.status ?? "pending"
 }
 
-function findSegRange(segmentIds: string[]): { start: number; end: number } {
-  const matched = props.segments.filter(s => segmentIds.includes(s.id))
-  if (matched.length === 0) return { start: 0, end: 0 }
-  return {
-    start: Math.min(...matched.map(s => s.start)),
-    end: Math.max(...matched.map(s => s.end)),
-  }
-}
-
 const groups = computed<GroupedResult[]>(() => {
   const result: GroupedResult[] = []
   const push = (type: ItemKind, label: string, items: SuggestionItem[]) => {
@@ -72,24 +63,6 @@ const groups = computed<GroupedResult[]>(() => {
       rejectedCount: items.filter(i => i.status === "rejected").length,
     })
   }
-
-  const fillerItems: SuggestionItem[] = props.analysisResults
-    .filter(r => r.type === "filler")
-    .map(r => {
-      const range = findSegRange(r.segment_ids)
-      const edit = props.edits.find(e => e.analysis_id === r.id)
-      return { id: r.id, editId: edit?.id, start: range.start, end: range.end, label: r.detail, type: "filler", status: statusOf(edit) }
-    })
-  push("filler", "口头禅", fillerItems)
-
-  const errorItems: SuggestionItem[] = props.analysisResults
-    .filter(r => r.type === "error")
-    .map(r => {
-      const range = findSegRange(r.segment_ids)
-      const edit = props.edits.find(e => e.analysis_id === r.id)
-      return { id: r.id, editId: edit?.id, start: range.start, end: range.end, label: r.detail, type: "error", status: statusOf(edit) }
-    })
-  push("error", "口误触发", errorItems)
 
   const silenceItems: SuggestionItem[] = props.edits
     .filter(e => e.source === "silence_detection")

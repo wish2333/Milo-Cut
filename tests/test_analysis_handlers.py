@@ -1,13 +1,7 @@
-"""v2.1.1 M1-1: Analysis handlers must read segments from active_timeline.
+"""v2.1.1 M1-1: _get_target_timeline helper regression tests.
 
-Regression tests for the ``AttributeError: 'Project' object has no attribute
-'transcript'`` crash. After the v2.0.0 multi-timeline refactor, Project no
-longer holds ``transcript`` directly -- it lives under
-``project.timelines[].transcript``. The three rule-analysis handlers
-(filler / error / full) were missed and read ``project.transcript.segments``.
-
-These tests exercise ``MiloCutApi._get_target_timeline`` (the shared helper
-all handlers now use) to confirm the correct timeline is resolved.
+Tests for ``MiloCutApi._get_target_timeline`` (the shared helper
+that resolves the correct timeline from a task's payload).
 """
 
 from __future__ import annotations
@@ -57,7 +51,7 @@ def _make_task(timeline_id: str | None) -> MiloTask:
         payload["timeline_id"] = timeline_id
     return MiloTask(
         id="task-1",
-        type=TaskType.FILLER_DETECTION,
+        type=TaskType.SILENCE_DETECTION,
         payload=payload,
     )
 
@@ -103,50 +97,3 @@ class TestGetTargetTimeline:
         task = _make_task(timeline_id=None)
         with pytest.raises(ValueError, match="No project open"):
             api._get_target_timeline(task)
-
-
-class TestHandlersReadActiveTimeline:
-    """Confirm the three rule handlers no longer touch project.transcript."""
-
-    def test_filler_detection_reads_segments(self, api, monkeypatch):
-        # Filler detection used to crash with AttributeError on project.transcript.
-        # The regression we guard against: the handler must run to completion
-        # (no AttributeError) and call add_analysis_results with results derived
-        # from the active timeline's segments.
-        import core.config as config_mod
-
-        monkeypatch.setattr(
-            config_mod, "load_settings", lambda: {"filler_words": ["那个"]}
-        )
-        captured: list[list] = []
-
-        def _add(results_dicts, source=""):
-            captured.append(results_dicts)
-            return {"success": True, "data": _make_project_with_timeline().model_dump()}
-
-        api._project.add_analysis_results = _add  # type: ignore[attr-defined]
-        task = _make_task(timeline_id=None)
-        # Must not raise AttributeError: 'Project' object has no attribute 'transcript'
-        result = api._handle_filler_detection(task, None, lambda *a, **k: None)
-        assert "results" in result
-        # store was invoked exactly once with a list of result dicts
-        assert len(captured) == 1
-
-    def test_full_analysis_reads_active_timeline(self, api, monkeypatch):
-        import core.config as config_mod
-
-        monkeypatch.setattr(
-            config_mod,
-            "load_settings",
-            lambda: {"filler_words": ["那个"], "error_trigger_words": []},
-        )
-
-        def _add(results_dicts, source=""):
-            return {"success": True, "data": _make_project_with_timeline().model_dump()}
-
-        api._project.add_analysis_results = _add  # type: ignore[attr-defined]
-        task = _make_task(timeline_id=None)
-        # Must not raise AttributeError; full analysis without workflow accumulate
-        # returns {"project", "results"}.
-        result = api._handle_full_analysis(task, None, lambda *a, **k: None)
-        assert "results" in result

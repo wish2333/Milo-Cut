@@ -17,7 +17,7 @@ from core.models import MiloTask, TaskType
 from core.task_manager import TaskManager
 
 
-def _make_task(task_type: TaskType = TaskType.FILLER_DETECTION) -> tuple[str, MiloTask]:
+def _make_task(task_type: TaskType = TaskType.SILENCE_DETECTION) -> tuple[str, MiloTask]:
     return (
         "task-cancel-1",
         MiloTask(id="task-cancel-1", type=task_type, payload={}),
@@ -49,7 +49,7 @@ class TestCancelDistinction:
         def handler(task, cancel_event, progress_cb):
             raise RuntimeError("Cancelled")
 
-        tm.register_handler(TaskType.FILLER_DETECTION, handler)
+        tm.register_handler(TaskType.SILENCE_DETECTION, handler)
         task_id, task = _make_task()
         _seed_task(tm, task_id, task)
         tm._execute_task(task_id, task)
@@ -66,7 +66,7 @@ class TestCancelDistinction:
         def handler(task, cancel_event, progress_cb):
             raise ValueError("boom")
 
-        tm.register_handler(TaskType.FILLER_DETECTION, handler)
+        tm.register_handler(TaskType.SILENCE_DETECTION, handler)
         task_id, task = _make_task()
         _seed_task(tm, task_id, task)
         tm._execute_task(task_id, task)
@@ -93,7 +93,7 @@ class TestCancelDistinction:
             cancel_event.set()
             raise OSError("connection aborted during teardown")
 
-        tm.register_handler(TaskType.FILLER_DETECTION, handler)
+        tm.register_handler(TaskType.SILENCE_DETECTION, handler)
         task_id, task = _make_task()
         _seed_task(tm, task_id, task)
         tm._execute_task(task_id, task)
@@ -109,7 +109,7 @@ class TestCancelDistinction:
         def handler(task, cancel_event, progress_cb):
             return {"ok": True}
 
-        tm.register_handler(TaskType.FILLER_DETECTION, handler)
+        tm.register_handler(TaskType.SILENCE_DETECTION, handler)
         task_id, task = _make_task()
         _seed_task(tm, task_id, task)
         tm._execute_task(task_id, task)
@@ -125,7 +125,7 @@ class TestCancelDistinction:
         def handler(task, cancel_event, progress_cb):
             raise RuntimeError("Cancelled")
 
-        tm.register_handler(TaskType.FILLER_DETECTION, handler)
+        tm.register_handler(TaskType.SILENCE_DETECTION, handler)
         task_id, task = _make_task()
         _seed_task(tm, task_id, task)
         tm._execute_task(task_id, task)
@@ -133,4 +133,4 @@ class TestCancelDistinction:
         cancelled_events = [d for name, d in emitted if name == TASK_CANCELLED]
         assert len(cancelled_events) == 1
         assert cancelled_events[0]["task_id"] == task_id
-        assert cancelled_events[0]["task_type"] == TaskType.FILLER_DETECTION.value
+        assert cancelled_events[0]["task_type"] == TaskType.SILENCE_DETECTION.value

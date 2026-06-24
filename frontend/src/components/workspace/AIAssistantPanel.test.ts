@@ -154,7 +154,7 @@ describe("AIAssistantPanel -- workflow mode", () => {
     _currentStepIndex.value = 1
     _workflowName.value = "Test Workflow"
     _stepResults.value = [
-      { index: 0, type: "full_analysis", status: "completed", edits_count: 5 },
+      { index: 0, type: "llm_smart_delete", status: "completed", edits_count: 5 },
       { index: 1, type: "llm_smart_delete", status: "running", edits_count: 0 },
       { index: 2, type: "llm_highlight", status: "pending", edits_count: 0 },
     ]
@@ -176,7 +176,7 @@ describe("AIAssistantPanel -- workflow mode", () => {
     _totalSteps.value = 2
     _currentStepIndex.value = 0
     _stepResults.value = [
-      { index: 0, type: "full_analysis", status: "queued", edits_count: 0 },
+      { index: 0, type: "llm_smart_delete", status: "queued", edits_count: 0 },
       { index: 1, type: "llm_smart_delete", status: "pending", edits_count: 0 },
     ]
 

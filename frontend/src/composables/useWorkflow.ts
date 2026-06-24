@@ -25,7 +25,7 @@ import {
 // ---------------------------------------------------------------------------
 
 export interface WorkflowStep {
-  type: "full_analysis" | "llm_smart_delete" | "llm_subtitle_correction" | "llm_highlight"
+  type: "llm_smart_delete" | "llm_subtitle_correction" | "llm_highlight"
   preset_id: string | null
 }
 

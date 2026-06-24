@@ -56,7 +56,6 @@ const STEP_TO_PRESET_KEY: Record<string, string> = {
   // Single-function mode keys
   smart_delete: "smart_delete",
   subtitle_correction: "subtitle_correction_a",
-  // full_analysis has no presets
 }
 
 const panelMode = ref<PanelMode>("single")
@@ -67,20 +66,17 @@ const currentPresetId = ref("")           // shared preset for single-function o
 // Workflow config state
 const newWorkflowName = ref("")
 const newWorkflowSteps = ref<WorkflowStep[]>([
-  { type: "full_analysis", preset_id: null },
   { type: "llm_smart_delete", preset_id: null },
 ])
 const selectedWorkflowId = ref("")
 
 const stepLabels: Record<string, string> = {
-  full_analysis: "规则分析",
   llm_smart_delete: "P0 智能删除",
   llm_subtitle_correction: "P1 字幕修正",
   llm_highlight: "P2 精华提取",
 }
 
 const availableSteps = [
-  { type: "full_analysis" as const, label: "规则分析" },
   { type: "llm_smart_delete" as const, label: "P0 智能删除" },
   { type: "llm_subtitle_correction" as const, label: "P1 字幕修正" },
   { type: "llm_highlight" as const, label: "P2 精华提取" },

@@ -88,10 +88,6 @@ export interface Timeline {
 export interface AnalysisResult {
   id: string
   type:
-    | "filler"
-    | "error"
-    | "duplicate"
-    | "punctuation"
     | "llm_smart_delete"
     | "llm_subtitle_correction"
     | "llm_highlight"

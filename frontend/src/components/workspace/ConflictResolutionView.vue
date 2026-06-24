@@ -31,7 +31,6 @@ function formatTime(seconds: number): string {
 
 function stepLabel(stepType: string): string {
   const labels: Record<string, string> = {
-    full_analysis: "规则分析",
     llm_smart_delete: "P0 智能删除",
     llm_subtitle_correction: "P1 字幕修正",
     llm_highlight: "P2 精华提取",

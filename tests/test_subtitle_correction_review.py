@@ -89,7 +89,7 @@ class TestStoreCorrections:
         segs = make_segments(2)
         svc = _service_with_project(monkeypatch, tmp_dir, segs)
         # Pre-existing filler analysis result
-        filler = AnalysisResult(id="f1", type="filler", segment_ids=[segs[0].id])
+        filler = AnalysisResult(id="f1", type="llm_smart_delete", segment_ids=[segs[0].id])
         tl = svc.active_timeline
         svc._update_active_timeline(
             analysis=tl.analysis.model_copy(update={"results": [filler]})
@@ -98,7 +98,7 @@ class TestStoreCorrections:
         svc.store_subtitle_corrections(_corrections(segs), "default")
         tl_after = svc.active_timeline
         types = [r.type for r in tl_after.analysis.results]
-        assert "filler" in types
+        assert "llm_smart_delete" in types
         assert types.count("llm_subtitle_correction") == 2
 
     def test_store_unknown_timeline_fails(self, tmp_dir, monkeypatch):
@@ -269,7 +269,7 @@ class TestClearCorrections:
         segs = make_segments(2)
         svc = _service_with_project(monkeypatch, tmp_dir, segs)
         from core.models import AnalysisResult
-        filler = AnalysisResult(id="f1", type="filler", segment_ids=[segs[0].id])
+        filler = AnalysisResult(id="f1", type="llm_smart_delete", segment_ids=[segs[0].id])
         tl = svc.active_timeline
         svc._update_active_timeline(
             analysis=tl.analysis.model_copy(update={"results": [filler]})
@@ -279,5 +279,5 @@ class TestClearCorrections:
         svc.clear_subtitle_corrections("default")
         tl_after = svc.active_timeline
         types = [r.type for r in tl_after.analysis.results]
-        assert "filler" in types
+        assert "llm_smart_delete" in types
         assert "llm_subtitle_correction" not in types

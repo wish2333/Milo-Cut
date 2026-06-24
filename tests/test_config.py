@@ -12,10 +12,10 @@ class TestConfig:
         settings = load_settings()
         assert settings["theme"] == "light"
         assert settings["language"] == "zh-CN"
-        assert isinstance(settings["filler_words"], list)
-        assert len(settings["filler_words"]) == 10
-        assert isinstance(settings["error_trigger_words"], list)
-        assert len(settings["error_trigger_words"]) == 9
+        assert isinstance(settings["silence_threshold_db"], int)
+        assert settings["silence_threshold_db"] == -30
+        assert isinstance(settings["export_video_codec"], str)
+        assert settings["export_video_codec"] == "libx264"
 
     def test_save_and_load(self, tmp_dir, monkeypatch):
         monkeypatch.setattr("core.paths.get_settings_path", lambda: tmp_dir / "settings.json")

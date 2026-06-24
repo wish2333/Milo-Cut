@@ -13,9 +13,6 @@ TASK_CANCELLED = "task:cancelled"
 PROJECT_SAVED = "project:saved"
 PROJECT_DIRTY = "project:dirty"
 
-# Analysis results
-ANALYSIS_UPDATED = "analysis:updated"
-
 # Edit summary
 EDIT_SUMMARY_UPDATED = "edit:summary_updated"
 
