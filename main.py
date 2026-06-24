@@ -692,13 +692,16 @@ class MiloCutApi(Bridge):
             raise ValueError("No project open")
 
         from core.llm_service import analyze_smart_delete
+        from core.timeline_utils import collect_confirmed_deleted_seg_ids
 
         timeline = self._get_target_timeline(task)
 
+        # Audit #8: filter out confirmed-deleted segments before LLM analysis
+        deleted_seg_ids = collect_confirmed_deleted_seg_ids(timeline)
         segments = [
             s.model_dump()
             for s in timeline.transcript.segments
-            if s.type == SegmentType.SUBTITLE
+            if s.type == SegmentType.SUBTITLE and s.id not in deleted_seg_ids
         ]
         if not segments:
             raise ValueError("No subtitle segments to analyze")
@@ -743,22 +746,26 @@ class MiloCutApi(Bridge):
         # Convert results to EditDecisions with source="llm_smart"
         from datetime import datetime as _dt
 
+        _ts = int(_dt.now().timestamp() * 1000)
+        # Build category lookup from all_results for partial_delete detection
+        category_by_seg = {r["segment_id"]: r.get("category", "") for r in all_results}
         edits = []
         seg_map = {s.id: s for s in timeline.transcript.segments}
         for i, r in enumerate(all_results):
             seg = seg_map.get(r["segment_id"])
             if seg is None:
                 continue
+            is_partial = category_by_seg.get(seg.id) == "partial_delete"
             edits.append(
                 {
-                    "id": f"llm_smart_{int(_dt.now().timestamp() * 1000)}_{i}",
+                    "id": f"llm_smart_{_ts}_{i}",
                     "start": seg.start,
                     "end": seg.end,
-                    "action": "delete",
+                    "action": "keep" if is_partial else "delete",
                     "source": "llm_smart",
                     "target_type": "segment",
                     "target_id": seg.id,
-                    "priority": 50,
+                    "priority": 10 if is_partial else 50,
                 }
             )
 
@@ -766,13 +773,14 @@ class MiloCutApi(Bridge):
         if edits:
             analysis_results = [
                 {
-                    "id": f"llm_smart_{int(_dt.now().timestamp() * 1000)}",
+                    "id": f"llm_smart_{_ts}_{i}",
                     "type": "llm_smart_delete",
                     "segment_ids": [r["segment_id"]],
                     "confidence": r.get("confidence", 0.8),
                     "detail": r.get("reason", ""),
+                    "category": r.get("category", ""),
                 }
-                for r in all_results
+                for i, r in enumerate(all_results)
                 if r["segment_id"] in seg_map
             ]
             # v2.1.0 Phase 3: workflow accumulation mode -- skip project write
@@ -784,7 +792,12 @@ class MiloCutApi(Bridge):
         self._emit("llm:smart_delete_completed", {"results": all_results, "edits": edits})
         self._emit("llm:token_usage", token_usage)
 
-        return {"results": all_results, "edits": edits, "token_usage": token_usage}
+        return {
+            "results": all_results,
+            "edits": edits,
+            "token_usage": token_usage,
+            "project": self._project.current.model_dump() if self._project.current else None,
+        }
 
     def _handle_subtitle_correction(self, task, cancel_event, progress_cb):
         """Run LLM subtitle correction on the active timeline."""
@@ -792,6 +805,7 @@ class MiloCutApi(Bridge):
             raise ValueError("No project open")
 
         from core.llm_service import analyze_subtitle_correction
+        from core.timeline_utils import collect_confirmed_deleted_seg_ids
 
         timeline = self._get_target_timeline(task)
 
@@ -799,10 +813,12 @@ class MiloCutApi(Bridge):
         # v2.1.1 M2: context_window defaults from settings; payload may override.
         context_window = task.payload.get("context_window", 3)
 
+        # Audit #8: filter out confirmed-deleted segments before LLM correction
+        deleted_seg_ids = collect_confirmed_deleted_seg_ids(timeline)
         segments = [
             s.model_dump()
             for s in timeline.transcript.segments
-            if s.type == SegmentType.SUBTITLE
+            if s.type == SegmentType.SUBTITLE and s.id not in deleted_seg_ids
         ]
         if not segments:
             raise ValueError("No subtitle segments to correct")
@@ -865,6 +881,7 @@ class MiloCutApi(Bridge):
             "corrections": corrections,
             "stored_count": store_result["data"].get("stored_count", 0),
             "token_usage": token_usage,
+            "project": self._project.current.model_dump() if self._project.current else None,
         }
 
     def _handle_highlight(self, task, cancel_event, progress_cb):
@@ -975,6 +992,7 @@ class MiloCutApi(Bridge):
             "edits": edits,
             "total_duration": total_duration,
             "token_usage": token_usage,
+            "project": self._project.current.model_dump() if self._project.current else None,
         }
 
     def _handle_semantic_search(self, task, cancel_event, progress_cb):
@@ -1422,6 +1440,14 @@ class MiloCutApi(Bridge):
     @expose
     def update_edit_decision(self, edit_id: str, status: str) -> dict:
         return self._project.update_edit_decision(edit_id, status)
+
+    @expose
+    def update_edit_decisions_batch(self, edit_ids: list, status: str) -> dict:
+        return self._project.update_edit_decisions_batch(edit_ids, status)
+
+    @expose
+    def delete_edit_decisions_batch(self, edit_ids: list[str]) -> dict:
+        return self._mark_dirty(self._project.delete_edit_decisions_batch(edit_ids))
 
     @expose
     def add_analysis_results(self, results: list, source: str = "manual") -> dict:
