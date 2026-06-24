@@ -243,3 +243,38 @@ class TestChunkTranscriptByCount:
         batch_segs[0]["text"] = "MUTATED"
         # Original should NOT be mutated
         assert segs[0]["text"] == "Segment 0"
+
+
+# ------------------------------------------------------------------
+# analyze_smart_delete with batch+target mode
+# ------------------------------------------------------------------
+
+
+class TestAnalyzeSmartDeleteBatchTarget:
+    """Tests for analyze_smart_delete with batch+target mode."""
+
+    def test_uses_chunk_transcript_by_count(self, monkeypatch):
+        """analyze_smart_delete should call chunk_transcript_by_count, not chunk_transcript."""
+        from unittest.mock import MagicMock, call
+        segments = [{"id": f"s{i}", "text": f"seg {i}", "start": float(i), "end": float(i+1)} for i in range(25)]
+        mock_llm = MagicMock(return_value={"success": True, "data": {"content": "[]", "usage": {"total_tokens": 10}}})
+        monkeypatch.setattr("core.llm_service.call_llm", mock_llm)
+        mock_config = MagicMock()
+        mock_config.is_configured.return_value = True
+        monkeypatch.setattr("core.llm_service.get_llm_config", lambda: mock_config)
+        monkeypatch.setattr("core.llm_service.load_settings", lambda: {"llm_smart_batch_size": 20, "llm_smart_overlap_size": 4, "llm_concurrency": 1})
+        # Track which chunk function gets called
+        mock_chunk_by_count = MagicMock(
+            side_effect=lambda segs, **kw: [
+                (segs[:20], {"s0", "s1"},),
+                (segs[20:], {"s20", "s21", "s22", "s23", "s24"},),
+            ]
+        )
+        monkeypatch.setattr("core.llm_service.chunk_transcript_by_count", mock_chunk_by_count)
+        from core.llm_service import analyze_smart_delete
+        result = analyze_smart_delete(segments)
+        assert result["success"] is True
+        mock_chunk_by_count.assert_called_once()
+        call_kwargs = mock_chunk_by_count.call_args
+        assert call_kwargs.kwargs.get("batch_size") == 20
+        assert call_kwargs.kwargs.get("overlap") == 4

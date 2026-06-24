@@ -548,13 +548,13 @@ def analyze_smart_delete(
             "data": {"results": [], "token_usage": {}, "skipped": len(segments)},
         }
 
-    # v2.1.1 M2: window/overlap/concurrency are configurable (settings.json).
+    # Batch+target mode: configurable batch_size and overlap (settings.json).
     settings = load_settings()
-    window = float(settings.get("llm_smart_window_duration", 60.0))
-    overlap = float(settings.get("llm_smart_overlap_duration", 10.0))
+    batch_size = max(1, int(settings.get("llm_smart_batch_size", 20)))
+    overlap_size = max(0, int(settings.get("llm_smart_overlap_size", 4)))
     concurrency = max(1, int(settings.get("llm_concurrency", 5)))
-    chunks = chunk_transcript(to_analyze, chunk_duration=window, overlap_duration=overlap)
-    total_chunks = len(chunks)
+    batches = chunk_transcript_by_count(to_analyze, batch_size=batch_size, overlap=overlap_size)
+    total_batches = len(batches)
 
     # Resolve effective system prompt (caller override > layered default)
     effective_system = system_prompt or get_effective_prompt("smart_delete")
@@ -566,11 +566,20 @@ def analyze_smart_delete(
         "total_tokens": 0,
     }
 
-    def _process_chunk(idx: int, chunk: list[dict]) -> tuple[int, list[dict] | None, dict, str | None]:
-        """Process a single smart-delete window. Returns (index, normalized, usage, error)."""
+    def _process_chunk(idx: int, batch_segments: list[dict], target_ids: set[str]) -> tuple[int, list[dict] | None, dict, str | None]:
+        """Process a single smart-delete batch.
+
+        Returns:
+            (idx, normalized_results_or_None, token_usage, error_message_or_None)
+        """
         if cancel_event and cancel_event.is_set():
             return (idx, None, {}, "Cancelled")
-        prompt = _build_structured_user_message(chunk)
+        # audit #7: target_segment_ids ordered by appearance in batch, not sorted
+        target_ids_ordered = [
+            str(s.get("id", "")) for s in batch_segments if str(s.get("id", "")) in target_ids
+        ]
+        extra_ctx: dict[str, Any] = {"target_segment_ids": target_ids_ordered}
+        prompt = _build_structured_user_message(batch_segments, extra_context=extra_ctx)
         result = call_llm(
             prompt,
             system=effective_system,
@@ -580,15 +589,17 @@ def analyze_smart_delete(
         )
         if not result.get("success"):
             error = result.get("error", "LLM call failed")
-            logger.warning(f"Smart-delete window {idx + 1} failed: {error}")
+            logger.warning(f"Smart-delete batch {idx + 1} failed: {error}")
             return (idx, None, {}, error)
         content = result["data"]["content"]
         usage = result["data"].get("usage", {})
         chunk_results = _parse_json_response_layers(content)
         if not chunk_results:
-            logger.warning(f"Smart-delete window {idx + 1}: JSON parse returned None")
+            logger.warning(f"Smart-delete batch {idx + 1}: JSON parse returned None")
             return (idx, None, usage, None)
         normalized = _normalize_smart_delete_items(chunk_results)
+        # Filter: only keep results for target_ids (same as P1, llm_service.py:783)
+        normalized = [r for r in normalized if r.get("segment_id") in target_ids]
         return (idx, normalized or None, usage, None)
 
     # AR-2: track consecutive 429s; after 3 in a row, finish remaining chunks
@@ -596,13 +607,13 @@ def analyze_smart_delete(
     consecutive_429 = 0
     _MAX_CONSECUTIVE_429 = 3
     serial_fallback = False
-    pending_indices: set[int] = set(range(total_chunks))
+    pending_indices: set[int] = set(range(total_batches))
     completed = 0
 
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
         futures = {
-            executor.submit(_process_chunk, idx, chunk): idx
-            for idx, chunk in enumerate(chunks)
+            executor.submit(_process_chunk, idx, batch_segs, target_ids): idx
+            for idx, (batch_segs, target_ids) in enumerate(batches)
         }
 
         try:
@@ -628,7 +639,7 @@ def analyze_smart_delete(
                     if consecutive_429 >= _MAX_CONSECUTIVE_429 and not serial_fallback and pending_indices:
                         logger.warning(
                             f"Rate limited {consecutive_429}x, switching remaining "
-                            f"{len(pending_indices)} chunks to serial"
+                            f"{len(pending_indices)} batches to serial"
                         )
                         serial_fallback = True
                         executor.shutdown(wait=False, cancel_futures=True)
@@ -642,8 +653,8 @@ def analyze_smart_delete(
                         chunk_callback(normalized)
 
                 if progress_cb:
-                    pct = (completed / total_chunks) * 100 if total_chunks > 0 else 0
-                    progress_cb(pct, f"Smart-delete window {completed}/{total_chunks}...")
+                    pct = (completed / total_batches) * 100 if total_batches > 0 else 0
+                    progress_cb(pct, f"Smart-delete batch {completed}/{total_batches}...")
         except Exception:
             executor.shutdown(wait=False, cancel_futures=True)
             raise
@@ -654,9 +665,9 @@ def analyze_smart_delete(
             if cancel_event and cancel_event.is_set():
                 return {"success": False, "error": "Cancelled"}
             if progress_cb:
-                pct = (completed / total_chunks) * 100 if total_chunks > 0 else 0
-                progress_cb(pct, f"Smart-delete window {completed}/{total_chunks} (serial)...")
-            idx_, normalized, usage, _ = _process_chunk(idx, chunks[idx])
+                pct = (completed / total_batches) * 100 if total_batches > 0 else 0
+                progress_cb(pct, f"Smart-delete batch {completed}/{total_batches} (serial)...")
+            idx_, normalized, usage, _ = _process_chunk(idx, batches[idx][0], batches[idx][1])
             completed += 1
             for key in total_usage:
                 total_usage[key] += usage.get(key, 0)
@@ -667,7 +678,7 @@ def analyze_smart_delete(
 
     # Merge results in original chunk order for timeline consistency
     all_results: list[dict] = []
-    for idx in range(total_chunks):
+    for idx in range(total_batches):
         if idx in results_by_index:
             all_results.extend(results_by_index[idx])
 
