@@ -71,8 +71,8 @@ export interface AppSettings {
   llm_thinking_enabled: boolean
   llm_provider_configs: Record<string, { base_url: string; api_key: string; model: string }>
   // v2.1.1 M2: tunable LLM chunking/batching/concurrency (advanced params)
-  llm_smart_window_duration: number
-  llm_smart_overlap_duration: number
+  llm_smart_batch_size: number
+  llm_smart_overlap_size: number
   llm_correction_batch_size: number
   llm_correction_context_window: number
   llm_highlight_chunk_duration: number

@@ -137,6 +137,9 @@ class ProjectService:
             # Migrate old format silence edits
             self._migrate_silence_edits()
 
+            # v2.1.1: Dedupe duplicate edit ids (legacy llm_smart bug fix)
+            self._dedupe_edit_ids()
+
             # Check media path reachability
             if self._current.media and self._current.media.path:
                 media_path = Path(self._current.media.path)
@@ -224,6 +227,48 @@ class ProjectService:
                 migrated.append(edit)
 
         self._update_active_timeline(edits=migrated)
+
+    def _dedupe_edit_ids(self) -> None:
+        """One-time fix: append _dup{N} suffix to duplicate edit ids in the active timeline.
+
+        Suffix format matches the defensive logic in add_analysis_results (_dup{N}).
+        O(n) fast path skips projects with no duplicates (zero overhead for large projects).
+        """
+        if not self._current:
+            return
+
+        tl = self.active_timeline
+        edits = list(tl.edits)
+        ids = [e.id for e in edits]
+
+        # Fast path: no duplicates, skip entirely
+        if len(ids) == len(set(ids)):
+            return
+
+        # Duplicate detected -- back up and fix
+        all_ids = set(ids)
+        seen: dict[str, int] = {}
+        fixed = []
+        changed_count = 0
+
+        for e in edits:
+            if e.id in seen:
+                seen[e.id] += 1
+                candidate = f"{e.id}_dup{seen[e.id]}"
+                # Guard: candidate might collide with an existing id (secondary conflict)
+                while candidate in all_ids:
+                    seen[e.id] += 1
+                    candidate = f"{e.id}_dup{seen[e.id]}"
+                all_ids.add(candidate)
+                fixed.append(e.model_copy(update={"id": candidate}))
+                changed_count += 1
+            else:
+                seen[e.id] = 1
+                fixed.append(e)
+
+        if changed_count > 0:
+            logger.warning("Deduped {} duplicate edit ids in timeline {}", changed_count, tl.id)
+            self._update_active_timeline(edits=fixed)
 
     def save_project(self) -> dict:
         """Save the current project to disk."""
@@ -649,6 +694,56 @@ class ProjectService:
         self._update_active_timeline(edits=updated_edits)
         return {"success": True, "data": self._current.model_dump()}
 
+    def update_edit_decisions_batch(self, edit_ids: list[str], status: str) -> dict:
+        """Batch update the status of multiple edit decisions.
+
+        v2.1.1: Used by SuggestionPanel group-level actions (confirm-all-in-group,
+        reject-all-in-group, reset-all-in-group) to avoid N sequential RPCs.
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        try:
+            new_status = EditStatus(status)
+        except ValueError:
+            return {"success": False, "error": f"Invalid status: {status}"}
+
+        ids_set = set(edit_ids)
+        updated_edits = []
+        matched = 0
+        for edit in self.active_timeline.edits:
+            if edit.id in ids_set:
+                updated_edits.append(edit.model_copy(update={"status": new_status}))
+                matched += 1
+            else:
+                updated_edits.append(edit)
+
+        if matched == 0:
+            return {"success": False, "error": "No matching edit decisions found"}
+
+        self._update_active_timeline(edits=updated_edits)
+        logger.info("Batch-updated {} edits to {}", matched, new_status.value)
+        return {"success": True, "data": self._current.model_dump()}
+
+    def delete_edit_decisions_batch(self, edit_ids: list[str]) -> dict:
+        """Permanently remove edit decisions by id.
+
+        Unlike update_edit_decisions_batch (which changes status),
+        this removes the edits entirely from the timeline.
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        ids_set = set(edit_ids)
+        updated_edits = [e for e in self.active_timeline.edits if e.id not in ids_set]
+        removed = len(self.active_timeline.edits) - len(updated_edits)
+        if removed == 0:
+            return {"success": False, "error": "No matching edit decisions found"}
+
+        self._update_active_timeline(edits=updated_edits)
+        logger.info("Permanently deleted {} edit decisions", removed)
+        return {"success": True, "data": self._current.model_dump()}
+
     def update_segment(self, segment_id: str, updates: dict) -> dict:
         """Update a segment's fields (start, end, text)."""
         if self._current is None:
@@ -914,9 +1009,60 @@ class ProjectService:
             else:
                 new_segments.append(s)
 
-        # Remove EditDecisions referencing the old segment
-        new_edits = [e for e in self.active_timeline.edits
-                     if not hasattr(e, '_segment_ids') or segment_id not in e._segment_ids]
+        # Rebind EditDecisions that referenced the split segment.
+        # v2.1.1 A-2.4 fix: previous logic used hasattr(e, '_segment_ids') which
+        # never matched -- EditDecision has no such field, binding is via
+        # target_type/target_id or implicit time-range overlap. The old code kept
+        # every ED, so a range-type ED [start, end] still covered both a and b
+        # sub-ranges, making their states appear 'synced'.
+        #
+        # Correct behavior:
+        # - segment-targeted ED pointing at the split segment: copy to both a and b
+        #   with updated target_id, so each sub-segment has an independent decision.
+        # - range-targeted ED crossing the split position: cut into two at position
+        #   so each sub-range binds to the correct sub-segment.
+        # - all other EDs: keep as-is (time range already correct for whichever side
+        #   they fall on; unrelated to this split).
+        # v2.1.1 A-2.4 fix (revised): the previous attempt only updated
+        # target_id on copied segment-type EDs but left start/end covering
+        # the original (pre-split) time range. Because resolveSegmentState
+        # treats any ED overlapping a segment by >0.3s as related, both a
+        # and b sub-segments kept matching every copied ED -- so toggling
+        # one still flipped the other.
+        #
+        # Correct behavior: when rebinding a segment-type ED to a/b, also
+        # clip its time range to the corresponding sub-segment so each ED
+        # only overlaps its own sub-segment.
+        new_edits: list[EditDecision] = []
+        target = next((s for s in self.active_timeline.transcript.segments
+                       if s.id == segment_id), None)
+        if target is None:
+            new_edits = list(self.active_timeline.edits)
+        else:
+            for e in self.active_timeline.edits:
+                if e.target_type == "segment" and e.target_id == segment_id:
+                    new_edits.append(e.model_copy(update={
+                        "id": f"{e.id}__{segment_id}-a",
+                        "target_id": f"{segment_id}-a",
+                        "end": position,
+                    }))
+                    new_edits.append(e.model_copy(update={
+                        "id": f"{e.id}__{segment_id}-b",
+                        "target_id": f"{segment_id}-b",
+                        "start": position,
+                    }))
+                    continue
+                if e.target_type == "range" and e.start < position and e.end > position:
+                    new_edits.append(e.model_copy(update={
+                        "id": f"{e.id}_a",
+                        "end": position,
+                    }))
+                    new_edits.append(e.model_copy(update={
+                        "id": f"{e.id}_b",
+                        "start": position,
+                    }))
+                    continue
+                new_edits.append(e)
 
         self._update_active_timeline(
             transcript=self.active_timeline.transcript.model_copy(update={"segments": new_segments}),
@@ -1144,6 +1290,7 @@ class ProjectService:
         segments = self.active_timeline.transcript.segments
         seg_map = {s.id: s for s in segments}
         existing_edits = list(self.active_timeline.edits)
+        existing_edit_ids = {e.id for e in existing_edits}
         new_edits: list[EditDecision] = []
 
         for ar in analysis_results:
@@ -1154,7 +1301,16 @@ class ProjectService:
             start = min(s.start for s in matching_segs)
             end = max(s.end for s in matching_segs)
 
+            # Defensive: if edit-{ar.id} already exists (ar.id duplicate or other source
+            # conflict), append _dup{N} suffix to ensure uniqueness.
             edit_id = f"edit-{ar.id}"
+            if edit_id in existing_edit_ids:
+                n = 2
+                while f"{edit_id}_dup{n}" in existing_edit_ids:
+                    n += 1
+                edit_id = f"{edit_id}_dup{n}"
+            existing_edit_ids.add(edit_id)
+
             new_edits.append(EditDecision(
                 id=edit_id,
                 start=start,

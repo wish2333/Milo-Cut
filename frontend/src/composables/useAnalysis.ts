@@ -92,6 +92,44 @@ export function useAnalysis(
     return false
   }
 
+  /** v2.1.1: Reset an edit back to pending (undo confirm/reject). */
+  async function resetEdit(editId: string): Promise<boolean> {
+    const res = await call<Project>("update_edit_decision", editId, "pending")
+    if (res.success && res.data) {
+      if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value)
+      project.value = res.data
+      return true
+    }
+    return false
+  }
+
+  /** v2.1.1: Batch update edit statuses (group-level operations). */
+  async function batchUpdateEdits(
+    editIds: string[],
+    status: "confirmed" | "rejected" | "pending",
+  ): Promise<boolean> {
+    if (editIds.length === 0) return false
+    if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value)
+    const res = await call<Project>("update_edit_decisions_batch", editIds, status)
+    if (res.success && res.data) {
+      project.value = res.data
+      return true
+    }
+    return false
+  }
+
+  /** v2.1.1: Permanently delete a group of edits (not just reset status). */
+  async function deleteEdits(editIds: string[]): Promise<boolean> {
+    if (editIds.length === 0) return false
+    if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value)
+    const res = await call<Project>("delete_edit_decisions_batch", editIds)
+    if (res.success && res.data) {
+      project.value = res.data
+      return true
+    }
+    return false
+  }
+
   async function confirmAllEdits(): Promise<boolean> {
     const tl = project.value?.timelines.find(t => t.id === project.value?.active_timeline_id)
     const edits = tl?.edits ?? []
@@ -116,6 +154,9 @@ export function useAnalysis(
     runTranscription,
     confirmEdit,
     rejectEdit,
+    resetEdit,
+    batchUpdateEdits,
+    deleteEdits,
     confirmAllEdits,
   }
 }

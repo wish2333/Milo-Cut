@@ -1,7 +1,7 @@
 <template>
   <div class="flex items-center gap-2">
-    <div class="dropdown dropdown-end">
-      <div tabindex="0" role="button" class="flex items-center gap-2 rounded px-2 py-1 text-xs text-gray-300 hover:text-white hover:bg-white/10 transition-colors cursor-pointer">
+    <details class="dropdown dropdown-end" :open="dropdownOpen" @toggle="onToggle">
+      <summary class="flex items-center gap-2 rounded px-2 py-1 text-xs text-gray-300 hover:text-white hover:bg-white/10 transition-colors cursor-pointer list-none">
         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2H7a2 2 0 00-2 2v2m4-4h6" />
         </svg>
@@ -9,8 +9,8 @@
         <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
         </svg>
-      </div>
-      <ul tabindex="0" class="dropdown-content z-50 menu p-2 shadow-lg bg-base-100 rounded-box w-64 border border-base-300">
+      </summary>
+      <ul class="dropdown-content z-50 menu p-2 shadow-lg bg-base-100 rounded-box w-64 border border-base-300">
         <li v-for="tl in timelines" :key="tl.id">
           <a
             class="flex items-center justify-between"
@@ -24,12 +24,12 @@
                 v-if="renamingId === tl.id"
                 :value="renameVal"
                 class="text-sm font-medium bg-transparent border-b border-blue-400 outline-none w-full"
+                :ref="(el) => { if (el) (el as HTMLInputElement).focus() }"
                 @click.stop
                 @input="$emit('rename-input', tl.id, ($event.target as HTMLInputElement).value)"
                 @keydown.enter.stop.prevent="$emit('rename-confirm', tl.id)"
                 @keydown.escape.stop.prevent="$emit('rename-cancel')"
                 @blur="$emit('rename-confirm', tl.id)"
-                @vue:mounted="(el: HTMLElement) => el.querySelector?.('input')?.focus?.()"
               />
               <span v-else class="truncate text-sm font-medium">{{ tl.label }}</span>
               <span v-if="tl.source !== 'default'" class="text-xs opacity-60">{{ tl.source }}</span>
@@ -59,7 +59,7 @@
           </a>
         </li>
       </ul>
-    </div>
+    </details>
 
     <!-- v2.1.1 M4-5: timeline right-click context menu -->
     <Teleport to="body">
@@ -115,6 +115,15 @@ const emit = defineEmits<{
 
 const contextMenu = ref<{ x: number; y: number; id: string } | null>(null)
 
+// v2.1.1 A-4: explicit dropdown open state. <details> element gives us
+// programmatic control so the dropdown no longer auto-collapses when focus
+// leaves the trigger (the root cause of "rename hides the switcher").
+const dropdownOpen = ref(false)
+
+function onToggle(e: ToggleEvent) {
+  dropdownOpen.value = (e.target as HTMLDetailsElement).open
+}
+
 const activeLabel = computed(() => {
   const tl = props.timelines.find(t => t.id === props.activeTimelineId)
   return tl?.label ?? ""
@@ -139,6 +148,8 @@ function onContextRename() {
   if (id) {
     // 先切换到目标 Timeline，再进入重命名
     if (id !== props.activeTimelineId) emit("switch", id)
+    // Force the dropdown to stay open so the inline rename input is visible.
+    dropdownOpen.value = true
     emit("rename-start", id)
   }
 }

@@ -550,7 +550,7 @@ def analyze_smart_delete(
 
     # Batch+target mode: configurable batch_size and overlap (settings.json).
     settings = load_settings()
-    batch_size = max(1, int(settings.get("llm_smart_batch_size", 20)))
+    batch_size = max(5, int(settings.get("llm_smart_batch_size", 20)))
     overlap_size = max(0, int(settings.get("llm_smart_overlap_size", 4)))
     concurrency = max(1, int(settings.get("llm_concurrency", 5)))
     batches = chunk_transcript_by_count(to_analyze, batch_size=batch_size, overlap=overlap_size)
@@ -654,7 +654,8 @@ def analyze_smart_delete(
 
                 if progress_cb:
                     pct = (completed / total_batches) * 100 if total_batches > 0 else 0
-                    progress_cb(pct, f"Smart-delete batch {completed}/{total_batches}...")
+                    target_count = len(batches[idx][1]) if idx < len(batches) else 0
+                    progress_cb(pct, f"Smart-delete batch {completed}/{total_batches} (target={target_count} segs)...")
         except Exception:
             executor.shutdown(wait=False, cancel_futures=True)
             raise
@@ -666,7 +667,8 @@ def analyze_smart_delete(
                 return {"success": False, "error": "Cancelled"}
             if progress_cb:
                 pct = (completed / total_batches) * 100 if total_batches > 0 else 0
-                progress_cb(pct, f"Smart-delete batch {completed}/{total_batches} (serial)...")
+                target_count = len(batches[idx][1])
+                progress_cb(pct, f"Smart-delete batch {completed}/{total_batches} (serial, target={target_count} segs)...")
             idx_, normalized, usage, _ = _process_chunk(idx, batches[idx][0], batches[idx][1])
             completed += 1
             for key in total_usage:

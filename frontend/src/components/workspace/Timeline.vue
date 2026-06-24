@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue"
+import { computed, ref, watch, nextTick } from "vue"
 import type { Segment, EditDecision, AnalysisResult } from "@/types/project"
 import { resolveSegmentState } from "@/utils/segmentHelpers"
 import TranscriptRow from "@/components/workspace/TranscriptRow.vue"
@@ -60,6 +60,11 @@ const emit = defineEmits<{
   "delete-segment": [segment: Segment]
   "confirm-suggestion": [editId: string]
   "reject-suggestion": [editId: string]
+  "reset-suggestion": [editId: string]
+  "confirm-suggestion-batch": [editIds: string[]]
+  "reject-suggestion-batch": [editIds: string[]]
+  "reset-suggestion-batch": [editIds: string[]]
+  "delete-suggestion-batch": [editIds: string[]]
   "confirm-all": []
   "reject-all": []
   "seek-suggestion": [time: number]
@@ -91,11 +96,92 @@ const emit = defineEmits<{
 type RightPanelTab = "suggestion" | "ai" | "highlight"
 const activeTab = ref<RightPanelTab>("suggestion")
 
+// v2.1.1 A-2.1: ref of the scrollable segment list, used for scrollIntoView on
+// external highlight (SuggestionPanel click).
+const listContainer = ref<HTMLElement | null>(null)
+
+// v2.1.1 A-3: right-side panel is now an overlay (default hidden). Keeps the
+// transcript list full-width when collapsed and floats over it when expanded.
+const sidebarOpen = ref(false)
+
+// v2.1.1: resizable sidebar width (persisted across sessions).
+const SIDEBAR_MIN = 320
+const SIDEBAR_MAX_RATIO = 0.85
+const SIDEBAR_STORAGE_KEY = "milo-sidebar-width"
+const sidebarWidth = ref<number>(
+  Number(localStorage.getItem(SIDEBAR_STORAGE_KEY)) || 384,
+)
+const sidebarMaxWidth = ref<number>(Math.max(SIDEBAR_MIN, Math.floor(window.innerWidth * SIDEBAR_MAX_RATIO)))
+
+function onSidebarResizeStart(e: MouseEvent) {
+  e.preventDefault()
+  const startX = e.clientX
+  const startWidth = sidebarWidth.value
+  const onMove = (ev: MouseEvent) => {
+    const delta = startX - ev.clientX
+    const next = Math.min(
+      sidebarMaxWidth.value,
+      Math.max(SIDEBAR_MIN, startWidth + delta),
+    )
+    sidebarWidth.value = next
+  }
+  const onUp = () => {
+    window.removeEventListener("mousemove", onMove)
+    window.removeEventListener("mouseup", onUp)
+    localStorage.setItem(SIDEBAR_STORAGE_KEY, String(sidebarWidth.value))
+  }
+  window.addEventListener("mousemove", onMove)
+  window.addEventListener("mouseup", onUp)
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("resize", () => {
+    sidebarMaxWidth.value = Math.max(SIDEBAR_MIN, Math.floor(window.innerWidth * SIDEBAR_MAX_RATIO))
+    if (sidebarWidth.value > sidebarMaxWidth.value) sidebarWidth.value = sidebarMaxWidth.value
+  })
+}
+
 const tabs: Array<{ key: RightPanelTab; label: string }> = [
   { key: "suggestion", label: "建议" },
   { key: "ai", label: "AI 助手" },
   { key: "highlight", label: "精华" },
 ]
+
+// v2.1.1 A-2.1: playhead-aware highlight + external (SuggestionPanel) click highlight.
+// playheadSegmentId is a computed based on currentTime -- the TranscriptRow that
+// contains the playhead gets a visual cue (left blue border + light bg) via the
+// is-playhead-inside prop. v-memo deps use the boolean per-row, so continuous
+// playhead movement only re-renders the two rows where playhead crosses boundary.
+const playheadSegmentId = computed<string | null>(() => {
+  const t = props.currentTime ?? 0
+  const seg = props.segments.find(s => s.type === "subtitle" && t >= s.start && t <= s.end)
+  return seg?.id ?? null
+})
+
+// External-click highlight: when user clicks a suggestion / AI assistant item,
+// we briefly flash the target TranscriptRow (yellow ring) and scroll it into view.
+const highlightedSegmentId = ref<string | null>(null)
+let highlightTimer: ReturnType<typeof setTimeout> | null = null
+function highlightSegment(segmentId: string) {
+  highlightedSegmentId.value = segmentId
+  if (highlightTimer) clearTimeout(highlightTimer)
+  highlightTimer = setTimeout(() => { highlightedSegmentId.value = null }, 2000)
+  // Scroll into view via DOM query on the segment list container.
+  nextTick(() => {
+    const el = listContainer.value?.querySelector(
+      `[data-segment-id="${segmentId}"]`
+    ) as HTMLElement | null
+    el?.scrollIntoView({ block: "nearest", behavior: "smooth" })
+  })
+}
+
+// Handle SuggestionPanel / AIAssistantPanel / HighlightModeView @seek:
+// seek the video AND flash the matching transcript row.
+function handleSuggestionSeek(time: number) {
+  emit("seek-suggestion", time)
+  const seg = props.segments.find(s => s.type === "subtitle" && time >= s.start && time <= s.end)
+  if (seg) highlightSegment(seg.id)
+}
 
 function getSegmentState(seg: Segment) {
   return resolveSegmentState(props.edits, seg)
@@ -118,8 +204,6 @@ const adjacentSubtitleIds = computed(() => {
   }
   return { prev, next }
 })
-
-import { watch, nextTick } from "vue"
 
 watch(
   () => props.selectedSegmentId,
@@ -185,7 +269,7 @@ watch(
       </div>
     </div>
 
-    <div class="flex flex-1 overflow-hidden">
+    <div class="relative flex flex-1 overflow-hidden">
       <!-- Transcript list -->
       <div ref="listContainer" class="flex-1 overflow-y-auto">
         <!-- v2.1.1 M4-1: selection mode banner -->
@@ -207,12 +291,14 @@ watch(
           <template v-for="seg in segments" :key="seg.id">
             <TranscriptRow
               v-if="seg.type === 'subtitle'"
-              v-memo="[seg, getSegmentState(seg).displayStatus, selectedSegmentIds?.has(seg.id) ?? false, selectedSegmentId === seg.id, globalEditMode, selectionMode]"
+              v-memo="[seg, getSegmentState(seg).displayStatus, selectedSegmentIds?.has(seg.id) ?? false, selectedSegmentId === seg.id, seg.id === playheadSegmentId, seg.id === highlightedSegmentId, globalEditMode, selectionMode]"
               :segment="seg"
               :display-status="getSegmentState(seg).displayStatus"
               :style-class="getSegmentState(seg).styleClass"
               :is-selected="selectedSegmentId === seg.id"
               :is-adjacent-highlighted="seg.id === adjacentSubtitleIds.prev || seg.id === adjacentSubtitleIds.next"
+              :is-playhead-inside="seg.id === playheadSegmentId"
+              :is-highlighted="seg.id === highlightedSegmentId"
               :global-edit-mode="globalEditMode"
               :selection-mode="selectionMode ?? false"
               :is-multi-selected="selectedSegmentIds?.has(seg.id) ?? false"
@@ -245,14 +331,54 @@ watch(
         </div>
       </div>
 
-      <!-- Right sidebar: 3-tab switcher (suggestion / AI assistant / highlight) -->
-      <div class="w-80 border-l border-gray-200 flex flex-col">
+      <!-- v2.1.1: toggle button -- shown only when sidebar is collapsed.
+           Lives inside Timeline (absolute top-right) so it never clashes
+           with the top nav Save button. When sidebar opens this one hides
+           and the close button inside the sidebar header takes over. -->
+      <button
+        v-show="!sidebarOpen"
+        class="absolute right-2 top-2 z-30 rounded p-1.5 text-gray-500 bg-white/40 backdrop-blur-sm hover:bg-gray-100/80 hover:text-gray-700 transition-colors"
+        title="显示侧栏"
+        @click="sidebarOpen = true"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+        </svg>
+      </button>
+
+      <!-- v2.1.1: Right sidebar -- teleported to body so it can overlay the
+           whole window (covering the Timeline toolbar and any ancestor
+           chrome) instead of being clipped by Timeline's overflow-hidden
+           wrapper. Width is user-resizable via the drag handle on its
+           left edge, and remembered across sessions. -->
+      <Teleport to="body">
+        <Transition
+          enter-active-class="transition transform duration-200 ease-out"
+          enter-from-class="translate-x-full"
+          enter-to-class="translate-x-0"
+          leave-active-class="transition transform duration-200 ease-in"
+          leave-from-class="translate-x-0"
+          leave-to-class="translate-x-full"
+        >
+          <div
+            v-if="sidebarOpen"
+            class="fixed top-0 bottom-0 right-0 bg-white shadow-2xl border-l border-gray-200 z-40 flex flex-col"
+            :style="{ width: sidebarWidth + 'px' }"
+          >
+            <!-- Resize drag handle -->
+            <div
+              class="absolute left-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-gray-200/0 hover:bg-blue-400/40 transition-colors"
+              title="拖动调整宽度"
+              @mousedown="onSidebarResizeStart"
+            ></div>
+
         <!-- Tab header (D-18) -->
-        <div class="flex border-b border-gray-200 bg-gray-50">
+        <div class="flex items-center border-b border-gray-200 bg-gray-50">
+          <!-- Left: Tab buttons (flex-1 + min-w-0 + truncate to prevent squeeze by right button) -->
           <button
             v-for="tab in tabs"
             :key="tab.key"
-            class="flex-1 px-2 py-2 text-xs font-medium transition-colors"
+            class="flex-1 min-w-0 truncate px-2 py-2 text-xs font-medium transition-colors"
             :class="
               activeTab === tab.key
                 ? 'border-b-2 border-blue-500 text-blue-600 bg-white'
@@ -261,6 +387,17 @@ watch(
             @click="activeTab = tab.key"
           >
             {{ tab.label }}
+          </button>
+
+          <!-- Right: inline close button (flex-shrink-0 to avoid squeeze; relative z-10 for dropdown visibility) -->
+          <button
+            class="relative z-10 flex-shrink-0 w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors"
+            title="隐藏侧栏"
+            @click="sidebarOpen = false"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
           </button>
         </div>
 
@@ -274,9 +411,14 @@ watch(
             :pending-correction-count="pendingCorrectionCount ?? 0"
             @confirm-edit="(editId) => emit('confirm-suggestion', editId)"
             @reject-edit="(editId) => emit('reject-suggestion', editId)"
+            @reset-edit="(editId) => emit('reset-suggestion', editId)"
+            @confirm-edit-batch="(ids) => emit('confirm-suggestion-batch', ids)"
+            @reject-edit-batch="(ids) => emit('reject-suggestion-batch', ids)"
+            @reset-edit-batch="(ids) => emit('reset-suggestion-batch', ids)"
+            @delete-edit-batch="(ids) => emit('delete-suggestion-batch', ids)"
             @confirm-all="emit('confirm-all')"
             @reject-all="emit('reject-all')"
-            @seek="(t) => emit('seek-suggestion', t)"
+            @seek="handleSuggestionSeek"
             @review-corrections="emit('open-subtitle-fullscreen')"
           />
 
@@ -294,7 +436,7 @@ watch(
             @start-subtitle-correction="(text) => emit('start-subtitle-correction', text)"
             @open-subtitle-fullscreen="emit('open-subtitle-fullscreen')"
             @go-to-settings="emit('go-to-settings')"
-            @seek="(t) => emit('seek-suggestion', t)"
+            @seek="handleSuggestionSeek"
             @cancel-single="emit('cancel-single')"
           />
 
@@ -310,10 +452,12 @@ watch(
             :error="llmErrorMsg ?? null"
             :llm-configured="llmConfigured ?? false"
             @start-highlight="(minutes) => emit('start-highlight', minutes)"
-            @seek="(t) => emit('seek-suggestion', t)"
+            @seek="handleSuggestionSeek"
           />
         </div>
-      </div>
+        </div>
+      </Transition>
+      </Teleport>
     </div>
   </div>
 </template>

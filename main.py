@@ -1442,7 +1442,7 @@ class MiloCutApi(Bridge):
         return self._project.update_edit_decision(edit_id, status)
 
     @expose
-    def update_edit_decisions_batch(self, edit_ids: list, status: str) -> dict:
+    def update_edit_decisions_batch(self, edit_ids: list[str], status: str) -> dict:
         return self._project.update_edit_decisions_batch(edit_ids, status)
 
     @expose

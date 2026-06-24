@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue"
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue"
 import type { Project, Segment, EditDecision, ModelInfo, Timeline as TimelineData } from "@/types/project"
 import { formatTimeShort } from "@/utils/format"
 import { call, onEvent } from "@/bridge"
@@ -111,6 +111,9 @@ const {
   runTranscription,
   confirmEdit,
   rejectEdit,
+  resetEdit,
+  batchUpdateEdits,
+  deleteEdits,
 } = useAnalysis(projectRef, pushSnapshot)
 
 const {
@@ -835,8 +838,46 @@ async function handleCreateTimeline() {
   }
 }
 
+// v2.1.1 A-4: in-app modal replacement for window.confirm.
+// window.confirm is a blocking native dialog that steals focus from the
+// DaisyUI dropdown, causing the whole TimelineSwitcher panel to collapse
+// after delete. Using <dialog> + a Promise resolver keeps focus inside the
+// app and lets the dropdown stay open.
+interface ConfirmOptions {
+  title: string
+  message: string
+  confirmText?: string
+  cancelText?: string
+  danger?: boolean
+}
+const confirmModalRef = ref<HTMLDialogElement | null>(null)
+const confirmState = ref<ConfirmOptions>({ title: "", message: "" })
+let confirmResolver: ((v: boolean) => void) | null = null
+
+function confirmAction(opts: ConfirmOptions): Promise<boolean> {
+  confirmState.value = opts
+  nextTick(() => confirmModalRef.value?.showModal())
+  return new Promise<boolean>((resolve) => {
+    confirmResolver = resolve
+  })
+}
+
+function resolveConfirm(value: boolean) {
+  confirmModalRef.value?.close()
+  if (confirmResolver) {
+    confirmResolver(value)
+    confirmResolver = null
+  }
+}
+
 async function handleDeleteTimeline(timelineId: string) {
-  if (!window.confirm("Delete this timeline? This cannot be undone.")) return
+  const ok = await confirmAction({
+    title: "删除 Timeline",
+    message: "确认删除此 Timeline？该操作无法撤销。",
+    confirmText: "删除",
+    danger: true,
+  })
+  if (!ok) return
   const res = await call<Project>("delete_timeline", timelineId)
   if (res.success && res.data) {
     emit("project-updated", res.data)
@@ -2024,6 +2065,11 @@ onUnmounted(() => {
             @delete-segment="(seg) => handleDeleteSegment(seg.id)"
             @confirm-suggestion="confirmEdit"
             @reject-suggestion="rejectEdit"
+            @reset-suggestion="resetEdit"
+            @confirm-suggestion-batch="(ids: string[]) => batchUpdateEdits(ids, 'confirmed')"
+            @reject-suggestion-batch="(ids: string[]) => batchUpdateEdits(ids, 'rejected')"
+            @reset-suggestion-batch="(ids: string[]) => batchUpdateEdits(ids, 'pending')"
+            @delete-suggestion-batch="(ids: string[]) => deleteEdits(ids)"
             @confirm-all="handleConfirmAllSuggestions"
             @reject-all="handleRejectAllSuggestions"
             @seek-suggestion="handleSeek"
@@ -2217,5 +2263,27 @@ onUnmounted(() => {
         </div>
       </Transition>
     </Teleport>
+    <!-- v2.1.1 A-4: in-app confirm modal (replaces window.confirm) -->
+    <dialog ref="confirmModalRef" class="modal">
+      <div class="modal-box">
+        <h3 class="font-bold text-lg">{{ confirmState.title }}</h3>
+        <p class="py-4 text-sm text-gray-600">{{ confirmState.message }}</p>
+        <div class="modal-action">
+          <button class="btn btn-sm" @click="resolveConfirm(false)">
+            {{ confirmState.cancelText || "取消" }}
+          </button>
+          <button
+            class="btn btn-sm"
+            :class="confirmState.danger ? 'btn-error' : 'btn-primary'"
+            @click="resolveConfirm(true)"
+          >
+            {{ confirmState.confirmText || "确定" }}
+          </button>
+        </div>
+      </div>
+      <form method="dialog" class="modal-backdrop">
+        <button @click="resolveConfirm(false)">close</button>
+      </form>
+    </dialog>
   </div>
 </template>

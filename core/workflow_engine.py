@@ -750,8 +750,16 @@ class WorkflowEngine:
         if step_type in ("llm_smart_delete", "llm_highlight"):
             # Handlers already build edit dicts in workflow mode
             raw_edits = result.get("edits", [])
+            seen_ids: set[str] = set()
             for e in raw_edits:
                 edit = dict(e)
+                # Defensive: if id collides within same batch, append _dup{N}
+                if edit.get("id") in seen_ids:
+                    n = 2
+                    while f"{edit['id']}_dup{n}" in seen_ids:
+                        n += 1
+                    edit["id"] = f"{edit['id']}_dup{n}"
+                seen_ids.add(edit["id"])
                 edit["step_type"] = step_type
                 edit["step_index"] = step_index
                 edits.append(edit)

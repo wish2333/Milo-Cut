@@ -343,3 +343,70 @@ class TestProjectService:
         assert len(sil_segs) == 2
         assert abs(sil_segs[0].start - 4.0) < 0.01
         assert abs(sil_segs[0].end - 4.7) < 0.01
+
+    def test_split_segment_inherits_and_independent_segment_edits(self, tmp_dir, monkeypatch, sample_segments):
+        """v2.1.1 A-2.4: segment-targeted ED must be cloned to both a and b
+        so each sub-segment has an independent decision after split."""
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
+        svc.update_transcript([s.model_dump() for s in sample_segments])
+
+        # Mark seg-0001 as delete -> creates segment-targeted ED
+        result = svc.mark_segments(["seg-0001"], "delete")
+        assert result["success"] is True
+        original_edits = svc.current.active_timeline.edits
+        assert len(original_edits) == 1
+        assert original_edits[0].target_type == "segment"
+        assert original_edits[0].target_id == "seg-0001"
+
+        # Split seg-0001 at 3.0
+        result = svc.split_segment("seg-0001", 3.0)
+        assert result["success"] is True
+        edits_after_split = svc.current.active_timeline.edits
+        # Original ED dropped, two clones added (a + b)
+        assert len(edits_after_split) == 2
+        edit_a = next(e for e in edits_after_split if e.target_id == "seg-0001-a")
+        edit_b = next(e for e in edits_after_split if e.target_id == "seg-0001-b")
+        # Both inherit action and original status
+        assert edit_a.action == "delete"
+        assert edit_b.action == "delete"
+
+        # Flip only a -> b must be unaffected (independence check)
+        svc.update_edit_decision(edit_a.id, "rejected")
+        edit_a_after = next(e for e in svc.current.active_timeline.edits if e.id == edit_a.id)
+        edit_b_after = next(e for e in svc.current.active_timeline.edits if e.id == edit_b.id)
+        assert edit_a_after.status == EditStatus.REJECTED
+        assert edit_b_after.status == EditStatus.PENDING
+
+    def test_split_segment_cuts_range_edits_crossing_position(self, tmp_dir, monkeypatch, sample_segments):
+        """v2.1.1 A-2.4: range-targeted ED crossing the split position must be
+        cut into two EDs at position; non-crossing EDs stay as-is."""
+        from core.models import EditDecision
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
+        svc.update_transcript([s.model_dump() for s in sample_segments])
+
+        # seg-0001 spans roughly [0, 5]; inject 3 range EDs manually:
+        # - crossing_ed [2, 4]: crosses split at 3 -> should be cut
+        # - left_ed     [1, 2]: fully left -> keep
+        # - right_ed    [4, 5]: fully right -> keep
+        crossing_ed = EditDecision(id="rx", start=2.0, end=4.0, action="delete",
+                                   target_type="range", target_id=None)
+        left_ed = EditDecision(id="rl", start=1.0, end=2.0, action="delete",
+                               target_type="range", target_id=None)
+        right_ed = EditDecision(id="rr", start=4.0, end=5.0, action="delete",
+                                target_type="range", target_id=None)
+        svc._update_active_timeline(edits=list(svc.active_timeline.edits) + [crossing_ed, left_ed, right_ed])
+
+        result = svc.split_segment("seg-0001", 3.0)
+        assert result["success"] is True
+        edits = svc.current.active_timeline.edits
+        ids = {e.id for e in edits}
+        # crossing_ed is split into _a and _b; original rx dropped
+        assert "rx_a" in ids and "rx_b" in ids and "rx" not in ids
+        rx_a = next(e for e in edits if e.id == "rx_a")
+        rx_b = next(e for e in edits if e.id == "rx_b")
+        assert rx_a.start == 2.0 and rx_a.end == 3.0
+        assert rx_b.start == 3.0 and rx_b.end == 4.0
+        # left/right EDs untouched
+        assert "rl" in ids and "rr" in ids

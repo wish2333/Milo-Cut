@@ -98,6 +98,7 @@ export interface AnalysisResult {
   segment_ids: string[]
   confidence: number
   detail: string
+  category?: string
 }
 
 // ================================================================

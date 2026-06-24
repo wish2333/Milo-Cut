@@ -16,6 +16,10 @@ const props = defineProps<{
   isMultiSelected?: boolean
   /** v2.1.1: waveform playhead time for split-at-cursor */
   currentTime?: number
+  /** v2.1.1 A-2.1: playhead is currently inside this segment's [start, end] */
+  isPlayheadInside?: boolean
+  /** v2.1.1 A-2.1: externally-driven temporary highlight (e.g. SuggestionPanel click) */
+  isHighlighted?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -181,9 +185,23 @@ watch(() => props.globalEditMode, (val) => {
   }
 })
 
+// v2.1.1 A-2.2: drag-out text selection can slip past the input boundary and
+// trigger blur mid-drag -- the user is still selecting text, not done editing.
+// Defer the save by 150ms and re-check focus: if focus has returned to any
+// edit-text-input (continued drag, or user clicked another row's edit field),
+// treat the blur as a non-commit and keep editing mode on.
+let blurSaveTimer: ReturnType<typeof setTimeout> | null = null
 function handleTextEditBlur() {
   if (props.globalEditMode) return
-  saveEdit()
+  if (blurSaveTimer) clearTimeout(blurSaveTimer)
+  blurSaveTimer = setTimeout(() => {
+    const active = document.activeElement as HTMLElement | null
+    if (active && active.tagName === "INPUT" && active.classList.contains("edit-text-input")) {
+      // Focus is back on an edit input -- this was a drag-out, ignore the blur.
+      return
+    }
+    saveEdit()
+  }, 150)
 }
 
 function handleTextEditKeydown(e: KeyboardEvent) {
@@ -219,7 +237,12 @@ const statusClass = computed(() => {
 <template>
   <div
     class="flex items-start gap-2 px-3 py-2 cursor-pointer hover:bg-gray-50 transition-colors"
-    :class="[statusClass, { 'ring-1 ring-blue-500': isSelected, 'ring-2 ring-blue-500 bg-blue-50': isMultiSelected }]"
+    :class="[statusClass, {
+      'ring-1 ring-blue-500': isSelected && !isMultiSelected,
+      'ring-2 ring-blue-500 bg-blue-50': isMultiSelected,
+      'bg-blue-50 border-l-2 border-blue-400': isPlayheadInside && !isSelected && !isMultiSelected && !isHighlighted,
+      'ring-2 ring-yellow-400 bg-yellow-50': isHighlighted,
+    }]" 
     :data-segment-id="segment.id"
     @click="handleRowClick"
     @contextmenu="handleContextMenu"
@@ -290,7 +313,7 @@ const statusClass = computed(() => {
       <input
         v-if="isEditingText"
         v-model="editText"
-        class="w-full min-w-0 bg-white border border-blue-400 rounded px-1 py-0.5 text-sm outline-none box-border"
+        class="edit-text-input w-full min-w-0 bg-white border border-blue-400 rounded px-1 py-0.5 text-sm outline-none box-border"
         @blur="handleTextEditBlur"
         @keydown="handleTextEditKeydown"
         @mousedown.stop
@@ -396,6 +419,7 @@ const statusClass = computed(() => {
         </button>
         <div class="border-t border-gray-100 my-1" />
         <button
+          v-if="isPlayheadInside"
           class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
           title="在时间指针位置分割"
           @click="handleSplitAtPointer"
