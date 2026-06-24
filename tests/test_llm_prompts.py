@@ -220,3 +220,11 @@ class TestHelperFunctions:
 
     def test_get_default_params_unknown_key(self):
         assert get_default_params("nonexistent") == {}
+
+
+def test_smart_delete_prompt_mentions_target_segment_ids():
+    """_SMART_DELETE_SYSTEM should contain target_segment_ids instruction."""
+    from core.llm_prompts import _SMART_DELETE_SYSTEM
+    assert "target_segment_ids" in _SMART_DELETE_SYSTEM
+    assert "仅输出 target_segment_ids 列表中包含的段的分析结果" in _SMART_DELETE_SYSTEM
+    assert "不在 target_segment_ids 中的段仅作为上下文参考" in _SMART_DELETE_SYSTEM

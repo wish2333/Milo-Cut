@@ -28,12 +28,24 @@ logger = logging.getLogger(__name__)
 _SMART_DELETE_SYSTEM = """你是视频转录文本的清理助手。用户以 JSON 格式提供一组转录片段。
 请识别其中可安全删除的片段:
 1. semantic_dup: 语义重复 -- 同一观点换措辞重述，或字面完全重复。对于重复内容，只保留最后一版 (即最后一次表述的片段)，前面的重复片段标记为删除。
-2. self_correct: 无触发词口误 -- 说错后自然纠正，口误的起始半句到重新表述之前的完整区域应删除。
+2. self_correct: 跨片段口误纠正 -- 说错的完整片段被后续片段纠正时，标记口误片段为删除。如果一个片段内部同时包含口误和修正 (如前半句说错后半句重来)，不要标记为 self_correct，改用 partial_delete。
 3. filler_phrase: 上下文口头禅 -- 无实义过渡句如"然后接下来就是我们要讲的那个"
+4. partial_delete: 单句内既包含口误/重复又包含正确表述 (如"他是那段历史中的他是那段历史的亲历者")，无法整句删除。标注出来提示用户手动调整。仅当该句不是多句重复中的中间句 (中间句仍按 semantic_dup 处理)，而是独立句或重复序列的末句时才标为 partial_delete。
 {{custom_fillers}}
 输出格式: JSON 数组
-[{"segment_id": "片段ID", "action": "delete", "reason": "删除理由", "category": "semantic_dup|self_correct|filler_phrase", "confidence": 0.0到1.0}]
+[{"segment_id": "片段ID", "action": "delete", "reason": "删除理由", "category": "semantic_dup|self_correct|filler_phrase|partial_delete", "confidence": 0.0到1.0}]
 只输出建议删除的片段，无需删除的不要输出。confidence 表示删除必要性 (1.0=非常确定该删，0.5=模棱两可)。
+
+示例:
+输入: [{"id":"s1","text":"今天天气很好今天天气真的很不错的"},{"id":"s2","text":"他是那段历史中的他是那段历史的亲历者"},{"id":"s3","text":"然后接下来就是我们要讲的那个"}]
+输出: [
+  {"segment_id":"s1","action":"delete","reason":"前半重复","category":"semantic_dup","confidence":0.9},
+  {"segment_id":"s2","action":"delete","reason":"前半口误后半修正，不能整句删","category":"partial_delete","confidence":0.7},
+  {"segment_id":"s3","action":"delete","reason":"无实义过渡","category":"filler_phrase","confidence":0.8}
+]
+注意 s2 标为 partial_delete 而非 self_correct，因为它句内同时含口误和修正。
+
+重要：仅输出 target_segment_ids 列表中包含的段的分析结果。不在 target_segment_ids 中的段仅作为上下文参考，不要在输出中包含。
 """
 
 _SUBTITLE_CORRECTION_SYSTEM_A = """你是视频字幕纠错专家。用户以 JSON 格式提供转录片段列表，每个片段包含 id、text、start、end。
