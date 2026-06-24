@@ -363,7 +363,113 @@ SettingsModal LLM Tab 新增「高级参数」折叠区（`<details>`），含 7
 - 前端净增: ~744 行
 - 测试净增: ~67 行
 
-## 后续审计 (AUD-4)
+## 后续审计 (AUD-4): AI 智能删除输入过滤 + 条数分块模式
 
-> 待定
+**日期**: 2026-06-25
+**依据**: `docs/2.1.1/spec-smart-delete-input-filter-batch-2.1.1-5.md`
+
+### 需求
+
+| # | 需求 | 旧行为 | 新行为 |
+|---|------|--------|--------|
+| A | AI 分析输入过滤 | smart_delete/subtitle_correction 传入所有 subtitle 段 | 忽略已被用户确认删除(`action=delete AND status=confirmed`)的段 |
+| B | 智能删除分块模式 | 时间窗口(默认 60s 窗口 + 10s 重叠) | 条数批次(默认 20 条 + 4 条重叠)，采用 P1 式 batch+target 模式 |
+
+### 实现要点
+
+#### 需求 A: 输入过滤
+
+- `core/timeline_utils.py` **新建** — `collect_confirmed_deleted_seg_ids(timeline)` 公共 helper，精确过滤 `action="delete" AND status=confirmed AND target_type="segment" AND target_id` 的编辑决策
+- `main.py` `_handle_smart_delete` + `_handle_subtitle_correction` — 两个 handler 均在 segments 提取时调用 helper 过滤
+
+**过滤顺序**: 先 confirmed-delete 过滤，再 existing_ids（规则引擎已标记）过滤，最后分块 + LLM 分析。
+
+#### 需求 B: 条数分块
+
+- `core/llm_service.py` — 新增 `chunk_transcript_by_count(segments, batch_size=20, overlap=4)`，P1 式 batch+target 分块
+- `analyze_smart_delete` 完整重构：
+  - 设置读取从 `llm_smart_window_duration`/`llm_smart_overlap_duration` 改为 `llm_smart_batch_size`/`llm_smart_overlap_size`
+  - `_process_chunk` 签名从 `(idx, chunk)` 变为 `(idx, batch_segments, target_ids)`
+  - 结果按 `target_ids` 过滤（与 P1 行为一致）
+  - 保留 `seen` 去重作为安全网
+  - batch_size 后端 clamp `max(5, ...)`（audit #17）
+  - 进度消息添加 target 段数（audit #16）
+- `core/llm_service.py` — 删除已 deprecated 的 `chunk_transcript_short()`
+- `core/llm_prompts.py` — `_SMART_DELETE_SYSTEM` 追加 target_segment_ids 约束说明
+
+#### 设置迁移
+
+| 旧键(自动清理) | 新键 | 默认值 |
+|---------------|------|--------|
+| `llm_smart_window_duration` | `llm_smart_batch_size` | 20 |
+| `llm_smart_overlap_duration` | `llm_smart_overlap_size` | 4 |
+
+- `core/config.py` `load_settings()` 自动 pop 旧键 + 写回（审计 #10）
+
+#### 前端
+
+- `frontend/src/types/edit.ts` — `AppSettings` 字段名替换
+- `frontend/src/components/workspace/SettingsModal.vue` — 标签/绑定/校验更新；修复 `parseInt("0") || default` bug（`Number.isNaN` 模式，审计 #1）
+
+### 审计修正
+
+本 spec 经审计报告校验，修正 17 项（P0×2 + P1×2 + P2×13）：
+
+| # | 审计项 | 优先级 | 修正 |
+|---|--------|--------|------|
+| 1 | 前端 `|| 4`/`|| 20` 对 0 的处理 | P0 | `Number.isNaN(v) ? default : v` |
+| 2 | 算法示例与实现不一致 | P0 | 示例修正 |
+| 3 | 主循环改造缺代码 | P0 | 补全 ThreadPoolExecutor 参数变更 |
+| 4 | extra_context 支持核对 | P0 | 确认已有支持 |
+| 5 | _process_chunk 返回类型 | P0 | 补全类型标注 + docstring |
+| 6 | EditDecision 字段类型核对 | P0 | 已核对，比较有效 |
+| 7 | sorted(target_ids) 不保证段顺序 | P1 | 改为按出现顺序构建 |
+| 8 | 过滤逻辑重复(DRY) | P2 | 抽取公共 helper |
+| 9 | 单批次阈值语义漂移 | P2 | 改为 `total ≤ batch_size` |
+| 10 | 旧设置无清理机制 | P2 | `load_settings()` 自动清理 |
+| 11 | overlap ≥ batch_size 未处理 | P1 | 入口 clamp + warning |
+| 12 | 单批次返回引用风险 | P2 | 返回独立拷贝 |
+| 13 | 命名不统一 | P2 | 注释标明映射关系 |
+| 14 | 表格内联修正残留 | P2 | 清理 |
+| 15 | 缺失测试用例 | P2 | 补全 7 条 |
+| 16 | 日志/可观测性 | P2 | 更新进度文案 |
+| 17 | min=5 依据 | P2 | 补充理由 |
+
+### 变更文件清单
+
+#### 后端 (6 文件)
+
+| 文件 | 变更 |
+|------|------|
+| `core/timeline_utils.py` | **新建** — `collect_confirmed_deleted_seg_ids()` 公共 helper |
+| `core/llm_service.py` | 新增 `chunk_transcript_by_count()`；重构 `analyze_smart_delete()` 为 batch+target；删除 `chunk_transcript_short()`；progress 消息增加 target 段数 |
+| `core/llm_prompts.py` | `_SMART_DELETE_SYSTEM` 追加 target_segment_ids 约束 |
+| `core/config.py` | `_DEFAULT_SETTINGS` 替换 2 个键；`load_settings()` 旧键自动清理 |
+| `main.py` | `_handle_smart_delete` + `_handle_subtitle_correction` 调用 helper 过滤 confirmed-delete |
+| `core/llm_service.py` | (同上) |
+
+#### 前端 (2 文件)
+
+| 文件 | 变更 |
+|------|------|
+| `frontend/src/types/edit.ts` | 字段名替换 |
+| `frontend/src/components/workspace/SettingsModal.vue` | 标签/绑定/Number.isNaN 校验更新 |
+
+#### 测试 (3 文件)
+
+| 文件 | 内容 |
+|------|------|
+| `tests/test_timeline_utils.py` | **新建** — 8 测试 (helper 过滤逻辑) |
+| `tests/test_llm_service.py` | 新增 11 测试 (chunk_transcript_by_count 10 + batch+target integration 1) |
+| `tests/test_config.py` | 新增 2 测试 (新默认值 + 旧键清理) |
+| `tests/test_llm_prompts.py` | 新增 1 测试 (prompt 含 target_segment_ids) |
+
+### 统计
+
+- 新增文件: 2 (`core/timeline_utils.py` + `tests/test_timeline_utils.py`)
+- 修改文件: 7 (后端 4 + 前端 2 + 测试 3)
+- 后端净增: ~110 行
+- 前端净增: ~4 行（仅字段替换，无交互新增）
+- 测试净增: ~220 行
+- 全部测试: 367/367 通过
 
