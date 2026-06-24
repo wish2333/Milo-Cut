@@ -12,6 +12,10 @@ from typing import Any
 
 from core.paths import get_settings_path
 
+from core.logging import get_logger
+
+logger = get_logger()
+
 _DEFAULT_SETTINGS: dict[str, Any] = {
     "ffmpeg_path": "",
     "ffprobe_path": "",
@@ -82,11 +86,11 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     "llm_timeout": 120,
     "llm_thinking_enabled": False,
     # v2.1.1 M2: tunable LLM chunking / batching / concurrency parameters.
-    # Window/overlap control smart-delete + highlight chunking; batch/context
+    # Batch/overlap control smart-delete + highlight chunking; batch/context
     # control subtitle-correction batching; concurrency enables parallel LLM
     # calls (M3). All have safe defaults so existing behavior is preserved.
-    "llm_smart_window_duration": 60.0,
-    "llm_smart_overlap_duration": 10.0,
+    "llm_smart_batch_size": 20,
+    "llm_smart_overlap_size": 4,
     "llm_correction_batch_size": 30,
     "llm_correction_context_window": 5,
     "llm_highlight_chunk_duration": 1800.0,
@@ -121,6 +125,16 @@ def load_settings() -> dict[str, Any]:
         return copy.deepcopy(_DEFAULT_SETTINGS)
     merged = copy.deepcopy(_DEFAULT_SETTINGS)
     merged.update(data)
+
+    # Audit #10: one-time cleanup of deprecated settings keys
+    _DEPRECATED_KEYS = {"llm_smart_window_duration", "llm_smart_overlap_duration"}
+    removed = [k for k in _DEPRECATED_KEYS if k in merged]
+    if removed:
+        for k in removed:
+            merged.pop(k, None)
+        save_settings(merged)
+        logger.info(f"Cleaned deprecated settings keys: {removed}")
+
     return merged
 
 
