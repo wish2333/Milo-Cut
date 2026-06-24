@@ -105,9 +105,6 @@ const {
   detectionProgress,
   activeTask,
   runSilenceDetection,
-  runFillerDetection,
-  runErrorDetection,
-  runFullAnalysis,
   runTranscription,
   confirmEdit,
   rejectEdit,
@@ -162,7 +159,6 @@ const { listPlugins, checkEngineReady, listModels } = usePluginManager()
 const statusMessage = ref("")
 const errorMessage = ref("")
 let statusTimer: ReturnType<typeof setTimeout> | null = null
-const showAnalysisDropdown = ref(false)
 const showSilenceSettings = ref(false)
 const showTranscribeSettings = ref(false)
 const videoUrl = ref("")
@@ -363,7 +359,6 @@ watch(statusMessage, (msg) => {
 const isDirty = ref(false)
 const isSaving = ref(false)
 const lastSavedAt = ref<number | null>(null)
-let saveTimer: ReturnType<typeof setTimeout> | null = null
 
 onEvent<void>(EVENT_PROJECT_DIRTY, () => {
   isDirty.value = true
@@ -373,10 +368,10 @@ onEvent<void>(EVENT_PROJECT_SAVED, () => {
   isDirty.value = false
 })
 
-watch(isDirty, (dirty) => {
+watch(isDirty, (dirty, _old, onCleanup) => {
   if (!dirty || isSaving.value) return
-  if (saveTimer) clearTimeout(saveTimer)
-  saveTimer = setTimeout(async () => {
+  const timer = setTimeout(async () => {
+    if (isSaving.value) return
     isSaving.value = true
     try {
       const res = await call<void>("save_project")
@@ -388,6 +383,7 @@ watch(isDirty, (dirty) => {
       isSaving.value = false
     }
   }, 2000)
+  onCleanup(() => clearTimeout(timer))
 })
 
 const activeTimeline = computed<TimelineData | null>(() =>
@@ -984,16 +980,6 @@ async function handleTranscribe() {
   }
 }
 
-async function handleRunAnalysis(type: string) {
-  showAnalysisDropdown.value = false
-  errorMessage.value = ""
-  switch (type) {
-    case "filler": await runFillerDetection(); break
-    case "error": await runErrorDetection(); break
-    case "full": await runFullAnalysis(); break
-  }
-}
-
 async function handleConfirmAllSuggestions() {
   errorMessage.value = ""
   await confirmAllSuggestions()
@@ -1291,7 +1277,6 @@ async function handleSettingsClosed() {
 
 async function handleSaveProject() {
   if (isSaving.value) return
-  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
   isSaving.value = true
   try {
     const res = await call("save_project")
@@ -1885,42 +1870,6 @@ onUnmounted(() => {
       >
         <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
       </button>
-
-      <!-- Analysis dropdown -->
-      <div class="relative">
-        <button
-          class="inline-flex items-center gap-1.5 rounded-md bg-purple-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-purple-600 disabled:opacity-50 transition-colors"
-          :disabled="isDetecting || isExporting"
-          @click="showAnalysisDropdown = !showAnalysisDropdown"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
-          {{ isDetecting ? 'Analyzing...' : 'Analysis' }}
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" /></svg>
-        </button>
-        <div
-          v-if="showAnalysisDropdown"
-          class="absolute top-full left-0 mt-1 w-48 rounded-md border border-gray-200 bg-white shadow-lg z-10"
-        >
-          <button
-            class="block w-full px-3 py-2 text-left text-sm hover:bg-gray-50 transition-colors"
-            @click="handleRunAnalysis('filler')"
-          >
-            Detect Filler Words
-          </button>
-          <button
-            class="block w-full px-3 py-2 text-left text-sm hover:bg-gray-50 transition-colors"
-            @click="handleRunAnalysis('error')"
-          >
-            Detect Error Triggers
-          </button>
-          <button
-            class="block w-full px-3 py-2 text-left text-sm hover:bg-gray-50 transition-colors"
-            @click="handleRunAnalysis('full')"
-          >
-            Full Analysis
-          </button>
-        </div>
-      </div>
 
       <div class="flex-1" />
 
