@@ -17,6 +17,8 @@ v2.1.0 发布后手动检查发现多项问题，涵盖崩溃 bug、性能瓶颈
 | M3 | LLM chunk 级并发 (smart_delete/correction 并发调用) | **完成** |
 | M4 | 字幕交互增强 (多选/时间微调/合并分割/搜索入口/Timeline 重命名) | **完成** |
 | M5 | 文档修正 (检查清单 + record) | **完成** |
+| M6 | isDirty watch 竞态修复 (连续操作数据丢失) | **完成** |
+| M7 | 移除 Analysis 规则引擎 (全链路清理) | **完成** |
 
 ## M1: P0 Bug 修复
 
@@ -133,6 +135,103 @@ SettingsModal LLM Tab 新增「高级参数」折叠区（`<details>`），含 7
 
 - `docs/2.1.1/record-2.1.1.md` — 本文档
 - `docs/2.1.1/spec-v2.1.1.md` — 规格文档（实施前编写）
+
+## M6: isDirty watch 竞态修复
+
+### 背景
+
+审计报告 `docs/2.1.1/audit-2.1.1-6-analysis.md` 发现全局 Bug：Vue `watch(isDirty, ...)` 只在值变化时触发。用户连续操作时（操作 A → 操作 B 在 2s 内），第二次 `isDirty = true` 不触发 watch（值已是 true），导致操作 B 的修改在 auto-save 前丢失。
+
+### 修复
+
+**文件**: `frontend/src/pages/WorkspacePage.vue`
+
+- 改用 Vue 3.5+ `watch` 的 `onCleanup` 回调模式：每次回调执行时注册清理函数，下次回调前自动取消旧 timer
+- 移除废弃的 module 级 `saveTimer` 变量
+- timer 回调内部增加 `if (isSaving.value) return` 守卫，防止与手动保存 `handleSaveProject` 竞态
+
+```typescript
+// 修复前：true → true 不触发，timer 不重置
+watch(isDirty, (dirty) => {
+  if (!dirty || isSaving.value) return
+  if (saveTimer) clearTimeout(saveTimer)
+  saveTimer = setTimeout(async () => { ... }, 2000)
+})
+
+// 修复后：每次 isDirty=true 都通过 onCleanup 重置 timer
+watch(isDirty, (dirty, _old, onCleanup) => {
+  if (!dirty || isSaving.value) return
+  const timer = setTimeout(async () => {
+    if (isSaving.value) return
+    isSaving.value = true
+    try { ... } finally { isSaving.value = false }
+  }, 2000)
+  onCleanup(() => clearTimeout(timer))
+})
+```
+
+## M7: 移除 Analysis 规则引擎
+
+### 背景
+
+审计报告对 Analysis 功能的 4 个专属 bug 进行分析后，认定 3 个 bug 共享同一架构缺陷根因（AnalysisResult append-only 设计、EditDecision 单向关联无级联删除、字符串匹配+固定 lookahead 代替语义理解），且规则引擎在 LLM 能力普及后的边际价值已被 Smart Delete 覆盖。决定移除而非修补。
+
+### 移除范围
+
+#### 后端
+
+| 文件 | 移除内容 |
+|------|----------|
+| `core/analysis_service.py` | **整文件删除** — `detect_fillers`, `detect_errors`, `detect_duplicates`, `detect_punctuation`, `run_full_analysis` |
+| `core/models.py` | `TaskType`: FILLER_DETECTION, ERROR_DETECTION, FULL_ANALYSIS; `AnalysisResult.type`: filler, error, duplicate, punctuation |
+| `core/events.py` | `ANALYSIS_UPDATED` 事件常量 |
+| `core/config.py` | `filler_words`, `error_trigger_words` 默认值 |
+| `main.py` | `_handle_filler_detection`, `_handle_error_detection`, `_handle_full_analysis` 三个 handler + 注册 + import |
+| `core/bridge_service.py` | `start_analysis_fn` 参数, `_handle_start_analysis` 方法, `/api/v1/analyze` 路由 |
+| `core/workflow_engine.py` | `full_analysis` 步骤类型（VALID_STEP_TYPES, STEP_TO_TASK_TYPE, STEP_DISPLAY_NAMES, `_extract_edits` 分支） |
+
+#### 前端
+
+| 文件 | 移除内容 |
+|------|----------|
+| `frontend/src/utils/events.ts` | `EVENT_ANALYSIS_UPDATED` |
+| `frontend/src/types/project.ts` | `AnalysisResult.type`: filler, error, duplicate, punctuation |
+| `frontend/src/types/task.ts` | TaskType: filler_detection, error_detection, full_analysis |
+| `frontend/src/composables/useAnalysis.ts` | `runFillerDetection`, `runErrorDetection`, `runFullAnalysis`; ANALYSIS_TASKS 条目 |
+| `frontend/src/composables/useWorkflow.ts` | `WorkflowStep.type` 移除 `"full_analysis"` |
+| `frontend/src/pages/WorkspacePage.vue` | Analysis 下拉菜单 HTML + `handleRunAnalysis` + `showAnalysisDropdown` + 解构引用 |
+| `frontend/src/components/workspace/SuggestionPanel.vue` | filler/error 分组逻辑 + `findSegRange` + `ItemKind` 中的 filler/error |
+| `frontend/src/components/workspace/AIAssistantPanel.vue` | `full_analysis` 步骤选项 + 标签 |
+| `frontend/src/components/workspace/ConflictResolutionView.vue` | `full_analysis` 步骤标签 |
+
+#### 测试
+
+| 文件 | 变更 |
+|------|------|
+| `tests/test_analysis_service.py` | **整文件删除** |
+| `tests/test_analysis_handlers.py` | 移除 `TestHandlersReadActiveTimeline` 类，保留 `TestGetTargetTimeline` |
+| `tests/test_config.py` | filler_words/error_trigger_words 断言改为 silence_threshold_db/export_video_codec |
+| `tests/test_models.py` | 移除 FILLER/ERROR/FULL 断言，AnalysisResult type 改为 llm_smart_delete |
+| `tests/test_project_service.py` | test_add_analysis_results type 改为 llm_smart_delete; test_get_settings 断言改为 silence_threshold_db |
+| `tests/test_subtitle_correction_review.py` | AnalysisResult type filler → llm_smart_delete |
+| `tests/test_task_cancel.py` | FILLER_DETECTION → SILENCE_DETECTION |
+| `tests/test_workflow_engine.py` | full_analysis → llm_smart_delete |
+| `tests/integration/test_workflow_integration.py` | full_analysis → llm_smart_delete |
+
+### 保留项
+
+- `add_analysis_results` — LLM Smart Delete / Subtitle Correction / Highlight 仍使用
+- `confirm_all_from_source` — LLM "信任此来源" 批量确认仍使用
+- `AnalysisData`, `AnalysisResult` 模型 — `type` 缩减为 `llm_smart_delete | llm_subtitle_correction | llm_highlight`
+- `SuggestionPanel` 的 silence / llm_smart / partial_delete 分组逻辑
+
+### 统计
+
+- 删除文件: 2 (`core/analysis_service.py` + `tests/test_analysis_service.py`)
+- 修改文件: 25 (后端 5 + 前端 11 + 测试 9)
+- 后端净删: ~380 行（analysis_service 332 行 + handler/注册/import ~48 行）
+- 前端净删: ~120 行（UI + composable + types）
+- 全部测试: 353/353 通过（减少 14 条 Analysis 专属测试）
 
 ## 变更文件清单
 
