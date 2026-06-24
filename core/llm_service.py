@@ -363,35 +363,6 @@ def chunk_transcript_by_count(
     return batches
 
 
-def chunk_transcript_short(
-    segments: list[dict],
-    window_duration: float = 25.0,
-    overlap_duration: float = 5.0,
-) -> list[list[dict]]:
-    """Split transcript into short overlapping windows for local-phenomenon analysis.
-
-    .. deprecated:: v2.1.1
-        Smart-delete now uses :func:`chunk_transcript` directly with
-        configurable window/overlap from settings (``llm_smart_window_duration``
-        / ``llm_smart_overlap_duration``). Kept for backward compatibility.
-
-    Used by P0 smart-delete where the phenomena (semantic dup, self-correction,
-    filler phrases) are local -- 15-30s windows catch them better than 5min chunks.
-
-    Args:
-        segments: List of segment dicts with 'start', 'end', 'text'.
-        window_duration: Target window length in seconds (default 25s).
-        overlap_duration: Overlap between windows in seconds (default 5s).
-
-    Returns:
-        List of window groups, each a list of segments.
-    """
-    return chunk_transcript(
-        segments,
-        chunk_duration=window_duration,
-        overlap_duration=overlap_duration,
-    )
-
 
 # ------------------------------------------------------------------
 # Structured message building + layered JSON parsing (C-02)

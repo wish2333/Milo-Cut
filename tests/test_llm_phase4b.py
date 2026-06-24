@@ -15,7 +15,6 @@ from core.llm_service import (
     _parse_json_response_layers,
     analyze_smart_delete,
     analyze_subtitle_correction,
-    chunk_transcript_short,
 )
 
 # ================================================================
@@ -132,35 +131,6 @@ class TestParseJsonResponseLayers:
         assert result is not None
         assert len(result) == 3
 
-
-# ================================================================
-# P0: chunk_transcript_short
-# ================================================================
-
-
-class TestChunkTranscriptShort:
-    def test_short_window_chunking(self):
-        """25s windows with 5s overlap."""
-        segments = [
-            {"id": f"s{i}", "text": f"text{i}", "start": i * 5.0, "end": (i + 1) * 5.0}
-            for i in range(10)  # 0-50s
-        ]
-        chunks = chunk_transcript_short(segments, window_duration=25.0, overlap_duration=5.0)
-        assert len(chunks) > 1
-        # Each chunk should have segments
-        for chunk in chunks:
-            assert len(chunk) > 0
-
-    def test_empty_segments(self):
-        """Empty input returns empty list."""
-        assert chunk_transcript_short([]) == []
-
-    def test_single_segment(self):
-        """Single segment returns single chunk."""
-        segments = [{"id": "s1", "text": "only", "start": 0.0, "end": 5.0}]
-        chunks = chunk_transcript_short(segments)
-        assert len(chunks) == 1
-        assert len(chunks[0]) == 1
 
 
 # ================================================================
