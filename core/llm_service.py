@@ -309,6 +309,60 @@ def chunk_transcript(
     return chunks
 
 
+def chunk_transcript_by_count(
+    segments: list[dict],
+    batch_size: int = 20,
+    overlap: int = 4,
+) -> list[tuple[list[dict], set[str]]]:
+    """Split transcript by segment count using P1-style batch+target mode.
+
+    Each batch contains ``batch_size + 2 * overlap`` segments (context
+    at boundaries), with ``target_ids`` marking the ``batch_size`` central
+    segments the LLM should analyze. Overlap segments provide context only.
+
+    Args:
+        segments: List of segment dicts (must have 'id' key).
+        batch_size: Target analysis segments per batch. min=1.
+        overlap: Context overlap on each side. min=0. Clamped to
+            ``batch_size - 1`` if >= batch_size (audit #11).
+
+    Returns:
+        [(batch_segments, target_ids), ...] where batch_segments are
+        shallow-copy slices and target_ids is a set of segment ID strings.
+    """
+    if not segments:
+        return []
+
+    # audit #11: overlap >= batch_size guard
+    if overlap >= batch_size:
+        logger.warning(
+            f"chunk_transcript_by_count: overlap ({overlap}) >= batch_size "
+            f"({batch_size}), clamping to {batch_size - 1}"
+        )
+        overlap = max(0, batch_size - 1)
+
+    total = len(segments)
+
+    # audit #9: single-batch only when total <= batch_size
+    if total <= batch_size:
+        all_ids = {str(s.get("id", "")) for s in segments}
+        return [([dict(s) for s in segments], all_ids)]  # independent copies
+
+    batches: list[tuple[list[dict], set[str]]] = []
+    step = batch_size  # targets don't overlap
+    start_i = 0
+    while start_i < total:
+        end_i = min(start_i + batch_size, total)
+        ctx_start = max(0, start_i - overlap)
+        ctx_end = min(total, end_i + overlap)
+        batch_with_context = [dict(s) for s in segments[ctx_start:ctx_end]]  # independent copies
+        target_ids = {str(segments[i].get("id", "")) for i in range(start_i, end_i)}
+        batches.append((batch_with_context, target_ids))
+        start_i += step
+
+    return batches
+
+
 def chunk_transcript_short(
     segments: list[dict],
     window_duration: float = 25.0,
