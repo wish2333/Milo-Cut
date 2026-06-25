@@ -1440,6 +1440,44 @@ function handleGlobalKeydown(e: KeyboardEvent) {
     handleRedo()
     return
   }
+  // §8: Ctrl+F toggle search/replace bar
+  if (e.ctrlKey && e.key === "f") {
+    e.preventDefault()
+    handleToggleSearchBar()
+    return
+  }
+  // §8: I / O — jump to selected segment start / end
+  if (e.key === "i" || e.key === "I") {
+    if (editSelectedSegmentId.value) {
+      const seg = segments.value.find(s => s.id === editSelectedSegmentId.value)
+      if (seg) {
+        e.preventDefault()
+        handleSeek(seg.start)
+      }
+    }
+    return
+  }
+  if (e.key === "o" || e.key === "O") {
+    if (editSelectedSegmentId.value) {
+      const seg = segments.value.find(s => s.id === editSelectedSegmentId.value)
+      if (seg) {
+        e.preventDefault()
+        handleSeek(seg.end)
+      }
+    }
+    return
+  }
+  // §8: Ctrl+Shift+A confirm all, Ctrl+Shift+D reject all
+  if (e.ctrlKey && e.shiftKey && e.key === "A") {
+    e.preventDefault()
+    handleConfirmAllSuggestions()
+    return
+  }
+  if (e.ctrlKey && e.shiftKey && e.key === "D") {
+    e.preventDefault()
+    handleRejectAllSuggestions()
+    return
+  }
   // v2.1.1 M4-1: selection-mode keyboard shortcuts
   if (selectionMode.value) {
     if (e.key === "Escape") {
