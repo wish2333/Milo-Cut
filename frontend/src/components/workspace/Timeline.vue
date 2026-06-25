@@ -100,9 +100,8 @@ const activeTab = ref<RightPanelTab>("suggestion")
 // external highlight (SuggestionPanel click).
 const listContainer = ref<HTMLElement | null>(null)
 
-// v2.1.1 A-3: right-side panel is now an overlay (default hidden). Keeps the
-// transcript list full-width when collapsed and floats over it when expanded.
-const sidebarOpen = ref(false)
+// v2.1.1 A-3: right-side panel — inline flex child (default open).
+const sidebarOpen = ref(true)
 
 // v2.1.1: resizable sidebar width (persisted across sessions).
 const SIDEBAR_MIN = 320
@@ -222,8 +221,9 @@ watch(
 <template>
   <div class="flex h-full w-full min-w-0 flex-col">
     <div class="flex items-center justify-between border-b border-gray-200 px-4 py-2">
-      <span class="text-sm font-medium">Timeline</span>
-      <div class="flex items-center gap-2">
+      <!-- LEFT: Timeline title + tools -->
+      <div class="flex items-center gap-2 flex-1 min-w-0">
+        <span class="text-sm font-medium">Timeline</span>
         <!-- v2.1.1 M4-1: selection mode toggle -->
         <button
           class="rounded p-1.5 transition-colors"
@@ -266,6 +266,29 @@ watch(
           {{ globalEditMode ? '退出编辑' : '编辑字幕' }}
         </button>
         <span class="text-xs text-gray-500">{{ subtitleCount }} subtitles + {{ silenceCount }} silence</span>
+      </div>
+      <!-- RIGHT: sidebar tabs + collapse arrow -->
+      <div class="flex items-center gap-1 flex-shrink-0">
+        <button
+          v-for="tab in tabs"
+          :key="tab.key"
+          v-if="sidebarOpen"
+          class="px-2 py-1 text-xs font-medium rounded transition-colors"
+          :class="activeTab === tab.key
+            ? 'bg-blue-100 text-blue-700'
+            : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'"
+          @click="activeTab = tab.key"
+        >{{ tab.label }}</button>
+        <button
+          class="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors"
+          :title="sidebarOpen ? '隐藏侧栏' : '显示侧栏'"
+          @click="sidebarOpen = !sidebarOpen"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path v-if="sidebarOpen" stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" />
+            <path v-else stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
+        </button>
       </div>
     </div>
 
@@ -331,133 +354,89 @@ watch(
         </div>
       </div>
 
-      <!-- v2.1.1: toggle button -- shown only when sidebar is collapsed.
-           Lives inside Timeline (absolute top-right) so it never clashes
-           with the top nav Save button. When sidebar opens this one hides
-           and the close button inside the sidebar header takes over. -->
-      <button
-        v-show="!sidebarOpen"
-        class="absolute right-2 top-2 z-30 rounded p-1.5 text-gray-500 bg-white/40 backdrop-blur-sm hover:bg-gray-100/80 hover:text-gray-700 transition-colors"
-        title="显示侧栏"
-        @click="sidebarOpen = true"
+      <!-- Divider with resize handle -->
+      <div
+        v-if="sidebarOpen"
+        class="relative w-px bg-gray-200 hover:bg-blue-400 cursor-ew-resize transition-colors shrink-0"
+        @mousedown="onSidebarResizeStart"
       >
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16" />
-        </svg>
-      </button>
+        <div class="absolute -left-1.5 -right-1.5 top-0 bottom-0 z-10"></div>
+      </div>
 
-      <!-- v2.1.1: Right sidebar -- teleported to body so it can overlay the
-           whole window (covering the Timeline toolbar and any ancestor
-           chrome) instead of being clipped by Timeline's overflow-hidden
-           wrapper. Width is user-resizable via the drag handle on its
-           left edge, and remembered across sessions. -->
-      <Teleport to="body">
-        <Transition
-          enter-active-class="transition transform duration-200 ease-out"
-          enter-from-class="translate-x-full"
-          enter-to-class="translate-x-0"
-          leave-active-class="transition transform duration-200 ease-in"
-          leave-from-class="translate-x-0"
-          leave-to-class="translate-x-full"
+      <!-- Inline sidebar -->
+      <Transition name="sidebar">
+        <div
+          v-if="sidebarOpen"
+          class="flex flex-col overflow-hidden border-l border-gray-200 bg-white shrink-0"
+          :style="{ width: sidebarWidth + 'px' }"
         >
-          <div
-            v-if="sidebarOpen"
-            class="fixed top-0 bottom-0 right-0 bg-white shadow-2xl border-l border-gray-200 z-40 flex flex-col"
-            :style="{ width: sidebarWidth + 'px' }"
-          >
-            <!-- Resize drag handle -->
-            <div
-              class="absolute left-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-gray-200/0 hover:bg-blue-400/40 transition-colors"
-              title="拖动调整宽度"
-              @mousedown="onSidebarResizeStart"
-            ></div>
+          <div class="flex-1 overflow-y-auto p-2">
+            <SuggestionPanel
+              v-show="activeTab === 'suggestion'"
+              :analysis-results="analysisResults"
+              :edits="edits"
+              :segments="segments"
+              :pending-correction-count="pendingCorrectionCount ?? 0"
+              @confirm-edit="(editId) => emit('confirm-suggestion', editId)"
+              @reject-edit="(editId) => emit('reject-suggestion', editId)"
+              @reset-edit="(editId) => emit('reset-suggestion', editId)"
+              @confirm-edit-batch="(ids) => emit('confirm-suggestion-batch', ids)"
+              @reject-edit-batch="(ids) => emit('reject-suggestion-batch', ids)"
+              @reset-edit-batch="(ids) => emit('reset-suggestion-batch', ids)"
+              @delete-edit-batch="(ids) => emit('delete-suggestion-batch', ids)"
+              @confirm-all="emit('confirm-all')"
+              @reject-all="emit('reject-all')"
+              @seek="handleSuggestionSeek"
+              @review-corrections="emit('open-subtitle-fullscreen')"
+            />
 
-        <!-- Tab header (D-18) -->
-        <div class="flex items-center border-b border-gray-200 bg-gray-50">
-          <!-- Left: Tab buttons (flex-1 + min-w-0 + truncate to prevent squeeze by right button) -->
-          <button
-            v-for="tab in tabs"
-            :key="tab.key"
-            class="flex-1 min-w-0 truncate px-2 py-2 text-xs font-medium transition-colors"
-            :class="
-              activeTab === tab.key
-                ? 'border-b-2 border-blue-500 text-blue-600 bg-white'
-                : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
-            "
-            @click="activeTab = tab.key"
-          >
-            {{ tab.label }}
-          </button>
+            <AIAssistantPanel
+              v-show="activeTab === 'ai'"
+              :segments="segments"
+              :llm-configured="llmConfigured ?? false"
+              :llm-model="llmModel ?? ''"
+              :is-running="llmIsRunning ?? false"
+              :progress="llmProgress ?? 0"
+              :error-msg="llmErrorMsg ?? null"
+              :subtitle-correction-count="subtitleCorrectionCount ?? null"
+              @start-smart-delete="emit('start-smart-delete')"
+              @switch-to-suggestion="activeTab = 'suggestion'"
+              @start-subtitle-correction="(text) => emit('start-subtitle-correction', text)"
+              @open-subtitle-fullscreen="emit('open-subtitle-fullscreen')"
+              @go-to-settings="emit('go-to-settings')"
+              @seek="handleSuggestionSeek"
+              @cancel-single="emit('cancel-single')"
+            />
 
-          <!-- Right: inline close button (flex-shrink-0 to avoid squeeze; relative z-10 for dropdown visibility) -->
-          <button
-            class="relative z-10 flex-shrink-0 w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors"
-            title="隐藏侧栏"
-            @click="sidebarOpen = false"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-
-        <!-- Tab content (v-show preserves component state across switches) -->
-        <div class="flex-1 overflow-y-auto p-2">
-          <SuggestionPanel
-            v-show="activeTab === 'suggestion'"
-            :analysis-results="analysisResults"
-            :edits="edits"
-            :segments="segments"
-            :pending-correction-count="pendingCorrectionCount ?? 0"
-            @confirm-edit="(editId) => emit('confirm-suggestion', editId)"
-            @reject-edit="(editId) => emit('reject-suggestion', editId)"
-            @reset-edit="(editId) => emit('reset-suggestion', editId)"
-            @confirm-edit-batch="(ids) => emit('confirm-suggestion-batch', ids)"
-            @reject-edit-batch="(ids) => emit('reject-suggestion-batch', ids)"
-            @reset-edit-batch="(ids) => emit('reset-suggestion-batch', ids)"
-            @delete-edit-batch="(ids) => emit('delete-suggestion-batch', ids)"
-            @confirm-all="emit('confirm-all')"
-            @reject-all="emit('reject-all')"
-            @seek="handleSuggestionSeek"
-            @review-corrections="emit('open-subtitle-fullscreen')"
-          />
-
-          <AIAssistantPanel
-            v-show="activeTab === 'ai'"
-            :segments="segments"
-            :llm-configured="llmConfigured ?? false"
-            :llm-model="llmModel ?? ''"
-            :is-running="llmIsRunning ?? false"
-            :progress="llmProgress ?? 0"
-            :error-msg="llmErrorMsg ?? null"
-            :subtitle-correction-count="subtitleCorrectionCount ?? null"
-            @start-smart-delete="emit('start-smart-delete')"
-            @switch-to-suggestion="activeTab = 'suggestion'"
-            @start-subtitle-correction="(text) => emit('start-subtitle-correction', text)"
-            @open-subtitle-fullscreen="emit('open-subtitle-fullscreen')"
-            @go-to-settings="emit('go-to-settings')"
-            @seek="handleSuggestionSeek"
-            @cancel-single="emit('cancel-single')"
-          />
-
-          <HighlightModeView
-            v-show="activeTab === 'highlight'"
-            :highlights="highlightItems ?? []"
-            :segments="segments"
-            :total-duration="highlightTotalDuration ?? 0"
-            :target-duration="highlightTargetDuration ?? 0"
-            :jump-cuts="jumpCuts ?? []"
-            :loading="llmIsRunning ?? false"
-            :progress="llmProgress ?? 0"
-            :error="llmErrorMsg ?? null"
-            :llm-configured="llmConfigured ?? false"
-            @start-highlight="(minutes) => emit('start-highlight', minutes)"
-            @seek="handleSuggestionSeek"
-          />
-        </div>
+            <HighlightModeView
+              v-show="activeTab === 'highlight'"
+              :highlights="highlightItems ?? []"
+              :segments="segments"
+              :total-duration="highlightTotalDuration ?? 0"
+              :target-duration="highlightTargetDuration ?? 0"
+              :jump-cuts="jumpCuts ?? []"
+              :loading="llmIsRunning ?? false"
+              :progress="llmProgress ?? 0"
+              :error="llmErrorMsg ?? null"
+              :llm-configured="llmConfigured ?? false"
+              @start-highlight="(minutes) => emit('start-highlight', minutes)"
+              @seek="handleSuggestionSeek"
+            />
+          </div>
         </div>
       </Transition>
-      </Teleport>
     </div>
   </div>
 </template>
+
+<style scoped>
+.sidebar-enter-active,
+.sidebar-leave-active {
+  transition: width 200ms ease-out;
+  overflow: hidden;
+}
+.sidebar-enter-from,
+.sidebar-leave-to {
+  width: 0 !important;
+}
+</style>
