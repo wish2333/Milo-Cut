@@ -46,12 +46,20 @@ describe("HighlightModeView", () => {
     expect(introIdx).toBeLessThan(mainIdx)
   })
 
-  it("shows density badge", () => {
+  it("shows density dot with title and segment text", () => {
     const wrapper = mount(HighlightModeView, {
       props: { highlights, segments, llmConfigured: true },
     })
-    expect(wrapper.text()).toContain("高密度")
-    expect(wrapper.text()).toContain("中密度")
+    // Density is now shown as colored dots with title attributes
+    const dots = wrapper.findAll("span.rounded-full")
+    expect(dots.length).toBeGreaterThanOrEqual(2)
+    // Check title attributes (not text content since dots are visual)
+    const titles = dots.map(d => d.attributes("title")).filter(Boolean)
+    expect(titles).toContain("高密度")
+    expect(titles).toContain("中密度")
+    // Segment text should be displayed alongside the time
+    expect(wrapper.text()).toContain("intro")
+    expect(wrapper.text()).toContain("main point")
   })
 
   it("shows duration summary", () => {
