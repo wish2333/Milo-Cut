@@ -758,6 +758,7 @@ class MiloCutApi(Bridge):
         from core.timeline_utils import collect_confirmed_deleted_seg_ids
 
         timeline = self._get_target_timeline(task)
+        timeline_id = task.payload.get("timeline_id", "") or self._project.current.active_timeline_id
 
         reference_text = task.payload.get("reference_text", "")
         # v2.1.1 M2: context_window defaults from settings; payload may override.
