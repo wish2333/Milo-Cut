@@ -5,11 +5,16 @@ Migrated from ff-intelligent-neo core/config.py, adapted for Milo-Cut.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 from typing import Any
 
-from core.paths import get_data_dir, get_settings_path
+from core.paths import get_settings_path
+
+from core.logging import get_logger
+
+logger = get_logger()
 
 _DEFAULT_SETTINGS: dict[str, Any] = {
     "ffmpeg_path": "",
@@ -23,14 +28,6 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     "trim_subtitles_on_silence_overlap": True,
     "export_fade_duration": 0.0,
     "export_transition_mode": "none",
-    "filler_words": [
-        "嗯", "啊", "呃", "然后", "就是", "那个",
-        "怎么说呢", "你知道", "对吧", "其实",
-    ],
-    "error_trigger_words": [
-        "不对", "重来", "重新说", "说错了", "刚才说错了",
-        "这段不要", "再来一遍", "算了", "不是这样的",
-    ],
     "export_video_codec": "libx264",
     "export_audio_codec": "aac",
     "export_audio_bitrate": "192k",
@@ -57,19 +54,64 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     # Proxy
     "proxy_resolution": "720p",
     "proxy_auto_generate": False,
+    # LLM
+    "llm_provider": "deepseek",
+    "llm_base_url": "",
+    "llm_api_key": "",
+    "llm_model": "",
+    "llm_temperature": 0.3,
+    "llm_timeout": 120,
+    "llm_thinking_enabled": False,
+    # v2.1.1 M2: tunable LLM chunking / batching / concurrency parameters.
+    # Batch/overlap control smart-delete + highlight chunking; batch/context
+    # control subtitle-correction batching; concurrency enables parallel LLM
+    # calls (M3). All have safe defaults so existing behavior is preserved.
+    "llm_smart_batch_size": 20,
+    "llm_smart_overlap_size": 4,
+    "llm_correction_batch_size": 30,
+    "llm_correction_context_window": 5,
+    "llm_highlight_chunk_duration": 1800.0,
+    "llm_highlight_overlap_duration": 60.0,
+    "llm_concurrency": 5,
+    # Per-provider config cache (v2.1.0): preserves base_url/api_key/model
+    # across provider switches so the user never loses what they typed.
+    # Structure: {provider_id: {base_url, api_key, model}}
+    "llm_provider_configs": {},
+    # LLM prompts (Phase 3: parameterized prompt customization)
+    "llm_prompts": {},
+    # LLM prompt presets (v2.1.0 Phase 1: per-feature saved parameter snapshots)
+    "llm_prompt_presets": {},
+    # Workflows (v2.1.0 Phase 3: saved workflow definitions, shared across projects)
+    "workflows": [],
 }
 
 
 def load_settings() -> dict[str, Any]:
-    """Load settings from disk, returning defaults for missing keys."""
+    """Load settings from disk, returning defaults for missing keys.
+
+    Returns a deep copy of the merged settings so callers can freely mutate
+    nested values (e.g. ``llm_prompt_presets``) without polluting the module
+    level ``_DEFAULT_SETTINGS`` singleton across invocations.
+    """
     path = get_settings_path()
     if not path.exists():
-        return {**_DEFAULT_SETTINGS}
+        return copy.deepcopy(_DEFAULT_SETTINGS)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return {**_DEFAULT_SETTINGS}
-    merged = {**_DEFAULT_SETTINGS, **data}
+        return copy.deepcopy(_DEFAULT_SETTINGS)
+    merged = copy.deepcopy(_DEFAULT_SETTINGS)
+    merged.update(data)
+
+    # Audit #10: one-time cleanup of deprecated settings keys
+    _DEPRECATED_KEYS = {"llm_smart_window_duration", "llm_smart_overlap_duration"}
+    removed = [k for k in _DEPRECATED_KEYS if k in merged]
+    if removed:
+        for k in removed:
+            merged.pop(k, None)
+        save_settings(merged)
+        logger.info(f"Cleaned deprecated settings keys: {removed}")
+
     return merged
 
 

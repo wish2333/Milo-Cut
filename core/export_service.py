@@ -7,19 +7,18 @@ concatenating them via FFmpeg. Also exports SRT with adjusted timestamps.
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import sys
-import tempfile
 import threading
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 _SUBPROCESS_KWARGS: dict = (
     {"creationflags": subprocess.CREATE_NO_WINDOW}
     if sys.platform == "win32"
     else {"start_new_session": True}
 )
-from typing import Callable
 
 from loguru import logger
 
@@ -67,7 +66,9 @@ def export_video(
         deletions = _get_confirmed_deletions(edits)
         media_duration = media_info.get("duration", 0.0) if media_info else 0.0
         if media_duration <= 0.0:
-            logger.warning("media_duration unavailable ({}), export may be truncated", media_duration)
+            logger.warning(
+                "media_duration unavailable ({}), export may be truncated", media_duration
+            )
         total_duration = _get_media_duration(segments, edits, media_duration)
 
         has_video = False
@@ -77,24 +78,37 @@ def export_video(
         # Safety: detect audio-only files by extension regardless of media_info
         _audio_exts = {".wav", ".mp3", ".flac", ".ogg", ".aac", ".m4a", ".wma", ".opus"}
         if has_video and Path(media_path).suffix.lower() in _audio_exts:
-            logger.warning("export_video: media_info reports width={} but file is audio-only ({}), forcing has_video=False",
-                           media_info.get("width", 0) if media_info else 0, Path(media_path).suffix)
+            logger.warning(
+                "export_video: media_info reports width={} but file is audio-only ({}), forcing has_video=False",
+                media_info.get("width", 0) if media_info else 0,
+                Path(media_path).suffix,
+            )
             has_video = False
 
-        logger.info("export_video: has_video={}, media_path={}, width={}",
-                     has_video, media_path,
-                     media_info.get("width", 0) if media_info else "N/A")
+        logger.info(
+            "export_video: has_video={}, media_path={}, width={}",
+            has_video,
+            media_path,
+            media_info.get("width", 0) if media_info else "N/A",
+        )
 
         if not deletions:
             logger.info("No confirmed deletions, copying original file")
             import shutil
+
             shutil.copy2(media_path, output_path)
             if progress_callback:
                 progress_callback(100.0, "Done (no cuts)")
             return {"success": True, "data": {"path": output_path}}
 
         keep_ranges = _compute_keep_ranges(total_duration, deletions)
-        logger.info("export_video: media_duration={}, total_duration={}, deletions={}, keep_ranges={}", media_duration, total_duration, len(deletions), keep_ranges)
+        logger.info(
+            "export_video: media_duration={}, total_duration={}, deletions={}, keep_ranges={}",
+            media_duration,
+            total_duration,
+            len(deletions),
+            keep_ranges,
+        )
         if not keep_ranges:
             return {"success": False, "error": "Nothing to export after applying all cuts"}
 
@@ -107,7 +121,10 @@ def export_video(
             if out.suffix.lower() == ".wav":
                 output_path = str(out.with_suffix(".m4a"))
             return export_audio(
-                media_path, segments, edits, output_path,
+                media_path,
+                segments,
+                edits,
+                output_path,
                 media_info=media_info,
                 progress_callback=progress_callback,
                 cancel_event=cancel_event,
@@ -118,9 +135,16 @@ def export_video(
         # Video+audio: single-pass filter_complex
         if fade_duration > 0 and len(keep_ranges) > 1:
             filter_complex = _build_video_xfade_filter(
-                keep_ranges, xfade_dur=fade_duration, fade_mode=fade_mode,
+                keep_ranges,
+                xfade_dur=fade_duration,
+                fade_mode=fade_mode,
             )
-            logger.info("export_video: xfade dur={} mode={} for {} ranges", fade_duration, fade_mode, len(keep_ranges))
+            logger.info(
+                "export_video: xfade dur={} mode={} for {} ranges",
+                fade_duration,
+                fade_mode,
+                len(keep_ranges),
+            )
         else:
             filter_complex = _build_video_trim_filter(keep_ranges)
         filter_path = str(temp_dir / "video_filter.txt")
@@ -137,17 +161,30 @@ def export_video(
         output_duration_ms = sum(e - s for s, e in keep_ranges) * 1000.0
 
         cmd = [
-            ffmpeg, "-hide_banner", "-y",
-            "-i", media_path,
-            "-filter_complex_script", filter_path,
-            "-map", "[outv]", "-map", "[outa]",
-            "-c:v", video_codec,
-            "-preset", preset,
+            ffmpeg,
+            "-hide_banner",
+            "-y",
+            "-i",
+            media_path,
+            "-filter_complex_script",
+            filter_path,
+            "-map",
+            "[outv]",
+            "-map",
+            "[outa]",
+            "-c:v",
+            video_codec,
+            "-preset",
+            preset,
             *quality_args,
-            "-c:a", audio_codec,
-            "-b:a", audio_bitrate,
-            "-pix_fmt", pix_fmt,
-            "-progress", "pipe:1",
+            "-c:a",
+            audio_codec,
+            "-b:a",
+            audio_bitrate,
+            "-pix_fmt",
+            pix_fmt,
+            "-progress",
+            "pipe:1",
         ]
         # Add scale filter if resolution is not original
         if resolution and resolution != "original":
@@ -156,7 +193,11 @@ def export_video(
         if output_path.endswith((".mp4", ".mov")):
             cmd.extend(["-movflags", "+faststart"])
         cmd.append(output_path)
-        logger.info("export_video: filter_complex length={}, written to {}", len(filter_complex), filter_path)
+        logger.info(
+            "export_video: filter_complex length={}, written to {}",
+            len(filter_complex),
+            filter_path,
+        )
         _run_ffmpeg_with_progress(cmd, output_duration_ms, progress_callback)
 
         _cleanup_files([filter_path])
@@ -194,19 +235,28 @@ def export_audio(
         deletions = _get_confirmed_deletions(edits)
         media_duration = media_info.get("duration", 0.0) if media_info else 0.0
         if media_duration <= 0.0:
-            logger.warning("media_duration unavailable ({}), export may be truncated", media_duration)
+            logger.warning(
+                "media_duration unavailable ({}), export may be truncated", media_duration
+            )
         total_duration = _get_media_duration(segments, edits, media_duration)
 
         if not deletions:
             logger.info("No confirmed deletions, copying original audio")
             import shutil
+
             shutil.copy2(media_path, output_path)
             if progress_callback:
                 progress_callback(100.0, "Done (no cuts)")
             return {"success": True, "data": {"path": output_path}}
 
         keep_ranges = _compute_keep_ranges(total_duration, deletions)
-        logger.info("export_audio: media_duration={}, total_duration={}, deletions={}, keep_ranges={}", media_duration, total_duration, len(deletions), keep_ranges)
+        logger.info(
+            "export_audio: media_duration={}, total_duration={}, deletions={}, keep_ranges={}",
+            media_duration,
+            total_duration,
+            len(deletions),
+            keep_ranges,
+        )
         if not keep_ranges:
             return {"success": False, "error": "Nothing to export after applying all cuts"}
 
@@ -214,8 +264,15 @@ def export_audio(
             if fade_mode == "separate":
                 filter_complex = _build_audio_fade_filter(keep_ranges, fade_dur=fade_duration)
             else:
-                filter_complex = _build_audio_acrossfade_filter(keep_ranges, xfade_dur=fade_duration)
-            logger.info("export_audio: dur={} mode={} for {} ranges", fade_duration, fade_mode, len(keep_ranges))
+                filter_complex = _build_audio_acrossfade_filter(
+                    keep_ranges, xfade_dur=fade_duration
+                )
+            logger.info(
+                "export_audio: dur={} mode={} for {} ranges",
+                fade_duration,
+                fade_mode,
+                len(keep_ranges),
+            )
         else:
             filter_complex = _build_audio_trim_filter(keep_ranges)
 
@@ -228,15 +285,26 @@ def export_audio(
         output_duration_ms = sum(e - s for s, e in keep_ranges) * 1000.0
 
         cmd = [
-            ffmpeg, "-hide_banner", "-y",
-            "-i", media_path,
-            "-filter_complex_script", filter_path,
-            "-map", "[out]",
-            "-c:a", "aac",
-            "-progress", "pipe:1",
+            ffmpeg,
+            "-hide_banner",
+            "-y",
+            "-i",
+            media_path,
+            "-filter_complex_script",
+            filter_path,
+            "-map",
+            "[out]",
+            "-c:a",
+            "aac",
+            "-progress",
+            "pipe:1",
             output_path,
         ]
-        logger.info("export_audio: filter_complex length={}, written to {}", len(filter_complex), filter_path)
+        logger.info(
+            "export_audio: filter_complex length={}, written to {}",
+            len(filter_complex),
+            filter_path,
+        )
         _run_ffmpeg_with_progress(cmd, output_duration_ms, progress_callback)
 
         file_size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
@@ -265,7 +333,14 @@ def export_srt(
         keep_ranges = _compute_keep_ranges(total_duration, deletions)
 
         subtitle_segs = [s for s in segments if s.get("type") == "subtitle"]
-        logger.info("export_srt: media_duration={}, total_duration={}, deletions={}, keep_ranges={}, total_subtitle_segs={}", media_duration, total_duration, len(deletions), keep_ranges, len(subtitle_segs))
+        logger.info(
+            "export_srt: media_duration={}, total_duration={}, deletions={}, keep_ranges={}, total_subtitle_segs={}",
+            media_duration,
+            total_duration,
+            len(deletions),
+            keep_ranges,
+            len(subtitle_segs),
+        )
 
         kept: list[dict] = []
         lost: list[dict] = []
@@ -275,14 +350,20 @@ def export_srt(
             else:
                 lost.append(seg)
         if lost:
-            logger.warning("export_srt: {} subtitles lost (not in keep_ranges): {}", len(lost), [(s["start"], s["end"], s.get("text", "")[:30]) for s in lost])
+            logger.warning(
+                "export_srt: {} subtitles lost (not in keep_ranges): {}",
+                len(lost),
+                [(s["start"], s["end"], s.get("text", "")[:30]) for s in lost],
+            )
 
         kept.sort(key=lambda s: s["start"])
 
         adjusted: list[tuple[float, float, str]] = []
         for seg in kept:
             new_start, new_end = _map_to_exported_timeline(
-                seg["start"], seg["end"], keep_ranges,
+                seg["start"],
+                seg["end"],
+                keep_ranges,
             )
             adjusted.append((new_start, new_end, seg.get("text", "")))
 
@@ -325,7 +406,9 @@ def export_vtt(
         adjusted: list[tuple[float, float, str]] = []
         for seg in kept:
             new_start, new_end = _map_to_exported_timeline(
-                seg["start"], seg["end"], keep_ranges,
+                seg["start"],
+                seg["end"],
+                keep_ranges,
             )
             adjusted.append((new_start, new_end, seg.get("text", "")))
 
@@ -348,13 +431,101 @@ def export_vtt(
 # Helpers
 # ================================================================
 
+
 def _get_confirmed_deletions(edits: list[dict]) -> list[tuple[float, float]]:
     """Extract confirmed deletion ranges from edit decisions."""
     result = []
     for edit in edits:
-        if (edit.get("action") == "delete"
-                and edit.get("status") == "confirmed"):
+        if edit.get("action") == "delete" and edit.get("status") == "confirmed":
             result.append((edit["start"], edit["end"]))
+    result.sort(key=lambda x: x[0])
+    return result
+
+
+def detect_jump_cuts(
+    highlight_segments: list[dict], threshold_s: float = 2.0
+) -> list[dict[str, Any]]:
+    """Detect jump cuts between highlight segments that need transition handling.
+
+    When exporting a highlight reel, segments that were far apart in the
+    original video get stitched together. Large gaps produce jarring audio
+    pops. This detects those points.
+
+    Args:
+        highlight_segments: List of segment dicts sorted by 'start', each
+            with at least 'start' and 'end' keys.
+        threshold_s: Gap duration threshold in seconds. Gaps exceeding this
+            are flagged as jump cuts.
+
+    Returns:
+        List of jump cut dicts: {index, gap_duration, from_end, to_start}
+    """
+    jump_cuts: list[dict[str, Any]] = []
+    for i in range(len(highlight_segments) - 1):
+        current = highlight_segments[i]
+        next_seg = highlight_segments[i + 1]
+        gap = next_seg["start"] - current["end"]
+        if gap > threshold_s:
+            jump_cuts.append(
+                {
+                    "index": i,
+                    "gap_duration": round(gap, 2),
+                    "from_end": current["end"],
+                    "to_start": next_seg["start"],
+                }
+            )
+    return jump_cuts
+
+
+def get_highlight_ranges(
+    analysis_results: list,
+    transcript_segments: list | None = None,
+) -> list[tuple[float, float]]:
+    """Extract highlight ranges from AnalysisResult objects.
+
+    Used for highlight reel export: reads from AnalysisResult(type="llm_highlight")
+    and derives ranges from segment_ids + transcript segments.
+
+    For backwards compatibility, if analysis_results items have a "source" key
+    (old edit-dict format), they are filtered by source="llm_highlight" + action="keep".
+
+    Args:
+        analysis_results: list of AnalysisResult objects (or dicts with segment_ids).
+        transcript_segments: list of Segment objects to resolve segment_ids to
+            (start, end) times. If None and results have start/end, those are used.
+    """
+    result = []
+
+    # Check if we have old-style edit dicts (have "source" key)
+    is_old_style = (
+        analysis_results
+        and isinstance(analysis_results[0], dict)
+        and "source" in analysis_results[0]
+    )
+
+    if is_old_style:
+        # Legacy path: filter edits by source/action
+        for item in analysis_results:
+            if (
+                item.get("action") == "keep"
+                and item.get("source", "").startswith("llm_highlight")
+            ):
+                result.append((item["start"], item["end"]))
+    else:
+        # New path: derive from AnalysisResult segment_ids
+        seg_ids: set[str] = set()
+        for r in analysis_results:
+            ids = getattr(r, "segment_ids", None) or r.get("segment_ids", [])
+            seg_ids.update(ids)
+
+        if transcript_segments is not None:
+            seg_map = {s.id: s for s in transcript_segments}
+            for sid in seg_ids:
+                seg = seg_map.get(sid)
+                if seg is not None:
+                    result.append((seg.start, seg.end))
+        # If no transcript_segments provided, return empty — caller must supply them.
+
     result.sort(key=lambda x: x[0])
     return result
 
@@ -439,20 +610,14 @@ def _build_audio_trim_filter(
     parts: list[str] = []
     if n == 1:
         start, end = keep_ranges[0]
-        parts.append(
-            f"[0:a]atrim=start={start:.6f}:end={end:.6f},asetpts=PTS-STARTPTS[out]"
-        )
+        parts.append(f"[0:a]atrim=start={start:.6f}:end={end:.6f},asetpts=PTS-STARTPTS[out]")
     else:
         split_outputs = "".join(f"[s{i}]" for i in range(n))
         parts.append(f"[0:a]asplit={n}{split_outputs}")
         for i, (start, end) in enumerate(keep_ranges):
-            parts.append(
-                f"[s{i}]atrim=start={start:.6f}:end={end:.6f},asetpts=PTS-STARTPTS[a{i}]"
-            )
+            parts.append(f"[s{i}]atrim=start={start:.6f}:end={end:.6f},asetpts=PTS-STARTPTS[a{i}]")
         concat_inputs = "".join(f"[a{i}]" for i in range(n))
-        parts.append(
-            f"{concat_inputs}concat=n={n}:v=0:a=1[out]"
-        )
+        parts.append(f"{concat_inputs}concat=n={n}:v=0:a=1[out]")
     return ";".join(parts)
 
 
@@ -510,7 +675,6 @@ def _build_video_xfade_filter(
     """
     n = len(keep_ranges)
     parts: list[str] = []
-    xdur_s = f"{xfade_dur:.3f}"
     half_fade = xfade_dur / 2.0
 
     if n == 1:
@@ -545,9 +709,11 @@ def _build_video_xfade_filter(
     prev_v = "fv0"
     acc_dur = keep_ranges[0][1] - keep_ranges[0][0]
     for i in range(1, n):
-        seg_xfade = min(xfade_dur,
-                        (keep_ranges[i - 1][1] - keep_ranges[i - 1][0]) * 0.5,
-                        (keep_ranges[i][1] - keep_ranges[i][0]) * 0.5)
+        seg_xfade = min(
+            xfade_dur,
+            (keep_ranges[i - 1][1] - keep_ranges[i - 1][0]) * 0.5,
+            (keep_ranges[i][1] - keep_ranges[i][0]) * 0.5,
+        )
         offset = max(0, acc_dur - seg_xfade)
         next_v = f"xv{i - 1}" if i < n - 1 else "outv"
         parts.append(
@@ -562,24 +728,24 @@ def _build_video_xfade_filter(
         # acrossfade (not concat) so total audio duration matches video xfade.
         prev_a = "a0"
         for i in range(1, n):
-            seg_cross = min(xfade_dur,
-                            (keep_ranges[i - 1][1] - keep_ranges[i - 1][0]) * 0.5,
-                            (keep_ranges[i][1] - keep_ranges[i][0]) * 0.5)
-            next_a = f"xa{i - 1}" if i < n - 1 else "outa"
-            parts.append(
-                f"[{prev_a}][a{i}]acrossfade=d={seg_cross:.3f}:c1=tri:c2=tri[{next_a}]"
+            seg_cross = min(
+                xfade_dur,
+                (keep_ranges[i - 1][1] - keep_ranges[i - 1][0]) * 0.5,
+                (keep_ranges[i][1] - keep_ranges[i][0]) * 0.5,
             )
+            next_a = f"xa{i - 1}" if i < n - 1 else "outa"
+            parts.append(f"[{prev_a}][a{i}]acrossfade=d={seg_cross:.3f}:c1=tri:c2=tri[{next_a}]")
             prev_a = next_a
     else:
         prev_a = "fa0"
         for i in range(1, n):
-            cross_len = min(xfade_dur,
-                            (keep_ranges[i - 1][1] - keep_ranges[i - 1][0]) * 0.5,
-                            (keep_ranges[i][1] - keep_ranges[i][0]) * 0.5)
-            next_a = f"xa{i - 1}" if i < n - 1 else "outa"
-            parts.append(
-                f"[{prev_a}][fa{i}]acrossfade=d={cross_len:.3f}:c1=tri:c2=tri[{next_a}]"
+            cross_len = min(
+                xfade_dur,
+                (keep_ranges[i - 1][1] - keep_ranges[i - 1][0]) * 0.5,
+                (keep_ranges[i][1] - keep_ranges[i][0]) * 0.5,
             )
+            next_a = f"xa{i - 1}" if i < n - 1 else "outa"
+            parts.append(f"[{prev_a}][fa{i}]acrossfade=d={cross_len:.3f}:c1=tri:c2=tri[{next_a}]")
             prev_a = next_a
 
     return ";".join(parts)
@@ -652,13 +818,13 @@ def _build_audio_acrossfade_filter(
 
     prev = "a0"
     for i in range(1, n):
-        cross_len = min(xfade_dur,
-                        (keep_ranges[i - 1][1] - keep_ranges[i - 1][0]) * 0.5,
-                        (keep_ranges[i][1] - keep_ranges[i][0]) * 0.5)
-        nxt = f"x{i - 1}" if i < n - 1 else "out"
-        parts.append(
-            f"[{prev}][a{i}]acrossfade=d={cross_len:.3f}:c1=tri:c2=tri[{nxt}]"
+        cross_len = min(
+            xfade_dur,
+            (keep_ranges[i - 1][1] - keep_ranges[i - 1][0]) * 0.5,
+            (keep_ranges[i][1] - keep_ranges[i][0]) * 0.5,
         )
+        nxt = f"x{i - 1}" if i < n - 1 else "out"
+        parts.append(f"[{prev}][a{i}]acrossfade=d={cross_len:.3f}:c1=tri:c2=tri[{nxt}]")
         prev = nxt
 
     return ";".join(parts)
@@ -730,24 +896,42 @@ def _extract_segment(
     """Extract a single segment as MPEG-TS via FFmpeg re-encode."""
     duration = end - start
     base = [
-        ffmpeg, "-hide_banner", "-y",
-        "-ss", f"{start:.3f}",
-        "-i", input_path,
-        "-t", f"{duration:.3f}",
-        "-avoid_negative_ts", "make_zero",
+        ffmpeg,
+        "-hide_banner",
+        "-y",
+        "-ss",
+        f"{start:.3f}",
+        "-i",
+        input_path,
+        "-t",
+        f"{duration:.3f}",
+        "-avoid_negative_ts",
+        "make_zero",
     ]
     if has_video:
         quality_args = get_quality_args(video_codec, crf)
         codec_args = [
-            "-c:v", video_codec, "-preset", preset,
-            *quality_args, "-pix_fmt", "yuv420p", "-c:a", "aac",
+            "-c:v",
+            video_codec,
+            "-preset",
+            preset,
+            *quality_args,
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
         ]
     else:
         codec_args = ["-c:a", "aac", "-vn"]
     cmd = base + codec_args + [output_path]
     result = subprocess.run(
-        cmd, capture_output=True, text=True, encoding="utf-8",
-        errors="replace", timeout=600, **_SUBPROCESS_KWARGS,
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=600,
+        **_SUBPROCESS_KWARGS,
     )
     if result.returncode != 0:
         raise RuntimeError(f"FFmpeg segment extraction failed: {result.stderr[-500:]}")
@@ -762,9 +946,15 @@ def _concat_segments(
 ) -> None:
     """Concatenate .ts segments via FFmpeg concat demuxer."""
     cmd = [
-        ffmpeg, "-hide_banner", "-y",
-        "-f", "concat", "-safe", "0",
-        "-i", concat_list,
+        ffmpeg,
+        "-hide_banner",
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        concat_list,
     ]
     if reencode_audio:
         cmd += ["-af", "aresample=async=1000", "-c:a", "aac"]
@@ -772,8 +962,13 @@ def _concat_segments(
         cmd += ["-c", "copy"]
     cmd.append(output_path)
     result = subprocess.run(
-        cmd, capture_output=True, text=True, encoding="utf-8",
-        errors="replace", timeout=600, **_SUBPROCESS_KWARGS,
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=600,
+        **_SUBPROCESS_KWARGS,
     )
     if result.returncode != 0:
         raise RuntimeError(f"FFmpeg concat failed: {result.stderr[-500:]}")

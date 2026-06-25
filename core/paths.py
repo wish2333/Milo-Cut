@@ -46,11 +46,19 @@ def get_data_dir() -> Path:
         d = get_app_dir() / "data"
     else:
         if sys.platform == "win32":
-            d = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "MiloCut" / "data"
+            d = (
+                Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+                / "MiloCut"
+                / "data"
+            )
         elif sys.platform == "darwin":
             d = Path.home() / "Library" / "Application Support" / "MiloCut" / "data"
         else:
-            d = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "milocut" / "data"
+            d = (
+                Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+                / "milocut"
+                / "data"
+            )
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -97,6 +105,16 @@ def get_plugin_data_dir() -> Path:
         else:
             base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
             d = base / "milocut"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def get_bridge_dir() -> Path:
+    """Return the bridge protocol directory for file-based interop.
+
+    Contains ``outgoing/``, ``incoming/``, and ``archive/`` subdirectories.
+    """
+    d = get_data_dir() / "bridge"
     d.mkdir(parents=True, exist_ok=True)
     return d
 

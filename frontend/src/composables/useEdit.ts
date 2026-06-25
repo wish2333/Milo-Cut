@@ -116,14 +116,14 @@ export function useEdit(
     return null
   }
 
-  async function deleteSegment(segmentId: string): Promise<boolean> {
+  async function deleteSegment(segmentId: string): Promise<string | null> {
     const res = await call<Project>("delete_segment", segmentId)
     if (res.success && res.data) {
       snapshot()
       project.value = res.data
-      return true
+      return null
     }
-    return false
+    return res.error ?? "Failed to delete segment"
   }
 
   async function deleteSilenceSegments(): Promise<boolean> {

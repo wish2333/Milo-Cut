@@ -23,6 +23,7 @@ from core.models import (
     ProjectMeta,
     Segment,
     SegmentType,
+    Timeline,
     TranscriptData,
 )
 from core.paths import get_projects_dir
@@ -62,6 +63,31 @@ class ProjectService:
     def current_path(self) -> Path | None:
         return self._current_path
 
+    @property
+    def active_timeline(self) -> Timeline:
+        """The currently active Timeline of the open project.
+
+        All transcript/edits/analysis operations go through this property.
+        """
+        if self._current is None:
+            raise RuntimeError("No project loaded")
+        return self._current.active_timeline
+
+    def _update_active_timeline(self, **updates) -> Project:
+        """Update the active timeline and write it back to Project.timelines.
+
+        Returns the updated Project (also stored as self._current).
+        """
+        if self._current is None:
+            raise RuntimeError("No project loaded")
+        tl = self.active_timeline
+        new_tl = tl.model_copy(update=updates)
+        new_timelines = [
+            new_tl if t.id == tl.id else t for t in self._current.timelines
+        ]
+        self._current = self._current.model_copy(update={"timelines": new_timelines})
+        return self._current
+
     def create_project(self, name: str, media_path: str, media_info: dict) -> dict:
         """Create a new project with media info."""
         media_fields = {k: v for k, v in media_info.items() if k in MediaInfo.model_fields and k != "path"}
@@ -98,6 +124,10 @@ class ProjectService:
                 return {"success": False, "error": f"Project file not found: {path}"}
 
             data = json.loads(project_path.read_text(encoding="utf-8"))
+
+            # Migrate v1 -> v2 schema if needed
+            data = self._migrate_to_v2(data)
+
             project = Project.model_validate(data)
 
             self._current = project
@@ -106,6 +136,12 @@ class ProjectService:
 
             # Migrate old format silence edits
             self._migrate_silence_edits()
+
+            # v2.1.1: Dedupe duplicate edit ids (legacy llm_smart bug fix)
+            self._dedupe_edit_ids()
+
+            # v2.1.1: Migrate legacy highlight EditDecisions (Bug E/G fix)
+            self._migrate_highlights()
 
             # Check media path reachability
             if self._current.media and self._current.media.path:
@@ -135,18 +171,45 @@ class ProjectService:
             logger.exception("Failed to open project: {}", path)
             return {"success": False, "error": str(e)}
 
+    def _migrate_to_v2(self, raw: dict) -> dict:
+        """Migrate schema_version 1 -> 2: wrap flat fields into default Timeline."""
+        if raw.get("schema_version", 1) >= 2:
+            return raw
+
+        transcript = raw.pop("transcript", {"segments": []})
+        edits = raw.pop("edits", [])
+        analysis = raw.pop("analysis", {"results": []})
+        raw.pop("topic_drift", None)  # Drop old Topic Drift data
+
+        created_at = raw.get("project", {}).get("created_at", "")
+        raw["timelines"] = [
+            {
+                "id": "default",
+                "label": "原始",
+                "source": "migrated",
+                "created_at": created_at,
+                "parent_id": "",
+                "transcript": transcript,
+                "edits": edits,
+                "analysis": analysis,
+            }
+        ]
+        raw["active_timeline_id"] = "default"
+        raw["schema_version"] = 2
+        return raw
+
     def _migrate_silence_edits(self) -> None:
         """Migrate old format silence EditDecisions to bind target_id."""
         if not self._current:
             return
 
         silence_map = {
-            s.id: s for s in self._current.transcript.segments
+            s.id: s for s in self.active_timeline.transcript.segments
             if s.type == SegmentType.SILENCE
         }
 
         migrated = []
-        for edit in self._current.edits:
+        for edit in self.active_timeline.edits:
             if (edit.source == "silence_detection"
                     and edit.target_type == "range"
                     and edit.target_id is None):
@@ -166,7 +229,88 @@ class ProjectService:
             else:
                 migrated.append(edit)
 
-        self._current = self._current.model_copy(update={"edits": migrated})
+        self._update_active_timeline(edits=migrated)
+
+    def _dedupe_edit_ids(self) -> None:
+        """One-time fix: append _dup{N} suffix to duplicate edit ids in the active timeline.
+
+        Suffix format matches the defensive logic in add_analysis_results (_dup{N}).
+        O(n) fast path skips projects with no duplicates (zero overhead for large projects).
+        """
+        if not self._current:
+            return
+
+        tl = self.active_timeline
+        edits = list(tl.edits)
+        ids = [e.id for e in edits]
+
+        # Fast path: no duplicates, skip entirely
+        if len(ids) == len(set(ids)):
+            return
+
+        # Duplicate detected -- back up and fix
+        all_ids = set(ids)
+        seen: dict[str, int] = {}
+        fixed = []
+        changed_count = 0
+
+        for e in edits:
+            if e.id in seen:
+                seen[e.id] += 1
+                candidate = f"{e.id}_dup{seen[e.id]}"
+                # Guard: candidate might collide with an existing id (secondary conflict)
+                while candidate in all_ids:
+                    seen[e.id] += 1
+                    candidate = f"{e.id}_dup{seen[e.id]}"
+                all_ids.add(candidate)
+                fixed.append(e.model_copy(update={"id": candidate}))
+                changed_count += 1
+            else:
+                seen[e.id] = 1
+                fixed.append(e)
+
+        if changed_count > 0:
+            logger.warning("Deduped {} duplicate edit ids in timeline {}", changed_count, tl.id)
+            self._update_active_timeline(edits=fixed)
+
+    def _migrate_highlights(self) -> None:
+        """One-time migration: fix legacy EditDecisions created before Bug E/G fix.
+
+        - Remove ANY orphan EditDecision whose analysis_id no longer exists
+          (not limited to highlights; covers all analysis-driven sources)
+        - Set action="keep" for highlight-source EditDecisions still on "delete"
+        Idempotent: safe to run multiple times.
+        """
+        if not self._current:
+            return
+
+        tl = self.active_timeline
+        ar_ids = {r.id for r in tl.analysis.results}
+
+        updated_edits = []
+        fixed = 0
+        orphan_removed = 0
+        for e in tl.edits:
+            is_highlight = e.source in ("llm_highlight", "manual_highlight")
+            # An edit with analysis_id pointing at a non-existent result is an
+            # orphan regardless of source -- its driving analysis was deleted.
+            if e.analysis_id and e.analysis_id not in ar_ids:
+                orphan_removed += 1
+                continue
+
+            if is_highlight and e.action == "delete":
+                # Bug E legacy: highlight edit had wrong action
+                updated_edits.append(e.model_copy(update={"action": "keep"}))
+                fixed += 1
+            else:
+                updated_edits.append(e)
+
+        if fixed > 0 or orphan_removed > 0:
+            self._update_active_timeline(edits=updated_edits)
+            logger.info(
+                "Highlight migration: fixed %d actions, removed %d orphans",
+                fixed, orphan_removed,
+            )
 
     def save_project(self) -> dict:
         """Save the current project to disk."""
@@ -198,6 +342,89 @@ class ProjectService:
         self._current_path = None
         return {"success": True}
 
+    # ------------------------------------------------------------------
+    # Timeline CRUD (multi-timeline infrastructure, v2.0.0)
+    # ------------------------------------------------------------------
+
+    def create_timeline(
+        self, label: str, source: str = "manual", fork_from: str | None = None
+    ) -> dict:
+        """Create a new timeline, optionally forking from an existing one."""
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        tl_id = f"tl_{int(datetime.now().timestamp() * 1000)}"
+
+        if fork_from:
+            parent = self._current.get_timeline(fork_from)
+            if parent is None:
+                return {"success": False, "error": f"Timeline not found: {fork_from}"}
+            new_tl = Timeline(
+                id=tl_id,
+                label=label,
+                source=source,
+                parent_id=fork_from,
+                transcript=parent.transcript.model_copy(deep=True),
+                edits=[e.model_copy() for e in parent.edits],
+                analysis=parent.analysis.model_copy(deep=True),
+            )
+        else:
+            new_tl = Timeline(id=tl_id, label=label, source=source)
+
+        new_timelines = list(self._current.timelines) + [new_tl]
+        self._current = self._current.model_copy(
+            update={"timelines": new_timelines, "active_timeline_id": tl_id}
+        )
+        logger.info("Created timeline '{}' ({})", label, tl_id)
+        return {"success": True, "data": self._current.model_dump()}
+
+    def switch_timeline(self, timeline_id: str) -> dict:
+        """Switch the active timeline."""
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+        if self._current.get_timeline(timeline_id) is None:
+            return {"success": False, "error": f"Timeline not found: {timeline_id}"}
+        self._current = self._current.model_copy(update={"active_timeline_id": timeline_id})
+        logger.info("Switched to timeline {}", timeline_id)
+        return {"success": True, "data": self._current.model_dump()}
+
+    def delete_timeline(self, timeline_id: str) -> dict:
+        """Delete a timeline (cannot delete if it's the only one)."""
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+        if len(self._current.timelines) <= 1:
+            return {"success": False, "error": "Cannot delete the last timeline"}
+        if self._current.get_timeline(timeline_id) is None:
+            return {"success": False, "error": f"Timeline not found: {timeline_id}"}
+
+        new_timelines = [tl for tl in self._current.timelines if tl.id != timeline_id]
+        new_active = self._current.active_timeline_id
+        if new_active == timeline_id:
+            new_active = new_timelines[0].id
+        self._current = self._current.model_copy(
+            update={"timelines": new_timelines, "active_timeline_id": new_active}
+        )
+        logger.info("Deleted timeline {}", timeline_id)
+        return {"success": True, "data": self._current.model_dump()}
+
+    def rename_timeline(self, timeline_id: str, new_label: str) -> dict:
+        """Rename a timeline."""
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+        tl = self._current.get_timeline(timeline_id)
+        if tl is None:
+            return {"success": False, "error": f"Timeline not found: {timeline_id}"}
+        new_timelines = [
+            t.model_copy(update={"label": new_label}) if t.id == timeline_id else t
+            for t in self._current.timelines
+        ]
+        self._current = self._current.model_copy(update={"timelines": new_timelines})
+        return {"success": True, "data": self._current.model_dump()}
+
+    def duplicate_timeline(self, timeline_id: str, new_label: str) -> dict:
+        """Duplicate a timeline (creates a fork)."""
+        return self.create_timeline(new_label, source="duplicate", fork_from=timeline_id)
+
     def relink_media(self, new_path: str) -> dict:
         """Relink media to a new path. Updates path + fingerprint."""
         if self._current is None:
@@ -222,7 +449,7 @@ class ProjectService:
         updated_media = self._current.media.model_copy(update={"waveform_path": waveform_path})
         updated = self._current.model_copy(update={"media": updated_media})
         self._current = updated
-        return {"success": True, "data": updated.model_dump()}
+        return {"success": True, "data": self._current.model_dump()}
 
     def update_transcript(self, segments: list[dict]) -> dict:
         """Replace subtitle segments while preserving silence segments.
@@ -234,7 +461,7 @@ class ProjectService:
             return {"success": False, "error": "No project is open"}
 
         new_subtitles = [Segment.model_validate(s) for s in segments]
-        existing = self._current.transcript.segments
+        existing = self.active_timeline.transcript.segments
         existing_silence = [s for s in existing if s.type == SegmentType.SILENCE]
 
         all_segments = new_subtitles + existing_silence
@@ -242,16 +469,15 @@ class ProjectService:
 
         # Remove orphaned EditDecisions whose target_id no longer exists
         cleaned_edits = [
-            e for e in self._current.edits
+            e for e in self.active_timeline.edits
             if e.target_id is None or e.target_id in new_seg_ids
         ]
 
-        updated = self._current.model_copy(update={
-            "transcript": TranscriptData(segments=all_segments),
-            "edits": cleaned_edits,
-        })
-        self._current = updated
-        return {"success": True, "data": updated.model_dump()}
+        self._update_active_timeline(
+            transcript=TranscriptData(segments=all_segments),
+            edits=cleaned_edits,
+        )
+        return {"success": True, "data": self._current.model_dump()}
 
     def update_media_info(self, media_info: dict) -> dict:
         """Update media info in the current project."""
@@ -263,7 +489,7 @@ class ProjectService:
         )
         updated = self._current.model_copy(update={"media": info})
         self._current = updated
-        return {"success": True, "data": updated.model_dump()}
+        return {"success": True, "data": self._current.model_dump()}
 
     def _resolve_subtitle_overlap(
         self,
@@ -344,12 +570,12 @@ class ProjectService:
 
         # Exclude subtitles that have been confirmed for deletion
         confirmed_deleted_ids: set[str] = {
-            e.target_id for e in (self._current.edits if self._current else [])
+            e.target_id for e in (self.active_timeline.edits if self._current else [])
             if e.status == EditStatus.CONFIRMED and e.action == "delete" and e.target_id
         }
 
         subtitle_segs = sorted(
-            [s for s in (self._current.transcript.segments if self._current else [])
+            [s for s in (self.active_timeline.transcript.segments if self._current else [])
              if s.type == SegmentType.SUBTITLE and s.id not in confirmed_deleted_ids],
             key=lambda s: s.start,
         )
@@ -431,8 +657,8 @@ class ProjectService:
         if not silences:
             return {"success": True, "data": {"message": "No silence ranges after processing"}}
 
-        existing = self._current.transcript.segments
-        existing_edits = list(self._current.edits)
+        existing = self.active_timeline.transcript.segments
+        existing_edits = list(self.active_timeline.edits)
 
         new_segments: list[Segment] = []
         new_edits: list[EditDecision] = []
@@ -477,15 +703,13 @@ class ProjectService:
         # Note: _resolve_subtitle_overlap is deprecated. D-2 handles subtitle
         # protection via _trim_silences_around_subtitles before segment creation.
 
-        from core.models import AnalysisData
-        updated = self._current.model_copy(update={
-            "transcript": TranscriptData(segments=all_segments),
-            "edits": all_edits,
-            "analysis": AnalysisData(last_run=datetime.now().isoformat()),
-        })
-        self._current = updated
+        self._update_active_timeline(
+            transcript=TranscriptData(segments=all_segments),
+            edits=all_edits,
+            analysis=AnalysisData(last_run=datetime.now().isoformat()),
+        )
         logger.info("Added {} silence segments to project", len(new_segments))
-        return {"success": True, "data": updated.model_dump()}
+        return {"success": True, "data": self._current.model_dump()}
 
     def update_edit_decision(self, edit_id: str, status: str) -> dict:
         """Update the status of an edit decision."""
@@ -499,7 +723,7 @@ class ProjectService:
 
         updated_edits = []
         found = False
-        for edit in self._current.edits:
+        for edit in self.active_timeline.edits:
             if edit.id == edit_id:
                 updated_edits.append(edit.model_copy(update={"status": new_status}))
                 found = True
@@ -509,9 +733,104 @@ class ProjectService:
         if not found:
             return {"success": False, "error": f"Edit decision not found: {edit_id}"}
 
-        updated = self._current.model_copy(update={"edits": updated_edits})
-        self._current = updated
-        return {"success": True, "data": updated.model_dump()}
+        self._update_active_timeline(edits=updated_edits)
+        return {"success": True, "data": self._current.model_dump()}
+
+    def update_edit_decisions_batch(self, edit_ids: list[str], status: str) -> dict:
+        """Batch update the status of multiple edit decisions.
+
+        v2.1.1: Used by SuggestionPanel group-level actions (confirm-all-in-group,
+        reject-all-in-group, reset-all-in-group) to avoid N sequential RPCs.
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        try:
+            new_status = EditStatus(status)
+        except ValueError:
+            return {"success": False, "error": f"Invalid status: {status}"}
+
+        ids_set = set(edit_ids)
+        updated_edits = []
+        matched = 0
+        for edit in self.active_timeline.edits:
+            if edit.id in ids_set:
+                updated_edits.append(edit.model_copy(update={"status": new_status}))
+                matched += 1
+            else:
+                updated_edits.append(edit)
+
+        if matched == 0:
+            return {"success": False, "error": "No matching edit decisions found"}
+
+        self._update_active_timeline(edits=updated_edits)
+        logger.info("Batch-updated {} edits to {}", matched, new_status.value)
+        return {"success": True, "data": self._current.model_dump()}
+
+    def delete_edit_decisions_batch(self, edit_ids: list[str]) -> dict:
+        """Permanently remove edit decisions and associated data by id.
+
+        Cascading cleanup:
+        1. Remove EditDecision entries from timeline.edits
+        2. Remove associated AnalysisResult entries from timeline.analysis.results
+        3. Clear dirty_flags on affected segments (only correction-related flags)
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        ids_set = set(edit_ids)
+        tl = self.active_timeline
+
+        # 1. Find edits to remove + collect their analysis_ids and target segment_ids
+        removed_analysis_ids: set[str] = set()
+        affected_seg_ids: set[str] = set()
+        for e in tl.edits:
+            if e.id in ids_set:
+                if e.analysis_id:
+                    removed_analysis_ids.add(e.analysis_id)
+                if e.target_id:
+                    affected_seg_ids.add(e.target_id)
+
+        updated_edits = [e for e in tl.edits if e.id not in ids_set]
+        removed = len(tl.edits) - len(updated_edits)
+        if removed == 0:
+            return {"success": False, "error": "No matching edit decisions found"}
+
+        # 2. Remove associated AnalysisResults
+        updated_results = [
+            r for r in tl.analysis.results
+            if r.id not in removed_analysis_ids
+        ]
+
+        # 3. Clear dirty_flags on affected segments
+        #    Only clear correction-related flags that are tied to AnalysisResult
+        #    lifecycle. Leave user-edit flags (text_edited, merged, split,
+        #    search_replaced) untouched -- those are independent of edit decisions.
+        CORRECTION_FLAGS = ("llm_corrected", "llm_uncovered")
+        updated_segments = list(tl.transcript.segments)
+        cleaned_count = 0
+        for i, seg in enumerate(updated_segments):
+            if seg.id in affected_seg_ids:
+                flags_to_remove = [k for k in CORRECTION_FLAGS if k in seg.dirty_flags]
+                if flags_to_remove:
+                    new_flags = {k: v for k, v in seg.dirty_flags.items()
+                                 if k not in CORRECTION_FLAGS}
+                    updated_segments[i] = seg.model_copy(update={"dirty_flags": new_flags})
+                    cleaned_count += 1
+
+        self._update_active_timeline(
+            edits=updated_edits,
+            analysis=tl.analysis.model_copy(update={"results": updated_results}),
+            transcript=tl.transcript.model_copy(update={"segments": updated_segments}),
+        )
+
+        logger.info(
+            "Permanently deleted %d edits + %d analysis results + cleaned %d segments",
+            removed,
+            len(tl.analysis.results) - len(updated_results),
+            cleaned_count,
+        )
+        return {"success": True, "data": self._current.model_dump()}
 
     def update_segment(self, segment_id: str, updates: dict) -> dict:
         """Update a segment's fields (start, end, text)."""
@@ -524,7 +843,7 @@ class ProjectService:
             return {"success": False, "error": "No valid fields to update"}
 
         old_seg = next(
-            (s for s in self._current.transcript.segments if s.id == segment_id),
+            (s for s in self.active_timeline.transcript.segments if s.id == segment_id),
             None,
         )
         if old_seg is None:
@@ -532,14 +851,14 @@ class ProjectService:
 
         updated_segments = []
         updated_seg = None
-        for seg in self._current.transcript.segments:
+        for seg in self.active_timeline.transcript.segments:
             if seg.id == segment_id:
                 updated_seg = seg.model_copy(update=filtered)
                 updated_segments.append(updated_seg)
             else:
                 updated_segments.append(seg)
 
-        updated_transcript = self._current.transcript.model_copy(
+        updated_transcript = self.active_timeline.transcript.model_copy(
             update={"segments": updated_segments}
         )
 
@@ -547,7 +866,7 @@ class ProjectService:
 
         if updated_seg and ("start" in filtered or "end" in filtered) and old_seg.type == SegmentType.SILENCE:
             updated_edits = []
-            for edit in self._current.edits:
+            for edit in self.active_timeline.edits:
                 if (abs(edit.start - old_seg.start) < 0.01
                         and abs(edit.end - old_seg.end) < 0.01
                         and edit.source == "silence_detection"):
@@ -559,9 +878,8 @@ class ProjectService:
                     updated_edits.append(edit)
             update_kwargs["edits"] = updated_edits
 
-        updated = self._current.model_copy(update=update_kwargs)
-        self._current = updated
-        return {"success": True, "data": updated.model_dump()}
+        self._update_active_timeline(**update_kwargs)
+        return {"success": True, "data": self._current.model_dump()}
 
     def update_segment_text(self, segment_id: str, text: str) -> dict:
         """Update a subtitle segment's text and set dirty_flags."""
@@ -570,7 +888,7 @@ class ProjectService:
             return result
 
         # Set dirty_flags on the updated segment
-        segments = self._current.transcript.segments
+        segments = self.active_timeline.transcript.segments
         updated_segments = []
         for seg in segments:
             if seg.id == segment_id:
@@ -580,11 +898,10 @@ class ProjectService:
             else:
                 updated_segments.append(seg)
 
-        updated = self._current.model_copy(update={
-            "transcript": self._current.transcript.model_copy(update={"segments": updated_segments}),
-        })
-        self._current = updated
-        return {"success": True, "data": updated.model_dump()}
+        self._update_active_timeline(
+            transcript=self.active_timeline.transcript.model_copy(update={"segments": updated_segments}),
+        )
+        return {"success": True, "data": self._current.model_dump()}
 
     def add_segment(self, start: float, end: float, text: str = "", seg_type: str = "subtitle") -> dict:
         """Add a new segment to the transcript."""
@@ -592,7 +909,7 @@ class ProjectService:
             return {"success": False, "error": "No project is open"}
 
         segment_type = SegmentType(seg_type)
-        existing = self._current.transcript.segments
+        existing = self.active_timeline.transcript.segments
         # Generate unique ID
         type_prefix = "sub" if segment_type == SegmentType.SUBTITLE else "sil"
         existing_ids = {s.id for s in existing}
@@ -612,40 +929,38 @@ class ProjectService:
         all_segments = list(existing) + [new_seg]
         all_segments.sort(key=lambda s: s.start)
 
-        updated = self._current.model_copy(update={
-            "transcript": TranscriptData(segments=all_segments),
-        })
-        self._current = updated
+        self._update_active_timeline(
+            transcript=TranscriptData(segments=all_segments),
+        )
         logger.info("Added segment {} ({:.3f}s - {:.3f}s)", seg_id, start, end)
-        return {"success": True, "data": updated.model_dump()}
+        return {"success": True, "data": self._current.model_dump()}
 
     def delete_segment(self, segment_id: str) -> dict:
         """Remove a segment and its associated edit decisions."""
         if self._current is None:
             return {"success": False, "error": "No project is open"}
 
-        segments = self._current.transcript.segments
+        segments = self.active_timeline.transcript.segments
         target = [s for s in segments if s.id == segment_id]
         if not target:
             return {"success": False, "error": f"Segment not found: {segment_id}"}
 
         remaining_segs = [s for s in segments if s.id != segment_id]
-        remaining_edits = [e for e in self._current.edits if e.target_id != segment_id]
+        remaining_edits = [e for e in self.active_timeline.edits if e.target_id != segment_id]
 
-        updated = self._current.model_copy(update={
-            "transcript": self._current.transcript.model_copy(update={"segments": remaining_segs}),
-            "edits": remaining_edits,
-        })
-        self._current = updated
+        self._update_active_timeline(
+            transcript=self.active_timeline.transcript.model_copy(update={"segments": remaining_segs}),
+            edits=remaining_edits,
+        )
         logger.info("Deleted segment {}", segment_id)
-        return {"success": True, "data": updated.model_dump()}
+        return {"success": True, "data": self._current.model_dump()}
 
     def clear_subtitles(self) -> dict:
         """Remove all subtitle-type segments and their associated edit decisions."""
         if self._current is None:
             return {"success": False, "error": "No project is open"}
 
-        segments = self._current.transcript.segments
+        segments = self.active_timeline.transcript.segments
         subtitle_ids = {s.id for s in segments if s.type == SegmentType.SUBTITLE}
 
         if not subtitle_ids:
@@ -653,24 +968,23 @@ class ProjectService:
 
         remaining_segs = [s for s in segments if s.type != SegmentType.SUBTITLE]
         remaining_edits = [
-            e for e in self._current.edits
+            e for e in self.active_timeline.edits
             if e.target_id not in subtitle_ids and e.source != "subtitle"
         ]
 
-        updated = self._current.model_copy(update={
-            "transcript": self._current.transcript.model_copy(update={"segments": remaining_segs}),
-            "edits": remaining_edits,
-        })
-        self._current = updated
+        self._update_active_timeline(
+            transcript=self.active_timeline.transcript.model_copy(update={"segments": remaining_segs}),
+            edits=remaining_edits,
+        )
         logger.info("Cleared {} subtitle segments", len(subtitle_ids))
-        return {"success": True, "data": updated.model_dump()}
+        return {"success": True, "data": self._current.model_dump()}
 
     def delete_silence_segments(self) -> dict:
         """Remove all silence-type segments and their associated edit decisions."""
         if self._current is None:
             return {"success": False, "error": "No project is open"}
 
-        segments = self._current.transcript.segments
+        segments = self.active_timeline.transcript.segments
         silence_ids = {s.id for s in segments if s.type == SegmentType.SILENCE}
 
         if not silence_ids:
@@ -678,33 +992,31 @@ class ProjectService:
 
         remaining_segs = [s for s in segments if s.type != SegmentType.SILENCE]
         remaining_edits = [
-            e for e in self._current.edits
+            e for e in self.active_timeline.edits
             if e.target_id not in silence_ids and e.source != "silence_detection"
         ]
 
-        updated = self._current.model_copy(update={
-            "transcript": self._current.transcript.model_copy(update={"segments": remaining_segs}),
-            "edits": remaining_edits,
-        })
-        self._current = updated
+        self._update_active_timeline(
+            transcript=self.active_timeline.transcript.model_copy(update={"segments": remaining_segs}),
+            edits=remaining_edits,
+        )
         logger.info("Deleted {} silence segments", len(silence_ids))
-        return {"success": True, "data": updated.model_dump()}
+        return {"success": True, "data": self._current.model_dump()}
 
     def delete_subtitle_trim_edits(self) -> dict:
         """Remove all subtitle_trim source edit decisions."""
         if self._current is None:
             return {"success": False, "error": "No project is open"}
 
-        remaining_edits = [e for e in self._current.edits if e.source != "subtitle_trim"]
-        removed_count = len(self._current.edits) - len(remaining_edits)
+        remaining_edits = [e for e in self.active_timeline.edits if e.source != "subtitle_trim"]
+        removed_count = len(self.active_timeline.edits) - len(remaining_edits)
 
         if removed_count == 0:
             return {"success": True, "data": self._current.model_dump()}
 
-        updated = self._current.model_copy(update={"edits": remaining_edits})
-        self._current = updated
+        self._update_active_timeline(edits=remaining_edits)
         logger.info("Deleted {} subtitle trim edits", removed_count)
-        return {"success": True, "data": updated.model_dump()}
+        return {"success": True, "data": self._current.model_dump()}
 
     def merge_segments(self, segment_ids: list[str]) -> dict:
         """Merge contiguous subtitle segments into one.
@@ -714,7 +1026,7 @@ class ProjectService:
         if self._current is None:
             return {"success": False, "error": "No project is open"}
 
-        segments = list(self._current.transcript.segments)
+        segments = list(self.active_timeline.transcript.segments)
         targets = [s for s in segments if s.id in segment_ids and s.type == SegmentType.SUBTITLE]
         if len(targets) < 2:
             return {"success": False, "error": "Need at least 2 subtitle segments to merge"}
@@ -732,16 +1044,15 @@ class ProjectService:
                         for s in segments if s.id not in remove_ids]
 
         # Remove orphaned EditDecisions that referenced removed segments
-        new_edits = [e for e in self._current.edits
+        new_edits = [e for e in self.active_timeline.edits
                      if not any(sid in remove_ids for sid in getattr(e, '_segment_ids', []))]
 
-        updated = self._current.model_copy(update={
-            "transcript": self._current.transcript.model_copy(update={"segments": new_segments}),
-            "edits": new_edits,
-        })
-        self._current = updated
+        self._update_active_timeline(
+            transcript=self.active_timeline.transcript.model_copy(update={"segments": new_segments}),
+            edits=new_edits,
+        )
         logger.info("Merged {} segments into {}", len(targets), merged_seg.id)
-        return {"success": True, "data": updated.model_dump()}
+        return {"success": True, "data": self._current.model_dump()}
 
     def split_segment(self, segment_id: str, position: float) -> dict:
         """Split a subtitle segment at the given time position.
@@ -751,13 +1062,14 @@ class ProjectService:
         if self._current is None:
             return {"success": False, "error": "No project is open"}
 
-        segments = list(self._current.transcript.segments)
+        segments = list(self.active_timeline.transcript.segments)
         target = next((s for s in segments if s.id == segment_id), None)
         if target is None:
             return {"success": False, "error": f"Segment not found: {segment_id}"}
         if target.type != SegmentType.SUBTITLE:
             return {"success": False, "error": "Can only split subtitle segments"}
-        if position <= target.start or position >= target.end:
+        # Allow split at exact boundaries (e.g. playhead at 0.0 for a segment starting at 0.0)
+        if position < target.start or position > target.end:
             return {"success": False, "error": "Split position must be within segment bounds"}
 
         # Split text proportionally by duration ratio
@@ -785,17 +1097,67 @@ class ProjectService:
             else:
                 new_segments.append(s)
 
-        # Remove EditDecisions referencing the old segment
-        new_edits = [e for e in self._current.edits
-                     if not hasattr(e, '_segment_ids') or segment_id not in e._segment_ids]
+        # Rebind EditDecisions that referenced the split segment.
+        # v2.1.1 A-2.4 fix: previous logic used hasattr(e, '_segment_ids') which
+        # never matched -- EditDecision has no such field, binding is via
+        # target_type/target_id or implicit time-range overlap. The old code kept
+        # every ED, so a range-type ED [start, end] still covered both a and b
+        # sub-ranges, making their states appear 'synced'.
+        #
+        # Correct behavior:
+        # - segment-targeted ED pointing at the split segment: copy to both a and b
+        #   with updated target_id, so each sub-segment has an independent decision.
+        # - range-targeted ED crossing the split position: cut into two at position
+        #   so each sub-range binds to the correct sub-segment.
+        # - all other EDs: keep as-is (time range already correct for whichever side
+        #   they fall on; unrelated to this split).
+        # v2.1.1 A-2.4 fix (revised): the previous attempt only updated
+        # target_id on copied segment-type EDs but left start/end covering
+        # the original (pre-split) time range. Because resolveSegmentState
+        # treats any ED overlapping a segment by >0.3s as related, both a
+        # and b sub-segments kept matching every copied ED -- so toggling
+        # one still flipped the other.
+        #
+        # Correct behavior: when rebinding a segment-type ED to a/b, also
+        # clip its time range to the corresponding sub-segment so each ED
+        # only overlaps its own sub-segment.
+        new_edits: list[EditDecision] = []
+        target = next((s for s in self.active_timeline.transcript.segments
+                       if s.id == segment_id), None)
+        if target is None:
+            new_edits = list(self.active_timeline.edits)
+        else:
+            for e in self.active_timeline.edits:
+                if e.target_type == "segment" and e.target_id == segment_id:
+                    new_edits.append(e.model_copy(update={
+                        "id": f"{e.id}__{segment_id}-a",
+                        "target_id": f"{segment_id}-a",
+                        "end": position,
+                    }))
+                    new_edits.append(e.model_copy(update={
+                        "id": f"{e.id}__{segment_id}-b",
+                        "target_id": f"{segment_id}-b",
+                        "start": position,
+                    }))
+                    continue
+                if e.target_type == "range" and e.start < position and e.end > position:
+                    new_edits.append(e.model_copy(update={
+                        "id": f"{e.id}_a",
+                        "end": position,
+                    }))
+                    new_edits.append(e.model_copy(update={
+                        "id": f"{e.id}_b",
+                        "start": position,
+                    }))
+                    continue
+                new_edits.append(e)
 
-        updated = self._current.model_copy(update={
-            "transcript": self._current.transcript.model_copy(update={"segments": new_segments}),
-            "edits": new_edits,
-        })
-        self._current = updated
+        self._update_active_timeline(
+            transcript=self.active_timeline.transcript.model_copy(update={"segments": new_segments}),
+            edits=new_edits,
+        )
         logger.info("Split segment {} at {:.3f}s", segment_id, position)
-        return {"success": True, "data": updated.model_dump()}
+        return {"success": True, "data": self._current.model_dump()}
 
     def search_replace(
         self,
@@ -815,7 +1177,7 @@ class ProjectService:
         if self._current is None:
             return {"success": False, "error": "No project is open"}
 
-        segments = list(self._current.transcript.segments)
+        segments = list(self.active_timeline.transcript.segments)
         modified_ids: list[str] = []
         new_segments: list[Segment] = []
 
@@ -837,11 +1199,9 @@ class ProjectService:
                 new_segments.append(seg)
 
         if modified_ids:
-            updated = self._current.model_copy(update={
-                "transcript": self._current.transcript.model_copy(update={"segments": new_segments}),
-            })
-            self._current = updated
-
+            self._update_active_timeline(
+                transcript=self.active_timeline.transcript.model_copy(update={"segments": new_segments}),
+            )
         logger.info("Search-replace: {} segments modified", len(modified_ids))
         return {
             "success": True,
@@ -859,7 +1219,7 @@ class ProjectService:
         if self._current is None:
             return {"success": False, "error": "No project is open"}
 
-        segments = self._current.transcript.segments
+        segments = self.active_timeline.transcript.segments
         target_segs = [s for s in segments if s.id in segment_ids]
         if not target_segs:
             return {"success": False, "error": "No matching segments found"}
@@ -869,7 +1229,7 @@ class ProjectService:
         except ValueError:
             edit_status = EditStatus.PENDING
 
-        existing_edits = list(self._current.edits)
+        existing_edits = list(self.active_timeline.edits)
         target_seg_ids = {seg.id for seg in target_segs}
         new_edits: list[EditDecision] = []
 
@@ -893,10 +1253,9 @@ class ProjectService:
             if not (e.source == "user" and e.target_id in target_seg_ids)
         ] + new_edits
 
-        updated = self._current.model_copy(update={"edits": merged_edits})
-        self._current = updated
+        self._update_active_timeline(edits=merged_edits)
         logger.info("Marked {} segments as {} ({})", len(target_segs), action, status)
-        return {"success": True, "data": updated.model_dump()}
+        return {"success": True, "data": self._current.model_dump()}
 
     def confirm_all_suggestions(self) -> dict:
         """Set all pending edit decisions to confirmed."""
@@ -905,15 +1264,14 @@ class ProjectService:
 
         count = 0
         updated_edits = []
-        for edit in self._current.edits:
+        for edit in self.active_timeline.edits:
             if edit.status == EditStatus.PENDING:
                 updated_edits.append(edit.model_copy(update={"status": EditStatus.CONFIRMED}))
                 count += 1
             else:
                 updated_edits.append(edit)
 
-        updated = self._current.model_copy(update={"edits": updated_edits})
-        self._current = updated
+        self._update_active_timeline(edits=updated_edits)
         logger.info("Confirmed {} pending edits", count)
         return {"success": True, "data": {"confirmed_count": count}}
 
@@ -924,15 +1282,14 @@ class ProjectService:
 
         count = 0
         updated_edits = []
-        for edit in self._current.edits:
+        for edit in self.active_timeline.edits:
             if edit.status == EditStatus.PENDING:
                 updated_edits.append(edit.model_copy(update={"status": EditStatus.REJECTED}))
                 count += 1
             else:
                 updated_edits.append(edit)
 
-        updated = self._current.model_copy(update={"edits": updated_edits})
-        self._current = updated
+        self._update_active_timeline(edits=updated_edits)
         logger.info("Rejected {} pending edits", count)
         return {"success": True, "data": {"rejected_count": count}}
 
@@ -947,8 +1304,8 @@ class ProjectService:
         if self._current is None:
             return {"success": False, "error": "No project is open"}
 
-        segments = self._current.transcript.segments
-        edits = self._current.edits
+        segments = self.active_timeline.transcript.segments
+        edits = self.active_timeline.edits
         warnings: list[str] = []
 
         # Compute total duration
@@ -1008,19 +1365,44 @@ class ProjectService:
             },
         }
 
-    def add_analysis_results(self, results: list[dict], source: str) -> dict:
-        """Store AnalysisResult entries and create EditDecisions from time ranges."""
+    def add_analysis_results(self, results: list[dict], source: str, clear_existing: bool = False) -> dict:
+        """Store AnalysisResult entries and create EditDecisions from time ranges.
+
+        Args:
+            results: List of AnalysisResult dicts to add.
+            source: Source label for generated EditDecisions.
+            clear_existing: If True, clear existing results of the same type
+                (and their associated EditDecisions) before adding new ones.
+        """
         if self._current is None:
             return {"success": False, "error": "No project is open"}
 
         analysis_results = [AnalysisResult.model_validate(r) for r in results]
-        existing_results = list(self._current.analysis.results)
+
+        if clear_existing:
+            # Clear existing results of the SAME type and their edits
+            target_type = analysis_results[0].type if analysis_results else None
+            removed_ar_ids: set[str] = set()
+            existing_results = []
+            for r in self.active_timeline.analysis.results:
+                if target_type is not None and r.type == target_type:
+                    removed_ar_ids.add(r.id)
+                else:
+                    existing_results.append(r)
+            existing_edits = [
+                e for e in self.active_timeline.edits
+                if e.analysis_id not in removed_ar_ids
+            ]
+        else:
+            existing_results = list(self.active_timeline.analysis.results)
+            existing_edits = list(self.active_timeline.edits)
+
         all_results = existing_results + analysis_results
 
         # Create EditDecisions from analysis time ranges
-        segments = self._current.transcript.segments
+        segments = self.active_timeline.transcript.segments
         seg_map = {s.id: s for s in segments}
-        existing_edits = list(self._current.edits)
+        existing_edit_ids = {e.id for e in existing_edits}
         new_edits: list[EditDecision] = []
 
         for ar in analysis_results:
@@ -1031,30 +1413,542 @@ class ProjectService:
             start = min(s.start for s in matching_segs)
             end = max(s.end for s in matching_segs)
 
+            # Defensive: if edit-{ar.id} already exists (ar.id duplicate or other source
+            # conflict), append _dup{N} suffix to ensure uniqueness.
             edit_id = f"edit-{ar.id}"
+            if edit_id in existing_edit_ids:
+                n = 2
+                while f"{edit_id}_dup{n}" in existing_edit_ids:
+                    n += 1
+                edit_id = f"{edit_id}_dup{n}"
+            existing_edit_ids.add(edit_id)
+
+            # Highlight sources keep segments (not delete them).
+            action = "keep" if source in ("llm_highlight", "manual_highlight") else "delete"
+            # partial_delete: manual-handling items default to keep (rejected),
+            # so they are surfaced but never auto-deleted.
+            is_partial = source == "llm_smart" and getattr(ar, "category", "") == "partial_delete"
+            status = EditStatus.REJECTED if is_partial else EditStatus.PENDING
+
             new_edits.append(EditDecision(
                 id=edit_id,
                 start=start,
                 end=end,
-                action="delete",
+                action=action,
                 source=source,
                 analysis_id=ar.id,
-                status=EditStatus.PENDING,
+                status=status,
                 priority=100,
                 target_type="segment",
                 target_id=ar.segment_ids[0],
             ))
 
-        updated = self._current.model_copy(update={
-            "analysis": self._current.analysis.model_copy(update={
+        self._update_active_timeline(
+            analysis=self.active_timeline.analysis.model_copy(update={
                 "results": all_results,
                 "last_run": datetime.now().isoformat(),
             }),
-            "edits": existing_edits + new_edits,
-        })
-        self._current = updated
+            edits=existing_edits + new_edits,
+        )
         logger.info("Added {} analysis results from {}", len(analysis_results), source)
-        return {"success": True, "data": updated.model_dump()}
+        return {"success": True, "data": self._current.model_dump()}
+
+    # ------------------------------------------------------------------
+    # v2.1.0 Phase 2: P1 subtitle correction review (store / accept / reject)
+    # ------------------------------------------------------------------
+
+    def _update_timeline_by_id(self, timeline_id: str, **updates) -> Project:
+        """Update an arbitrary timeline (not necessarily active) by id.
+
+        Mirrors _update_active_timeline but targets a specific timeline.
+        """
+        if self._current is None:
+            raise RuntimeError("No project loaded")
+        tl = self._current.get_timeline(timeline_id)
+        if tl is None:
+            raise ValueError(f"Timeline {timeline_id} not found")
+        new_tl = tl.model_copy(update=updates)
+        new_timelines = [
+            new_tl if t.id == timeline_id else t for t in self._current.timelines
+        ]
+        self._current = self._current.model_copy(update={"timelines": new_timelines})
+        return self._current
+
+    def store_subtitle_corrections(
+        self, corrections: list[dict], timeline_id: str
+    ) -> dict:
+        """Persist LLM subtitle corrections as AnalysisResult records (D-54).
+
+        Instead of immediately mutating segment text (the old behavior), each
+        correction is stored as an AnalysisResult with type=
+        llm_subtitle_correction and its structured payload JSON-encoded in
+        ``detail``. The frontend reviews them and calls accept/reject per item.
+
+        Existing unreviewed corrections of the same type are cleared first so
+        re-running P1 replaces the pending review set.
+
+        Args:
+            corrections: LLM output list (segment_id, corrected_text, changes,
+                category, confidence).
+            timeline_id: Target timeline.
+
+        Returns:
+            {"success": True, "data": {"stored_count": int}}
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        import json
+        from uuid import uuid4
+
+        tl = self._current.get_timeline(timeline_id)
+        if tl is None:
+            return {"success": False, "error": f"Timeline {timeline_id} not found"}
+
+        seg_map = {s.id: s for s in tl.transcript.segments}
+
+        # Clear previously-pending corrections (avoid duplicates on re-run).
+        kept_results = [
+            r for r in tl.analysis.results
+            if r.type != "llm_subtitle_correction"
+        ]
+
+        stored: list[AnalysisResult] = []
+        for corr in corrections:
+            seg_id = corr.get("segment_id")
+            if not seg_id or seg_id not in seg_map:
+                continue
+            original_text = seg_map[seg_id].text
+            corrected_text = str(corr.get("corrected_text", original_text))
+            # Skip no-op corrections (LLM says "no change").
+            if corrected_text.strip() == original_text.strip():
+                continue
+            result = AnalysisResult(
+                id=f"corr-{seg_id}-{uuid4().hex[:8]}",
+                type="llm_subtitle_correction",
+                segment_ids=[seg_id],
+                confidence=float(corr.get("confidence", 0.8)),
+                detail=json.dumps(
+                    {
+                        "original_text": original_text,
+                        "corrected_text": corrected_text,
+                        "changes": corr.get("changes", []),
+                        "category": corr.get("category", "none"),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            stored.append(result)
+
+        new_results = kept_results + stored
+        self._update_timeline_by_id(
+            timeline_id,
+            analysis=tl.analysis.model_copy(update={"results": new_results}),
+        )
+        logger.info(
+            "Stored {} subtitle corrections for review (timeline {})",
+            len(stored), timeline_id,
+        )
+        return {"success": True, "data": {"stored_count": len(stored)}}
+
+    def get_subtitle_corrections(self, timeline_id: str) -> dict:
+        """Read pending P1 corrections for a timeline (parsed detail JSON).
+
+        Returns:
+            {"success": True, "data": [correction_dict, ...]} where each dict
+            has id, segment_id, confidence, original_text, corrected_text,
+            changes, category, start, end (for time-link rendering).
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        import json
+
+        tl = self._current.get_timeline(timeline_id)
+        if tl is None:
+            return {"success": False, "error": f"Timeline {timeline_id} not found"}
+
+        seg_map = {s.id: s for s in tl.transcript.segments}
+        out: list[dict] = []
+        for r in tl.analysis.results:
+            if r.type != "llm_subtitle_correction":
+                continue
+            try:
+                payload = json.loads(r.detail) if r.detail else {}
+            except (ValueError, TypeError):
+                payload = {}
+            seg_id = r.segment_ids[0] if r.segment_ids else ""
+            seg = seg_map.get(seg_id)
+            out.append({
+                "id": r.id,
+                "segment_id": seg_id,
+                "confidence": r.confidence,
+                "original_text": payload.get("original_text", seg.text if seg else ""),
+                "corrected_text": payload.get("corrected_text", ""),
+                "changes": payload.get("changes", []),
+                "category": payload.get("category", "none"),
+                "start": seg.start if seg else 0.0,
+                "end": seg.end if seg else 0.0,
+            })
+        return {"success": True, "data": out}
+
+    def _parse_correction_result(self, result: AnalysisResult) -> dict | None:
+        """Decode the detail JSON of a correction AnalysisResult."""
+        import json
+        if not result.detail:
+            return None
+        try:
+            return json.loads(result.detail)
+        except (ValueError, TypeError):
+            return None
+
+    def accept_subtitle_correction(self, result_id: str) -> dict:
+        """Accept one correction: apply to segment.text + remove AnalysisResult.
+
+        Args:
+            result_id: The AnalysisResult id (``corr-<seg>-<hex>``).
+
+        Returns:
+            {"success": True, "data": {"segment_id": str}}
+            {"success": False, "error": str} if not found.
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        from core.llm_service import (
+            TimestampCorruptionError,
+            _assert_timestamps_unchanged,
+            _check_correction_confidence,
+        )
+
+        tl = self.active_timeline
+        target = next(
+            (r for r in tl.analysis.results if r.id == result_id), None
+        )
+        if target is None or target.type != "llm_subtitle_correction":
+            return {"success": False, "error": f"Correction {result_id} not found"}
+
+        payload = self._parse_correction_result(target)
+        if payload is None:
+            return {"success": False, "error": "Malformed correction detail"}
+
+        seg_id = target.segment_ids[0] if target.segment_ids else ""
+        seg = next((s for s in tl.transcript.segments if s.id == seg_id), None)
+        if seg is None:
+            return {"success": False, "error": f"Segment {seg_id} not found"}
+
+        corrected_text = str(payload.get("corrected_text", seg.text))
+        conf = _check_correction_confidence(seg.text, corrected_text)
+        new_flags = {**seg.dirty_flags, "llm_corrected": True}
+        if conf["low_confidence"]:
+            new_flags["llm_low_confidence"] = True
+
+        corrected_seg = seg.model_copy(
+            update={"text": corrected_text, "dirty_flags": new_flags}
+        )
+
+        # Timestamp assertion (defensive -- LLM should never alter timestamps).
+        try:
+            _assert_timestamps_unchanged(
+                seg.start, seg.end, corrected_seg.start, corrected_seg.end,
+                segment_id=seg.id,
+            )
+            new_segments = [
+                corrected_seg if s.id == seg_id else s
+                for s in tl.transcript.segments
+            ]
+        except TimestampCorruptionError:
+            logger.warning("Timestamp corruption on accept, rollback segment %s", seg_id)
+            new_segments = list(tl.transcript.segments)
+
+        # Remove the accepted correction from analysis results.
+        new_results = [r for r in tl.analysis.results if r.id != result_id]
+
+        self._update_active_timeline(
+            transcript=tl.transcript.model_copy(update={"segments": new_segments}),
+            analysis=tl.analysis.model_copy(update={"results": new_results}),
+        )
+        logger.info("Accepted subtitle correction {} (seg {})", result_id, seg_id)
+        return {"success": True, "data": {"segment_id": seg_id}}
+
+    def reject_subtitle_correction(self, result_id: str) -> dict:
+        """Reject one correction: remove AnalysisResult without touching text.
+
+        Args:
+            result_id: The AnalysisResult id.
+
+        Returns:
+            {"success": True, "data": {"segment_id": str}}
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        tl = self.active_timeline
+        target = next(
+            (r for r in tl.analysis.results if r.id == result_id), None
+        )
+        if target is None or target.type != "llm_subtitle_correction":
+            return {"success": False, "error": f"Correction {result_id} not found"}
+
+        seg_id = target.segment_ids[0] if target.segment_ids else ""
+        new_results = [r for r in tl.analysis.results if r.id != result_id]
+        self._update_active_timeline(
+            analysis=tl.analysis.model_copy(update={"results": new_results}),
+        )
+        logger.info("Rejected subtitle correction {} (seg {})", result_id, seg_id)
+        return {"success": True, "data": {"segment_id": seg_id}}
+
+    def accept_high_confidence_corrections(
+        self, timeline_id: str, threshold: float = 0.8
+    ) -> dict:
+        """Batch-accept all corrections with confidence >= threshold (D-52).
+
+        Iterates the pending corrections, applying each qualifying one to
+        segment.text and removing it from the analysis results. Corrections
+        below the threshold remain pending for manual review.
+
+        Args:
+            timeline_id: Target timeline.
+            threshold: Minimum confidence to auto-accept (default 0.8, D-68).
+
+        Returns:
+            {"success": True, "data": {"accepted_count": int, "remaining_count": int}}
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        tl = self._current.get_timeline(timeline_id)
+        if tl is None:
+            return {"success": False, "error": f"Timeline {timeline_id} not found"}
+
+        # Gather qualifying ids, then reuse the single-accept path so the
+        # apply logic (confidence flag, timestamp assertion) stays unified.
+        qualifying = [
+            r.id for r in tl.analysis.results
+            if r.type == "llm_subtitle_correction" and r.confidence >= threshold
+        ]
+
+        # Ensure the target timeline is active so accept_subtitle_correction
+        # (which operates on active_timeline) hits the right timeline.
+        if self._current.active_timeline_id != timeline_id:
+            self._current = self._current.model_copy(
+                update={"active_timeline_id": timeline_id}
+            )
+
+        accepted = 0
+        for rid in qualifying:
+            res = self.accept_subtitle_correction(rid)
+            if res.get("success"):
+                accepted += 1
+
+        # Count remaining (active timeline may have changed during accepts).
+        tl_after = self._current.get_timeline(timeline_id)
+        remaining = sum(
+            1 for r in tl_after.analysis.results
+            if r.type == "llm_subtitle_correction"
+        ) if tl_after else 0
+        logger.info(
+            "Batch-accepted {} high-confidence corrections (threshold {}, {})",
+            accepted, threshold, "remaining" if remaining else "clean",
+        )
+        return {
+            "success": True,
+            "data": {"accepted_count": accepted, "remaining_count": remaining},
+        }
+
+    def clear_subtitle_corrections(self, timeline_id: str) -> dict:
+        """Clear all pending P1 corrections for a timeline (D-50).
+
+        Used when the user dismisses the review without per-item action.
+
+        Returns:
+            {"success": True, "data": {"cleared_count": int}}
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        tl = self._current.get_timeline(timeline_id)
+        if tl is None:
+            return {"success": False, "error": f"Timeline {timeline_id} not found"}
+
+        cleared = sum(1 for r in tl.analysis.results if r.type == "llm_subtitle_correction")
+        if cleared == 0:
+            return {"success": True, "data": {"cleared_count": 0}}
+
+        new_results = [
+            r for r in tl.analysis.results
+            if r.type != "llm_subtitle_correction"
+        ]
+        self._update_timeline_by_id(
+            timeline_id,
+            analysis=tl.analysis.model_copy(update={"results": new_results}),
+        )
+        logger.info("Cleared {} subtitle corrections (timeline {})", cleared, timeline_id)
+        return {"success": True, "data": {"cleared_count": cleared}}
+
+    def apply_subtitle_corrections(self, corrections: list[dict]) -> dict:
+        """Apply LLM subtitle corrections to the active timeline.
+
+        Uses layered fault tolerance: does not fail entirely on partial
+        mismatches. Matches by segment_id, applies what matches, and marks
+        uncovered segments with dirty_flags.llm_uncovered.
+
+        Args:
+            corrections: List of dicts with segment_id, corrected_text,
+                changes, category, confidence.
+
+        Returns:
+            {"success": True, "data": {corrected_count, uncovered_count,
+             uncovered_ids, orphaned_count, partial}}
+            {"success": False, "error": str} on complete mismatch.
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        from core.llm_service import (
+            TimestampCorruptionError,
+            _assert_timestamps_unchanged,
+            _check_correction_confidence,
+        )
+
+        timeline = self.active_timeline
+        seg_map = {s.id: s for s in timeline.transcript.segments}
+        total = len(timeline.transcript.segments)
+
+        # Match corrections to segments
+        matched: list[tuple[Segment, dict]] = []
+        uncovered_ids: list[str] = []
+
+        for seg in timeline.transcript.segments:
+            corr = next((c for c in corrections if c["segment_id"] == seg.id), None)
+            if corr:
+                matched.append((seg, corr))
+            else:
+                uncovered_ids.append(seg.id)
+
+        extra_corrections = [c for c in corrections if c["segment_id"] not in seg_map]
+
+        # Complete mismatch
+        if len(matched) == 0 and total > 0:
+            return {
+                "success": False,
+                "error": "No segment_id matched (LLM output completely mismatched)",
+            }
+
+        if len(matched) < total:
+            logger.warning(
+                f"Partial correction coverage: {len(matched)}/{total} segments matched, "
+                f"{len(uncovered_ids)} uncovered, {len(extra_corrections)} orphaned"
+            )
+
+        # Apply corrections
+        corr_map = {seg_id: corr for seg, corr in matched for seg_id in [seg.id]}
+        new_segments: list[Segment] = []
+        rolled_back_count = 0
+
+        for seg in timeline.transcript.segments:
+            corr = corr_map.get(seg.id)
+            if corr:
+                corrected_text = str(corr.get("corrected_text", seg.text))
+                # Confidence check
+                conf = _check_correction_confidence(seg.text, corrected_text)
+                new_flags = {**seg.dirty_flags, "llm_corrected": True}
+                if conf["low_confidence"]:
+                    new_flags["llm_low_confidence"] = True
+
+                corrected = seg.model_copy(
+                    update={"text": corrected_text, "dirty_flags": new_flags}
+                )
+
+                # Timestamp assertion
+                try:
+                    _assert_timestamps_unchanged(
+                        seg.start, seg.end, corrected.start, corrected.end,
+                        segment_id=seg.id,
+                    )
+                    new_segments.append(corrected)
+                except TimestampCorruptionError:
+                    # Rollback this segment, keep original
+                    rolled_back_count += 1
+                    new_segments.append(seg)
+            else:
+                # Uncovered: keep original, mark for UI
+                uncovered = seg.model_copy(
+                    update={
+                        "dirty_flags": {**seg.dirty_flags, "llm_uncovered": True}
+                    }
+                )
+                new_segments.append(uncovered)
+
+        # Update timeline: new segments + invalidate analysis
+        self._update_active_timeline(
+            transcript=timeline.transcript.model_copy(update={"segments": new_segments}),
+            analysis=timeline.analysis.model_copy(update={"last_run": None}),
+        )
+
+        logger.info(
+            f"Applied subtitle corrections: {len(matched)} matched, "
+            f"{len(uncovered_ids)} uncovered, {rolled_back_count} rolled back"
+        )
+
+        return {
+            "success": True,
+            "data": {
+                "corrected_count": len(matched) - rolled_back_count,
+                "uncovered_count": len(uncovered_ids),
+                "uncovered_ids": uncovered_ids,
+                "orphaned_count": len(extra_corrections),
+                "rolled_back_count": rolled_back_count,
+                "partial": len(matched) < total,
+            },
+        }
+
+    def confirm_all_from_source(self, source: str, min_confidence: float = 0.0) -> dict:
+        """Batch-confirm all edit decisions from a given source.
+
+        Implements the 'trust this source' feature: one-click accept all
+        suggestions from a specific source (e.g. 'llm_smart') that meet
+        the minimum confidence threshold.
+
+        Args:
+            source: The source string to filter by (e.g. "llm_smart").
+            min_confidence: Minimum confidence to auto-confirm. Lower-
+                confidence items still require manual review.
+
+        Returns:
+            {"success": True, "data": {"confirmed_count": int}}
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        timeline = self.active_timeline
+        confirmed_count = 0
+        new_edits: list[EditDecision] = []
+
+        for edit in timeline.edits:
+            if edit.source == source and edit.status == EditStatus.PENDING:
+                # Check confidence from analysis results if available
+                should_confirm = True
+                if min_confidence > 0:
+                    # Look up confidence from analysis results
+                    for result in timeline.analysis.results:
+                        if edit.target_id in result.segment_ids:
+                            should_confirm = result.confidence >= min_confidence
+                            break
+
+                if should_confirm:
+                    new_edits.append(edit.model_copy(update={"status": EditStatus.CONFIRMED}))
+                    confirmed_count += 1
+                else:
+                    new_edits.append(edit)
+            else:
+                new_edits.append(edit)
+
+        if confirmed_count > 0:
+            self._update_active_timeline(edits=new_edits)
+            logger.info(f"Batch-confirmed {confirmed_count} edits from source '{source}'")
+
+        return {"success": True, "data": {"confirmed_count": confirmed_count}}
 
     def generate_subtitle_keep_ranges(self, padding: float = 0.3) -> dict:
         """Generate EditDecisions to delete ranges outside subtitle segments + padding.
@@ -1067,19 +1961,13 @@ class ProjectService:
 
         # Collect IDs of segments with confirmed delete edits
         confirmed_deleted_ids: set[str] = {
-            e.target_id for e in self._current.edits
+            e.target_id for e in self.active_timeline.edits
             if e.status == EditStatus.CONFIRMED and e.action == "delete" and e.target_id
-        }
-
-        # Collect IDs of segments with confirmed keep edits
-        confirmed_kept_ids: set[str] = {
-            e.target_id for e in self._current.edits
-            if e.status == EditStatus.CONFIRMED and e.action == "keep" and e.target_id
         }
 
         # Exclude confirmed-deleted subtitles from keep ranges
         subtitle_segs = sorted(
-            [s for s in self._current.transcript.segments
+            [s for s in self.active_timeline.transcript.segments
              if s.type == SegmentType.SUBTITLE and s.id not in confirmed_deleted_ids],
             key=lambda s: s.start,
         )
@@ -1087,7 +1975,7 @@ class ProjectService:
             return {"success": False, "error": "No subtitle segments found"}
 
         # Compute total duration
-        total_duration = max(s.end for s in self._current.transcript.segments)
+        total_duration = max(s.end for s in self.active_timeline.transcript.segments)
 
         # Build expanded keep ranges (subtitle + padding)
         keep_ranges: list[tuple[float, float]] = []
@@ -1111,7 +1999,7 @@ class ProjectService:
             delete_ranges.append((current, total_duration))
 
         # Create EditDecisions for delete ranges
-        existing_edits = list(self._current.edits)
+        existing_edits = list(self.active_timeline.edits)
         new_edits: list[EditDecision] = []
         for i, (start, end) in enumerate(delete_ranges):
             edit_id = f"edit-subtitle-trim-{i:04d}"
@@ -1135,8 +2023,7 @@ class ProjectService:
                     target_type="range",
                 ))
 
-        updated = self._current.model_copy(update={"edits": existing_edits + new_edits})
-        self._current = updated
+        self._update_active_timeline(edits=existing_edits + new_edits)
         logger.info("Generated {} delete ranges from subtitle trim (padding={:.1f}s)", len(new_edits), padding)
         return {
             "success": True,
@@ -1144,7 +2031,7 @@ class ProjectService:
                 "keep_ranges": len(keep_ranges),
                 "delete_ranges": len(delete_ranges),
                 "new_edits": len(new_edits),
-                "project": updated.model_dump(),
+                "project": self._current.model_dump(),
             },
         }
 

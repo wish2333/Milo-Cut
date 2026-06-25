@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from "vue"
-import type { Project, Segment } from "@/types/project"
+import type { Project, Segment, Timeline } from "@/types/project"
 import type { EditSummary } from "@/types/edit"
 import EncodingSettings from "@/components/export/EncodingSettings.vue"
 import PreviewPlayer from "@/components/export/PreviewPlayer.vue"
@@ -122,12 +122,16 @@ function handleSummaryCancel() {
   exportSummary.value = null
 }
 
+const activeTimeline = computed<Timeline | null>(() =>
+  props.project.timelines.find(t => t.id === props.project.active_timeline_id) ?? null
+)
+
 const subtitleCount = computed(() =>
-  props.project.transcript?.segments?.filter(s => s.type === "subtitle").length ?? 0
+  activeTimeline.value?.transcript?.segments?.filter(s => s.type === "subtitle").length ?? 0
 )
 
 const sortedSegments = computed<Segment[]>(() =>
-  [...(props.project.transcript?.segments ?? [])].sort((a, b) => a.start - b.start)
+  [...(activeTimeline.value?.transcript?.segments ?? [])].sort((a, b) => a.start - b.start)
 )
 
 function handleEncodingSettingsUpdate(settings: typeof encodingSettings.value) {
@@ -329,7 +333,7 @@ function formatTimeShort(seconds: number): string {
         <PreviewPlayer
           :media-path="props.project.media?.path ?? null"
           :proxy-path="props.project.media?.proxy_path ?? null"
-          :edits="props.project.edits ?? []"
+          :edits="activeTimeline?.edits ?? []"
           :duration="props.project.media?.duration ?? 0"
           :segments="sortedSegments"
         />
@@ -341,7 +345,7 @@ function formatTimeShort(seconds: number): string {
 
         <div class="space-y-3">
           <button
-            class="w-full flex items-center gap-2 rounded-md bg-green-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-green-700 transition-colors"
+            class="w-full flex items-center gap-2 rounded-md bg-green-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-green-700 active:scale-95 transition-all duration-150"
             :disabled="isExporting || confirmedEdits.length === 0"
             @click="handleExportVideo"
           >
@@ -350,7 +354,7 @@ function formatTimeShort(seconds: number): string {
           </button>
 
           <button
-            class="w-full flex items-center gap-2 rounded-md bg-green-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-green-700 transition-colors"
+            class="w-full flex items-center gap-2 rounded-md bg-green-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-green-700 active:scale-95 transition-all duration-150"
             :disabled="isExporting || confirmedEdits.length === 0"
             @click="handleExportAudio"
           >
@@ -359,7 +363,7 @@ function formatTimeShort(seconds: number): string {
           </button>
 
           <button
-            class="w-full flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
+            class="w-full flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700 active:scale-95 transition-all duration-150"
             :disabled="isExporting"
             @click="handleExportSrt"
           >
@@ -368,7 +372,7 @@ function formatTimeShort(seconds: number): string {
           </button>
 
           <button
-            class="w-full flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
+            class="w-full flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700 active:scale-95 transition-all duration-150"
             :disabled="isExporting"
             @click="handleExportVtt"
           >

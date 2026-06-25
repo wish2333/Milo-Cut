@@ -70,17 +70,31 @@ export interface Project {
   schema_version: number
   project: ProjectMeta
   media: MediaInfo | null
+  timelines: Timeline[]
+  active_timeline_id: string
+}
+
+export interface Timeline {
+  id: string
+  label: string
+  source: string
+  created_at: string
+  parent_id: string
   transcript: TranscriptData
-  analysis: AnalysisData
   edits: EditDecision[]
+  analysis: AnalysisData
 }
 
 export interface AnalysisResult {
   id: string
-  type: "filler" | "error" | "duplicate" | "punctuation"
+  type:
+    | "llm_smart_delete"
+    | "llm_subtitle_correction"
+    | "llm_highlight"
   segment_ids: string[]
   confidence: number
   detail: string
+  category?: string
 }
 
 // ================================================================

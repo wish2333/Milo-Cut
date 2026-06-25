@@ -1,16 +1,19 @@
 <script setup lang="ts">
-import { computed, inject, ref } from "vue"
+import { computed, inject, ref, onMounted, onUnmounted } from "vue"
 import type { Segment, EditDecision } from "@/types/project"
 import { resolveSegmentState } from "@/utils/segmentHelpers"
 import type { SegmentState } from "@/utils/segmentHelpers"
 import { TIMELINE_METRICS_KEY } from "./injectionKeys"
 import type { TimelineMetrics } from "@/composables/useTimelineMetrics"
-import { openContextMenu, closeContextMenu as closeContextMenuManager } from "@/utils/contextMenuManager"
 
 const props = defineProps<{
   segments: Segment[]
   edits: EditDecision[]
   updateTime?: (segmentId: string, field: "start" | "end", value: number) => void
+  currentTime?: number
+  duration?: number
+  /** v2.1.1 A-03: edit mode interception for structural ops */
+  globalEditMode?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -18,6 +21,11 @@ const emit = defineEmits<{
   "add-segment": [start: number, end: number]
   "delete-segment": [segmentId: string]
   "seek-segment": [segment: Segment]
+  "split-segment": [segmentId: string, position: number]
+  /** v2.1.1 A-03: move playhead without playing (arrow keys, selection mode) */
+  "set-time": [time: number]
+  /** v2.1.1 A-03: edit mode toast notification */
+  toast: [msg: string]
 }>()
 
 const metrics = inject<TimelineMetrics>(TIMELINE_METRICS_KEY)!
@@ -27,6 +35,16 @@ const hoverEdge = ref<"left" | "right" | "body" | null>(null)
 const EDGE_HANDLE_HIT_PX = 16
 const selectedBlockId = ref<string | null>(null)
 const contextMenu = ref<{ x: number; y: number; segmentId: string } | null>(null)
+const containerRef = ref<HTMLElement | null>(null)
+
+const menuMaxY = typeof window !== "undefined" ? window.innerHeight - 180 : 0
+
+// Focus the container on any interaction so arrow keys go to our handler,
+// not to the HTML5 video element (which seeks ±5s natively).
+function focusContainer(_e?: MouseEvent) {
+  const el = containerRef.value
+  if (el && document.activeElement !== el) el.focus()
+}
 
 interface Block {
   seg: Segment
@@ -130,6 +148,7 @@ function handleBlockMouseDown(
   block: Block,
   e: MouseEvent,
 ) {
+  focusContainer(e)
   selectedBlockId.value = block.seg.id
   const edge = detectEdge(e)
   if (edge === "body") {
@@ -165,9 +184,31 @@ function handleBlockMouseDown(
 function handleBlockContextMenu(block: Block, e: MouseEvent) {
   e.preventDefault()
   e.stopPropagation()
+  // v2.1.1 A-01: broadcast close to Timeline menu before opening own
+  window.dispatchEvent(new CustomEvent("closeallcontextmenus"))
   selectedBlockId.value = block.seg.id
   contextMenu.value = { x: e.clientX, y: e.clientY, segmentId: block.seg.id }
-  openContextMenu(() => { contextMenu.value = null })
+  // Use local document listener (not shared contextMenuManager) to avoid
+  // cross-component state leaks that prevent re-opening after outside-click.
+  const close = () => { contextMenu.value = null }
+  const onDocClick = (ce: MouseEvent) => {
+    // Only close if the click is outside the menu itself
+    const target = ce.target as HTMLElement
+    if (!target.closest(".fixed.z-\\[9999\\]")) {
+      close()
+      cleanup()
+    }
+  }
+  const onDocContext = () => { close(); cleanup() }
+  const cleanup = () => {
+    document.removeEventListener("click", onDocClick)
+    document.removeEventListener("contextmenu", onDocContext)
+  }
+  // Delay adding listeners so the current right-click event finishes propagation
+  setTimeout(() => {
+    document.addEventListener("click", onDocClick)
+    document.addEventListener("contextmenu", onDocContext)
+  }, 0)
 }
 
 function handleBlockClick(block: Block) {
@@ -177,10 +218,47 @@ function handleBlockClick(block: Block) {
 
 function closeContextMenu() {
   contextMenu.value = null
-  closeContextMenuManager()
+}
+
+function splitSelectedAtCursor() {
+  // v2.1.1 A-03: block structural ops in edit mode
+  if (props.globalEditMode) {
+    emit("toast", "请退出编辑模式后重试")
+    closeContextMenu()
+    return
+  }
+  const id = contextMenu.value?.segmentId
+  if (!id) return
+  const seg = props.segments.find(s => s.id === id)
+  const pos = props.currentTime ?? 0
+  if (!seg || pos <= seg.start || pos >= seg.end) return
+  emit("split-segment", id, pos)
+  closeContextMenu()
+}
+
+function splitSelectedAtMidpoint() {
+  // v2.1.1 A-03: block structural ops in edit mode
+  if (props.globalEditMode) {
+    emit("toast", "请退出编辑模式后重试")
+    closeContextMenu()
+    return
+  }
+  const id = contextMenu.value?.segmentId
+  if (!id) return
+  const seg = props.segments.find(s => s.id === id)
+  if (!seg) return
+  const mid = (seg.start + seg.end) / 2
+  emit("split-segment", id, mid)
+  closeContextMenu()
 }
 
 function deleteSelected() {
+  // v2.1.1 A-03: block structural ops in edit mode
+  if (props.globalEditMode) {
+    emit("toast", "请退出编辑模式后重试")
+    closeContextMenu()
+    return
+  }
   if (selectedBlockId.value) {
     emit("delete-segment", selectedBlockId.value)
     selectedBlockId.value = null
@@ -199,14 +277,57 @@ function handleKeyDown(e: KeyboardEvent) {
     selectedBlockId.value = null
     closeContextMenu()
   }
+  // v2.1.1 A-03: ←/→ move playhead without playing (arrow keys are positioning tools)
+  if (e.key === "ArrowLeft") {
+    e.preventDefault()
+    const step = e.shiftKey ? 1.0 : 0.1
+    const t = Math.max(0, (props.currentTime ?? 0) - step)
+    emit("set-time", t)
+  }
+  if (e.key === "ArrowRight") {
+    e.preventDefault()
+    const step = e.shiftKey ? 1.0 : 0.1
+    const t = Math.min(props.duration ?? 99999, (props.currentTime ?? 0) + step)
+    emit("set-time", t)
+  }
 }
+
+// Document-level capture listener: intercept arrow keys BEFORE the video
+// element's native ±5s handler. Delegates to handleKeyDown when waveform active.
+function handleDocKeyCapture(e: KeyboardEvent) {
+  if ((e.key === "ArrowLeft" || e.key === "ArrowRight") &&
+      containerRef.value && document.activeElement === containerRef.value) {
+    e.preventDefault()
+    e.stopPropagation()
+    handleKeyDown(e)
+  }
+}
+
+// v2.1.1 A-01: listen for Timeline menu close broadcasts
+const handleGlobalClose = () => {
+  if (contextMenu.value) {
+    contextMenu.value = null
+  }
+}
+
+onMounted(() => {
+  document.addEventListener("keydown", handleDocKeyCapture, { capture: true })
+  window.addEventListener("closeallcontextmenus", handleGlobalClose)
+})
+
+onUnmounted(() => {
+  document.removeEventListener("keydown", handleDocKeyCapture, { capture: true })
+  window.removeEventListener("closeallcontextmenus", handleGlobalClose)
+})
 
 </script>
 
 <template>
   <div
-    class="absolute inset-x-0 top-6 bottom-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+    ref="containerRef"
+    class="absolute inset-x-0 top-6 bottom-0 focus:outline-none"
     tabindex="0"
+    @mousedown="focusContainer"
     @mousedown.self="handleEmptyClick"
     @keydown="handleKeyDown"
     @click.self="selectedBlockId = null; closeContextMenu()"
@@ -267,10 +388,23 @@ function handleKeyDown(e: KeyboardEvent) {
     <Teleport to="body">
       <div
         v-if="contextMenu"
-        class="fixed z-[9999] bg-white rounded-md shadow-lg border border-gray-200 py-1 min-w-[120px]"
-        :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
+        class="fixed z-[9999] bg-white rounded-md shadow-lg border border-gray-200 py-1 min-w-[140px]"
+        :style="{ left: contextMenu.x + 'px', top: Math.min(contextMenu.y, menuMaxY) + 'px' }"
         @click="closeContextMenu"
       >
+        <button
+          class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+          @click="splitSelectedAtCursor"
+        >
+          按时间指针分割
+        </button>
+        <button
+          class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+          @click="splitSelectedAtMidpoint"
+        >
+          从中点分割
+        </button>
+        <div class="border-t border-gray-100 my-1" />
         <button
           class="w-full text-left px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
           @click="deleteSelected"

@@ -13,12 +13,13 @@ import itertools
 import queue
 import threading
 import uuid
+from collections.abc import Callable
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any
 
 from loguru import logger
 
-from core.events import TASK_COMPLETED, TASK_FAILED, TASK_PROGRESS
+from core.events import TASK_CANCELLED, TASK_COMPLETED, TASK_FAILED, TASK_PROGRESS
 from core.models import MiloTask, TaskProgress, TaskStatus, TaskType
 
 
@@ -42,7 +43,9 @@ class TaskManager:
         self._queue: queue.PriorityQueue[tuple[int, int, str]] = queue.PriorityQueue()
         self._cancel_events: dict[str, threading.Event] = {}  # Only for RUNNING tasks
         self._lock = threading.Lock()
-        self._handlers: dict[TaskType, Callable[[MiloTask, threading.Event, Callable[[float, str], None]], dict]] = {}
+        self._handlers: dict[
+            TaskType, Callable[[MiloTask, threading.Event, Callable[[float, str], None]], dict]
+        ] = {}
 
         # Atomic counter for FIFO ordering within same priority
         self._sequence = itertools.count()
@@ -208,9 +211,7 @@ class TaskManager:
     def _threaded_execution_wrapper(self, task_id: str, task: MiloTask) -> None:
         """Acquire appropriate semaphore and execute in separate thread."""
         semaphore = (
-            self._heavy_semaphore
-            if task.type in self.HEAVY_TASKS
-            else self._light_semaphore
+            self._heavy_semaphore if task.type in self.HEAVY_TASKS else self._light_semaphore
         )
 
         semaphore.acquire()
@@ -231,10 +232,12 @@ class TaskManager:
             with self._lock:
                 current = self._tasks.get(task_id)
                 if current:
-                    self._tasks[task_id] = current.model_copy(update={
-                        "status": TaskStatus.FAILED,
-                        "error": f"No handler for task type: {task.type}",
-                    })
+                    self._tasks[task_id] = current.model_copy(
+                        update={
+                            "status": TaskStatus.FAILED,
+                            "error": f"No handler for task type: {task.type}",
+                        }
+                    )
             return
 
         cancel_event = threading.Event()
@@ -242,12 +245,15 @@ class TaskManager:
             self._cancel_events[task_id] = cancel_event
             current = self._tasks.get(task_id)
             if current:
-                self._tasks[task_id] = current.model_copy(update={
-                    "status": TaskStatus.RUNNING,
-                    "started_at": datetime.now().isoformat(),
-                })
+                self._tasks[task_id] = current.model_copy(
+                    update={
+                        "status": TaskStatus.RUNNING,
+                        "started_at": datetime.now().isoformat(),
+                    }
+                )
 
         try:
+
             def progress_cb(percent: float, message: str = "") -> None:
                 self._update_progress(task_id, percent, message)
 
@@ -256,34 +262,68 @@ class TaskManager:
             with self._lock:
                 current = self._tasks.get(task_id)
                 if current:
-                    self._tasks[task_id] = current.model_copy(update={
-                        "status": TaskStatus.COMPLETED,
-                        "progress": TaskProgress(percent=100),
-                        "result": result,
-                        "completed_at": datetime.now().isoformat(),
-                    })
+                    self._tasks[task_id] = current.model_copy(
+                        update={
+                            "status": TaskStatus.COMPLETED,
+                            "progress": TaskProgress(percent=100),
+                            "result": result,
+                            "completed_at": datetime.now().isoformat(),
+                        }
+                    )
 
-            self._emit(TASK_COMPLETED, {
-                "task_id": task_id,
-                "task_type": task.type.value,
-                "result": result,
-            })
+            self._emit(
+                TASK_COMPLETED,
+                {
+                    "task_id": task_id,
+                    "task_type": task.type.value,
+                    "result": result,
+                },
+            )
 
         except Exception as e:
-            logger.exception("Task {} failed", task_id)
-            with self._lock:
-                current = self._tasks.get(task_id)
-                if current:
-                    self._tasks[task_id] = current.model_copy(update={
-                        "status": TaskStatus.FAILED,
-                        "error": str(e),
-                        "completed_at": datetime.now().isoformat(),
-                    })
+            # Distinguish cancellation from real failure (v2.1.1 M1-2a).
+            # Handlers raise RuntimeError("Cancelled") when cancel_event fires;
+            # task_manager must not emit TASK_FAILED or log a stack trace for
+            # an intentional cancel.
+            is_cancelled = (
+                isinstance(e, RuntimeError) and str(e) == "Cancelled"
+            ) or cancel_event.is_set()
 
-            self._emit(TASK_FAILED, {
-                "task_id": task_id,
-                "error": str(e),
-            })
+            if is_cancelled:
+                with self._lock:
+                    current = self._tasks.get(task_id)
+                    if current:
+                        self._tasks[task_id] = current.model_copy(
+                            update={
+                                "status": TaskStatus.CANCELLED,
+                                "completed_at": datetime.now().isoformat(),
+                            }
+                        )
+                # No TASK_FAILED event for cancellation -- dedicated one.
+                self._emit(
+                    TASK_CANCELLED,
+                    {"task_id": task_id, "task_type": task.type.value},
+                )
+            else:
+                logger.exception("Task {} failed", task_id)
+                with self._lock:
+                    current = self._tasks.get(task_id)
+                    if current:
+                        self._tasks[task_id] = current.model_copy(
+                            update={
+                                "status": TaskStatus.FAILED,
+                                "error": str(e),
+                                "completed_at": datetime.now().isoformat(),
+                            }
+                        )
+
+                self._emit(
+                    TASK_FAILED,
+                    {
+                        "task_id": task_id,
+                        "error": str(e),
+                    },
+                )
 
         finally:
             with self._lock:
@@ -295,11 +335,16 @@ class TaskManager:
             task = self._tasks.get(task_id)
             if task is None:
                 return
-            self._tasks[task_id] = task.model_copy(update={
-                "progress": TaskProgress(percent=percent, message=message),
-            })
-        self._emit(TASK_PROGRESS, {
-            "task_id": task_id,
-            "percent": percent,
-            "message": message,
-        })
+            self._tasks[task_id] = task.model_copy(
+                update={
+                    "progress": TaskProgress(percent=percent, message=message),
+                }
+            )
+        self._emit(
+            TASK_PROGRESS,
+            {
+                "task_id": task_id,
+                "percent": percent,
+                "message": message,
+            },
+        )

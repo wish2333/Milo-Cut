@@ -1,9 +1,5 @@
 """Tests for core.project_service."""
 
-import json
-import tempfile
-from pathlib import Path
-
 from core.models import EditStatus, SegmentType
 from core.project_service import ProjectService
 
@@ -54,7 +50,7 @@ class TestProjectService:
         segs = [s.model_dump() for s in sample_segments]
         result = svc.update_transcript(segs)
         assert result["success"] is True
-        assert len(svc.current.transcript.segments) == len(sample_segments)
+        assert len(svc.current.active_timeline.transcript.segments) == len(sample_segments)
 
     def test_add_silence_results(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)
@@ -62,18 +58,18 @@ class TestProjectService:
         silences = [{"start": 5.0, "end": 5.5}, {"start": 10.0, "end": 11.0}]
         result = svc.add_silence_results(silences)
         assert result["success"] is True
-        sil_segs = [s for s in svc.current.transcript.segments if s.type == SegmentType.SILENCE]
+        sil_segs = [s for s in svc.current.active_timeline.transcript.segments if s.type == SegmentType.SILENCE]
         assert len(sil_segs) == 2
-        assert len(svc.current.edits) == 2
+        assert len(svc.current.active_timeline.edits) == 2
 
     def test_update_edit_decision(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)
         svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         svc.add_silence_results([{"start": 5.0, "end": 5.5}])
-        edit_id = svc.current.edits[0].id
+        edit_id = svc.current.active_timeline.edits[0].id
         result = svc.update_edit_decision(edit_id, "confirmed")
         assert result["success"] is True
-        assert svc.current.edits[0].status == EditStatus.CONFIRMED
+        assert svc.current.active_timeline.edits[0].status == EditStatus.CONFIRMED
 
     def test_update_segment(self, tmp_dir, monkeypatch, sample_segments):
         svc = self._create_service(tmp_dir, monkeypatch)
@@ -81,7 +77,7 @@ class TestProjectService:
         svc.update_transcript([s.model_dump() for s in sample_segments])
         result = svc.update_segment("seg-0001", {"text": "Updated text"})
         assert result["success"] is True
-        seg = next(s for s in svc.current.transcript.segments if s.id == "seg-0001")
+        seg = next(s for s in svc.current.active_timeline.transcript.segments if s.id == "seg-0001")
         assert seg.text == "Updated text"
 
     def test_merge_segments(self, tmp_dir, monkeypatch, sample_segments):
@@ -90,7 +86,7 @@ class TestProjectService:
         svc.update_transcript([s.model_dump() for s in sample_segments])
         result = svc.merge_segments(["seg-0001", "seg-0002"])
         assert result["success"] is True
-        merged = [s for s in svc.current.transcript.segments if s.id == "seg-0001"]
+        merged = [s for s in svc.current.active_timeline.transcript.segments if s.id == "seg-0001"]
         assert len(merged) == 1
         assert "Hello world" in merged[0].text
         assert "This is a test" in merged[0].text
@@ -101,7 +97,7 @@ class TestProjectService:
         svc.update_transcript([s.model_dump() for s in sample_segments])
         result = svc.split_segment("seg-0001", 3.0)
         assert result["success"] is True
-        segs = svc.current.transcript.segments
+        segs = svc.current.active_timeline.transcript.segments
         a = next((s for s in segs if s.id == "seg-0001-a"), None)
         b = next((s for s in segs if s.id == "seg-0001-b"), None)
         assert a is not None
@@ -116,7 +112,7 @@ class TestProjectService:
         result = svc.search_replace("Hello", "Hi")
         assert result["success"] is True
         assert result["data"]["count"] == 1
-        seg = next(s for s in svc.current.transcript.segments if s.id == "seg-0001")
+        seg = next(s for s in svc.current.active_timeline.transcript.segments if s.id == "seg-0001")
         assert seg.text == "Hi world"
 
     def test_mark_segments(self, tmp_dir, monkeypatch, sample_segments):
@@ -125,7 +121,7 @@ class TestProjectService:
         svc.update_transcript([s.model_dump() for s in sample_segments])
         result = svc.mark_segments(["seg-0001"], "delete")
         assert result["success"] is True
-        assert len(svc.current.edits) > 0
+        assert len(svc.current.active_timeline.edits) > 0
 
     def test_confirm_all_suggestions(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)
@@ -134,7 +130,7 @@ class TestProjectService:
         result = svc.confirm_all_suggestions()
         assert result["success"] is True
         assert result["data"]["confirmed_count"] == 2
-        assert all(e.status == EditStatus.CONFIRMED for e in svc.current.edits)
+        assert all(e.status == EditStatus.CONFIRMED for e in svc.current.active_timeline.edits)
 
     def test_reject_all_suggestions(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)
@@ -142,7 +138,7 @@ class TestProjectService:
         svc.add_silence_results([{"start": 5.0, "end": 5.5}])
         result = svc.reject_all_suggestions()
         assert result["success"] is True
-        assert svc.current.edits[0].status == EditStatus.REJECTED
+        assert svc.current.active_timeline.edits[0].status == EditStatus.REJECTED
 
     def test_get_edit_summary(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)
@@ -157,11 +153,19 @@ class TestProjectService:
         svc = self._create_service(tmp_dir, monkeypatch)
         svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         svc.update_transcript([s.model_dump() for s in sample_segments])
-        results = [{"id": "ar-1", "type": "filler", "segment_ids": ["seg-0001"], "confidence": 0.9, "detail": "test"}]
+        results = [
+            {
+                "id": "ar-1",
+                "type": "llm_smart_delete",
+                "segment_ids": ["seg-0001"],
+                "confidence": 0.9,
+                "detail": "test",
+            }
+        ]
         result = svc.add_analysis_results(results, source="test")
         assert result["success"] is True
-        assert len(svc.current.analysis.results) == 1
-        assert len(svc.current.edits) > 0
+        assert len(svc.current.active_timeline.analysis.results) == 1
+        assert len(svc.current.active_timeline.edits) > 0
 
     def test_update_segment_text(self, tmp_dir, monkeypatch, sample_segments):
         svc = self._create_service(tmp_dir, monkeypatch)
@@ -169,7 +173,7 @@ class TestProjectService:
         svc.update_transcript([s.model_dump() for s in sample_segments])
         result = svc.update_segment_text("seg-0001", "New text")
         assert result["success"] is True
-        seg = next(s for s in svc.current.transcript.segments if s.id == "seg-0001")
+        seg = next(s for s in svc.current.active_timeline.transcript.segments if s.id == "seg-0001")
         assert seg.text == "New text"
         assert seg.dirty_flags.get("text_edited") is True
 
@@ -177,7 +181,7 @@ class TestProjectService:
         svc = self._create_service(tmp_dir, monkeypatch)
         result = svc.get_settings()
         assert result["success"] is True
-        assert "filler_words" in result["data"]
+        assert "silence_threshold_db" in result["data"]
 
     def test_get_recent_projects_empty(self, tmp_dir, monkeypatch):
         svc = self._create_service(tmp_dir, monkeypatch)
@@ -193,7 +197,7 @@ class TestProjectService:
         silences = [{"start": 5.0, "end": 6.0}, {"start": 10.0, "end": 11.0}]
         result = svc.add_silence_results(silences, margin=0.1)
         assert result["success"] is True
-        sil_segs = [s for s in svc.current.transcript.segments if s.type == SegmentType.SILENCE]
+        sil_segs = [s for s in svc.current.active_timeline.transcript.segments if s.type == SegmentType.SILENCE]
         assert len(sil_segs) == 2
         assert abs(sil_segs[0].start - 5.1) < 0.01
         assert abs(sil_segs[0].end - 5.9) < 0.01
@@ -204,7 +208,7 @@ class TestProjectService:
         silences = [{"start": 5.0, "end": 5.1}]  # 0.1s duration, margin=0.1 -> consumed
         result = svc.add_silence_results(silences, margin=0.1)
         assert result["success"] is True
-        sil_segs = [s for s in svc.current.transcript.segments if s.type == SegmentType.SILENCE]
+        sil_segs = [s for s in svc.current.active_timeline.transcript.segments if s.type == SegmentType.SILENCE]
         assert len(sil_segs) == 0
 
     def test_add_silence_results_margin_zero(self, tmp_dir, monkeypatch):
@@ -213,7 +217,7 @@ class TestProjectService:
         silences = [{"start": 5.0, "end": 6.0}]
         result = svc.add_silence_results(silences, margin=0.0)
         assert result["success"] is True
-        sil_segs = [s for s in svc.current.transcript.segments if s.type == SegmentType.SILENCE]
+        sil_segs = [s for s in svc.current.active_timeline.transcript.segments if s.type == SegmentType.SILENCE]
         assert len(sil_segs) == 1
         assert abs(sil_segs[0].start - 5.0) < 0.01
 
@@ -221,9 +225,11 @@ class TestProjectService:
 
     def _add_subtitles(self, svc, subtitles):
         """Helper: add subtitle segments to the project. subtitles = [(start, end, text), ...]"""
-        from core.models import Segment, SegmentType
+        from core.models import SegmentType
+        from tests.mocks import make_segment
+
         segs = [
-            Segment(id=f"sub-{i:04d}", type=SegmentType.SUBTITLE, start=s, end=e, text=t)
+            make_segment(id=f"sub-{i:04d}", type=SegmentType.SUBTITLE, start=s, end=e, text=t)
             for i, (s, e, t) in enumerate(subtitles)
         ]
         svc.update_transcript([s.model_dump() for s in segs])
@@ -301,19 +307,25 @@ class TestProjectService:
         svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         self._add_subtitles(svc, [(5.0, 8.0, "sub")])
         # Confirm-delete the subtitle via update_edit_decision
-        sub_id = next(s.id for s in svc.current.transcript.segments if s.type == "subtitle")
+        sub_id = next(s.id for s in svc.current.active_timeline.transcript.segments if s.type == "subtitle")
         svc.add_silence_results([{"start": 5.0, "end": 8.0}])
         # Mark the silence edit as confirmed so the subtitle gets a confirmed-delete edit
         # Instead, directly add a confirmed delete edit for the subtitle
-        from core.models import EditDecision, EditStatus
-        confirmed_edit = EditDecision(
-            id="ed-sub-del", start=5.0, end=8.0, action="delete",
-            source="user", status=EditStatus.CONFIRMED, target_id=sub_id,
+        from core.models import EditStatus
+        from tests.mocks import make_edit_decision
+
+        confirmed_edit = make_edit_decision(
+            id="ed-sub-del",
+            start=5.0,
+            end=8.0,
+            action="delete",
+            source="user",
+            status=EditStatus.CONFIRMED,
+            target_id=sub_id,
         )
-        updated = svc._current.model_copy(update={
-            "edits": list(svc._current.edits) + [confirmed_edit],
-        })
-        svc._current = updated
+        svc._update_active_timeline(
+            edits=list(svc.active_timeline.edits) + [confirmed_edit],
+        )
         silences = [{"start": 4.0, "end": 9.0, "duration": 5.0}]
         result = svc._trim_silences_around_subtitles(silences, padding=0.3)
         assert len(result) == 1  # deleted subtitle ignored, silence unchanged
@@ -327,7 +339,218 @@ class TestProjectService:
         silences = [{"start": 4.0, "end": 9.0}]
         result = svc.add_silence_results(silences, subtitle_padding=0.3)
         assert result["success"] is True
-        sil_segs = [s for s in svc.current.transcript.segments if s.type == SegmentType.SILENCE]
+        sil_segs = [s for s in svc.current.active_timeline.transcript.segments if s.type == SegmentType.SILENCE]
         assert len(sil_segs) == 2
         assert abs(sil_segs[0].start - 4.0) < 0.01
         assert abs(sil_segs[0].end - 4.7) < 0.01
+
+    def test_split_segment_inherits_and_independent_segment_edits(self, tmp_dir, monkeypatch, sample_segments):
+        """v2.1.1 A-2.4: segment-targeted ED must be cloned to both a and b
+        so each sub-segment has an independent decision after split."""
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
+        svc.update_transcript([s.model_dump() for s in sample_segments])
+
+        # Mark seg-0001 as delete -> creates segment-targeted ED
+        result = svc.mark_segments(["seg-0001"], "delete")
+        assert result["success"] is True
+        original_edits = svc.current.active_timeline.edits
+        assert len(original_edits) == 1
+        assert original_edits[0].target_type == "segment"
+        assert original_edits[0].target_id == "seg-0001"
+
+        # Split seg-0001 at 3.0
+        result = svc.split_segment("seg-0001", 3.0)
+        assert result["success"] is True
+        edits_after_split = svc.current.active_timeline.edits
+        # Original ED dropped, two clones added (a + b)
+        assert len(edits_after_split) == 2
+        edit_a = next(e for e in edits_after_split if e.target_id == "seg-0001-a")
+        edit_b = next(e for e in edits_after_split if e.target_id == "seg-0001-b")
+        # Both inherit action and original status
+        assert edit_a.action == "delete"
+        assert edit_b.action == "delete"
+
+        # Flip only a -> b must be unaffected (independence check)
+        svc.update_edit_decision(edit_a.id, "rejected")
+        edit_a_after = next(e for e in svc.current.active_timeline.edits if e.id == edit_a.id)
+        edit_b_after = next(e for e in svc.current.active_timeline.edits if e.id == edit_b.id)
+        assert edit_a_after.status == EditStatus.REJECTED
+        assert edit_b_after.status == EditStatus.PENDING
+
+    def test_split_segment_cuts_range_edits_crossing_position(self, tmp_dir, monkeypatch, sample_segments):
+        """v2.1.1 A-2.4: range-targeted ED crossing the split position must be
+        cut into two EDs at position; non-crossing EDs stay as-is."""
+        from core.models import EditDecision
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
+        svc.update_transcript([s.model_dump() for s in sample_segments])
+
+        # seg-0001 spans roughly [0, 5]; inject 3 range EDs manually:
+        # - crossing_ed [2, 4]: crosses split at 3 -> should be cut
+        # - left_ed     [1, 2]: fully left -> keep
+        # - right_ed    [4, 5]: fully right -> keep
+        crossing_ed = EditDecision(id="rx", start=2.0, end=4.0, action="delete",
+                                   target_type="range", target_id=None)
+        left_ed = EditDecision(id="rl", start=1.0, end=2.0, action="delete",
+                               target_type="range", target_id=None)
+        right_ed = EditDecision(id="rr", start=4.0, end=5.0, action="delete",
+                                target_type="range", target_id=None)
+        svc._update_active_timeline(edits=list(svc.active_timeline.edits) + [crossing_ed, left_ed, right_ed])
+
+        result = svc.split_segment("seg-0001", 3.0)
+        assert result["success"] is True
+        edits = svc.current.active_timeline.edits
+        ids = {e.id for e in edits}
+        # crossing_ed is split into _a and _b; original rx dropped
+        assert "rx_a" in ids and "rx_b" in ids and "rx" not in ids
+        rx_a = next(e for e in edits if e.id == "rx_a")
+        rx_b = next(e for e in edits if e.id == "rx_b")
+        assert rx_a.start == 2.0 and rx_a.end == 3.0
+        assert rx_b.start == 3.0 and rx_b.end == 4.0
+        # left/right EDs untouched
+        assert "rl" in ids and "rr" in ids
+
+    def test_delete_edit_decisions_batch_cascades_to_analysis_results(self, tmp_dir, monkeypatch):
+        """Bug F: deleting edits should also clean associated AnalysisResults."""
+        svc = self._create_service(tmp_dir, monkeypatch)
+        mp = str(self._create_media_file(tmp_dir))
+        svc.create_project("cascade-test", mp, {"duration": 60.0})
+
+        # Add a subtitle segment so add_analysis_results can match it
+        from core.models import Segment, SegmentType
+        test_seg = Segment(id="s_test", type=SegmentType.SUBTITLE, start=0.0, end=5.0, text="test")
+        svc._update_active_timeline(
+            transcript=svc.active_timeline.transcript.model_copy(
+                update={"segments": list(svc.active_timeline.transcript.segments) + [test_seg]}
+            )
+        )
+
+        # Add an AnalysisResult with associated EditDecision
+        ar_results = [{
+            "id": "ar_test_1",
+            "type": "llm_smart_delete",
+            "segment_ids": ["s_test"],
+            "confidence": 0.9,
+            "detail": "test",
+        }]
+        svc.add_analysis_results(ar_results, source="llm_smart")
+
+        # Verify both AnalysisResult and EditDecision exist
+        tl = svc.active_timeline
+        assert len(tl.analysis.results) == 1
+        assert tl.analysis.results[0].id == "ar_test_1"
+        smart_edits = [e for e in tl.edits if e.source == "llm_smart"]
+        assert len(smart_edits) == 1
+        assert smart_edits[0].analysis_id == "ar_test_1"
+
+        # Delete the edit decision
+        result = svc.delete_edit_decisions_batch([smart_edits[0].id])
+        assert result["success"]
+
+        # Verify both EditDecision AND AnalysisResult are gone
+        tl = svc.active_timeline
+        smart_edits_after = [e for e in tl.edits if e.source == "llm_smart"]
+        assert len(smart_edits_after) == 0, "EditDecision should be removed"
+        remaining_ars = [r for r in tl.analysis.results if r.id == "ar_test_1"]
+        assert len(remaining_ars) == 0, "AnalysisResult should be cascade-removed"
+
+    def test_migrate_highlights_fixes_legacy_actions(self, tmp_dir, monkeypatch):
+        """Phase 4: _migrate_highlights should fix action=delete to keep for highlights."""
+        from core.models import AnalysisResult, EditDecision, EditStatus
+
+        svc = self._create_service(tmp_dir, monkeypatch)
+        mp = str(self._create_media_file(tmp_dir))
+        svc.create_project("migrate-test", mp, {"duration": 60.0})
+
+        # Add a subtitle segment
+        from core.models import Segment, SegmentType
+        test_seg = Segment(id="s_migrate", type=SegmentType.SUBTITLE, start=0.0, end=10.0, text="test")
+        svc._update_active_timeline(
+            transcript=svc.active_timeline.transcript.model_copy(
+                update={"segments": list(svc.active_timeline.transcript.segments) + [test_seg]}
+            )
+        )
+
+        seg_id = "s_migrate"
+
+        # Simulate legacy: add analysis result + edit with action="delete"
+        ar = AnalysisResult(
+            id="llm_hl_old",
+            type="llm_highlight",
+            segment_ids=[seg_id],
+            confidence=1.0,
+            detail="old highlight",
+        )
+        legacy_edit = EditDecision(
+            id="edit-llm_hl_old",
+            start=0.0,
+            end=10.0,
+            action="delete",  # Bug E: wrong action
+            source="llm_highlight",
+            analysis_id="llm_hl_old",
+            status=EditStatus.PENDING,
+            priority=100,
+            target_type="segment",
+            target_id=seg_id,
+        )
+        svc._update_active_timeline(
+            analysis=svc.active_timeline.analysis.model_copy(
+                update={"results": list(svc.active_timeline.analysis.results) + [ar]}
+            ),
+            edits=list(svc.active_timeline.edits) + [legacy_edit],
+        )
+
+        # Run migration
+        svc._migrate_highlights()
+
+        # Verify action is now "keep"
+        tl = svc.active_timeline
+        hl_edits = [e for e in tl.edits if e.source == "llm_highlight"]
+        assert len(hl_edits) == 1
+        assert hl_edits[0].action == "keep", (
+            f"Migration should fix action to 'keep', got '{hl_edits[0].action}'"
+        )
+
+    def test_migrate_highlights_removes_orphan_edits(self, tmp_dir, monkeypatch):
+        """Phase 4: _migrate_highlights should remove orphan edits whose analysis_id is gone."""
+        from core.models import EditDecision, EditStatus
+
+        svc = self._create_service(tmp_dir, monkeypatch)
+        mp = str(self._create_media_file(tmp_dir))
+        svc.create_project("orphan-test", mp, {"duration": 60.0})
+
+        # Add a subtitle segment
+        from core.models import Segment, SegmentType
+        test_seg = Segment(id="s_orphan", type=SegmentType.SUBTITLE, start=0.0, end=10.0, text="test")
+        svc._update_active_timeline(
+            transcript=svc.active_timeline.transcript.model_copy(
+                update={"segments": list(svc.active_timeline.transcript.segments) + [test_seg]}
+            )
+        )
+
+        seg_id = "s_orphan"
+
+        orphan_edit = EditDecision(
+            id="edit-manual_hl_orphan",
+            start=0.0,
+            end=10.0,
+            action="keep",
+            source="manual_highlight",
+            analysis_id="manual_hl_gone",  # No matching AnalysisResult
+            status=EditStatus.PENDING,
+            priority=100,
+            target_type="segment",
+            target_id=seg_id,
+        )
+        svc._update_active_timeline(
+            edits=list(svc.active_timeline.edits) + [orphan_edit],
+        )
+
+        # Run migration
+        svc._migrate_highlights()
+
+        # Verify orphan is removed
+        tl = svc.active_timeline
+        orphans = [e for e in tl.edits if e.analysis_id == "manual_hl_gone"]
+        assert len(orphans) == 0, f"Orphan edit should be removed: {orphans}"

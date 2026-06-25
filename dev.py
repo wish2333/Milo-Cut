@@ -26,6 +26,7 @@ How it works
 
 ============================================================
 """
+
 from __future__ import annotations
 
 import argparse
@@ -45,6 +46,7 @@ DEFAULT_FRONTEND_DIR = PROJECT_ROOT / "frontend"
 # ================================================================
 # Helpers
 # ================================================================
+
 
 def _info(msg: str) -> None:
     print(f"[INFO] {msg}")
@@ -105,6 +107,7 @@ def _kill_bg() -> None:
 # Setup
 # ================================================================
 
+
 def _setup_python() -> None:
     """Install Python dependencies via uv."""
     uv = _find_cmd("uv")
@@ -127,6 +130,7 @@ def _setup_frontend(frontend_dir: Path) -> str:
 # ================================================================
 # Start
 # ================================================================
+
 
 def _start_vite(frontend_dir: Path, pm: str) -> None:
     """Start Vite dev server in background and wait for it to be ready."""
@@ -173,6 +177,7 @@ def _start_app(env_extra: dict[str, str] | None = None) -> None:
 # Signal handling
 # ================================================================
 
+
 def _on_signal(signum: int, _frame) -> None:
     _info("\nShutting down...")
     _kill_bg()
@@ -182,6 +187,7 @@ def _on_signal(signum: int, _frame) -> None:
 # ================================================================
 # Main
 # ================================================================
+
 
 def main() -> None:
     ap = argparse.ArgumentParser(
@@ -195,12 +201,14 @@ examples:
   uv run dev.py --setup                    Only install dependencies
 """,
     )
-    ap.add_argument("--no-vite", action="store_true",
-                    help="Skip Vite, load frontend from disk")
-    ap.add_argument("--setup", action="store_true",
-                    help="Only install dependencies, then exit")
-    ap.add_argument("--frontend-dir", type=str, default=None,
-                    help="Vue project root with package.json (default: ./frontend)")
+    ap.add_argument("--no-vite", action="store_true", help="Skip Vite, load frontend from disk")
+    ap.add_argument("--setup", action="store_true", help="Only install dependencies, then exit")
+    ap.add_argument(
+        "--frontend-dir",
+        type=str,
+        default=None,
+        help="Vue project root with package.json (default: ./frontend)",
+    )
     args = ap.parse_args()
 
     # Graceful shutdown on Ctrl+C
@@ -212,15 +220,14 @@ examples:
     _setup_python()
 
     # --- Step 2: Frontend deps ---
-    frontend_dir = (
-        Path(args.frontend_dir) if args.frontend_dir
-        else DEFAULT_FRONTEND_DIR
-    )
+    frontend_dir = Path(args.frontend_dir) if args.frontend_dir else DEFAULT_FRONTEND_DIR
     pm: str | None = None
     if not args.no_vite:
         if not (frontend_dir / "package.json").exists():
-            _error(f"No package.json in {frontend_dir}. "
-                   f"Use --frontend-dir to point to your Vue project.")
+            _error(
+                f"No package.json in {frontend_dir}. "
+                f"Use --frontend-dir to point to your Vue project."
+            )
         pm = _setup_frontend(frontend_dir)
 
     if args.setup:

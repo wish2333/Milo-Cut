@@ -15,10 +15,11 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from loguru import logger
 
@@ -266,7 +267,7 @@ def _detect_download_source() -> str:
         sock = socket.create_connection(("huggingface.co", 443), timeout=3)
         sock.close()
         return "huggingface"
-    except (socket.timeout, OSError):
+    except (TimeoutError, OSError):
         pass
 
     # Try hf-mirror
@@ -275,7 +276,7 @@ def _detect_download_source() -> str:
         sock = socket.create_connection(("hf-mirror.com", 443), timeout=3)
         sock.close()
         return "hf-mirror"
-    except (socket.timeout, OSError):
+    except (TimeoutError, OSError):
         pass
 
     # Fallback to ModelScope
@@ -331,7 +332,9 @@ def detect_gpu() -> dict[str, Any]:
             if not result["has_nvidia_gpu"]:
                 proc2 = subprocess.run(
                     ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-                    capture_output=True, text=True, timeout=5,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
                     **_subprocess_kwargs(),
                 )
                 if proc2.returncode == 0 and proc2.stdout.strip():
@@ -343,6 +346,7 @@ def detect_gpu() -> dict[str, Any]:
             for line in output.split("\n"):
                 if "CUDA Version" in line:
                     import re
+
                     match = re.search(r"CUDA Version:\s*([\d.]+)", line)
                     if match:
                         result["cuda_available"] = True
@@ -452,15 +456,17 @@ class PluginManager:
                 continue
 
             entry = self._registry.get(plugin_id, {})
-            result.append({
-                "plugin_id": plugin_id,
-                "display_name": meta["display_name"],
-                "engine": meta["engine"],
-                "version": entry.get("version", "1.0.0"),
-                "status": "installed" if entry.get("installed") else "not_installed",
-                "installed_at": entry.get("installed_at", ""),
-                "venv_path": str(self._get_venv_path(plugin_id)),
-            })
+            result.append(
+                {
+                    "plugin_id": plugin_id,
+                    "display_name": meta["display_name"],
+                    "engine": meta["engine"],
+                    "version": entry.get("version", "1.0.0"),
+                    "status": "installed" if entry.get("installed") else "not_installed",
+                    "installed_at": entry.get("installed_at", ""),
+                    "venv_path": str(self._get_venv_path(plugin_id)),
+                }
+            )
         return result
 
     def is_installed(self, plugin_id: str) -> bool:
@@ -600,15 +606,17 @@ class PluginManager:
         for plugin_id, meta in PLUGIN_REGISTRY.items():
             for model_id, model_meta in meta["models"].items():
                 local_path = self._get_model_path(model_id)
-                result.append({
-                    "model_id": model_id,
-                    "display_name": model_meta["display_name"],
-                    "plugin_id": plugin_id,
-                    "engine": meta["engine"],
-                    "size_bytes": model_meta["size_bytes"],
-                    "local_path": str(local_path),
-                    "status": "downloaded" if local_path.exists() else "not_downloaded",
-                })
+                result.append(
+                    {
+                        "model_id": model_id,
+                        "display_name": model_meta["display_name"],
+                        "plugin_id": plugin_id,
+                        "engine": meta["engine"],
+                        "size_bytes": model_meta["size_bytes"],
+                        "local_path": str(local_path),
+                        "status": "downloaded" if local_path.exists() else "not_downloaded",
+                    }
+                )
         return result
 
     def is_model_downloaded(self, model_id: str) -> bool:
@@ -719,8 +727,7 @@ class PluginManager:
                 self._download_from_modelscope(model_id, local_path, progress_cb)
             else:
                 endpoint = (
-                    "https://hf-mirror.com" if source == "hf-mirror"
-                    else "https://huggingface.co"
+                    "https://hf-mirror.com" if source == "hf-mirror" else "https://huggingface.co"
                 )
                 self._download_from_hf(model_id, local_path, endpoint, progress_cb)
         except Exception as exc:
@@ -810,9 +817,7 @@ class PluginManager:
                 **_subprocess_kwargs(),
             )
             if result.returncode != 0:
-                raise RuntimeError(
-                    f"uv command failed (exit {result.returncode}): {result.stderr}"
-                )
+                raise RuntimeError(f"uv command failed (exit {result.returncode}): {result.stderr}")
             return result
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(f"uv command timed out after {timeout}s") from exc
@@ -1030,12 +1035,14 @@ class PluginManager:
         logs: list[dict[str, str]] = []
         for log_file in self._tasks_dir.glob("*.log"):
             stat = log_file.stat()
-            logs.append({
-                "task_id": log_file.stem,
-                "path": str(log_file),
-                "size": str(stat.st_size),
-                "modified": str(stat.st_mtime),
-            })
+            logs.append(
+                {
+                    "task_id": log_file.stem,
+                    "path": str(log_file),
+                    "size": str(stat.st_size),
+                    "modified": str(stat.st_mtime),
+                }
+            )
         logs.sort(key=lambda x: x["modified"], reverse=True)
         return logs
 
@@ -1090,9 +1097,6 @@ def _classify_exit_code(returncode: int) -> str:
             "Try switching to CPU mode or a smaller model."
         )
     if returncode in (0xC0000409, -1073740791):
-        return (
-            "Process aborted with stack buffer overrun (0xC0000409). "
-            "Try switching to CPU mode."
-        )
+        return "Process aborted with stack buffer overrun (0xC0000409). Try switching to CPU mode."
 
     return f"Process exited with code {returncode}"

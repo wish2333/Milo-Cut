@@ -1,17 +1,15 @@
 import { describe, it, expect } from "vitest"
 import { mount } from "@vue/test-utils"
 import SilenceRow from "./SilenceRow.vue"
-import type { Segment } from "@/types/project"
+import { mockSegment } from "@/test/helpers/mockProject"
 
-const silenceSegment: Segment = {
+const silenceSegment = mockSegment({
   id: "sil-0001",
-  version: 1,
   type: "silence",
   start: 5.0,
   end: 7.5,
   text: "",
-  speaker: "",
-}
+})
 
 describe("SilenceRow", () => {
   it("renders silence duration", () => {

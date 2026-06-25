@@ -18,12 +18,15 @@ export interface SegmentState {
   activeEdit: EditDecision | undefined
 }
 
+const HIGHLIGHT_SOURCES = new Set(["llm_highlight", "manual_highlight"])
+
 export function resolveSegmentState(
   edits: ReadonlyArray<EditDecision>,
   seg: Segment,
 ): SegmentState {
   const related = edits.filter(e =>
-    e.target_id === seg.id || isOverlapping(e, seg, 0.3),
+    (e.target_id === seg.id || isOverlapping(e, seg, 0.3))
+    && !HIGHLIGHT_SOURCES.has(e.source),
   )
 
   const all = related

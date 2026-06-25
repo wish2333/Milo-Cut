@@ -61,4 +61,21 @@ export interface AppSettings {
   // Proxy settings
   proxy_resolution: string
   auto_generate_proxy: boolean
+  // LLM settings
+  llm_provider: "deepseek" | "openai" | "qwen" | "glm" | "custom"
+  llm_base_url: string
+  llm_api_key: string
+  llm_model: string
+  llm_temperature: number
+  llm_timeout: number
+  llm_thinking_enabled: boolean
+  llm_provider_configs: Record<string, { base_url: string; api_key: string; model: string }>
+  // v2.1.1 M2: tunable LLM chunking/batching/concurrency (advanced params)
+  llm_smart_batch_size: number
+  llm_smart_overlap_size: number
+  llm_correction_batch_size: number
+  llm_correction_context_window: number
+  llm_highlight_chunk_duration: number
+  llm_highlight_overlap_duration: number
+  llm_concurrency: number
 }

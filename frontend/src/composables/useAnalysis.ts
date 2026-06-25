@@ -8,9 +8,6 @@ import type { TaskType } from "@/types/task"
 
 const ANALYSIS_TASKS: TaskType[] = [
   "silence_detection",
-  "filler_detection",
-  "error_detection",
-  "full_analysis",
   "transcription",
 ]
 
@@ -48,24 +45,6 @@ export function useAnalysis(
     return await startTask(task.id)
   }
 
-  async function runFillerDetection(): Promise<boolean> {
-    const task = await createTask("filler_detection")
-    if (!task) return false
-    return await startTask(task.id)
-  }
-
-  async function runErrorDetection(): Promise<boolean> {
-    const task = await createTask("error_detection")
-    if (!task) return false
-    return await startTask(task.id)
-  }
-
-  async function runFullAnalysis(): Promise<boolean> {
-    const task = await createTask("full_analysis")
-    if (!task) return false
-    return await startTask(task.id)
-  }
-
   async function runTranscription(payload?: Record<string, unknown>): Promise<boolean> {
     const task = await createTask("transcription", payload)
     if (!task) return false
@@ -92,8 +71,47 @@ export function useAnalysis(
     return false
   }
 
+  /** v2.1.1: Reset an edit back to pending (undo confirm/reject). */
+  async function resetEdit(editId: string): Promise<boolean> {
+    const res = await call<Project>("update_edit_decision", editId, "pending")
+    if (res.success && res.data) {
+      if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value)
+      project.value = res.data
+      return true
+    }
+    return false
+  }
+
+  /** v2.1.1: Batch update edit statuses (group-level operations). */
+  async function batchUpdateEdits(
+    editIds: string[],
+    status: "confirmed" | "rejected" | "pending",
+  ): Promise<boolean> {
+    if (editIds.length === 0) return false
+    if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value)
+    const res = await call<Project>("update_edit_decisions_batch", editIds, status)
+    if (res.success && res.data) {
+      project.value = res.data
+      return true
+    }
+    return false
+  }
+
+  /** v2.1.1: Permanently delete a group of edits (not just reset status). */
+  async function deleteEdits(editIds: string[]): Promise<boolean> {
+    if (editIds.length === 0) return false
+    if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value)
+    const res = await call<Project>("delete_edit_decisions_batch", editIds)
+    if (res.success && res.data) {
+      project.value = res.data
+      return true
+    }
+    return false
+  }
+
   async function confirmAllEdits(): Promise<boolean> {
-    const edits = project.value?.edits ?? []
+    const tl = project.value?.timelines.find(t => t.id === project.value?.active_timeline_id)
+    const edits = tl?.edits ?? []
     let ok = true
     for (const edit of edits) {
       if (edit.status === "pending" && edit.action === "delete") {
@@ -109,12 +127,12 @@ export function useAnalysis(
     detectionProgress,
     activeTask,
     runSilenceDetection,
-    runFillerDetection,
-    runErrorDetection,
-    runFullAnalysis,
     runTranscription,
     confirmEdit,
     rejectEdit,
+    resetEdit,
+    batchUpdateEdits,
+    deleteEdits,
     confirmAllEdits,
   }
 }

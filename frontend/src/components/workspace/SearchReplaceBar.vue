@@ -3,6 +3,7 @@ import { ref, onMounted, onUnmounted } from "vue"
 
 const emit = defineEmits<{
   "search-replace": [query: string, replacement: string, scope: string]
+  "close": []
 }>()
 
 const isVisible = ref(false)
@@ -20,6 +21,7 @@ function show() {
 
 function hide() {
   isVisible.value = false
+  emit("close")
 }
 
 function handleSearch() {

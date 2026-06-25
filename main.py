@@ -5,15 +5,16 @@ AI-powered video preprocessing tool for oral presentation videos.
 
 from __future__ import annotations
 
-import sys
 import os
-import pathlib
-from pathlib import Path
-import subprocess
 import shutil
+import subprocess
+import sys
 import uuid
+from pathlib import Path
 
 from pywebvue import App, Bridge, expose
+
+_BRIDGE_DEFAULT_PORT = 18230
 
 _SUBPROCESS_KWARGS: dict = (
     {"creationflags": subprocess.CREATE_NO_WINDOW}
@@ -38,7 +39,9 @@ def _fix_macos_path() -> None:
     try:
         result = _sp.run(
             [shell, "-l", "-c", "echo $PATH"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode == 0 and result.stdout.strip():
             os.environ["PATH"] = result.stdout.strip()
@@ -48,22 +51,21 @@ def _fix_macos_path() -> None:
 
 _fix_macos_path()
 
-from core.analysis_service import detect_errors, detect_fillers, run_full_analysis
+from core.bridge_service import BridgeService
 from core.config import load_settings
-from core.events import EDIT_SUMMARY_UPDATED, ENCODER_FALLBACK, LOG_LINE
-from core.ffmpeg_service import detect_silence, generate_waveform, probe_media
+from core.events import EDIT_SUMMARY_UPDATED, ENCODER_FALLBACK, PROJECT_DIRTY, PROJECT_SAVED
+from core.export_service import export_audio, export_srt, export_video, export_vtt
+from core.ffmpeg_presets import ENCODER_METADATA, get_fallback_codec
+from core.ffmpeg_service import _find_ffmpeg, detect_silence, generate_waveform, probe_media
 from core.logging import get_logger, setup_frontend_sink, setup_logging
 from core.media_server import MediaServer
-from core.models import TaskStatus, TaskType
+from core.models import SegmentType, TaskStatus, TaskType
 from core.paths import migrate_if_needed
-from core.plugin_manager import PluginManager, PLUGIN_REGISTRY
+from core.plugin_manager import PLUGIN_REGISTRY, PluginManager
 from core.project_service import ProjectService
 from core.proxy_manager import ProxyManager
 from core.subtitle_service import parse_srt
 from core.task_manager import TaskManager
-from core.export_service import export_audio, export_srt, export_video, export_vtt
-from core.ffmpeg_presets import ENCODER_METADATA, get_fallback_codec
-from core.ffmpeg_service import _find_ffmpeg
 
 logger = get_logger()
 
@@ -73,12 +75,14 @@ def _get_version() -> str:
     # Method 1: importlib.metadata (dev env / pip install)
     try:
         from importlib.metadata import version
+
         return version("milo-cut")
     except Exception:
         pass
     # Method 2: read pyproject.toml (PyInstaller/Nuitka packaging fallback)
     try:
         import tomllib
+
         with open(Path(__file__).parent / "pyproject.toml", "rb") as f:
             return tomllib.load(f)["project"]["version"]
     except Exception:
@@ -97,53 +101,61 @@ class MiloCutApi(Bridge):
         self._media_server = MediaServer()
         settings = load_settings()
         model_dir = settings.get("model_dir", "")
-        self._plugin_manager = PluginManager(
-            model_dir=Path(model_dir) if model_dir else None
-        )
+        self._plugin_manager = PluginManager(model_dir=Path(model_dir) if model_dir else None)
         self._register_task_handlers()
         self._proxy_manager = ProxyManager(self._task_manager)
         self._batches: dict[str, dict] = {}  # batch_id -> batch state
+        from core.file_protocol import FileProtocolManager
+
+        self._file_protocol = FileProtocolManager()
+        self._bridge_service = BridgeService(
+            get_projects_fn=self._bridge_get_projects,
+            get_project_fn=self._bridge_get_project,
+        )
+        # v2.1.0 Phase 3: workflow engine
+        from core.workflow_engine import WorkflowEngine
+        self._workflow_engine = WorkflowEngine(
+            self._task_manager, self._project, self._emit,
+        )
+
+    def _mark_dirty(self, result: dict) -> dict:
+        """Emit PROJECT_DIRTY if the wrapped mutation succeeded.
+
+        Centralizes auto-save signaling: every @expose method that mutates the
+        project state should ``return self._mark_dirty(self._project.xxx())``.
+        The frontend listens for ``project:dirty`` and debounce-saves (2s).
+        """
+        if result.get("success"):
+            self._emit(PROJECT_DIRTY)
+        return result
 
     def _register_task_handlers(self) -> None:
         """Register handlers for each task type."""
-        self._task_manager.register_handler(
-            TaskType.SILENCE_DETECTION, self._handle_silence_detection
-        )
-        self._task_manager.register_handler(
-            TaskType.EXPORT_VIDEO, self._handle_export_video
-        )
-        self._task_manager.register_handler(
-            TaskType.EXPORT_SUBTITLE, self._handle_export_subtitle
-        )
-        self._task_manager.register_handler(
-            TaskType.EXPORT_AUDIO, self._handle_export_audio
-        )
-        self._task_manager.register_handler(
-            TaskType.EXPORT_VTT, self._handle_export_vtt
-        )
-        self._task_manager.register_handler(
-            TaskType.FILLER_DETECTION, self._handle_filler_detection
-        )
-        self._task_manager.register_handler(
-            TaskType.ERROR_DETECTION, self._handle_error_detection
-        )
-        self._task_manager.register_handler(
-            TaskType.FULL_ANALYSIS, self._handle_full_analysis
-        )
+        self._task_manager.register_handler(TaskType.SILENCE_DETECTION, self._handle_silence_detection)
+        self._task_manager.register_handler(TaskType.EXPORT_VIDEO, self._handle_export_video)
+        self._task_manager.register_handler(TaskType.EXPORT_SUBTITLE, self._handle_export_subtitle)
+        self._task_manager.register_handler(TaskType.EXPORT_AUDIO, self._handle_export_audio)
+        self._task_manager.register_handler(TaskType.EXPORT_VTT, self._handle_export_vtt)
         self._task_manager.register_handler(
             TaskType.WAVEFORM_GENERATION, self._handle_waveform_generation
         )
-        self._task_manager.register_handler(
-            TaskType.PLUGIN_INSTALL, self._handle_plugin_install
-        )
-        self._task_manager.register_handler(
-            TaskType.MODEL_DOWNLOAD, self._handle_model_download
-        )
-        self._task_manager.register_handler(
-            TaskType.TRANSCRIPTION, self._handle_transcription
-        )
+        self._task_manager.register_handler(TaskType.PLUGIN_INSTALL, self._handle_plugin_install)
+        self._task_manager.register_handler(TaskType.MODEL_DOWNLOAD, self._handle_model_download)
+        self._task_manager.register_handler(TaskType.TRANSCRIPTION, self._handle_transcription)
         self._task_manager.register_handler(
             TaskType.PROXY_GENERATION, self._handle_proxy_generation
+        )
+        self._task_manager.register_handler(
+            TaskType.LLM_SMART_DELETE, self._handle_smart_delete
+        )
+        self._task_manager.register_handler(
+            TaskType.LLM_SUBTITLE_CORRECTION, self._handle_subtitle_correction
+        )
+        self._task_manager.register_handler(
+            TaskType.LLM_HIGHLIGHT, self._handle_highlight
+        )
+        self._task_manager.register_handler(
+            TaskType.LLM_SEMANTIC_SEARCH, self._handle_semantic_search
         )
 
     def _handle_silence_detection(self, task, cancel_event, progress_cb):
@@ -162,7 +174,9 @@ class MiloCutApi(Bridge):
         margin = settings.get("silence_margin", 0.0)
         subtitle_padding = settings.get("silence_subtitle_padding", 0.0)
         store_result = self._project.add_silence_results(
-            result["data"], margin=margin, subtitle_padding=subtitle_padding,
+            result["data"],
+            margin=margin,
+            subtitle_padding=subtitle_padding,
         )
         if not store_result["success"]:
             raise RuntimeError(store_result.get("error", "Failed to store silence results"))
@@ -199,8 +213,8 @@ class MiloCutApi(Bridge):
             if self._project.current.media is None:
                 raise ValueError("No media in project")
             project = self._project.current
-            segments_data = [s.model_dump() for s in project.transcript.segments]
-            edits_data = [e.model_dump() for e in project.edits]
+            segments_data = [s.model_dump() for s in project.active_timeline.transcript.segments]
+            edits_data = [e.model_dump() for e in project.active_timeline.edits]
             media_path = project.media.path
             output_path = task.payload.get("output_path", "")
             if not output_path:
@@ -224,11 +238,14 @@ class MiloCutApi(Bridge):
             video_codec, fallback_msg = get_fallback_codec(ffmpeg, video_codec)
             if fallback_msg:
                 logger.warning(fallback_msg)
-                self._emit(ENCODER_FALLBACK, {
-                    "requested": original_codec,
-                    "fallback": video_codec,
-                    "message": fallback_msg,
-                })
+                self._emit(
+                    ENCODER_FALLBACK,
+                    {
+                        "requested": original_codec,
+                        "fallback": video_codec,
+                        "message": fallback_msg,
+                    },
+                )
 
             def progress_cb(percent: float, message: str = "") -> None:
                 self._task_manager._update_progress(task.id, percent, message)
@@ -263,8 +280,8 @@ class MiloCutApi(Bridge):
         if self._project.current.media is None:
             raise ValueError("No media in project")
         project = self._project.current
-        segments_data = [s.model_dump() for s in project.transcript.segments]
-        edits_data = [e.model_dump() for e in project.edits]
+        segments_data = [s.model_dump() for s in project.active_timeline.transcript.segments]
+        edits_data = [e.model_dump() for e in project.active_timeline.edits]
         output_path = task.payload.get("output_path", "")
         if not output_path:
             output_path = os.path.splitext(project.media.path)[0] + "_cut.srt"
@@ -284,8 +301,8 @@ class MiloCutApi(Bridge):
         if self._project.current.media is None:
             raise ValueError("No media in project")
         project = self._project.current
-        segments_data = [s.model_dump() for s in project.transcript.segments]
-        edits_data = [e.model_dump() for e in project.edits]
+        segments_data = [s.model_dump() for s in project.active_timeline.transcript.segments]
+        edits_data = [e.model_dump() for e in project.active_timeline.edits]
         output_path = task.payload.get("output_path", "")
         if not output_path:
             output_path = os.path.splitext(project.media.path)[0] + "_cut.vtt"
@@ -305,8 +322,8 @@ class MiloCutApi(Bridge):
         if self._project.current.media is None:
             raise ValueError("No media in project")
         project = self._project.current
-        segments_data = [s.model_dump() for s in project.transcript.segments]
-        edits_data = [e.model_dump() for e in project.edits]
+        segments_data = [s.model_dump() for s in project.active_timeline.transcript.segments]
+        edits_data = [e.model_dump() for e in project.active_timeline.edits]
         media_path = project.media.path
         output_path = task.payload.get("output_path", "")
         if not output_path:
@@ -332,44 +349,23 @@ class MiloCutApi(Bridge):
             fade_mode=fade_mode,
         )
 
-    def _handle_filler_detection(self, task, cancel_event, progress_cb):
-        """Run filler word detection and store results."""
-        if self._project.current is None:
-            raise ValueError("No project open")
-        settings = load_settings()
-        segments = list(self._project.current.transcript.segments)
-        results = detect_fillers(segments, settings.get("filler_words", []))
-        results_dicts = [r.model_dump() for r in results]
-        store = self._project.add_analysis_results(results_dicts, source="filler_detection")
-        if not store["success"]:
-            raise RuntimeError(store.get("error", "Failed to store analysis results"))
-        return {"project": store["data"], "results": results_dicts}
+    def _get_target_timeline(self, task):
+        """Resolve target timeline from task payload or active timeline.
 
-    def _handle_error_detection(self, task, cancel_event, progress_cb):
-        """Run error trigger detection and store results."""
-        if self._project.current is None:
-            raise ValueError("No project open")
-        settings = load_settings()
-        segments = list(self._project.current.transcript.segments)
-        results = detect_errors(segments, settings.get("error_trigger_words", []))
-        results_dicts = [r.model_dump() for r in results]
-        store = self._project.add_analysis_results(results_dicts, source="error_detection")
-        if not store["success"]:
-            raise RuntimeError(store.get("error", "Failed to store analysis results"))
-        return {"project": store["data"], "results": results_dicts}
+        All rule analysis and LLM handlers use this helper to get segments,
+        eliminating the repeated timeline-lookup boilerplate (v2.1.1 AR-1).
 
-    def _handle_full_analysis(self, task, cancel_event, progress_cb):
-        """Run full analysis (filler + error) and store results."""
+        payload carries ``timeline_id`` -> use it; otherwise fall back to
+        ``project.active_timeline_id``.
+        """
         if self._project.current is None:
             raise ValueError("No project open")
-        settings = load_settings()
-        segments = list(self._project.current.transcript.segments)
-        results = run_full_analysis(segments, settings)
-        results_dicts = [r.model_dump() for r in results]
-        store = self._project.add_analysis_results(results_dicts, source="full_analysis")
-        if not store["success"]:
-            raise RuntimeError(store.get("error", "Failed to store analysis results"))
-        return {"project": store["data"], "results": results_dicts}
+        project = self._project.current
+        timeline_id = task.payload.get("timeline_id", "") or project.active_timeline_id
+        timeline = project.get_timeline(timeline_id)
+        if timeline is None:
+            raise ValueError(f"Timeline {timeline_id} not found")
+        return timeline
 
     def _handle_waveform_generation(self, task, cancel_event, progress_cb):
         """Generate waveform peak data for the project media."""
@@ -386,7 +382,8 @@ class MiloCutApi(Bridge):
         if self._project._current_path:
             waveform_path = str(self._project._current_path.parent / "waveform.json")
         else:
-            from core.paths import get_data_dir, get_projects_dir
+            from core.paths import get_projects_dir
+
             name = self._project.current.project.name
             waveform_path = str(get_projects_dir() / name / "waveform.json")
 
@@ -423,7 +420,9 @@ class MiloCutApi(Bridge):
             raise ValueError("plugin_id is required")
 
         # Install plugin
-        self._plugin_manager.install_plugin(plugin_id, progress_cb=progress_cb, mirror=mirror, no_cache=no_cache)
+        self._plugin_manager.install_plugin(
+            plugin_id, progress_cb=progress_cb, mirror=mirror, no_cache=no_cache
+        )
 
         # Optionally download model
         if model_id:
@@ -470,8 +469,12 @@ class MiloCutApi(Bridge):
         if plugin_id == "plugin-qwen-mlx":
             from core.asr_service import transcribe_with_mlx
 
-            asr_model_size = task.payload.get("asr_model_size", settings.get("asr_model_size", "0.6B"))
-            aligner_model_size = task.payload.get("aligner_model_size", settings.get("asr_aligner_model_size", "0.6B"))
+            asr_model_size = task.payload.get(
+                "asr_model_size", settings.get("asr_model_size", "0.6B")
+            )
+            aligner_model_size = task.payload.get(
+                "aligner_model_size", settings.get("asr_aligner_model_size", "0.6B")
+            )
 
             result = transcribe_with_mlx(
                 plugin_manager=self._plugin_manager,
@@ -486,8 +489,12 @@ class MiloCutApi(Bridge):
             from core.asr_service import transcribe_with_whisper
             from core.ffmpeg_service import _find_ffmpeg
 
-            model_size = task.payload.get("model_size", settings.get("asr_model_size", "large-v3-turbo"))
-            compute_type = task.payload.get("compute_type", settings.get("whisper_compute_type", "int8_float16"))
+            model_size = task.payload.get(
+                "model_size", settings.get("asr_model_size", "large-v3-turbo")
+            )
+            compute_type = task.payload.get(
+                "compute_type", settings.get("whisper_compute_type", "int8_float16")
+            )
             vad_filter = task.payload.get("vad_filter", settings.get("asr_vad_filter", True))
             vad_threshold = settings.get("whisper_vad_threshold", 0.5)
             vad_min_silence_ms = settings.get("whisper_vad_min_silence_ms", 500)
@@ -510,8 +517,12 @@ class MiloCutApi(Bridge):
         elif engine == "qwen3-asr":
             from core.asr_service import transcribe_with_qwen
 
-            asr_model_size = task.payload.get("asr_model_size", settings.get("asr_model_size", "0.6B"))
-            aligner_model_size = task.payload.get("aligner_model_size", settings.get("asr_aligner_model_size", "0.6B"))
+            asr_model_size = task.payload.get(
+                "asr_model_size", settings.get("asr_model_size", "0.6B")
+            )
+            aligner_model_size = task.payload.get(
+                "aligner_model_size", settings.get("asr_aligner_model_size", "0.6B")
+            )
             compute_type = settings.get("qwen_compute_type", "bfloat16")
 
             result = transcribe_with_qwen(
@@ -544,10 +555,16 @@ class MiloCutApi(Bridge):
         # Auto-save SRT to project directory
         srt_path = None
         try:
+            from datetime import datetime
+
             from core.export_service import export_srt
             from core.paths import get_data_dir
-            from datetime import datetime
-            project_name = self._project.current.project.name if self._project.current.project else "transcript"
+
+            project_name = (
+                self._project.current.project.name
+                if self._project.current.project
+                else "transcript"
+            )
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             srt_filename = f"{project_name}_{timestamp}.srt"
             srt_dir = Path(get_data_dir()) / "transcripts"
@@ -556,19 +573,23 @@ class MiloCutApi(Bridge):
 
             segments_for_export = []
             for seg in result["data"].get("segments", []):
-                segments_for_export.append({
-                    "id": seg.get("id", ""),
-                    "start": seg.get("start", 0),
-                    "end": seg.get("end", 0),
-                    "text": seg.get("text", ""),
-                    "type": "subtitle",
-                })
+                segments_for_export.append(
+                    {
+                        "id": seg.get("id", ""),
+                        "start": seg.get("start", 0),
+                        "end": seg.get("end", 0),
+                        "text": seg.get("text", ""),
+                        "type": "subtitle",
+                    }
+                )
 
             srt_result = export_srt(
                 segments=segments_for_export,
                 edits=[],
                 output_path=srt_path,
-                media_duration=self._project.current.media.duration if self._project.current.media else 0,
+                media_duration=self._project.current.media.duration
+                if self._project.current.media
+                else 0,
             )
             if srt_result.get("success"):
                 logger.info("Auto-saved transcription SRT to {}", srt_path)
@@ -615,8 +636,343 @@ class MiloCutApi(Bridge):
         finally:
             self._proxy_manager.on_proxy_complete(media_path)
 
+    def _handle_smart_delete(self, task, cancel_event, progress_cb):
+        """Run LLM smart-delete analysis: catch what rule engine misses."""
+        if self._project.current is None:
+            raise ValueError("No project open")
+
+        from core.llm_service import analyze_smart_delete
+        from core.timeline_utils import collect_confirmed_deleted_seg_ids
+
+        timeline = self._get_target_timeline(task)
+
+        # Audit #8: filter out confirmed-deleted segments before LLM analysis
+        deleted_seg_ids = collect_confirmed_deleted_seg_ids(timeline)
+        segments = [
+            s.model_dump()
+            for s in timeline.transcript.segments
+            if s.type == SegmentType.SUBTITLE and s.id not in deleted_seg_ids
+        ]
+        if not segments:
+            raise ValueError("No subtitle segments to analyze")
+
+        # Collect segment IDs already flagged by rule engine (incremental)
+        existing_ids: set[str] = set()
+        for result in timeline.analysis.results:
+            existing_ids.update(result.segment_ids)
+
+        def _chunk_callback(chunk_results: list[dict]) -> None:
+            """Emit per-window results for frontend live update."""
+            self._emit(
+                "llm:smart_delete_progress",
+                {"results": chunk_results},
+            )
+
+        # Phase 3: resolve effective prompt (project > global > default)
+        from core.llm_prompts import get_effective_prompt
+
+        project_prompts = (
+            timeline.llm_prompts if hasattr(timeline, "llm_prompts") else None
+        )
+        effective_prompt = get_effective_prompt("smart_delete", project_prompts)
+
+        result = analyze_smart_delete(
+            segments,
+            existing_flagged_ids=existing_ids,
+            cancel_event=cancel_event,
+            progress_cb=progress_cb,
+            chunk_callback=_chunk_callback,
+            system_prompt=effective_prompt,
+        )
+
+        if not result.get("success"):
+            error = result.get("error", "Smart-delete analysis failed")
+            self._emit("llm:analysis_failed", {"error": error})
+            raise RuntimeError(error)
+
+        all_results = result["data"]["results"]
+        token_usage = result["data"]["token_usage"]
+
+        # Convert results to EditDecisions with source="llm_smart"
+        from datetime import datetime as _dt
+
+        _ts = int(_dt.now().timestamp() * 1000)
+        # Build category lookup from all_results for partial_delete detection
+        category_by_seg = {r["segment_id"]: r.get("category", "") for r in all_results}
+        edits = []
+        seg_map = {s.id: s for s in timeline.transcript.segments}
+        for i, r in enumerate(all_results):
+            seg = seg_map.get(r["segment_id"])
+            if seg is None:
+                continue
+            is_partial = category_by_seg.get(seg.id) == "partial_delete"
+            edits.append(
+                {
+                    "id": f"llm_smart_{_ts}_{i}",
+                    "start": seg.start,
+                    "end": seg.end,
+                    "action": "keep" if is_partial else "delete",
+                    "source": "llm_smart",
+                    "target_type": "segment",
+                    "target_id": seg.id,
+                    "priority": 10 if is_partial else 50,
+                }
+            )
+
+        # Store as analysis results + edits
+        if edits:
+            analysis_results = [
+                {
+                    "id": f"llm_smart_{_ts}_{i}",
+                    "type": "llm_smart_delete",
+                    "segment_ids": [r["segment_id"]],
+                    "confidence": r.get("confidence", 0.8),
+                    "detail": r.get("reason", ""),
+                    "category": r.get("category", ""),
+                }
+                for i, r in enumerate(all_results)
+                if r["segment_id"] in seg_map
+            ]
+            # v2.1.0 Phase 3: workflow accumulation mode -- skip project write
+            if not task.payload.get("_workflow_accumulate"):
+                store = self._mark_dirty(self._project.add_analysis_results(analysis_results, source="llm_smart"))
+                if not store["success"]:
+                    raise RuntimeError(store.get("error", "Failed to store smart-delete results"))
+
+        self._emit("llm:smart_delete_completed", {"results": all_results, "edits": edits})
+        self._emit("llm:token_usage", token_usage)
+
+        return {
+            "results": all_results,
+            "edits": edits,
+            "token_usage": token_usage,
+            "project": self._project.current.model_dump() if self._project.current else None,
+        }
+
+    def _handle_subtitle_correction(self, task, cancel_event, progress_cb):
+        """Run LLM subtitle correction on the active timeline."""
+        if self._project.current is None:
+            raise ValueError("No project open")
+
+        from core.llm_service import analyze_subtitle_correction
+        from core.timeline_utils import collect_confirmed_deleted_seg_ids
+
+        timeline = self._get_target_timeline(task)
+        timeline_id = task.payload.get("timeline_id", "") or self._project.current.active_timeline_id
+
+        reference_text = task.payload.get("reference_text", "")
+        # v2.1.1 M2: context_window defaults from settings; payload may override.
+        context_window = task.payload.get("context_window", 3)
+
+        # Audit #8: filter out confirmed-deleted segments before LLM correction
+        deleted_seg_ids = collect_confirmed_deleted_seg_ids(timeline)
+        segments = [
+            s.model_dump()
+            for s in timeline.transcript.segments
+            if s.type == SegmentType.SUBTITLE and s.id not in deleted_seg_ids
+        ]
+        if not segments:
+            raise ValueError("No subtitle segments to correct")
+
+        # Phase 3: resolve effective prompts for both modes
+        from core.llm_prompts import get_effective_prompt
+
+        project_prompts = (
+            timeline.llm_prompts if hasattr(timeline, "llm_prompts") else None
+        )
+        effective_prompt_a = get_effective_prompt(
+            "subtitle_correction_a", project_prompts
+        )
+        effective_prompt_b = get_effective_prompt(
+            "subtitle_correction_b", project_prompts
+        )
+
+        result = analyze_subtitle_correction(
+            segments,
+            reference_text=reference_text if reference_text else None,
+            context_window=context_window,
+            cancel_event=cancel_event,
+            progress_cb=progress_cb,
+            system_prompt_a=effective_prompt_a,
+            system_prompt_b=effective_prompt_b,
+        )
+
+        if not result.get("success"):
+            error = result.get("error", "Subtitle correction failed")
+            self._emit("llm:analysis_failed", {"error": error})
+            raise RuntimeError(error)
+
+        corrections = result["data"]["corrections"]
+        token_usage = result["data"]["token_usage"]
+
+        # v2.1.0 Phase 3: workflow accumulation mode -- skip project write,
+        # return raw corrections for the engine to accumulate.
+        if task.payload.get("_workflow_accumulate"):
+            self._emit("llm:token_usage", token_usage)
+            return {
+                "corrections": corrections,
+                "stored_count": len(corrections),
+                "token_usage": token_usage,
+            }
+
+        # v2.1.0 Phase 2: store corrections for review instead of auto-applying.
+        store_result = self._mark_dirty(
+            self._project.store_subtitle_corrections(corrections, timeline_id)
+        )
+
+        if not store_result["success"]:
+            raise RuntimeError(
+                store_result.get("error", "Failed to store subtitle corrections")
+            )
+
+        self._emit("llm:subtitle_correction_completed", store_result["data"])
+        self._emit("llm:token_usage", token_usage)
+
+        return {
+            "corrections": corrections,
+            "stored_count": store_result["data"].get("stored_count", 0),
+            "token_usage": token_usage,
+            "project": self._project.current.model_dump() if self._project.current else None,
+        }
+
+    def _handle_highlight(self, task, cancel_event, progress_cb):
+        """Run LLM highlight extraction: identify high-density segments."""
+        if self._project.current is None:
+            raise ValueError("No project open")
+
+        from core.llm_service import analyze_highlights
+        from core.timeline_utils import collect_confirmed_deleted_seg_ids
+
+        timeline = self._get_target_timeline(task)
+
+        target_minutes = task.payload.get("target_duration_minutes", 10)
+
+        # P0-5: filter out confirmed-deleted segments before LLM highlight analysis
+        deleted_seg_ids = collect_confirmed_deleted_seg_ids(timeline)
+        segments = [
+            s.model_dump()
+            for s in timeline.transcript.segments
+            if s.type == SegmentType.SUBTITLE and s.id not in deleted_seg_ids
+        ]
+        if not segments:
+            raise ValueError("No subtitle segments to analyze")
+
+        def _chunk_callback(chunk_results: list[dict]) -> None:
+            self._emit(
+                "llm:highlight_progress",
+                {"results": chunk_results},
+            )
+
+        # Phase 3: resolve effective prompt
+        from core.llm_prompts import get_effective_prompt
+
+        project_prompts = (
+            timeline.llm_prompts if hasattr(timeline, "llm_prompts") else None
+        )
+        effective_prompt = get_effective_prompt("highlight", project_prompts)
+
+        result = analyze_highlights(
+            segments,
+            target_duration_minutes=target_minutes,
+            cancel_event=cancel_event,
+            progress_cb=progress_cb,
+            chunk_callback=_chunk_callback,
+            system_prompt=effective_prompt,
+        )
+
+        if not result.get("success"):
+            error = result.get("error", "Highlight analysis failed")
+            self._emit("llm:analysis_failed", {"error": error})
+            raise RuntimeError(error)
+
+        all_results = result["data"]["results"]
+        token_usage = result["data"]["token_usage"]
+        total_duration = result["data"]["total_highlight_duration"]
+
+        seg_map = {s.id: s for s in timeline.transcript.segments}
+
+        # Store as analysis results
+        if all_results:
+            from datetime import datetime as _dt
+
+            analysis_results = [
+                {
+                    "id": f"llm_hl_{int(_dt.now().timestamp() * 1000)}",
+                    "type": "llm_highlight",
+                    "segment_ids": [r["segment_id"]],
+                    "confidence": 1.0 if r["density"] == "high" else 0.7,
+                    "detail": r.get("highlight_reason", ""),
+                }
+                for r in all_results
+                if r["segment_id"] in seg_map
+            ]
+            # v2.1.0 Phase 3: workflow accumulation mode -- skip project write
+            if not task.payload.get("_workflow_accumulate"):
+                store = self._mark_dirty(self._project.add_analysis_results(
+                    analysis_results, source="llm_highlight", clear_existing=True,
+                ))
+                if not store["success"]:
+                    raise RuntimeError(store.get("error", "Failed to store highlight results"))
+
+        self._emit(
+            "llm:highlight_completed",
+            {
+                "results": all_results,
+                "total_duration": total_duration,
+                "target_duration": result["data"]["target_duration"],
+            },
+        )
+        self._emit("llm:token_usage", token_usage)
+
+        return {
+            "results": all_results,
+            "total_duration": total_duration,
+            "token_usage": token_usage,
+            "project": self._project.current.model_dump() if self._project.current else None,
+        }
+
+    def _handle_semantic_search(self, task, cancel_event, progress_cb):
+        """Run LLM semantic search over transcript."""
+        if self._project.current is None:
+            raise ValueError("No project open")
+
+        from core.llm_service import semantic_search
+
+        timeline = self._get_target_timeline(task)
+
+        query = task.payload.get("query", "")
+        top_k = task.payload.get("top_k", 5)
+
+        segments = [
+            s.model_dump()
+            for s in timeline.transcript.segments
+            if s.type == SegmentType.SUBTITLE
+        ]
+        if not segments:
+            raise ValueError("No subtitle segments to search")
+
+        result = semantic_search(
+            query,
+            segments,
+            top_k=top_k,
+            cancel_event=cancel_event,
+        )
+
+        if not result.get("success"):
+            error = result.get("error", "Semantic search failed")
+            self._emit("llm:analysis_failed", {"error": error})
+            raise RuntimeError(error)
+
+        search_results = result["data"]["results"]
+        self._emit(
+            "llm:semantic_search_completed",
+            {"results": search_results, "query": query},
+        )
+
+        return {"results": search_results, "query": query}
+
     # ================================================================
-    # System
+    # region System
     # ================================================================
 
     @expose
@@ -634,6 +990,7 @@ class MiloCutApi(Bridge):
     @expose
     def select_files(self) -> dict:
         import webview
+
         result = webview.windows[0].create_file_dialog(
             webview.FileDialog.OPEN,
             file_types=(
@@ -651,6 +1008,7 @@ class MiloCutApi(Bridge):
     @expose
     def select_file(self) -> dict:
         import webview
+
         result = webview.windows[0].create_file_dialog(
             webview.FileDialog.OPEN,
             file_types=("SRT files (*.srt)", "All files (*.*)"),
@@ -662,6 +1020,7 @@ class MiloCutApi(Bridge):
     @expose
     def open_folder(self, path: str) -> dict:
         import webview
+
         webview.windows[0].create_file_dialog(webview.FileDialog.FOLDER, directory=path)
         return {"success": True}
 
@@ -669,6 +1028,7 @@ class MiloCutApi(Bridge):
     def select_directory(self) -> dict:
         """Open a folder picker dialog and return the selected path."""
         import webview
+
         result = webview.windows[0].create_file_dialog(webview.FileDialog.FOLDER)
         if result:
             # pywebview FOLDER dialog returns a tuple/list on Windows,
@@ -682,7 +1042,8 @@ class MiloCutApi(Bridge):
         return {"success": True, "data": None}
 
     # ================================================================
-    # Project
+    # endregion System
+    # region Project
     # ================================================================
 
     @expose
@@ -698,7 +1059,16 @@ class MiloCutApi(Bridge):
 
     @expose
     def save_project(self) -> dict:
-        return self._project.save_project()
+        result = self._project.save_project()
+        # Publish edit timeline to file protocol on save
+        if result.get("success"):
+            if self._project.current is not None:
+                project = self._project.current
+                segments = [s.model_dump() for s in project.active_timeline.transcript.segments]
+                edits = [e.model_dump() for e in project.active_timeline.edits]
+                self._file_protocol.publish_edit_timeline(segments, edits)
+            self._emit(PROJECT_SAVED)  # tell frontend the project is clean
+        return result
 
     @expose
     def close_project(self) -> dict:
@@ -710,7 +1080,35 @@ class MiloCutApi(Bridge):
         return self._project.relink_media(new_path)
 
     # ================================================================
-    # Subtitle
+    # endregion Project
+    # region Timeline (multi-timeline infrastructure, v2.0.0)
+    # ================================================================
+
+    @expose
+    def create_timeline(
+        self, label: str, source: str = "manual", fork_from: str | None = None
+    ) -> dict:
+        return self._mark_dirty(self._project.create_timeline(label, source, fork_from))
+
+    @expose
+    def switch_timeline(self, timeline_id: str) -> dict:
+        return self._project.switch_timeline(timeline_id)
+
+    @expose
+    def delete_timeline(self, timeline_id: str) -> dict:
+        return self._mark_dirty(self._project.delete_timeline(timeline_id))
+
+    @expose
+    def rename_timeline(self, timeline_id: str, new_label: str) -> dict:
+        return self._mark_dirty(self._project.rename_timeline(timeline_id, new_label))
+
+    @expose
+    def duplicate_timeline(self, timeline_id: str, new_label: str) -> dict:
+        return self._mark_dirty(self._project.duplicate_timeline(timeline_id, new_label))
+
+    # ================================================================
+    # endregion Timeline
+    # region Subtitle
     # ================================================================
 
     @expose
@@ -734,10 +1132,13 @@ class MiloCutApi(Bridge):
             if vdata.get("error_count", 0) > 0 or vdata.get("warning_count", 0) > 0:
                 update_result["warnings"] = vdata.get("issues", [])
 
+        # SRT import mutates transcript -- signal auto-save
+        self._mark_dirty(update_result)
         return update_result
 
     # ================================================================
-    # FFmpeg
+    # endregion Subtitle
+    # region FFmpeg
     # ================================================================
 
     @expose
@@ -762,7 +1163,10 @@ class MiloCutApi(Bridge):
             return {"success": False, "error": "Media server not running"}
         if not self._media_server._waveform_path:
             return {"success": False, "error": "Waveform not available"}
-        return {"success": True, "data": {"url": f"http://127.0.0.1:{self._media_server.port}/waveform"}}
+        return {
+            "success": True,
+            "data": {"url": f"http://127.0.0.1:{self._media_server.port}/waveform"},
+        }
 
     @expose
     def regenerate_waveform(self) -> dict:
@@ -801,7 +1205,8 @@ class MiloCutApi(Bridge):
         )
 
     # ================================================================
-    # Tasks
+    # endregion FFmpeg
+    # region Tasks
     # ================================================================
 
     @expose
@@ -815,6 +1220,21 @@ class MiloCutApi(Bridge):
     @expose
     def cancel_task(self, task_id: str) -> dict:
         return self._task_manager.cancel_task(task_id)
+
+    @expose
+    def cancel_llm_tasks(self) -> dict:
+        """Cancel all currently running/queued LLM tasks (single-function mode)."""
+        llm_types = {
+            "llm_smart_delete", "llm_subtitle_correction",
+            "llm_highlight", "llm_semantic_search",
+        }
+        tasks = self._task_manager.list_tasks()
+        cancelled = 0
+        for t in tasks.get("data", []):
+            if t.get("type") in llm_types and t.get("status") in ("queued", "running"):
+                self._task_manager.cancel_task(t["id"])
+                cancelled += 1
+        return {"success": True, "data": {"cancelled": cancelled}}
 
     @expose
     def get_task(self, task_id: str) -> dict:
@@ -873,7 +1293,8 @@ class MiloCutApi(Bridge):
 
         logger.info(
             "Batch export created: batch_id={}, {} projects queued",
-            batch_id, len(task_ids),
+            batch_id,
+            len(task_ids),
         )
 
         return {
@@ -942,7 +1363,8 @@ class MiloCutApi(Bridge):
         }
 
     # ================================================================
-    # Project State
+    # endregion Tasks
+    # region Project State (editing, analysis, segments)
     # ================================================================
 
     @expose
@@ -956,54 +1378,174 @@ class MiloCutApi(Bridge):
         return self._project.update_edit_decision(edit_id, status)
 
     @expose
+    def update_edit_decisions_batch(self, edit_ids: list[str], status: str) -> dict:
+        return self._project.update_edit_decisions_batch(edit_ids, status)
+
+    @expose
+    def delete_edit_decisions_batch(self, edit_ids: list[str]) -> dict:
+        return self._mark_dirty(self._project.delete_edit_decisions_batch(edit_ids))
+
+    @expose
+    def add_analysis_results(self, results: list, source: str = "manual") -> dict:
+        """Add analysis results and generate EditDecisions from them.
+
+        Args:
+            results: List of AnalysisResult dicts.
+            source: Source label for the generated edits.
+        """
+        return self._mark_dirty(self._project.add_analysis_results(results, source=source))
+
+    @expose
+    def add_highlight_segment(self, segment_id: str, timeline_id: str = "") -> dict:
+        """Add a single segment to highlights via AnalysisResult.
+
+        Args:
+            segment_id: The segment ID to add to highlights.
+            timeline_id: Target timeline (defaults to active_timeline_id).
+
+        Returns:
+            {"success": True, "data": {"result": dict}}
+        """
+        if self._project.current is None:
+            return {"success": False, "error": "No project open"}
+
+        project = self._project.current
+        tl_id = timeline_id or project.active_timeline_id
+        timeline = project.get_timeline(tl_id)
+        if timeline is None:
+            return {"success": False, "error": f"Timeline {tl_id} not found"}
+
+        # Verify segment exists
+        seg = next((s for s in timeline.transcript.segments if s.id == segment_id), None)
+        if seg is None or seg.type != "subtitle":
+            return {"success": False, "error": f"Segment {segment_id} not found or not a subtitle"}
+
+        import uuid
+        result = {
+            "id": f"manual_hl_{uuid.uuid4().hex[:12]}",
+            "type": "llm_highlight",
+            "segment_ids": [segment_id],
+            "confidence": 1.0,
+            "detail": "手动添加",
+        }
+
+        store = self._mark_dirty(
+            self._project.add_analysis_results([result], source="manual_highlight")
+        )
+
+        if not store["success"]:
+            return {"success": False, "error": store.get("error", "Failed to store highlight")}
+
+        # Return full project so the frontend can hydrate highlight state
+        # in real time (Issue 5) without a separate reload.
+        return {"success": True, "data": {"result": result, "project": self._project.current.model_dump()}}
+
+    @expose
+    def remove_highlight_segment(self, segment_id: str, timeline_id: str = "") -> dict:
+        """Remove analysis results matching a segment from highlights.
+
+        Args:
+            segment_id: The segment ID whose highlight should be removed.
+            timeline_id: Target timeline (defaults to active_timeline_id).
+
+        Returns:
+            {"success": True} or {"success": False, "error": str}
+        """
+        if self._project.current is None:
+            return {"success": False, "error": "No project open"}
+
+        project = self._project.current
+        tl_id = timeline_id or project.active_timeline_id
+        timeline = project.get_timeline(tl_id)
+        if timeline is None:
+            return {"success": False, "error": f"Timeline {tl_id} not found"}
+
+        results = timeline.analysis.results
+        # AnalysisResult is a Pydantic model — use attribute access, not .get()
+        removed = [r for r in results if segment_id in r.segment_ids]
+        if not removed:
+            return {"success": False, "error": f"No highlight found for segment {segment_id}"}
+
+        remaining = [r for r in results if segment_id not in r.segment_ids]
+        removed_ar_ids = {r.id for r in removed}
+
+        # 同步清理关联 EditDecision（Bug G 修复）
+        remaining_edits = [
+            e for e in timeline.edits
+            if e.analysis_id not in removed_ar_ids
+        ]
+        removed_edit_count = len(timeline.edits) - len(remaining_edits)
+
+        self._project._update_timeline_by_id(
+            tl_id,
+            analysis=timeline.analysis.model_copy(update={"results": remaining}),
+            edits=remaining_edits,
+        )
+        self._mark_dirty({"success": True})
+
+        logger.info(
+            "Removed highlight for segment %s: %d results + %d edits",
+            segment_id, len(removed), removed_edit_count,
+        )
+        # Return full project so the frontend can hydrate highlight state
+        # in real time (Issue 5) without a separate reload.
+        return {"success": True, "data": {
+            "removed_count": len(removed),
+            "project": self._project.current.model_dump(),
+        }}
+
+    @expose
     def update_segment(self, segment_id: str, updates: dict) -> dict:
-        return self._project.update_segment(segment_id, updates)
+        return self._mark_dirty(self._project.update_segment(segment_id, updates))
 
     @expose
     def update_segment_text(self, segment_id: str, text: str) -> dict:
-        return self._project.update_segment_text(segment_id, text)
+        return self._mark_dirty(self._project.update_segment_text(segment_id, text))
 
     @expose
     def merge_segments(self, segment_ids: list[str]) -> dict:
-        return self._project.merge_segments(segment_ids)
+        return self._mark_dirty(self._project.merge_segments(segment_ids))
 
     @expose
     def split_segment(self, segment_id: str, position: float) -> dict:
-        return self._project.split_segment(segment_id, position)
+        return self._mark_dirty(self._project.split_segment(segment_id, position))
 
     @expose
-    def add_segment(self, start: float, end: float, text: str = "", seg_type: str = "subtitle") -> dict:
-        return self._project.add_segment(start, end, text, seg_type)
+    def add_segment(
+        self, start: float, end: float, text: str = "", seg_type: str = "subtitle"
+    ) -> dict:
+        return self._mark_dirty(self._project.add_segment(start, end, text, seg_type))
 
     @expose
     def delete_segment(self, segment_id: str) -> dict:
-        return self._project.delete_segment(segment_id)
+        return self._mark_dirty(self._project.delete_segment(segment_id))
 
     @expose
     def delete_silence_segments(self) -> dict:
-        return self._project.delete_silence_segments()
+        return self._mark_dirty(self._project.delete_silence_segments())
 
     @expose
     def clear_subtitles(self) -> dict:
-        return self._project.clear_subtitles()
+        return self._mark_dirty(self._project.clear_subtitles())
 
     @expose
     def delete_subtitle_trim_edits(self) -> dict:
-        return self._project.delete_subtitle_trim_edits()
+        return self._mark_dirty(self._project.delete_subtitle_trim_edits())
 
     @expose
     def search_replace(self, query: str, replacement: str, scope: str = "all") -> dict:
-        return self._project.search_replace(query, replacement, scope)
+        return self._mark_dirty(self._project.search_replace(query, replacement, scope))
 
     @expose
     def mark_segments(self, segment_ids: list[str], action: str, status: str = "pending") -> dict:
-        return self._project.mark_segments(segment_ids, action, status)
+        return self._mark_dirty(self._project.mark_segments(segment_ids, action, status))
 
     @expose
     def confirm_all_suggestions(self) -> dict:
         result = self._project.confirm_all_suggestions()
         if result["success"]:
             self._emit(EDIT_SUMMARY_UPDATED, self._project.get_edit_summary().get("data", {}))
+            self._emit(PROJECT_DIRTY)
         return result
 
     @expose
@@ -1011,6 +1553,7 @@ class MiloCutApi(Bridge):
         result = self._project.reject_all_suggestions()
         if result["success"]:
             self._emit(EDIT_SUMMARY_UPDATED, self._project.get_edit_summary().get("data", {}))
+            self._emit(PROJECT_DIRTY)
         return result
 
     @expose
@@ -1018,6 +1561,7 @@ class MiloCutApi(Bridge):
         result = self._project.generate_subtitle_keep_ranges(padding)
         if result["success"]:
             self._emit(EDIT_SUMMARY_UPDATED, self._project.get_edit_summary().get("data", {}))
+            self._emit(PROJECT_DIRTY)
         return result
 
     @expose
@@ -1027,6 +1571,7 @@ class MiloCutApi(Bridge):
     @expose
     def validate_srt(self, file_path: str) -> dict:
         from core.subtitle_service import validate_srt
+
         media = self._project.current.media if self._project.current else None
         duration = media.duration if media else 0.0
         return validate_srt(file_path, video_duration=duration)
@@ -1036,7 +1581,8 @@ class MiloCutApi(Bridge):
         return self._project.get_recent_projects()
 
     # ================================================================
-    # Plugin Management
+    # endregion Project State
+    # region Plugin Management
     # ================================================================
 
     @expose
@@ -1045,7 +1591,9 @@ class MiloCutApi(Bridge):
         return {"success": True, "data": self._plugin_manager.list_plugins()}
 
     @expose
-    def install_plugin(self, plugin_id: str, model_id: str = "", mirror: str = "official", no_cache: bool = False) -> dict:
+    def install_plugin(
+        self, plugin_id: str, model_id: str = "", mirror: str = "official", no_cache: bool = False
+    ) -> dict:
         """Start a background task to install a plugin and optionally download its model."""
         if plugin_id not in PLUGIN_REGISTRY:
             return {"success": False, "error": f"Unknown plugin: {plugin_id}"}
@@ -1091,9 +1639,9 @@ class MiloCutApi(Bridge):
         """Return available model download mirrors."""
         try:
             from core.plugin_manager import MODEL_MIRRORS
+
             mirrors = [
-                {"id": k, "display_name": v["display_name"]}
-                for k, v in MODEL_MIRRORS.items()
+                {"id": k, "display_name": v["display_name"]} for k, v in MODEL_MIRRORS.items()
             ]
             return {"success": True, "data": mirrors}
         except Exception as exc:
@@ -1123,10 +1671,7 @@ class MiloCutApi(Bridge):
 
         installed = self._plugin_manager.is_installed(plugin_id)
         models = PLUGIN_REGISTRY[plugin_id]["models"]
-        downloaded_models = {
-            mid: self._plugin_manager.is_model_downloaded(mid)
-            for mid in models
-        }
+        downloaded_models = {mid: self._plugin_manager.is_model_downloaded(mid) for mid in models}
 
         return {
             "success": True,
@@ -1154,6 +1699,11 @@ class MiloCutApi(Bridge):
         """Return the current state of a subprocess ASR task."""
         return {"success": True, "data": self._plugin_manager.get_subprocess_state(task_id)}
 
+    # ================================================================
+    # endregion Plugin Management
+    # region Settings & Data Management
+    # ================================================================
+
     @expose
     def get_settings(self) -> dict:
         return self._project.get_settings()
@@ -1162,6 +1712,7 @@ class MiloCutApi(Bridge):
     def get_plugin_data_dir(self) -> dict:
         """Return the plugin data directory path."""
         from core.paths import get_plugin_data_dir
+
         path = get_plugin_data_dir()
         return {"success": True, "data": {"path": str(path)}}
 
@@ -1169,7 +1720,9 @@ class MiloCutApi(Bridge):
     def open_data_directory(self) -> dict:
         """Open the plugin data directory in the system file manager."""
         import subprocess as _sp
+
         from core.paths import get_plugin_data_dir
+
         path = get_plugin_data_dir()
         try:
             if sys.platform == "win32":
@@ -1186,6 +1739,7 @@ class MiloCutApi(Bridge):
     def cleanup_tasks_folder(self) -> dict:
         """Clean up old transcription task files (logs and results)."""
         from core.paths import get_plugin_data_dir
+
         try:
             tasks_dir = Path(get_plugin_data_dir()) / "tasks"
             if not tasks_dir.exists():
@@ -1197,7 +1751,10 @@ class MiloCutApi(Bridge):
                     f.unlink()
                     deleted += 1
 
-            return {"success": True, "data": {"deleted": deleted, "message": f"Cleaned up {deleted} task files"}}
+            return {
+                "success": True,
+                "data": {"deleted": deleted, "message": f"Cleaned up {deleted} task files"},
+            }
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -1205,6 +1762,7 @@ class MiloCutApi(Bridge):
     def cleanup_transcripts_folder(self) -> dict:
         """Delete all auto-saved transcription SRT files."""
         from core.paths import get_data_dir
+
         try:
             transcripts_dir = get_data_dir() / "transcripts"
             if not transcripts_dir.exists():
@@ -1218,7 +1776,9 @@ class MiloCutApi(Bridge):
                     f.unlink()
                     deleted += 1
 
-            logger.info("Cleaned up transcripts folder: {} files, {} bytes freed", deleted, size_freed)
+            logger.info(
+                "Cleaned up transcripts folder: {} files, {} bytes freed", deleted, size_freed
+            )
             return {"success": True, "data": {"deleted": deleted, "size_freed": size_freed}}
         except Exception as e:
             logger.exception("cleanup_transcripts_folder failed")
@@ -1228,9 +1788,15 @@ class MiloCutApi(Bridge):
     def update_settings(self, updates: dict) -> dict:
         return self._project.update_settings(updates)
 
+    # ================================================================
+    # endregion Settings & Data Management
+    # region Export & Encoding
+    # ================================================================
+
     @expose
     def select_export_path(self, default_name: str, file_types: list[str] | None = None) -> dict:
         import webview
+
         if file_types is None:
             file_types = ["All files (*.*)"]
         result = webview.windows[0].create_file_dialog(
@@ -1253,13 +1819,17 @@ class MiloCutApi(Bridge):
     def detect_gpu_encoders(self) -> dict:
         """Detect available FFmpeg encoders."""
         from core.ffmpeg_presets import ENCODER_METADATA
+
         encoders: list[str] = []
         try:
             from core.ffmpeg_service import _find_ffmpeg
+
             ffmpeg = _find_ffmpeg()
             result = subprocess.run(
                 [ffmpeg, "-hide_banner", "-encoders"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
                 **_SUBPROCESS_KWARGS,
             )
             if result.returncode == 0:
@@ -1281,6 +1851,7 @@ class MiloCutApi(Bridge):
     def detect_gpu(self) -> dict:
         """Detect GPU status for plugin installation recommendations."""
         from core.plugin_manager import detect_gpu
+
         try:
             result = detect_gpu()
             return {"success": True, "data": result}
@@ -1291,18 +1862,22 @@ class MiloCutApi(Bridge):
     def list_mirrors(self) -> dict:
         """List available PyTorch mirrors."""
         from core.plugin_manager import PYTORCH_MIRRORS
+
         return {"success": True, "data": PYTORCH_MIRRORS}
 
     @expose
     def get_ffmpeg_info(self) -> dict:
         """Return FFmpeg status for settings page."""
         from core.ffmpeg_service import _find_ffmpeg, _find_ffprobe
+
         info: dict = {"ffmpeg_path": "", "ffprobe_path": "", "version": ""}
         try:
             info["ffmpeg_path"] = _find_ffmpeg()
             result = subprocess.run(
                 [info["ffmpeg_path"], "-version"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
                 **_SUBPROCESS_KWARGS,
             )
             if result.returncode == 0:
@@ -1319,7 +1894,9 @@ class MiloCutApi(Bridge):
     def check_uv_available(self, force: bool = False) -> dict:
         """Check if uv package manager is available in PATH."""
         if not force and os.environ.get("MILO_FAKE_NO_UV"):
-            import time; time.sleep(0.1)  # avoid pywebview callback race
+            import time
+
+            time.sleep(0.1)  # avoid pywebview callback race
             return {
                 "success": True,
                 "data": {
@@ -1348,11 +1925,12 @@ class MiloCutApi(Bridge):
     def export_edl(self, output_path: str) -> dict:
         """Export EDL (CMX3600) file."""
         from core.export_timeline import export_edl as _export_edl
+
         project = self._project._current
         if not project:
             return {"success": False, "error": "No project open"}
-        segments = [s.model_dump() for s in project.transcript.segments]
-        edits = [e.model_dump() for e in project.edits]
+        segments = [s.model_dump() for s in project.active_timeline.transcript.segments]
+        edits = [e.model_dump() for e in project.active_timeline.edits]
         media_info = project.media.model_dump() if project.media else {}
         return _export_edl(segments, edits, media_info, output_path)
 
@@ -1360,25 +1938,680 @@ class MiloCutApi(Bridge):
     def export_xmeml_premiere(self, output_path: str, mode: str = "clean") -> dict:
         """Export xmeml for Premiere Pro."""
         from core.export_timeline import export_xmeml_premiere as _export_xmeml_premiere
+
         project = self._project._current
         if not project:
             return {"success": False, "error": "No project open"}
-        segments = [s.model_dump() for s in project.transcript.segments]
-        edits = [e.model_dump() for e in project.edits]
+        segments = [s.model_dump() for s in project.active_timeline.transcript.segments]
+        edits = [e.model_dump() for e in project.active_timeline.edits]
         media_info = project.media.model_dump() if project.media else {}
         return _export_xmeml_premiere(segments, edits, media_info, output_path, mode=mode)
 
     @expose
-    def export_otio(self, output_path: str, fade_duration: float = 0.0, mode: str = "clean", fade_mode: str = "crossfade", audio_fade_duration: float | None = None) -> dict:
+    def export_otio(
+        self,
+        output_path: str,
+        fade_duration: float = 0.0,
+        mode: str = "clean",
+        fade_mode: str = "crossfade",
+        audio_fade_duration: float | None = None,
+    ) -> dict:
         """Export OpenTimelineIO (.otio) file."""
         from core.export_timeline import export_otio as _export_otio
+
         project = self._project._current
         if not project:
             return {"success": False, "error": "No project open"}
-        segments = [s.model_dump() for s in project.transcript.segments]
-        edits = [e.model_dump() for e in project.edits]
+        segments = [s.model_dump() for s in project.active_timeline.transcript.segments]
+        edits = [e.model_dump() for e in project.active_timeline.edits]
         media_info = project.media.model_dump() if project.media else {}
-        return _export_otio(segments, edits, media_info, output_path, fade_duration=fade_duration, mode=mode, fade_mode=fade_mode, audio_fade_duration=audio_fade_duration)
+        return _export_otio(
+            segments,
+            edits,
+            media_info,
+            output_path,
+            fade_duration=fade_duration,
+            mode=mode,
+            fade_mode=fade_mode,
+            audio_fade_duration=audio_fade_duration,
+        )
+
+    # ================================================================
+    # endregion Export & Encoding
+    # region Bridge Service callbacks
+    # ================================================================
+
+    def _bridge_get_projects(self) -> list[dict]:
+        """Callback for BridgeService: return project list."""
+        result = self._project.get_recent_projects(limit=100)
+        if result.get("success") and result.get("data"):
+            return result["data"]
+        return []
+
+    def _bridge_get_project(self, name: str) -> dict | None:
+        """Callback for BridgeService: get project by name."""
+        projects = self._bridge_get_projects()
+        for p in projects:
+            if p.get("name") == name:
+                return self._project.open_project(p["path"])
+        return None
+
+    @expose
+    def get_bridge_status(self) -> dict:
+        """Get bridge HTTP API server status."""
+        return {
+            "success": True,
+            "data": {
+                "running": self._bridge_service.is_running,
+                "port": self._bridge_service.port,
+            },
+        }
+
+    # ================================================================
+    # endregion Bridge Service
+    # region LLM (P0 smart-delete, P1 subtitle correction, P2 highlight, P3 search)
+    # ================================================================
+
+    @expose
+    def test_llm_connection(self) -> dict:
+        """Test LLM connectivity with current settings."""
+        from core.llm_service import test_connection
+
+        return test_connection()
+
+    @expose
+    def get_llm_config(self) -> dict:
+        """Read LLM configuration (API key masked)."""
+        from core.llm_service import get_llm_config as _get_cfg
+
+        config = _get_cfg()
+        data = config.model_dump()
+        if data.get("api_key"):
+            key = data["api_key"]
+            data["api_key_masked"] = (
+                key[:4] + "*" * (len(key) - 8) + key[-4:] if len(key) > 8 else "****"
+            )
+            data["api_key"] = ""
+        return {"success": True, "data": data}
+
+    @expose
+    def update_llm_config(self, updates: dict) -> dict:
+        """Update LLM settings (only llm_* keys accepted)."""
+        allowed = {
+            "llm_provider",
+            "llm_base_url",
+            "llm_api_key",
+            "llm_model",
+            "llm_temperature",
+            "llm_timeout",
+        }
+        filtered = {k: v for k, v in updates.items() if k in allowed}
+        if not filtered:
+            return {"success": False, "error": "No valid LLM settings provided"}
+        return self.update_settings(filtered)
+
+    @expose
+    def get_llm_prompts(self) -> dict:
+        """Read all LLM prompt configurations (defaults + user overrides).
+
+        Returns:
+            {"success": True, "data": {"defaults": {...}, "overrides": {...}}}
+            - defaults: hardcoded default prompts (read-only reference)
+            - overrides: user customizations from settings.json
+        """
+        from core.llm_prompts import DEFAULT_PROMPTS, get_default_params
+
+        defaults = {}
+        for key in DEFAULT_PROMPTS:
+            defaults[key] = {
+                "system": DEFAULT_PROMPTS[key]["system"],
+                "params": get_default_params(key),
+            }
+
+        settings = self._load_settings_raw()
+        overrides = settings.get("llm_prompts", {})
+
+        return {"success": True, "data": {"defaults": defaults, "overrides": overrides}}
+
+    @expose
+    def update_llm_prompt(self, func_key: str, updates: dict) -> dict:
+        """Update a single LLM prompt configuration.
+
+        Args:
+            func_key: One of DEFAULT_PROMPTS keys.
+            updates: {"system_override": str|None, "params": {...}}
+
+        Returns:
+            {"success": True, "data": {"func_key": str}}
+        """
+        from core.llm_prompts import DEFAULT_PROMPTS
+
+        if func_key not in DEFAULT_PROMPTS:
+            return {"success": False, "error": f"Unknown prompt key: {func_key}"}
+
+        settings = self._load_settings_raw()
+        prompts = settings.get("llm_prompts", {})
+
+        # Merge updates into existing override
+        existing = prompts.get(func_key, {})
+        if "system_override" in updates:
+            val = updates["system_override"]
+            existing["system_override"] = val if val and val.strip() else None
+        if "params" in updates:
+            existing["params"] = updates["params"]
+
+        prompts[func_key] = existing
+        settings["llm_prompts"] = prompts
+
+        return self.update_settings({"llm_prompts": prompts})
+
+    @expose
+    def reset_llm_prompt(self, func_key: str) -> dict:
+        """Reset a single LLM prompt to its hardcoded default.
+
+        Args:
+            func_key: One of DEFAULT_PROMPTS keys.
+
+        Returns:
+            {"success": True, "data": {"func_key": str}}
+        """
+        from core.llm_prompts import DEFAULT_PROMPTS
+
+        if func_key not in DEFAULT_PROMPTS:
+            return {"success": False, "error": f"Unknown prompt key: {func_key}"}
+
+        settings = self._load_settings_raw()
+        prompts = settings.get("llm_prompts", {})
+        prompts.pop(func_key, None)
+        settings["llm_prompts"] = prompts
+
+        return self.update_settings({"llm_prompts": prompts})
+
+    def _load_settings_raw(self) -> dict:
+        """Load raw settings dict (internal helper for prompt management)."""
+        from core.config import load_settings
+
+        return load_settings()
+
+    def _resolve_timeline_id(self, timeline_id: str) -> str:
+        """Resolve a timeline id, falling back to the active timeline.
+
+        Raises ValueError if no project is open.
+        """
+        if self._project.current is None:
+            raise ValueError("No project is open")
+        return timeline_id or self._project.current.active_timeline_id
+
+    # ------------------------------------------------------------------
+    # LLM prompt presets (v2.1.0 Phase 1: per-feature parameter snapshots)
+    # ------------------------------------------------------------------
+
+    @expose
+    def get_prompt_presets(self, func_key: str) -> dict:
+        """Get the saved preset list for a feature (always includes default).
+
+        Args:
+            func_key: One of PRESET_SUPPORTED_KEYS (smart_delete, etc.).
+
+        Returns:
+            {"success": True, "data": [preset, ...]}
+        """
+        from core.llm_presets import PRESET_SUPPORTED_KEYS, get_presets
+
+        if func_key not in PRESET_SUPPORTED_KEYS:
+            return {"success": False, "error": f"Unsupported preset key: {func_key}"}
+
+        return {"success": True, "data": get_presets(func_key)}
+
+    @expose
+    def save_prompt_preset(
+        self,
+        func_key: str,
+        name: str,
+        params: dict | None = None,
+        system_override: str = "",
+        model: str = "",
+    ) -> dict:
+        """Save a new preset from the supplied parameters.
+
+        Args:
+            func_key: Feature key.
+            name: Human-readable preset name.
+            params: Simple-mode params snapshot (defaults to empty).
+            system_override: Advanced-mode full prompt (empty = simple mode).
+            model: Reserved model field (D-73, stored without UI).
+
+        Returns:
+            {"success": True, "data": preset}
+        """
+        from core.llm_presets import PRESET_SUPPORTED_KEYS, save_preset
+
+        if func_key not in PRESET_SUPPORTED_KEYS:
+            return {"success": False, "error": f"Unsupported preset key: {func_key}"}
+        if not name or not name.strip():
+            return {"success": False, "error": "Preset name is required"}
+
+        try:
+            preset = save_preset(
+                func_key,
+                name,
+                params or {},
+                system_override or "",
+                model or "",
+            )
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+        return {"success": True, "data": preset}
+
+    @expose
+    def apply_prompt_preset(self, func_key: str, preset_id: str) -> dict:
+        """Apply a preset -- writes its params + system_override to llm_prompts.
+
+        Args:
+            func_key: Feature key.
+            preset_id: Target preset id.
+
+        Returns:
+            {"success": True, "data": {"func_key": str, "preset_id": str}}
+        """
+        from core.llm_presets import PRESET_SUPPORTED_KEYS, apply_preset
+
+        if func_key not in PRESET_SUPPORTED_KEYS:
+            return {"success": False, "error": f"Unsupported preset key: {func_key}"}
+
+        try:
+            apply_preset(func_key, preset_id)
+        except (KeyError, ValueError) as e:
+            return {"success": False, "error": str(e)}
+        return {
+            "success": True,
+            "data": {"func_key": func_key, "preset_id": preset_id},
+        }
+
+    @expose
+    def delete_prompt_preset(self, func_key: str, preset_id: str) -> dict:
+        """Delete a preset (the built-in default is protected).
+
+        Args:
+            func_key: Feature key.
+            preset_id: Target preset id.
+
+        Returns:
+            {"success": True, "data": {"func_key": str, "preset_id": str}}
+        """
+        from core.llm_presets import PRESET_SUPPORTED_KEYS, delete_preset
+
+        if func_key not in PRESET_SUPPORTED_KEYS:
+            return {"success": False, "error": f"Unsupported preset key: {func_key}"}
+
+        try:
+            delete_preset(func_key, preset_id)
+        except (KeyError, ValueError) as e:
+            return {"success": False, "error": str(e)}
+        return {
+            "success": True,
+            "data": {"func_key": func_key, "preset_id": preset_id},
+        }
+
+    # ------------------------------------------------------------------
+    # v2.1.0 Phase 2: P1 subtitle correction review @expose methods
+    # ------------------------------------------------------------------
+
+    @expose
+    def get_subtitle_corrections(self, timeline_id: str = "") -> dict:
+        """Get pending P1 corrections for a timeline (parsed detail JSON).
+
+        Args:
+            timeline_id: Target timeline (defaults to active).
+
+        Returns:
+            {"success": True, "data": [correction, ...]}
+        """
+        tid = self._resolve_timeline_id(timeline_id)
+        return self._project.get_subtitle_corrections(tid)
+
+    @expose
+    def compute_diff(self, original: str, corrected: str) -> dict:
+        """Compute an inline diff between original and corrected text.
+
+        Returns:
+            {"success": True, "data": {"tokens": [{"text", "type"}, ...]}}
+        """
+        from core.diff_service import compute_inline_diff
+
+        return {"success": True, "data": compute_inline_diff(original, corrected)}
+
+    @expose
+    def accept_correction(self, result_id: str) -> dict:
+        """Accept one subtitle correction (apply to segment + remove result).
+
+        Returns:
+            {"success": True, "data": {"segment_id": str}}
+        """
+        return self._mark_dirty(self._project.accept_subtitle_correction(result_id))
+
+    @expose
+    def reject_correction(self, result_id: str) -> dict:
+        """Reject one subtitle correction (remove result, text untouched).
+
+        Returns:
+            {"success": True, "data": {"segment_id": str}}
+        """
+        return self._mark_dirty(self._project.reject_subtitle_correction(result_id))
+
+    @expose
+    def accept_high_confidence_corrections(
+        self, timeline_id: str = "", threshold: float = 0.8
+    ) -> dict:
+        """Batch-accept corrections with confidence >= threshold (D-52).
+
+        Args:
+            timeline_id: Target timeline (defaults to active).
+            threshold: Minimum confidence (default 0.8 per D-68).
+
+        Returns:
+            {"success": True, "data": {"accepted_count", "remaining_count"}}
+        """
+        tid = self._resolve_timeline_id(timeline_id)
+        return self._mark_dirty(self._project.accept_high_confidence_corrections(tid, threshold))
+
+    @expose
+    def clear_subtitle_corrections(self, timeline_id: str = "") -> dict:
+        """Clear all pending P1 corrections for a timeline (D-50).
+
+        Returns:
+            {"success": True, "data": {"cleared_count": int}}
+        """
+        tid = self._resolve_timeline_id(timeline_id)
+        return self._mark_dirty(self._project.clear_subtitle_corrections(tid))
+
+    @expose
+    def start_smart_delete(self, timeline_id: str = "") -> dict:
+        """Start LLM smart-delete analysis as a background task.
+
+        Args:
+            timeline_id: Target timeline (defaults to active_timeline_id).
+
+        Returns:
+            {"success": True, "data": {"task_id": str}}
+        """
+        from core.llm_service import get_llm_config as _get_cfg
+
+        config = _get_cfg()
+        if not config.is_configured():
+            return {"success": False, "error": "LLM not configured"}
+
+        if self._project.current is None:
+            return {"success": False, "error": "No project open"}
+
+        tl_id = timeline_id or self._project.current.active_timeline_id
+        task = self._task_manager.create_task(
+            "llm_smart_delete",
+            {"timeline_id": tl_id},
+        )
+        return task
+
+    @expose
+    def start_subtitle_correction(
+        self,
+        reference_text: str = "",
+        timeline_id: str = "",
+        context_window: int = 3,
+    ) -> dict:
+        """Start LLM subtitle correction as a background task.
+
+        Args:
+            reference_text: Optional reference transcript for mode B alignment.
+                Empty string = mode A (LLM self-correction).
+            timeline_id: Target timeline (defaults to active_timeline_id).
+            context_window: Number of adjacent segments for context.
+
+        Returns:
+            {"success": True, "data": {"task_id": str}}
+        """
+        from core.llm_service import get_llm_config as _get_cfg
+
+        config = _get_cfg()
+        if not config.is_configured():
+            return {"success": False, "error": "LLM not configured"}
+
+        if self._project.current is None:
+            return {"success": False, "error": "No project open"}
+
+        tl_id = timeline_id or self._project.current.active_timeline_id
+        task = self._task_manager.create_task(
+            "llm_subtitle_correction",
+            {
+                "timeline_id": tl_id,
+                "reference_text": reference_text,
+                "context_window": context_window,
+            },
+        )
+        return task
+
+    @expose
+    def confirm_all_from_source(self, source: str, min_confidence: float = 0.0) -> dict:
+        """Batch-confirm all pending edit decisions from a given source.
+
+        Implements the 'trust this source' feature for reducing user review
+        burden when a model's suggestions are trusted.
+
+        Args:
+            source: Source filter (e.g. "llm_smart").
+            min_confidence: Minimum confidence threshold for auto-confirm.
+
+        Returns:
+            {"success": True, "data": {"confirmed_count": int, "project": dict}}
+        """
+        result = self._project.confirm_all_from_source(source, min_confidence)
+        if result["success"]:
+            self._emit(PROJECT_DIRTY)
+            if self._project.current:
+                result["data"]["project"] = self._project.current.model_dump()
+        return result
+
+    @expose
+    def start_highlight(self, target_duration_minutes: int = 10, timeline_id: str = "") -> dict:
+        """Start LLM highlight extraction as a background task.
+
+        Args:
+            target_duration_minutes: Target highlight reel duration.
+            timeline_id: Target timeline (defaults to active_timeline_id).
+
+        Returns:
+            {"success": True, "data": {"task_id": str}}
+        """
+        from core.llm_service import get_llm_config as _get_cfg
+
+        config = _get_cfg()
+        if not config.is_configured():
+            return {"success": False, "error": "LLM not configured"}
+
+        if self._project.current is None:
+            return {"success": False, "error": "No project open"}
+
+        tl_id = timeline_id or self._project.current.active_timeline_id
+        task = self._task_manager.create_task(
+            "llm_highlight",
+            {"timeline_id": tl_id, "target_duration_minutes": target_duration_minutes},
+        )
+        return task
+
+    @expose
+    def semantic_search(self, query: str, top_k: int = 5, timeline_id: str = "") -> dict:
+        """Run LLM semantic search over transcript segments.
+
+        Args:
+            query: Natural language search query.
+            top_k: Maximum results to return.
+            timeline_id: Target timeline (defaults to active_timeline_id).
+
+        Returns:
+            {"success": True, "data": {"results": [...], "query": str}}
+        """
+        from core.llm_service import get_llm_config as _get_cfg
+        from core.llm_service import semantic_search as _search
+
+        config = _get_cfg()
+        if not config.is_configured():
+            return {"success": False, "error": "LLM not configured"}
+
+        if self._project.current is None:
+            return {"success": False, "error": "No project open"}
+
+        project = self._project.current
+        tl_id = timeline_id or project.active_timeline_id
+        timeline = project.get_timeline(tl_id)
+        if timeline is None:
+            return {"success": False, "error": f"Timeline {tl_id} not found"}
+
+        segments = [
+            s.model_dump()
+            for s in timeline.transcript.segments
+            if s.type == SegmentType.SUBTITLE
+        ]
+
+        # Phase 3: resolve effective prompt
+        from core.llm_prompts import get_effective_prompt
+
+        project_prompts = (
+            timeline.llm_prompts if hasattr(timeline, "llm_prompts") else None
+        )
+        effective_prompt = get_effective_prompt("search", project_prompts)
+
+        result = _search(
+            query,
+            segments,
+            top_k=top_k,
+            config=config,
+            system_prompt=effective_prompt,
+        )
+        return result
+
+    @expose
+    def detect_highlight_jump_cuts(self, timeline_id: str = "") -> dict:
+        """Detect jump cuts between highlight segments for export preview.
+
+        Args:
+            timeline_id: Target timeline (defaults to active_timeline_id).
+
+        Returns:
+            {"success": True, "data": {"jump_cuts": [...]}}
+        """
+        from core.export_service import detect_jump_cuts
+
+        if self._project.current is None:
+            return {"success": False, "error": "No project open"}
+
+        project = self._project.current
+        tl_id = timeline_id or project.active_timeline_id
+        timeline = project.get_timeline(tl_id)
+        if timeline is None:
+            return {"success": False, "error": f"Timeline {tl_id} not found"}
+
+        # P0-4: derive highlight ranges from AnalysisResult instead of timeline.edits
+        analysis_results = [r for r in timeline.analysis.results if r.type == "llm_highlight"]
+        seg_ids: set[str] = set()
+        for r in analysis_results:
+            seg_ids.update(r.segment_ids)
+        seg_map = {s.id: s for s in timeline.transcript.segments if s.type == SegmentType.SUBTITLE}
+        ranges = [(seg_map[sid].start, seg_map[sid].end) for sid in seg_ids if sid in seg_map]
+        ranges.sort()
+        if not ranges:
+            return {"success": True, "data": {"jump_cuts": [], "highlight_count": 0}}
+
+        seg_dicts = [{"start": s, "end": e} for s, e in ranges]
+        jumps = detect_jump_cuts(seg_dicts)
+
+        return {
+            "success": True,
+            "data": {
+                "jump_cuts": jumps,
+                "highlight_count": len(ranges),
+                "total_highlight_duration": sum(e - s for s, e in ranges),
+            },
+        }
+
+    @expose
+    def get_file_protocol_status(self) -> dict:
+        """Get file protocol bridge status."""
+        return {
+            "success": True,
+            "data": {
+                "outgoing_dir": str(self._file_protocol.outgoing_dir),
+                "incoming_dir": str(self._file_protocol.incoming_dir),
+                "archive_dir": str(self._file_protocol.archive_dir),
+                "polling": self._file_protocol._poll_thread is not None
+                and self._file_protocol._poll_thread.is_alive(),
+            },
+        }
+
+    # ================================================================
+    # region Workflow (v2.1.0 Phase 3)
+    # ================================================================
+
+    @expose
+    def get_workflows(self) -> dict:
+        """Get all saved workflow definitions."""
+        return self._workflow_engine.get_workflows()
+
+    @expose
+    def save_workflow(self, name: str, steps: list[dict], workflow_id: str = "") -> dict:
+        """Create or update a workflow definition."""
+        return self._workflow_engine.save_workflow(name, steps, workflow_id)
+
+    @expose
+    def delete_workflow(self, workflow_id: str) -> dict:
+        """Delete a workflow definition."""
+        return self._workflow_engine.delete_workflow(workflow_id)
+
+    @expose
+    def start_workflow(self, workflow_id: str, timeline_id: str = "") -> dict:
+        """Start a workflow execution."""
+        return self._workflow_engine.start_workflow(workflow_id, timeline_id)
+
+    @expose
+    def cancel_workflow(self, mode: str = "immediate") -> dict:
+        """Cancel the active workflow (immediate | after_current)."""
+        return self._workflow_engine.cancel_workflow(mode)
+
+    @expose
+    def handle_step_failure(self, action: str) -> dict:
+        """Respond to a workflow step failure (retry | skip | abort)."""
+        return self._workflow_engine.handle_step_failure(action)
+
+    @expose
+    def get_workflow_status(self) -> dict:
+        """Get current workflow execution status."""
+        return self._workflow_engine.get_workflow_status()
+
+    @expose
+    def detect_workflow_conflicts(self) -> dict:
+        """Run conflict detection on the active workflow snapshot."""
+        return self._workflow_engine.detect_conflicts()
+
+    @expose
+    def resolve_workflow_conflict(self, segment_id: str, resolution: str) -> dict:
+        """Resolve a single conflict (keep_first | keep_last | keep_all)."""
+        return self._workflow_engine.resolve_conflict(segment_id, resolution)
+
+    @expose
+    def apply_workflow(self) -> dict:
+        """Apply accumulated workflow edits to the real project."""
+        return self._workflow_engine.apply_workflow()
+
+    @expose
+    def discard_workflow(self) -> dict:
+        """Discard the active workflow without applying."""
+        return self._workflow_engine.discard_workflow()
+
+    @expose
+    def find_resumable_workflows(self) -> dict:
+        """Find workflow snapshots that can be resumed (cross-session recovery)."""
+        return {"success": True, "data": self._workflow_engine.find_resumable_snapshots()}
+
+    # ================================================================
+    # endregion Workflow
 
 
 if __name__ == "__main__":
@@ -1390,6 +2623,22 @@ if __name__ == "__main__":
 
     logger = get_logger()
     logger.info("Milo-Cut starting...")
+
+    # Start bridge HTTP API (localhost only)
+    bridge_result = api._bridge_service.start(port=_BRIDGE_DEFAULT_PORT)
+    if bridge_result.get("success"):
+        logger.info(f"Bridge API on http://127.0.0.1:{bridge_result['data']['port']}")
+    else:
+        logger.warning(f"Bridge API failed to start: {bridge_result.get('error')}")
+
+    import atexit
+
+    atexit.register(api._bridge_service.stop)
+    atexit.register(api._file_protocol.stop_polling)
+
+    # Start file protocol polling for incoming messages from external tools
+    api._file_protocol.start_polling()
+    logger.info("File protocol polling started")
 
     app = App(
         api,

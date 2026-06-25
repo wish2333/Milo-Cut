@@ -1,6 +1,6 @@
 [project]
 name = "milo-cut"
-version = "1.3.0"
+version = "2.1.1"
 description = "AI-powered video preprocessing tool for oral presentation videos"
 requires-python = ">=3.11"
 dependencies = [
@@ -10,10 +10,16 @@ dependencies = [
     "opentimelineio>=0.18.1",
     "huggingface-hub>=0.20",
     "modelscope>=1.10",
+    "openai>=1.0",
 ]
 
 [dependency-groups]
-dev = ["pyinstaller>=6.19.0", "pytest>=8.0", "pytest-cov>=5.0"]
+dev = [
+    "pyinstaller>=6.19.0",
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.15.17",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -21,3 +27,37 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["pywebvue", "core"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+]
+ignore = ["E501"]  # line length handled by formatter
+
+[tool.ruff.lint.per-file-ignores]
+# Path/setup code runs before imports by design
+"main.py" = ["E402"]
+"core/export_service.py" = ["E402"]
+"core/ffmpeg_service.py" = ["E402"]
+"core/asr_scripts/*.py" = ["E402"]
+# Tests may use broad exception checks for frozen-model assertions
+"tests/*.py" = ["E402", "S101"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--ignore=tests/integration -q"
+markers = [
+    "integration: end-to-end tests requiring full task pipeline",
+]

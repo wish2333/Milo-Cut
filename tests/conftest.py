@@ -1,23 +1,18 @@
-"""Shared fixtures for Milo-Cut tests."""
+"""Shared fixtures for Milo-Cut tests.
+
+Fixtures are thin wrappers over the centralized mock factories in
+``tests.mocks``. New tests should prefer importing the factories directly.
+"""
 
 from __future__ import annotations
 
-import json
-import tempfile
-from pathlib import Path
-
 import pytest
 
-from core.models import (
-    AnalysisData,
-    EditDecision,
-    EditStatus,
-    MediaInfo,
-    Project,
-    ProjectMeta,
-    Segment,
-    SegmentType,
-    TranscriptData,
+from tests.mocks.factories import (
+    SAMPLE_SRT_CONTENT,
+    make_edit_decision,
+    make_project,
+    make_segment,
 )
 
 
@@ -30,61 +25,52 @@ def tmp_dir(tmp_path):
 @pytest.fixture
 def sample_segment():
     """Create a sample subtitle segment."""
-    return Segment(
-        id="seg-0001",
-        type=SegmentType.SUBTITLE,
-        start=1.0,
-        end=5.0,
-        text="Hello world",
-    )
+    return make_segment(id="seg-0001", start=1.0, end=5.0, text="Hello world")
 
 
 @pytest.fixture
 def sample_segments():
     """Create a list of sample subtitle segments."""
+
     return [
-        Segment(id="seg-0001", type=SegmentType.SUBTITLE, start=1.0, end=5.0, text="Hello world"),
-        Segment(id="seg-0002", type=SegmentType.SUBTITLE, start=5.5, end=10.0, text="This is a test"),
-        Segment(id="seg-0003", type=SegmentType.SUBTITLE, start=10.5, end=15.0, text="Filler word here"),
-        Segment(id="seg-0004", type=SegmentType.SUBTITLE, start=15.5, end=20.0, text="不对重来说错了这段不要"),
-        Segment(id="seg-0005", type=SegmentType.SUBTITLE, start=20.5, end=25.0, text="Normal sentence"),
-        Segment(id="seg-0006", type=SegmentType.SUBTITLE, start=25.5, end=30.0, text="Another segment"),
+        make_segment(id="seg-0001", start=1.0, end=5.0, text="Hello world"),
+        make_segment(id="seg-0002", start=5.5, end=10.0, text="This is a test"),
+        make_segment(id="seg-0003", start=10.5, end=15.0, text="Filler word here"),
+        make_segment(
+            id="seg-0004", start=15.5, end=20.0, text="不对重来说错了这段不要"
+        ),
+        make_segment(id="seg-0005", start=20.5, end=25.0, text="Normal sentence"),
+        make_segment(id="seg-0006", start=25.5, end=30.0, text="Another segment"),
     ]
 
 
 @pytest.fixture
 def sample_silence_segment():
     """Create a sample silence segment."""
-    return Segment(
-        id="sil-0001",
-        type=SegmentType.SILENCE,
-        start=5.0,
-        end=5.5,
-        text="",
+    from core.models import SegmentType
+
+    return make_segment(
+        id="sil-0001", type=SegmentType.SILENCE, start=5.0, end=5.5, text=""
     )
 
 
 @pytest.fixture
 def sample_edit_decision():
     """Create a sample edit decision."""
-    return EditDecision(
+    return make_edit_decision(
         id="edit-0001",
         start=5.0,
         end=5.5,
         action="delete",
         source="silence_detection",
-        status=EditStatus.PENDING,
     )
 
 
 @pytest.fixture
 def sample_project(sample_segments, sample_silence_segment, sample_edit_decision):
     """Create a sample project with segments and edits."""
-    return Project(
-        project=ProjectMeta(name="test-project"),
-        media=MediaInfo(path="/tmp/test.mp4", duration=60.0),
-        transcript=TranscriptData(segments=list(sample_segments) + [sample_silence_segment]),
-        analysis=AnalysisData(),
+    return make_project(
+        segments=list(sample_segments) + [sample_silence_segment],
         edits=[sample_edit_decision],
     )
 
@@ -92,18 +78,7 @@ def sample_project(sample_segments, sample_silence_segment, sample_edit_decision
 @pytest.fixture
 def sample_srt_content():
     """Sample SRT content for testing."""
-    return """1
-00:00:01,000 --> 00:00:05,000
-Hello world
-
-2
-00:00:05,500 --> 00:00:10,000
-This is a test
-
-3
-00:00:10,500 --> 00:00:15,000
-Filler word here
-"""
+    return SAMPLE_SRT_CONTENT
 
 
 @pytest.fixture

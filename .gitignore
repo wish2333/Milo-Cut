@@ -228,6 +228,7 @@ frontend_dist/
 # Claude
 settings.local.json
 .omo
+reasonix.toml
 
 # Project
 project.json
@@ -238,3 +239,5 @@ project.json
 
 # MacOS
 .DS_Store
+.codegraph/
+.reasonix/

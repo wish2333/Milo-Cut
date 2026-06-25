@@ -91,7 +91,9 @@ class ProxyManager:
 
             logger.info(
                 "Proxy generation queued: {} ({}) priority={}",
-                media_path, resolution, priority,
+                media_path,
+                resolution,
+                priority,
             )
             return {"success": True, "data": {"task_id": task_id}}
 

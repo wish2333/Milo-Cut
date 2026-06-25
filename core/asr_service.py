@@ -12,12 +12,11 @@ from __future__ import annotations
 import json
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from loguru import logger
-
-from core.plugin_manager import PluginManager, PLUGIN_REGISTRY
+from core.plugin_manager import PLUGIN_REGISTRY, PluginManager
 
 
 def _asr_script(name: str) -> Path:
@@ -68,7 +67,7 @@ def transcribe_with_whisper(
         RuntimeError: If transcription fails.
     """
     plugin_id = "plugin-whisper"
-    plugin_meta = PLUGIN_REGISTRY.get(plugin_id, {})
+    PLUGIN_REGISTRY.get(plugin_id, {})
 
     # Resolve model ID from size key
     model_id = _resolve_whisper_model(model_size)
@@ -78,8 +77,7 @@ def transcribe_with_whisper(
     # Check plugin installation
     if not plugin_manager.is_installed(plugin_id):
         raise ValueError(
-            f"faster-whisper plugin is not installed. "
-            f"Please install it from Settings > AI Engine."
+            "faster-whisper plugin is not installed. Please install it from Settings > AI Engine."
         )
 
     # Ensure model is downloaded
@@ -98,15 +96,24 @@ def transcribe_with_whisper(
 
     # Build subprocess arguments
     args = [
-        "--media-path", str(media_path),
-        "--model-path", str(model_path),
-        "--language", language,
-        "--device", device,
-        "--compute-type", compute_type,
-        "--word-timestamps", str(word_timestamps).lower(),
-        "--vad-filter", str(vad_filter).lower(),
-        "--vad-threshold", str(vad_threshold),
-        "--vad-min-silence-ms", str(vad_min_silence_ms),
+        "--media-path",
+        str(media_path),
+        "--model-path",
+        str(model_path),
+        "--language",
+        language,
+        "--device",
+        device,
+        "--compute-type",
+        compute_type,
+        "--word-timestamps",
+        str(word_timestamps).lower(),
+        "--vad-filter",
+        str(vad_filter).lower(),
+        "--vad-threshold",
+        str(vad_threshold),
+        "--vad-min-silence-ms",
+        str(vad_min_silence_ms),
     ]
 
     # Run in isolated subprocess
@@ -184,8 +191,10 @@ def transcribe_with_qwen(
         RuntimeError: If transcription fails.
     """
     # Determine plugin ID based on device
-    plugin_id = "plugin-qwen-gpu" if device == "cuda" else "plugin-qwen-cpu"  # mps uses CPU plugin too
-    plugin_meta = PLUGIN_REGISTRY.get(plugin_id, {})
+    plugin_id = (
+        "plugin-qwen-gpu" if device == "cuda" else "plugin-qwen-cpu"
+    )  # mps uses CPU plugin too
+    PLUGIN_REGISTRY.get(plugin_id, {})
 
     # Resolve model IDs
     asr_model_id = _resolve_qwen_model("asr", asr_model_size)
@@ -199,8 +208,7 @@ def transcribe_with_qwen(
     # Check plugin installation
     if not plugin_manager.is_installed(plugin_id):
         raise ValueError(
-            f"Qwen3-ASR plugin is not installed. "
-            f"Please install it from Settings > AI Engine."
+            "Qwen3-ASR plugin is not installed. Please install it from Settings > AI Engine."
         )
 
     # Ensure models are downloaded
@@ -224,12 +232,18 @@ def transcribe_with_qwen(
 
     # Build subprocess arguments
     args = [
-        "--media-path", str(media_path),
-        "--asr-model-path", str(asr_model_path),
-        "--aligner-model-path", str(aligner_model_path),
-        "--language", language,
-        "--device", device,
-        "--compute-type", compute_type,
+        "--media-path",
+        str(media_path),
+        "--asr-model-path",
+        str(asr_model_path),
+        "--aligner-model-path",
+        str(aligner_model_path),
+        "--language",
+        language,
+        "--device",
+        device,
+        "--compute-type",
+        compute_type,
     ]
 
     # Run in isolated subprocess
@@ -287,7 +301,7 @@ def _resolve_whisper_model(model_size: str) -> str | None:
 
     # Look up in plugin registry
     whisper_models = PLUGIN_REGISTRY.get("plugin-whisper", {}).get("models", {})
-    for model_id, meta in whisper_models.items():
+    for model_id, _meta in whisper_models.items():
         # Match by suffix (e.g., "large-v3-turbo" matches "Purfview/faster-whisper-large-v3-turbo")
         if model_id.endswith(f"faster-whisper-{model_size}"):
             return model_id
@@ -356,8 +370,7 @@ def transcribe_with_mlx(
 
     if not plugin_manager.is_installed(plugin_id):
         raise ValueError(
-            "Qwen3-ASR MLX plugin is not installed. "
-            "Please install it from Settings > AI Engine."
+            "Qwen3-ASR MLX plugin is not installed. Please install it from Settings > AI Engine."
         )
 
     if progress_cb:
@@ -368,7 +381,9 @@ def transcribe_with_mlx(
     if aligner_model_id:
         if progress_cb:
             progress_cb(5.0, "Checking aligner model availability...")
-        aligner_model_path = str(plugin_manager.ensure_model(aligner_model_id, progress_cb=progress_cb))
+        aligner_model_path = str(
+            plugin_manager.ensure_model(aligner_model_id, progress_cb=progress_cb)
+        )
 
     if progress_cb:
         progress_cb(10.0, "Preparing transcription...")
@@ -378,10 +393,14 @@ def transcribe_with_mlx(
         raise RuntimeError(f"Transcription script not found: {script_path}")
 
     args = [
-        "--media-path", str(media_path),
-        "--asr-model-path", str(asr_model_path),
-        "--aligner-model-path", aligner_model_path,
-        "--language", language,
+        "--media-path",
+        str(media_path),
+        "--asr-model-path",
+        str(asr_model_path),
+        "--aligner-model-path",
+        aligner_model_path,
+        "--language",
+        language,
     ]
 
     if progress_cb:

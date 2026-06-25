@@ -13,6 +13,14 @@ export interface UseSegmentEditReturn {
   selectRange: (start: number, end: number) => void
   clearSelection: () => void
 
+  // v2.1.1 M4-1: multi-select mode
+  selectionMode: Ref<boolean>
+  selectedSegmentIds: Ref<Set<string>>
+  selectedCount: ComputedRef<number>
+  toggleSelectionMode: () => void
+  handleSegmentClick: (segId: string, event: MouseEvent, orderedIds: string[]) => void
+  clearMultiSelection: () => void
+
   updateSegmentTime: (segmentId: string, field: "start" | "end", value: number) => void
   updateSegmentText: (segmentId: string, text: string) => Promise<boolean>
   toggleEditStatus: (segment: Segment, nextStatus?: string) => Promise<void>
@@ -25,15 +33,30 @@ export interface UseSegmentEditReturn {
   pendingCount: ComputedRef<number>
 }
 
+function activeEdits(p: Project): EditDecision[] {
+  return p.timelines.find(t => t.id === p.active_timeline_id)?.edits ?? []
+}
+
+function activeTranscriptSegments(p: Project): Segment[] {
+  return p.timelines.find(t => t.id === p.active_timeline_id)?.transcript?.segments ?? []
+}
+
 function replaceSegment(project: Project, segId: string, patch: Partial<Segment>): Project {
   return {
     ...project,
-    transcript: {
-      ...project.transcript,
-      segments: project.transcript.segments.map(s =>
-        s.id === segId ? { ...s, ...patch } : s,
-      ),
-    },
+    timelines: project.timelines.map(tl =>
+      tl.id === project.active_timeline_id
+        ? {
+            ...tl,
+            transcript: {
+              ...tl.transcript,
+              segments: tl.transcript.segments.map(s =>
+                s.id === segId ? { ...s, ...patch } : s,
+              ),
+            },
+          }
+        : tl,
+    ),
   }
 }
 
@@ -44,6 +67,12 @@ export function useSegmentEdit(
 ): UseSegmentEditReturn {
   const selectedSegmentId = ref<string | null>(null)
   const selectedRange = ref<{ start: number; end: number } | null>(null)
+
+  // v2.1.1 M4-1: multi-select mode state
+  const selectionMode = ref(false)
+  const selectedSegmentIds = ref<Set<string>>(new Set())
+  const lastSelectedId = ref<string | null>(null)
+  const selectedCount = computed(() => selectedSegmentIds.value.size)
 
   const pendingMap = new Map<string, { timer: ReturnType<typeof setTimeout>; callback: () => void }>()
   const pendingCount = computed(() => pendingMap.size)
@@ -63,26 +92,70 @@ export function useSegmentEdit(
     selectedRange.value = null
   }
 
+  // v2.1.1 M4-1: multi-select mode ------------------------------------
+
+  function toggleSelectionMode() {
+    selectionMode.value = !selectionMode.value
+    if (!selectionMode.value) {
+      clearMultiSelection()
+    }
+  }
+
+  function clearMultiSelection() {
+    selectedSegmentIds.value = new Set()
+    lastSelectedId.value = null
+  }
+
+  function handleSegmentClick(segId: string, event: MouseEvent, orderedIds: string[]) {
+    if (!selectionMode.value) return // play mode: caller handles seek
+    const set = selectedSegmentIds.value
+    if (event.ctrlKey || event.metaKey) {
+      // Ctrl/Cmd: toggle single
+      const next = new Set(set)
+      if (next.has(segId)) next.delete(segId)
+      else next.add(segId)
+      selectedSegmentIds.value = next
+    } else if (event.shiftKey && lastSelectedId.value) {
+      // Shift: range select from last to current
+      const startIdx = orderedIds.indexOf(lastSelectedId.value)
+      const endIdx = orderedIds.indexOf(segId)
+      const next = new Set(set)
+      if (startIdx >= 0 && endIdx >= 0) {
+        const from = Math.min(startIdx, endIdx)
+        const to = Math.max(startIdx, endIdx)
+        for (let i = from; i <= to; i++) next.add(orderedIds[i])
+      }
+      selectedSegmentIds.value = next
+    } else {
+      // Plain click in selection mode: toggle
+      const next = new Set(set)
+      if (next.has(segId)) next.delete(segId)
+      else next.add(segId)
+      selectedSegmentIds.value = next
+    }
+    lastSelectedId.value = segId
+  }
+
   // -- Status queries ---------------------------------------------------
 
   function getEffectiveStatus(seg: Segment): "normal" | "masked" | "kept" {
-    return resolveSegmentState(project.value.edits, seg).styleClass
+    return resolveSegmentState(activeEdits(project.value), seg).styleClass
   }
 
   function getEditStatus(seg: Segment): EditDecision["status"] | null {
-    const state = resolveSegmentState(project.value.edits, seg)
+    const state = resolveSegmentState(activeEdits(project.value), seg)
     return state.displayStatus === "none" ? null : state.displayStatus
   }
 
   function resolveState(seg: Segment): SegmentState {
-    return resolveSegmentState(project.value.edits, seg)
+    return resolveSegmentState(activeEdits(project.value), seg)
   }
 
   // -- Debounced time updates -------------------------------------------
 
   function updateSegmentTime(segmentId: string, field: "start" | "end", value: number) {
     const prev = project.value
-    const seg = prev.transcript.segments.find(s => s.id === segmentId)
+    const seg = activeTranscriptSegments(prev).find(s => s.id === segmentId)
     if (!seg) return
 
     if (onBeforeProjectUpdate) onBeforeProjectUpdate(prev)
@@ -126,7 +199,7 @@ export function useSegmentEdit(
 
   async function toggleEditStatus(segment: Segment, nextStatus?: string): Promise<void> {
     if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value)
-    const edits = project.value.edits
+    const edits = activeEdits(project.value)
     const state = resolveSegmentState(edits, segment)
 
     if (state.activeEdit) {
@@ -168,6 +241,14 @@ export function useSegmentEdit(
     selectSegment,
     selectRange,
     clearSelection,
+
+    // v2.1.1 M4-1
+    selectionMode,
+    selectedSegmentIds,
+    selectedCount,
+    toggleSelectionMode,
+    handleSegmentClick,
+    clearMultiSelection,
 
     updateSegmentTime,
     updateSegmentText,

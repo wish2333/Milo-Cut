@@ -23,9 +23,10 @@ export function useExport(project: Ref<Project | null>) {
     return null
   })
 
-  const confirmedEdits = computed(() =>
-    (project.value?.edits ?? []).filter(e => e.status === "confirmed" && e.action === "delete")
-  )
+  const confirmedEdits = computed(() => {
+    const tl = project.value?.timelines.find(t => t.id === project.value?.active_timeline_id)
+    return (tl?.edits ?? []).filter(e => e.status === "confirmed" && e.action === "delete")
+  })
 
   const estimatedSaving = computed(() => {
     return confirmedEdits.value.reduce((sum, e) => sum + (e.end - e.start), 0)

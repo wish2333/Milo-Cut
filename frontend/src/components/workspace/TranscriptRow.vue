@@ -11,6 +11,15 @@ const props = defineProps<{
   isSelected?: boolean
   isAdjacentHighlighted?: boolean
   globalEditMode?: boolean
+  // v2.1.1 M4-1: multi-select mode
+  selectionMode?: boolean
+  isMultiSelected?: boolean
+  /** v2.1.1: waveform playhead time for split-at-cursor */
+  currentTime?: number
+  /** v2.1.1 A-2.1: playhead is currently inside this segment's [start, end] */
+  isPlayheadInside?: boolean
+  /** v2.1.1 A-2.1: externally-driven temporary highlight (e.g. SuggestionPanel click) */
+  isHighlighted?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -21,6 +30,15 @@ const emit = defineEmits<{
   "confirm-edit": []
   "reject-edit": []
   "delete": []
+  // v2.1.1 M4-1/M4-3: selection click + split
+  "segment-click": [segmentId: string, event: MouseEvent]
+  "toggle-multi-selected": []
+  "split": []
+  "split-at-pointer": [position: number]
+  /** v2.1.1 A-03: edit mode toast notification */
+  toast: [msg: string]
+  // Spec-6 §11.5.2: right-click add to highlights
+  "add-to-highlight": [segmentId: string]
 }>()
 
 // Context menu
@@ -33,9 +51,53 @@ function handleContextMenu(e: MouseEvent) {
   openContextMenu(() => { contextMenu.value = null })
 }
 
+// v2.1.1 A-02: distinguish left-click edit from right-click menu on time stamps
+function onTimeMouseDown(field: "start" | "end", e: MouseEvent) {
+  // e.button === 0 is left, e.button === 2 is right
+  if (e.button !== 0) {
+    // Right-click: do nothing, let contextmenu event fire normally
+    return
+  }
+  // Left-click: stop propagation and enter time edit mode
+  e.stopPropagation()
+  e.preventDefault()
+  startTimeEdit(field, e)
+}
+
 function closeContextMenu() {
   contextMenu.value = null
   closeContextMenuManager()
+}
+
+// v2.1.1 A-03: menu handlers that check globalEditMode before structural ops
+function handleSplitAtPointer() {
+  if (props.globalEditMode) {
+    emit("toast", "请退出编辑模式后重试")
+    closeContextMenu()
+    return
+  }
+  emit("split-at-pointer", props.currentTime ?? 0)
+  closeContextMenu()
+}
+
+function handleSplitAtMidpoint() {
+  if (props.globalEditMode) {
+    emit("toast", "请退出编辑模式后重试")
+    closeContextMenu()
+    return
+  }
+  emit("split")
+  closeContextMenu()
+}
+
+function handleDeleteSegment() {
+  if (props.globalEditMode) {
+    emit("toast", "请退出编辑模式后重试")
+    closeContextMenu()
+    return
+  }
+  emit("delete")
+  closeContextMenu()
 }
 
 // Text editing
@@ -46,19 +108,24 @@ const originalText = ref("")
 // Time editing (click on time value)
 const editingTimeField = ref<"start" | "end" | null>(null)
 const editingTimeValue = ref("")
+const editingTimeSeconds = ref<number>(0)
 const timeInputRef = ref<HTMLInputElement | null>(null)
 
 function startTimeEdit(field: "start" | "end", e: MouseEvent) {
   e.stopPropagation()
-  editingTimeValue.value = formatTime(field === "start" ? props.segment.start : props.segment.end)
+  const seconds = field === "start" ? props.segment.start : props.segment.end
+  editingTimeSeconds.value = seconds
+  editingTimeValue.value = formatTime(seconds)
   editingTimeField.value = field
   nextTick(() => timeInputRef.value?.select())
 }
 
 function applyTimeEdit() {
+  // Prefer parsed input value (user may have typed manually)
   const parsed = parseTime(editingTimeValue.value)
-  if (parsed !== null && editingTimeField.value) {
-    emit("update-time", props.segment.id, editingTimeField.value, parsed)
+  const finalSeconds = parsed !== null ? parsed : editingTimeSeconds.value
+  if (editingTimeField.value) {
+    emit("update-time", props.segment.id, editingTimeField.value, finalSeconds)
   }
   editingTimeField.value = null
 }
@@ -68,8 +135,23 @@ function cancelTimeEdit() {
 }
 
 function handleTimeEditKeydown(e: KeyboardEvent) {
-  if (e.key === "Enter") applyTimeEdit()
-  else if (e.key === "Escape") cancelTimeEdit()
+  if (e.key === "Enter") {
+    applyTimeEdit()
+  } else if (e.key === "Escape") {
+    cancelTimeEdit()
+  } else if (e.key === "ArrowUp") {
+    // v2.1.1 M4-2: ArrowUp = +0.1s (Shift = +1.0s)
+    e.preventDefault()
+    const step = e.shiftKey ? 1.0 : 0.1
+    editingTimeSeconds.value += step
+    editingTimeValue.value = formatTime(editingTimeSeconds.value)
+  } else if (e.key === "ArrowDown") {
+    // v2.1.1 M4-2: ArrowDown = -0.1s (Shift = -1.0s)
+    e.preventDefault()
+    const step = e.shiftKey ? 1.0 : 0.1
+    editingTimeSeconds.value = Math.max(0, editingTimeSeconds.value - step)
+    editingTimeValue.value = formatTime(editingTimeSeconds.value)
+  }
 }
 
 // Text edit functions
@@ -104,9 +186,23 @@ watch(() => props.globalEditMode, (val) => {
   }
 })
 
+// v2.1.1 A-2.2: drag-out text selection can slip past the input boundary and
+// trigger blur mid-drag -- the user is still selecting text, not done editing.
+// Defer the save by 150ms and re-check focus: if focus has returned to any
+// edit-text-input (continued drag, or user clicked another row's edit field),
+// treat the blur as a non-commit and keep editing mode on.
+let blurSaveTimer: ReturnType<typeof setTimeout> | null = null
 function handleTextEditBlur() {
   if (props.globalEditMode) return
-  saveEdit()
+  if (blurSaveTimer) clearTimeout(blurSaveTimer)
+  blurSaveTimer = setTimeout(() => {
+    const active = document.activeElement as HTMLElement | null
+    if (active && active.tagName === "INPUT" && active.classList.contains("edit-text-input")) {
+      // Focus is back on an edit input -- this was a drag-out, ignore the blur.
+      return
+    }
+    saveEdit()
+  }, 150)
 }
 
 function handleTextEditKeydown(e: KeyboardEvent) {
@@ -114,9 +210,14 @@ function handleTextEditKeydown(e: KeyboardEvent) {
   else if (e.key === "Escape") cancelEdit()
 }
 
-// Row click: seek to segment. In normal mode, also save if editing.
-function handleRowClick() {
+// Row click: in selection mode toggle selection; otherwise seek to segment.
+function handleRowClick(e: MouseEvent) {
   if (editingTimeField.value) return
+  // v2.1.1 M4-1: selection mode intercepts the click
+  if (props.selectionMode) {
+    emit("segment-click", props.segment.id, e)
+    return
+  }
   if (isEditingText.value && !props.globalEditMode) {
     saveEdit()
   }
@@ -137,13 +238,24 @@ const statusClass = computed(() => {
 <template>
   <div
     class="flex items-start gap-2 px-3 py-2 cursor-pointer hover:bg-gray-50 transition-colors"
-    :class="[statusClass, { 'ring-1 ring-blue-500': isSelected }]"
+    :class="[statusClass, {
+      'ring-1 ring-blue-500': isSelected && !isMultiSelected,
+      'ring-2 ring-blue-500 bg-blue-50': isMultiSelected,
+      'bg-blue-50 border-l-2 border-blue-400': isPlayheadInside && !isSelected && !isMultiSelected && !isHighlighted,
+      'ring-2 ring-yellow-400 bg-yellow-50': isHighlighted,
+    }]" 
     :data-segment-id="segment.id"
     @click="handleRowClick"
     @contextmenu="handleContextMenu"
   >
+    <!-- Multi-select indicator (selection mode) -->
+    <div
+      v-if="selectionMode"
+      class="absolute left-0 top-0 bottom-0 w-1"
+      :class="isMultiSelected ? 'bg-blue-500' : 'bg-transparent'"
+    ></div>
     <!-- Time column: fixed width, no overlap -->
-    <div class="text-xs text-gray-400 w-[130px] shrink-0 pt-0.5 font-mono overflow-hidden whitespace-nowrap">
+    <div class="text-xs text-gray-400 w-[150px] shrink-0 pt-0.5 font-mono overflow-hidden whitespace-nowrap">
       <template v-if="editingTimeField === 'start'">
         <input
           ref="timeInputRef"
@@ -155,9 +267,9 @@ const statusClass = computed(() => {
         />
       </template>
       <template v-else>
-        <span class="cursor-pointer hover:text-blue-500 hover:underline" title="Click to edit" @mousedown.stop.prevent="startTimeEdit('start', $event)">{{ formatTime(segment.start) }}</span>
+        <span class="cursor-pointer hover:text-blue-500 hover:underline" title="Click to edit (Arrows = ±0.1s)" @mousedown="onTimeMouseDown('start', $event)">{{ formatTime(segment.start) }}</span>
       </template>
-      <span class="mx-0.5">→</span>
+      <span class="mx-0.5">&rarr;</span>
       <template v-if="editingTimeField === 'end'">
         <input
           ref="timeInputRef"
@@ -169,7 +281,7 @@ const statusClass = computed(() => {
         />
       </template>
       <template v-else>
-        <span class="cursor-pointer hover:text-blue-500 hover:underline" title="Click to edit" @mousedown.stop.prevent="startTimeEdit('end', $event)">{{ formatTime(segment.end) }}</span>
+        <span class="cursor-pointer hover:text-blue-500 hover:underline" title="Click to edit (Arrows = ±0.1s)" @mousedown="onTimeMouseDown('end', $event)">{{ formatTime(segment.end) }}</span>
       </template>
     </div>
 
@@ -178,7 +290,7 @@ const statusClass = computed(() => {
       <input
         v-if="isEditingText"
         v-model="editText"
-        class="w-full min-w-0 bg-white border border-blue-400 rounded px-1 py-0.5 text-sm outline-none box-border"
+        class="edit-text-input w-full min-w-0 bg-white border border-blue-400 rounded px-1 py-0.5 text-sm outline-none box-border"
         @blur="handleTextEditBlur"
         @keydown="handleTextEditKeydown"
         @mousedown.stop
@@ -284,8 +396,31 @@ const statusClass = computed(() => {
         </button>
         <div class="border-t border-gray-100 my-1" />
         <button
+          v-if="isPlayheadInside"
+          class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+          title="在时间指针位置分割"
+          @click="handleSplitAtPointer"
+        >
+          从时间指针分割
+        </button>
+        <button
+          class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+          title="从此段中间分为两段"
+          @click="handleSplitAtMidpoint"
+        >
+          从中点分割
+        </button>
+        <div class="border-t border-gray-100 my-1" />
+        <button
+          class="w-full text-left px-3 py-1.5 text-sm text-blue-600 hover:bg-blue-50 transition-colors"
+          @click="emit('add-to-highlight', segment.id); closeContextMenu()"
+        >
+          加入精华
+        </button>
+        <div class="border-t border-gray-100 my-1" />
+        <button
           class="w-full text-left px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
-          @click="emit('delete')"
+          @click="handleDeleteSegment"
         >
           删除段落
         </button>

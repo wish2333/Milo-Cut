@@ -10,7 +10,8 @@ import queue
 import re
 import threading
 import warnings
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -162,9 +163,7 @@ class Bridge:
         """
         self._handlers[name] = handler
 
-    def run_on_bridge(
-        self, name: str, args: Any = None, timeout: float = 30.0
-    ) -> Any:
+    def run_on_bridge(self, name: str, args: Any = None, timeout: float = 30.0) -> Any:
         """Schedule a named handler and block until completion.
 
         Thread-safe: callable from background threads.
@@ -187,9 +186,7 @@ class Bridge:
         except queue.Empty:
             with self._task_lock:
                 self._cancelled_tasks.add(task_id)
-            raise TimeoutError(
-                f"Task '{name}' (id={task_id}) timed out after {timeout}s"
-            )
+            raise TimeoutError(f"Task '{name}' (id={task_id}) timed out after {timeout}s") from None
         finally:
             with self._task_lock:
                 self._pending_results.pop(task_id, None)
@@ -197,11 +194,7 @@ class Bridge:
     def _on_drop(self, event: dict) -> None:
         """Handle native file drag-and-drop events from pywebview."""
         files = event.get("dataTransfer", {}).get("files", [])
-        paths = [
-            f.get("pywebviewFullPath")
-            for f in files
-            if f.get("pywebviewFullPath")
-        ]
+        paths = [f.get("pywebviewFullPath") for f in files if f.get("pywebviewFullPath")]
         if paths:
             with self._drop_lock:
                 self._dropped_paths.extend(paths)
@@ -214,9 +207,7 @@ class Bridge:
             self._dropped_paths.clear()
         return {"success": True, "data": paths}
 
-    def run_on_main_thread(
-        self, name: str, args: Any = None, timeout: float = 30.0
-    ) -> Any:
+    def run_on_main_thread(self, name: str, args: Any = None, timeout: float = 30.0) -> Any:
         """Deprecated: use ``run_on_bridge`` instead."""
         warnings.warn(
             "run_on_main_thread() is deprecated, use run_on_bridge() instead",

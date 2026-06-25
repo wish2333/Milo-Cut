@@ -46,6 +46,7 @@ Android build details
 
 ============================================================
 """
+
 from __future__ import annotations
 
 import argparse
@@ -57,7 +58,16 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent
 
 
+def _read_version() -> str:
+    """Read version from pyproject.toml (single source of truth)."""
+    import tomllib
+
+    with open(PROJECT_ROOT / "pyproject.toml", "rb") as f:
+        return tomllib.load(f)["project"]["version"]
+
+
 # ========== helpers ==========
+
 
 def _info(msg: str) -> None:
     print(f"[INFO] {msg}")
@@ -98,6 +108,7 @@ def _run(cmd: list[str], cwd: Path | None = None) -> None:
 
 # ========== clean ==========
 
+
 def _clean() -> None:
     """Remove build artifacts (build/, dist/, temp spec files)."""
     for name in ("build", "dist"):
@@ -115,6 +126,7 @@ def _clean() -> None:
 
 # ========== desktop: onedir ==========
 
+
 def _build_onedir() -> None:
     """Build desktop app as a directory (uses app.spec directly).
 
@@ -127,10 +139,7 @@ def _build_onedir() -> None:
 
     spec = PROJECT_ROOT / "app.spec"
     if not spec.exists():
-        _error(
-            f"Spec file not found: {spec}\n"
-            "Make sure app.spec exists in the project root."
-        )
+        _error(f"Spec file not found: {spec}\nMake sure app.spec exists in the project root.")
 
     cmd = [uv, "run", "--", "pyinstaller", "--clean", "--noconfirm", str(spec)]
     _info(f"Running: {' '.join(cmd)}")
@@ -153,6 +162,7 @@ def _build_onedir() -> None:
 
 
 # ========== desktop: onefile ==========
+
 
 def _build_onefile() -> None:
     """Build desktop app as a single executable.
@@ -194,9 +204,9 @@ def _generate_onefile_spec() -> str:
     Modify app.spec to customize: entry script, app name, icon, etc.
     """
     # --- Read user config from app.spec ---
-    entry_script = "main.py"       # [MODIFY] same as app.spec ENTRY_SCRIPT
-    app_name = "app"               # [MODIFY] same as app.spec APP_NAME
-    icon = None                    # [MODIFY] same as app.spec ICON
+    entry_script = "main.py"  # [MODIFY] same as app.spec ENTRY_SCRIPT
+    app_name = "app"  # [MODIFY] same as app.spec APP_NAME
+    icon = None  # [MODIFY] same as app.spec ICON
 
     project_root = Path(__file__).parent
 
@@ -212,6 +222,7 @@ def _generate_onefile_spec() -> str:
     # opentimelineio plugin manifest
     try:
         import opentimelineio as _otio
+
         _otio_dir = Path(_otio.__file__).parent
         _otio_manifest = _otio_dir / "adapters" / "builtin_adapters.plugin_manifest.json"
         if _otio_manifest.exists():
@@ -224,6 +235,11 @@ def _generate_onefile_spec() -> str:
         _asr_scripts = project_root / "core" / "asr_scripts"
         if _asr_scripts.is_dir():
             datas_line += f'\n        (r"{_asr_scripts}", "core/asr_scripts"),'
+
+    # Bundle pyproject.toml so core.__version__ can read it at runtime
+    _pyproject = project_root / "pyproject.toml"
+    if _pyproject.exists():
+        datas_line += f'\n        (r"{_pyproject}", "."),'
 
     icon_line = f'    icon=r"{icon}",' if icon else "    icon=None,"
 
@@ -251,6 +267,7 @@ a = Analysis(
 {datas_line}
     ],
     hiddenimports=[
+        "core",
         "pywebvue",
         "pywebvue.app",
         "pywebvue.bridge",
@@ -314,6 +331,7 @@ exe = EXE(
 
 # ========== android ==========
 
+
 def _build_android() -> None:
     """Build Android APK using Buildozer.
 
@@ -364,14 +382,16 @@ def _generate_buildozer_spec() -> None:
     jar_path = ""
     try:
         from webview import util  # type: ignore[import-untyped]
+
         jar_path = str(util.android_jar_path())
     except Exception:
         _warn(
             "Could not resolve pywebview Android JAR path.\n"
-            "  Run: python -c \"from webview import util; print(util.android_jar_path())\"\n"
+            '  Run: python -c "from webview import util; print(util.android_jar_path())"\n'
             "  Then update android.add_jars in buildozer.spec manually."
         )
 
+    version = _read_version()
     content = f"""\
 # ============================================================
 # Buildozer spec for PyWebVue Android builds
@@ -395,7 +415,7 @@ package.name = pywebvue
 package.domain = org.pywebvue
 source.dir = .
 source.include_exts = py,html,css,js
-version = 0.1
+version = {version}
 
 # pywebview 6.x uses Kivyless Android (kivy still needed for bootstrap)
 # [MODIFY] Add your own Python dependencies here, comma-separated
@@ -423,6 +443,7 @@ android.accept_sdk_license = True
 
 # ========== main ==========
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="PyWebVue build script",
@@ -440,12 +461,13 @@ configuration:
 """,
     )
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--onefile", action="store_true",
-                        help="Build single executable instead of folder")
-    group.add_argument("--android", action="store_true",
-                        help="Build Android APK (requires macOS or Linux)")
-    parser.add_argument("--clean", action="store_true",
-                        help="Remove build/ and dist/ artifacts")
+    group.add_argument(
+        "--onefile", action="store_true", help="Build single executable instead of folder"
+    )
+    group.add_argument(
+        "--android", action="store_true", help="Build Android APK (requires macOS or Linux)"
+    )
+    parser.add_argument("--clean", action="store_true", help="Remove build/ and dist/ artifacts")
     args = parser.parse_args()
 
     if args.clean:
@@ -463,6 +485,7 @@ configuration:
 
 
 # ========== frontend build ==========
+
 
 def _build_frontend() -> None:
     """Build the Vue frontend to frontend_dist/."""
@@ -491,13 +514,11 @@ def _build_frontend() -> None:
 
 # ========== desktop ==========
 
+
 def _build_desktop(onefile: bool = False) -> None:
     dist_dir = PROJECT_ROOT / "frontend_dist"
     if not dist_dir.is_dir() or not (dist_dir / "index.html").exists():
-        _error(
-            "frontend_dist not found or incomplete. "
-            "Run 'cd frontend && bun run build' first."
-        )
+        _error("frontend_dist not found or incomplete. Run 'cd frontend && bun run build' first.")
     if onefile:
         _build_onefile()
     else:
