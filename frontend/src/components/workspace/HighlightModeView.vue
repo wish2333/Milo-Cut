@@ -155,7 +155,7 @@ function onHighlightContextMenu(e: MouseEvent, segmentId: string) {
       />
       <span class="text-xs text-gray-400">分钟</span>
       <button
-        class="rounded bg-blue-500 px-3 py-1 text-xs text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
+        class="rounded-md bg-blue-500 px-3 py-1 text-xs text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50 active:scale-95 transition-colors"
         :disabled="loading || !llmConfigured || targetMinutes <= 0"
         @click="startExtraction"
       >

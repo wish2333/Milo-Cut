@@ -345,7 +345,7 @@ function formatTimeShort(seconds: number): string {
 
         <div class="space-y-3">
           <button
-            class="w-full flex items-center gap-2 rounded-md bg-green-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-green-700 transition-colors"
+            class="w-full flex items-center gap-2 rounded-md bg-green-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-green-700 active:scale-95 transition-colors"
             :disabled="isExporting || confirmedEdits.length === 0"
             @click="handleExportVideo"
           >
@@ -354,7 +354,7 @@ function formatTimeShort(seconds: number): string {
           </button>
 
           <button
-            class="w-full flex items-center gap-2 rounded-md bg-green-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-green-700 transition-colors"
+            class="w-full flex items-center gap-2 rounded-md bg-green-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-green-700 active:scale-95 transition-colors"
             :disabled="isExporting || confirmedEdits.length === 0"
             @click="handleExportAudio"
           >
@@ -363,7 +363,7 @@ function formatTimeShort(seconds: number): string {
           </button>
 
           <button
-            class="w-full flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
+            class="w-full flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700 active:scale-95 transition-colors"
             :disabled="isExporting"
             @click="handleExportSrt"
           >
@@ -372,7 +372,7 @@ function formatTimeShort(seconds: number): string {
           </button>
 
           <button
-            class="w-full flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
+            class="w-full flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700 active:scale-95 transition-colors"
             :disabled="isExporting"
             @click="handleExportVtt"
           >

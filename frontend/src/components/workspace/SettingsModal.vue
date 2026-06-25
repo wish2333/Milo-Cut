@@ -1995,7 +1995,7 @@ async function loadPluginDataDir() {
             关闭
           </button>
           <button
-            class="px-4 py-2 text-sm bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50"
+            class="px-4 py-2 text-sm bg-blue-500 text-white rounded-lg hover:bg-blue-600 active:scale-95 disabled:opacity-50"
             :disabled="saving"
             @click="handleSave"
           >

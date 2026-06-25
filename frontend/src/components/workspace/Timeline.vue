@@ -255,13 +255,13 @@ watch(
         </span>
         <button
           v-if="selectionMode && (selectedCount ?? 0) >= 2"
-          class="rounded bg-blue-500 px-2 py-1 text-xs text-white hover:bg-blue-600 transition-colors"
+          class="rounded bg-blue-500 px-2 py-1 text-xs text-white hover:bg-blue-600 active:scale-95 transition-colors"
           @click="emit('merge-selected')"
         >
           合并选中
         </button>
         <button
-          class="text-xs px-2 py-1 rounded transition-colors"
+          class="text-xs px-2 py-1 rounded-md transition-colors active:scale-95"
           :class="globalEditMode ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-amber-100 text-amber-700 hover:bg-amber-200'"
           :title="globalEditMode ? 'Exit edit mode' : 'Edit all subtitles'"
           @click="emit('toggle-edit-mode')"
