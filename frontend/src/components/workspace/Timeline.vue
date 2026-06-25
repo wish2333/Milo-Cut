@@ -88,6 +88,9 @@ const emit = defineEmits<{
   "toggle-search-bar": []
   // v2.1.1 A-03: toast notification from child components
   toast: [msg: string]
+  // Spec-6 §11.5.2: highlight context-menu actions
+  "remove-highlight": [segmentId: string]
+  "add-to-highlight": [segmentId: string]
 }>()
 
 // Phase 2: right panel tab state (D-18). Using ref + v-show preserves
@@ -337,6 +340,7 @@ watch(
               @split="emit('split-segment', seg.id)"
               @split-at-pointer="(pos) => emit('split-at-pointer', seg.id, pos)"
               @toast="(msg) => emit('toast', msg)"
+              @add-to-highlight="(id) => emit('add-to-highlight', id)"
             />
             <SilenceRow
               v-else
@@ -421,6 +425,7 @@ watch(
               :llm-configured="llmConfigured ?? false"
               @start-highlight="(minutes) => emit('start-highlight', minutes)"
               @seek="handleSuggestionSeek"
+              @remove-highlight="(id) => emit('remove-highlight', id)"
             />
           </div>
         </div>

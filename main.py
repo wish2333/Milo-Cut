@@ -1437,6 +1437,39 @@ class MiloCutApi(Bridge):
         return {"success": True, "data": {"result": result}}
 
     @expose
+    def remove_highlight_segment(self, segment_id: str, timeline_id: str = "") -> dict:
+        """Remove analysis results matching a segment from highlights.
+
+        Args:
+            segment_id: The segment ID whose highlight should be removed.
+            timeline_id: Target timeline (defaults to active_timeline_id).
+
+        Returns:
+            {"success": True} or {"success": False, "error": str}
+        """
+        if self._project.current is None:
+            return {"success": False, "error": "No project open"}
+
+        project = self._project.current
+        tl_id = timeline_id or project.active_timeline_id
+        timeline = project.get_timeline(tl_id)
+        if timeline is None:
+            return {"success": False, "error": f"Timeline {tl_id} not found"}
+
+        # Find and remove analysis results whose segment_ids include this segment
+        results = timeline.analysis.results
+        removed = [r for r in results if segment_id in r.get("segment_ids", [])]
+        if not removed:
+            return {"success": False, "error": f"No highlight found for segment {segment_id}"}
+
+        # Remove by filtering out
+        remaining = [r for r in results if segment_id not in r.get("segment_ids", [])]
+        timeline.analysis.results = remaining
+        self._mark_dirty({"success": True})
+
+        return {"success": True, "data": {"removed_count": len(removed)}}
+
+    @expose
     def update_segment(self, segment_id: str, updates: dict) -> dict:
         return self._mark_dirty(self._project.update_segment(segment_id, updates))
 

@@ -47,6 +47,7 @@ const props = withDefaults(
 const emit = defineEmits<{
   "start-highlight": [targetMinutes: number]
   seek: [time: number]
+  "remove-highlight": [segmentId: string]
 }>()
 
 // Target duration input (default 10 minutes)
@@ -101,6 +102,11 @@ function startExtraction() {
 
 function handleSeek(time: number) {
   emit("seek", time)
+}
+
+function onHighlightContextMenu(e: MouseEvent, segmentId: string) {
+  e.preventDefault()
+  emit("remove-highlight", segmentId)
 }
 </script>
 
@@ -187,6 +193,7 @@ function handleSeek(time: number) {
         v-for="item in sortedHighlights"
         :key="item.highlight.segment_id"
         class="mb-2 rounded-lg border border-gray-200 bg-white p-2 text-xs"
+        @contextmenu="onHighlightContextMenu($event, item.highlight.segment_id)"
       >
         <!-- First row: density dot + time + segment text -->
         <div class="mb-1 flex items-center gap-2 min-w-0">

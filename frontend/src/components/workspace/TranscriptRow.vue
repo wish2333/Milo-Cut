@@ -37,6 +37,8 @@ const emit = defineEmits<{
   "split-at-pointer": [position: number]
   /** v2.1.1 A-03: edit mode toast notification */
   toast: [msg: string]
+  // Spec-6 §11.5.2: right-click add to highlights
+  "add-to-highlight": [segmentId: string]
 }>()
 
 // Context menu
@@ -407,6 +409,13 @@ const statusClass = computed(() => {
           @click="handleSplitAtMidpoint"
         >
           从中点分割
+        </button>
+        <div class="border-t border-gray-100 my-1" />
+        <button
+          class="w-full text-left px-3 py-1.5 text-sm text-blue-600 hover:bg-blue-50 transition-colors"
+          @click="emit('add-to-highlight', segment.id); closeContextMenu()"
+        >
+          加入精华
         </button>
         <div class="border-t border-gray-100 my-1" />
         <button

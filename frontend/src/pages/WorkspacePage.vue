@@ -1261,6 +1261,27 @@ function handleGoToSettings() {
   showSettingsModal.value = true
 }
 
+// §11.5.2: Remove highlight via context menu (right-click on highlight card)
+async function handleRemoveHighlight(segmentId: string) {
+  if (!window.confirm("确认移除此精华片段？")) return
+  const res = await call("remove_highlight_segment", { segment_id: segmentId })
+  if (res.success) {
+    showToast("精华片段已移除", "success", 2000)
+  } else {
+    showToast("移除失败: " + (res.error ?? "未知错误"), "error", 3000)
+  }
+}
+
+// §11.5.2: Add segment to highlights via right-click "加入精华"
+async function handleAddToHighlight(segmentId: string) {
+  const res = await call("add_highlight_segment", { segment_id: segmentId })
+  if (res.success) {
+    showToast("已加入精华", "success", 2000)
+  } else {
+    showToast("加入失败: " + (res.error ?? "未知错误"), "error", 3000)
+  }
+}
+
 // ESC key closes P1 fullscreen diff view (D-16 UX补齐)
 function handleKeydown(e: KeyboardEvent) {
   if (e.key === "Escape" && showSubtitleFullscreen.value) {
@@ -2044,6 +2065,8 @@ onUnmounted(() => {
             @split-at-pointer="handleSplitSegment"
             @toggle-search-bar="handleToggleSearchBar"
             @toast="(msg: string) => showToast(msg, 'info', 3000)"
+            @remove-highlight="handleRemoveHighlight"
+            @add-to-highlight="handleAddToHighlight"
           />
           </div>
         </template>
