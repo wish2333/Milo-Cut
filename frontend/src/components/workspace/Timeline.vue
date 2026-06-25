@@ -255,13 +255,13 @@ watch(
         </span>
         <button
           v-if="selectionMode && (selectedCount ?? 0) >= 2"
-          class="rounded bg-blue-500 px-2 py-1 text-xs text-white hover:bg-blue-600 active:scale-95 transition-colors"
+          class="rounded-md bg-blue-500 px-2 py-1 text-xs text-white hover:bg-blue-600 active:scale-95 transition-all duration-150"
           @click="emit('merge-selected')"
         >
           合并选中
         </button>
         <button
-          class="text-xs px-2 py-1 rounded-md transition-colors active:scale-95"
+          class="text-xs px-2 py-1 rounded-md transition-all duration-150 active:scale-95"
           :class="globalEditMode ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-amber-100 text-amber-700 hover:bg-amber-200'"
           :title="globalEditMode ? 'Exit edit mode' : 'Edit all subtitles'"
           @click="emit('toggle-edit-mode')"
@@ -288,8 +288,8 @@ watch(
           @click="sidebarOpen = !sidebarOpen"
         >
           <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path v-if="sidebarOpen" stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" />
-            <path v-else stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
+            <path v-if="sidebarOpen" stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
+            <path v-else stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" />
           </svg>
         </button>
       </div>
@@ -358,23 +358,24 @@ watch(
         </div>
       </div>
 
-      <!-- Divider with resize handle -->
-      <div
-        v-if="sidebarOpen"
-        class="relative w-px bg-gray-200 hover:bg-blue-400 cursor-ew-resize transition-colors shrink-0"
-        @mousedown="onSidebarResizeStart"
-      >
-        <div class="absolute -left-1.5 -right-1.5 top-0 bottom-0 z-10"></div>
-      </div>
-
-      <!-- Inline sidebar -->
+      <!-- Sidebar panel + divider wrapped together for smooth animation -->
       <Transition name="sidebar">
         <div
           v-if="sidebarOpen"
-          class="flex flex-col overflow-hidden border-l border-gray-200 bg-white shrink-0"
+          class="flex shrink-0 overflow-hidden"
           :style="{ width: sidebarWidth + 'px' }"
         >
-          <div class="flex-1 overflow-y-auto p-2">
+          <!-- Divider with resize handle -->
+          <div
+            class="relative w-px bg-gray-200 hover:bg-blue-400 cursor-ew-resize transition-colors shrink-0"
+            @mousedown="onSidebarResizeStart"
+          >
+            <div class="absolute -left-1.5 -right-1.5 top-0 bottom-0 z-10"></div>
+          </div>
+
+          <!-- Inline sidebar -->
+          <div class="flex flex-col border-l border-gray-200 bg-white flex-1 overflow-hidden">
+            <div class="flex-1 overflow-y-auto p-2">
             <SuggestionPanel
               v-show="activeTab === 'suggestion'"
               :analysis-results="analysisResults"
@@ -427,6 +428,7 @@ watch(
               @seek="handleSuggestionSeek"
               @remove-highlight="(id) => emit('remove-highlight', id)"
             />
+            </div>
           </div>
         </div>
       </Transition>
@@ -439,6 +441,7 @@ watch(
 .sidebar-leave-active {
   transition: width 200ms ease-out;
   overflow: hidden;
+  will-change: width;
 }
 .sidebar-enter-from,
 .sidebar-leave-to {

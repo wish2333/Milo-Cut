@@ -700,3 +700,48 @@ spec-2.1.1-6.md 定义了 v2.1.1 的 UI/UX 优化范围（侧边栏内联化、�
 - 后端测试: 353/353 通过（无新增后端测试）
 - 前端构建: 0 错误
 
+
+## 代码审查批次 (Spec-2.1.1-9: 精华/建议修复 + Bug C/D/E/F/G + UI 收尾)
+
+对全分支 uncommitted 改动做了一次完整安全 + 质量审查，结果 **无 Critical/High**，可提交。本次审查覆盖 12 个源文件 + 1 个新测试文件 + 4 个文档重命名 + 1 个配置。
+
+### 审查范围
+
+| 类别 | 文件 |
+|------|------|
+| 后端 | `core/project_service.py`, `main.py` |
+| 前端 | `HighlightModeView.vue`, `SettingsModal.vue`, `SuggestionPanel.vue`, `Timeline.vue`, `PreviewPlayer.vue`, `ExportPage.vue`, `useLlmTasks.ts`, `WorkspacePage.vue`, `segmentHelpers.ts` |
+| 测试 | `tests/test_project_service.py` (+3), `tests/test_highlight_segment.py` (新增 332 行), `segmentHelpers.test.ts` (+2 case) |
+| 文档/配置 | `docs/2.1.1/*` 重命名归档, `reasonix.toml` |
+
+### 安全审查 (全部通过)
+
+- 无硬编码凭据 / API key / token
+- 无 SQL 注入 / XSS / 路径穿越风险
+- 所有 `@expose` 方法返回标准 `{"success","data","error"}` 信封
+- 用户输入 (`segment_id`, `timeline_id`, `edit_ids`) 均先校验存在性再变更
+- 所有 Pydantic 变更使用不可变 `model_copy(update=...)`，无原地修改
+- 错误处理：所有 I/O 路径均有 guard
+
+### 验证结果
+
+| 检查 | 命令 | 结果 |
+|------|------|------|
+| 后端测试 (真实 service) | `uv run python -m pytest tests/test_project_service.py tests/test_highlight_segment.py -q` | **48 passed** |
+| 前端类型检查 + 构建 | `cd frontend && bun run build` (`vue-tsc --noEmit && vite build`) | **pass** |
+| 前端单测 | `bun run test` | 169 passed / 2 failed |
+| 失败用例回归确认 | `git stash` 后在 HEAD 跑同样两文件 | **同样 2 个失败** (`TranscriptRow > saves edit on blur`, `AIAssistantPanel > workflow checkboxes`) — **与本次改动无关，为既有问题** |
+
+### 发现的问题 (留待下一批次修复)
+
+| ID | 严重 | 文件:行 | 问题 |
+|----|------|---------|------|
+| M1 | Medium | `core/project_service.py:1387` | `if r.type == analysis_results[0].type if analysis_results else None:` 运算符优先级陷阱，虽结果正确但语义不透明 |
+| M2 | Medium | `Timeline.vue:68-69, 392-393` | SuggestionPanel 移除了 confirm-all/reject-all 按钮，WorkspacePage 也不再绑定，但 Timeline 仍声明并 re-emit → 死代码 |
+| L1 | Low | `core/project_service.py:294-299` | `_migrate_highlights` 的 orphan 清理仅对 highlight 生效，非 highlight orphan 被保留 (符合 Bug G 文档范围，可延后) |
+| L2 | Low | `tests/test_highlight_segment.py:57-127` | `_ServiceStub` 复制了 `add_analysis_results` 逻辑而非走真实 service |
+| L3 | Low | `reasonix.toml` (root) | 工具配置文件，需确认是否应纳入版本控制 |
+
+### 提交
+
+commit: `fix(project): 高亮/建议级联清理 + Bug C/D/E/F/G 修复 + UI 收尾`

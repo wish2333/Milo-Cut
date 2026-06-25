@@ -282,6 +282,48 @@ export function useLlmTasks() {
     }
   }
 
+  // v2.1.1: Hydrate highlight state from persisted project data on reopen
+  async function hydrateHighlightsFromProject(project: Project): Promise<void> {
+    const tl = project.timelines.find(t => t.id === project.active_timeline_id)
+    if (!tl) return
+
+    const hlResults = (tl.analysis?.results ?? [])
+      .filter(r => r.type === "llm_highlight")
+
+    if (hlResults.length === 0) {
+      highlightResults.value = []
+      highlightTotalDuration.value = 0
+      jumpCuts.value = []
+      return
+    }
+
+    // Hydrate highlightResults from AnalysisResult records
+    highlightResults.value = hlResults.flatMap(r =>
+      r.segment_ids.map(sid => ({
+        segment_id: sid,
+        highlight_reason: r.detail ?? "",
+        // confidence 1.0 → high, 0.7 → medium (symmetric with storage logic)
+        density: (r.confidence >= 0.9 ? "high" : "medium") as "high" | "medium" | "low",
+      }))
+    )
+
+    // Recalculate totalDuration from segments
+    const segMap = new Map((tl.transcript?.segments ?? []).map(s => [s.id, s]))
+    highlightTotalDuration.value = hlResults.reduce((sum, r) => {
+      const segs = r.segment_ids.filter(sid => segMap.has(sid)).map(sid => segMap.get(sid)!)
+      if (segs.length === 0) return sum
+      return sum + (Math.max(...segs.map(s => s.end)) - Math.min(...segs.map(s => s.start)))
+    }, 0)
+
+    // Recalculate jumpCuts via backend API
+    const jcRes = await call<{ jump_cuts?: JumpCut[]; highlight_count?: number }>(
+      "detect_highlight_jump_cuts",
+    )
+    if (jcRes.success && jcRes.data?.jump_cuts) {
+      jumpCuts.value = jcRes.data.jump_cuts
+    }
+  }
+
   async function confirmAllFromSource(
     source: string,
     minConfidence = 0,
@@ -397,6 +439,7 @@ export function useLlmTasks() {
     jumpCuts,
     startHighlight,
     resetHighlight,
+    hydrateHighlightsFromProject,
     // Shared
     isRunning,
     progress,

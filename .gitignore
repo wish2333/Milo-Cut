@@ -228,6 +228,7 @@ frontend_dist/
 # Claude
 settings.local.json
 .omo
+reasonix.toml
 
 # Project
 project.json

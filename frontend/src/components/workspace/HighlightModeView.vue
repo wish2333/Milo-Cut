@@ -155,7 +155,7 @@ function onHighlightContextMenu(e: MouseEvent, segmentId: string) {
       />
       <span class="text-xs text-gray-400">分钟</span>
       <button
-        class="rounded-md bg-blue-500 px-3 py-1 text-xs text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50 active:scale-95 transition-colors"
+        class="rounded-md bg-blue-500 px-3 py-1 text-xs text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50 active:scale-95 transition-all duration-150"
         :disabled="loading || !llmConfigured || targetMinutes <= 0"
         @click="startExtraction"
       >
@@ -168,21 +168,19 @@ function onHighlightContextMenu(e: MouseEvent, segmentId: string) {
       v-if="sortedHighlights.length > 0"
       class="text-xs text-gray-500"
     >
-      已选 {{ totalDuration }}s / 目标 {{ targetDuration }}s
+      已选 {{ Math.round(totalDuration) }}s / 目标 {{ targetDuration }}s
     </div>
 
     <!-- Jump cut warnings -->
-    <div v-if="jumpCuts.length > 0" class="rounded-lg border border-yellow-200 bg-yellow-50 p-2 text-xs text-yellow-800">
-      <div class="flex flex-col gap-1">
-        <span class="font-semibold">检测到 {{ jumpCuts.length }} 处跳切</span>
-        <ul class="ml-4 list-disc">
-          <li v-for="(jc, i) in jumpCuts" :key="i">
-            片段 {{ jc.index }}->{{ jc.index + 1 }} 间隔
-            {{ Math.round(jc.gap_duration) }}s 可能产生音频跳变
-          </li>
-        </ul>
-      </div>
-    </div>
+    <details v-if="jumpCuts.length > 0" class="rounded-lg border border-yellow-200 bg-yellow-50 p-2 text-xs text-yellow-800">
+      <summary class="font-semibold cursor-pointer">检测到 {{ jumpCuts.length }} 处跳切</summary>
+      <ul class="mt-1 ml-4 list-disc">
+        <li v-for="(jc, i) in jumpCuts" :key="i">
+          片段 {{ jc.index }}->{{ jc.index + 1 }} 间隔
+          {{ Math.round(jc.gap_duration) }}s 可能产生音频跳变
+        </li>
+      </ul>
+    </details>
 
     <!-- Highlight list -->
     <div

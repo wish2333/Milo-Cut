@@ -908,7 +908,9 @@ class MiloCutApi(Bridge):
             ]
             # v2.1.0 Phase 3: workflow accumulation mode -- skip project write
             if not task.payload.get("_workflow_accumulate"):
-                store = self._mark_dirty(self._project.add_analysis_results(analysis_results, source="llm_highlight"))
+                store = self._mark_dirty(self._project.add_analysis_results(
+                    analysis_results, source="llm_highlight", clear_existing=True,
+                ))
                 if not store["success"]:
                     raise RuntimeError(store.get("error", "Failed to store highlight results"))
 
@@ -1463,12 +1465,26 @@ class MiloCutApi(Bridge):
             return {"success": False, "error": f"No highlight found for segment {segment_id}"}
 
         remaining = [r for r in results if segment_id not in r.segment_ids]
+        removed_ar_ids = {r.id for r in removed}
+
+        # 同步清理关联 EditDecision（Bug G 修复）
+        remaining_edits = [
+            e for e in timeline.edits
+            if e.analysis_id not in removed_ar_ids
+        ]
+        removed_edit_count = len(timeline.edits) - len(remaining_edits)
+
         self._project._update_timeline_by_id(
             tl_id,
             analysis=timeline.analysis.model_copy(update={"results": remaining}),
+            edits=remaining_edits,
         )
         self._mark_dirty({"success": True})
 
+        logger.info(
+            "Removed highlight for segment %s: %d results + %d edits",
+            segment_id, len(removed), removed_edit_count,
+        )
         return {"success": True, "data": {"removed_count": len(removed)}}
 
     @expose

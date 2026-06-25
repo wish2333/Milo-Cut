@@ -18,8 +18,6 @@ const emit = defineEmits<{
   "reject-edit-batch": [editIds: string[]]
   "reset-edit-batch": [editIds: string[]]
   "delete-edit-batch": [editIds: string[]]
-  "confirm-all": []
-  "reject-all": []
   "seek": [time: number]
   "review-corrections": []
 }>()
@@ -100,8 +98,14 @@ const groups = computed<GroupedResult[]>(() => {
   return result
 })
 
-const totalPending = computed(() => props.edits.filter(e => e.status === "pending" && e.action === "delete").length)
-const totalAll = computed(() => props.edits.filter(e => e.action === "delete").length)
+const SUGGESTION_SOURCES = new Set(["silence_detection", "llm_smart"])
+
+const totalPending = computed(() => props.edits.filter(e =>
+  e.status === "pending" && e.action === "delete" && SUGGESTION_SOURCES.has(e.source)
+).length)
+const totalAll = computed(() => props.edits.filter(e =>
+  e.action === "delete" && SUGGESTION_SOURCES.has(e.source)
+).length)
 
 function toggleGroup(type: string) {
   if (expandedGroups.value.has(type)) expandedGroups.value.delete(type)
@@ -291,21 +295,6 @@ onBeforeUnmount(() => {
           </span>
         </div>
       </div>
-    </div>
-
-    <div v-if="totalPending > 0" class="flex gap-2 px-3 py-2 bg-gray-50">
-      <button
-        class="flex-1 text-sm px-3 py-1.5 rounded-full bg-blue-500 text-white hover:bg-blue-600 transition-colors"
-        @click="emit('confirm-all')"
-      >
-        全部确认删除
-      </button>
-      <button
-        class="flex-1 text-sm px-3 py-1.5 rounded-full border border-gray-300 text-gray-600 hover:bg-gray-100 transition-colors"
-        @click="emit('reject-all')"
-      >
-        忽略所有建议
-      </button>
     </div>
 
     <!-- Context menu (Teleport to body so it is never clipped) -->

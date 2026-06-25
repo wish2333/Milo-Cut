@@ -1989,13 +1989,13 @@ async function loadPluginDataDir() {
         <span class="text-sm text-gray-500">{{ statusMsg }}</span>
         <div class="flex gap-2">
           <button
-            class="px-4 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50"
+            class="px-4 py-2 text-sm border border-gray-300 rounded-md hover:bg-gray-50"
             @click="emit('close')"
           >
             关闭
           </button>
           <button
-            class="px-4 py-2 text-sm bg-blue-500 text-white rounded-lg hover:bg-blue-600 active:scale-95 disabled:opacity-50"
+            class="px-4 py-2 text-sm bg-blue-500 text-white rounded-md hover:bg-blue-600 active:scale-95 disabled:opacity-50 transition-all duration-150"
             :disabled="saving"
             @click="handleSave"
           >

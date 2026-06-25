@@ -140,6 +140,9 @@ class ProjectService:
             # v2.1.1: Dedupe duplicate edit ids (legacy llm_smart bug fix)
             self._dedupe_edit_ids()
 
+            # v2.1.1: Migrate legacy highlight EditDecisions (Bug E/G fix)
+            self._migrate_highlights()
+
             # Check media path reachability
             if self._current.media and self._current.media.path:
                 media_path = Path(self._current.media.path)
@@ -269,6 +272,45 @@ class ProjectService:
         if changed_count > 0:
             logger.warning("Deduped {} duplicate edit ids in timeline {}", changed_count, tl.id)
             self._update_active_timeline(edits=fixed)
+
+    def _migrate_highlights(self) -> None:
+        """One-time migration: fix highlight EditDecisions created before Bug E fix.
+
+        - Set action="keep" for all highlight-source EditDecisions
+        - Remove orphan EditDecisions whose analysis_id no longer exists
+        Idempotent: safe to run multiple times.
+        """
+        if not self._current:
+            return
+
+        tl = self.active_timeline
+        ar_ids = {r.id for r in tl.analysis.results}
+
+        updated_edits = []
+        fixed = 0
+        orphan_removed = 0
+        for e in tl.edits:
+            is_highlight = e.source in ("llm_highlight", "manual_highlight")
+            is_orphan = e.analysis_id and e.analysis_id not in ar_ids
+
+            if is_highlight and is_orphan:
+                # Bug G legacy: orphan EditDecision whose analysis result was deleted
+                orphan_removed += 1
+                continue
+
+            if is_highlight and e.action == "delete":
+                # Bug E legacy: highlight edit had wrong action
+                updated_edits.append(e.model_copy(update={"action": "keep"}))
+                fixed += 1
+            else:
+                updated_edits.append(e)
+
+        if fixed > 0 or orphan_removed > 0:
+            self._update_active_timeline(edits=updated_edits)
+            logger.info(
+                "Highlight migration: fixed %d actions, removed %d orphans",
+                fixed, orphan_removed,
+            )
 
     def save_project(self) -> dict:
         """Save the current project to disk."""
@@ -726,22 +768,68 @@ class ProjectService:
         return {"success": True, "data": self._current.model_dump()}
 
     def delete_edit_decisions_batch(self, edit_ids: list[str]) -> dict:
-        """Permanently remove edit decisions by id.
+        """Permanently remove edit decisions and associated data by id.
 
-        Unlike update_edit_decisions_batch (which changes status),
-        this removes the edits entirely from the timeline.
+        Cascading cleanup:
+        1. Remove EditDecision entries from timeline.edits
+        2. Remove associated AnalysisResult entries from timeline.analysis.results
+        3. Clear dirty_flags on affected segments (only correction-related flags)
         """
         if self._current is None:
             return {"success": False, "error": "No project is open"}
 
         ids_set = set(edit_ids)
-        updated_edits = [e for e in self.active_timeline.edits if e.id not in ids_set]
-        removed = len(self.active_timeline.edits) - len(updated_edits)
+        tl = self.active_timeline
+
+        # 1. Find edits to remove + collect their analysis_ids and target segment_ids
+        removed_analysis_ids: set[str] = set()
+        affected_seg_ids: set[str] = set()
+        for e in tl.edits:
+            if e.id in ids_set:
+                if e.analysis_id:
+                    removed_analysis_ids.add(e.analysis_id)
+                if e.target_id:
+                    affected_seg_ids.add(e.target_id)
+
+        updated_edits = [e for e in tl.edits if e.id not in ids_set]
+        removed = len(tl.edits) - len(updated_edits)
         if removed == 0:
             return {"success": False, "error": "No matching edit decisions found"}
 
-        self._update_active_timeline(edits=updated_edits)
-        logger.info("Permanently deleted {} edit decisions", removed)
+        # 2. Remove associated AnalysisResults
+        updated_results = [
+            r for r in tl.analysis.results
+            if r.id not in removed_analysis_ids
+        ]
+
+        # 3. Clear dirty_flags on affected segments
+        #    Only clear correction-related flags that are tied to AnalysisResult
+        #    lifecycle. Leave user-edit flags (text_edited, merged, split,
+        #    search_replaced) untouched -- those are independent of edit decisions.
+        CORRECTION_FLAGS = ("llm_corrected", "llm_uncovered")
+        updated_segments = list(tl.transcript.segments)
+        cleaned_count = 0
+        for i, seg in enumerate(updated_segments):
+            if seg.id in affected_seg_ids:
+                flags_to_remove = [k for k in CORRECTION_FLAGS if k in seg.dirty_flags]
+                if flags_to_remove:
+                    new_flags = {k: v for k, v in seg.dirty_flags.items()
+                                 if k not in CORRECTION_FLAGS}
+                    updated_segments[i] = seg.model_copy(update={"dirty_flags": new_flags})
+                    cleaned_count += 1
+
+        self._update_active_timeline(
+            edits=updated_edits,
+            analysis=tl.analysis.model_copy(update={"results": updated_results}),
+            transcript=tl.transcript.model_copy(update={"segments": updated_segments}),
+        )
+
+        logger.info(
+            "Permanently deleted %d edits + %d analysis results + cleaned %d segments",
+            removed,
+            len(tl.analysis.results) - len(updated_results),
+            cleaned_count,
+        )
         return {"success": True, "data": self._current.model_dump()}
 
     def update_segment(self, segment_id: str, updates: dict) -> dict:
@@ -1277,19 +1365,42 @@ class ProjectService:
             },
         }
 
-    def add_analysis_results(self, results: list[dict], source: str) -> dict:
-        """Store AnalysisResult entries and create EditDecisions from time ranges."""
+    def add_analysis_results(self, results: list[dict], source: str, clear_existing: bool = False) -> dict:
+        """Store AnalysisResult entries and create EditDecisions from time ranges.
+
+        Args:
+            results: List of AnalysisResult dicts to add.
+            source: Source label for generated EditDecisions.
+            clear_existing: If True, clear existing results of the same type
+                (and their associated EditDecisions) before adding new ones.
+        """
         if self._current is None:
             return {"success": False, "error": "No project is open"}
 
         analysis_results = [AnalysisResult.model_validate(r) for r in results]
-        existing_results = list(self.active_timeline.analysis.results)
+
+        if clear_existing:
+            # Clear existing results of the SAME type and their edits
+            removed_ar_ids: set[str] = set()
+            existing_results = []
+            for r in self.active_timeline.analysis.results:
+                if r.type == analysis_results[0].type if analysis_results else None:
+                    removed_ar_ids.add(r.id)
+                else:
+                    existing_results.append(r)
+            existing_edits = [
+                e for e in self.active_timeline.edits
+                if e.analysis_id not in removed_ar_ids
+            ]
+        else:
+            existing_results = list(self.active_timeline.analysis.results)
+            existing_edits = list(self.active_timeline.edits)
+
         all_results = existing_results + analysis_results
 
         # Create EditDecisions from analysis time ranges
         segments = self.active_timeline.transcript.segments
         seg_map = {s.id: s for s in segments}
-        existing_edits = list(self.active_timeline.edits)
         existing_edit_ids = {e.id for e in existing_edits}
         new_edits: list[EditDecision] = []
 
@@ -1311,11 +1422,14 @@ class ProjectService:
                 edit_id = f"{edit_id}_dup{n}"
             existing_edit_ids.add(edit_id)
 
+            # Highlight sources keep segments (not delete them).
+            action = "keep" if source in ("llm_highlight", "manual_highlight") else "delete"
+
             new_edits.append(EditDecision(
                 id=edit_id,
                 start=start,
                 end=end,
-                action="delete",
+                action=action,
                 source=source,
                 analysis_id=ar.id,
                 status=EditStatus.PENDING,

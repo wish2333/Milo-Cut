@@ -410,3 +410,147 @@ class TestProjectService:
         assert rx_b.start == 3.0 and rx_b.end == 4.0
         # left/right EDs untouched
         assert "rl" in ids and "rr" in ids
+
+    def test_delete_edit_decisions_batch_cascades_to_analysis_results(self, tmp_dir, monkeypatch):
+        """Bug F: deleting edits should also clean associated AnalysisResults."""
+        svc = self._create_service(tmp_dir, monkeypatch)
+        mp = str(self._create_media_file(tmp_dir))
+        svc.create_project("cascade-test", mp, {"duration": 60.0})
+
+        # Add a subtitle segment so add_analysis_results can match it
+        from core.models import Segment, SegmentType
+        test_seg = Segment(id="s_test", type=SegmentType.SUBTITLE, start=0.0, end=5.0, text="test")
+        svc._update_active_timeline(
+            transcript=svc.active_timeline.transcript.model_copy(
+                update={"segments": list(svc.active_timeline.transcript.segments) + [test_seg]}
+            )
+        )
+
+        # Add an AnalysisResult with associated EditDecision
+        ar_results = [{
+            "id": "ar_test_1",
+            "type": "llm_smart_delete",
+            "segment_ids": ["s_test"],
+            "confidence": 0.9,
+            "detail": "test",
+        }]
+        svc.add_analysis_results(ar_results, source="llm_smart")
+
+        # Verify both AnalysisResult and EditDecision exist
+        tl = svc.active_timeline
+        assert len(tl.analysis.results) == 1
+        assert tl.analysis.results[0].id == "ar_test_1"
+        smart_edits = [e for e in tl.edits if e.source == "llm_smart"]
+        assert len(smart_edits) == 1
+        assert smart_edits[0].analysis_id == "ar_test_1"
+
+        # Delete the edit decision
+        result = svc.delete_edit_decisions_batch([smart_edits[0].id])
+        assert result["success"]
+
+        # Verify both EditDecision AND AnalysisResult are gone
+        tl = svc.active_timeline
+        smart_edits_after = [e for e in tl.edits if e.source == "llm_smart"]
+        assert len(smart_edits_after) == 0, "EditDecision should be removed"
+        remaining_ars = [r for r in tl.analysis.results if r.id == "ar_test_1"]
+        assert len(remaining_ars) == 0, "AnalysisResult should be cascade-removed"
+
+    def test_migrate_highlights_fixes_legacy_actions(self, tmp_dir, monkeypatch):
+        """Phase 4: _migrate_highlights should fix action=delete to keep for highlights."""
+        from core.models import AnalysisResult, EditDecision, EditStatus
+
+        svc = self._create_service(tmp_dir, monkeypatch)
+        mp = str(self._create_media_file(tmp_dir))
+        svc.create_project("migrate-test", mp, {"duration": 60.0})
+
+        # Add a subtitle segment
+        from core.models import Segment, SegmentType
+        test_seg = Segment(id="s_migrate", type=SegmentType.SUBTITLE, start=0.0, end=10.0, text="test")
+        svc._update_active_timeline(
+            transcript=svc.active_timeline.transcript.model_copy(
+                update={"segments": list(svc.active_timeline.transcript.segments) + [test_seg]}
+            )
+        )
+
+        seg_id = "s_migrate"
+
+        # Simulate legacy: add analysis result + edit with action="delete"
+        ar = AnalysisResult(
+            id="llm_hl_old",
+            type="llm_highlight",
+            segment_ids=[seg_id],
+            confidence=1.0,
+            detail="old highlight",
+        )
+        legacy_edit = EditDecision(
+            id="edit-llm_hl_old",
+            start=0.0,
+            end=10.0,
+            action="delete",  # Bug E: wrong action
+            source="llm_highlight",
+            analysis_id="llm_hl_old",
+            status=EditStatus.PENDING,
+            priority=100,
+            target_type="segment",
+            target_id=seg_id,
+        )
+        svc._update_active_timeline(
+            analysis=svc.active_timeline.analysis.model_copy(
+                update={"results": list(svc.active_timeline.analysis.results) + [ar]}
+            ),
+            edits=list(svc.active_timeline.edits) + [legacy_edit],
+        )
+
+        # Run migration
+        svc._migrate_highlights()
+
+        # Verify action is now "keep"
+        tl = svc.active_timeline
+        hl_edits = [e for e in tl.edits if e.source == "llm_highlight"]
+        assert len(hl_edits) == 1
+        assert hl_edits[0].action == "keep", (
+            f"Migration should fix action to 'keep', got '{hl_edits[0].action}'"
+        )
+
+    def test_migrate_highlights_removes_orphan_edits(self, tmp_dir, monkeypatch):
+        """Phase 4: _migrate_highlights should remove orphan edits whose analysis_id is gone."""
+        from core.models import EditDecision, EditStatus
+
+        svc = self._create_service(tmp_dir, monkeypatch)
+        mp = str(self._create_media_file(tmp_dir))
+        svc.create_project("orphan-test", mp, {"duration": 60.0})
+
+        # Add a subtitle segment
+        from core.models import Segment, SegmentType
+        test_seg = Segment(id="s_orphan", type=SegmentType.SUBTITLE, start=0.0, end=10.0, text="test")
+        svc._update_active_timeline(
+            transcript=svc.active_timeline.transcript.model_copy(
+                update={"segments": list(svc.active_timeline.transcript.segments) + [test_seg]}
+            )
+        )
+
+        seg_id = "s_orphan"
+
+        orphan_edit = EditDecision(
+            id="edit-manual_hl_orphan",
+            start=0.0,
+            end=10.0,
+            action="keep",
+            source="manual_highlight",
+            analysis_id="manual_hl_gone",  # No matching AnalysisResult
+            status=EditStatus.PENDING,
+            priority=100,
+            target_type="segment",
+            target_id=seg_id,
+        )
+        svc._update_active_timeline(
+            edits=list(svc.active_timeline.edits) + [orphan_edit],
+        )
+
+        # Run migration
+        svc._migrate_highlights()
+
+        # Verify orphan is removed
+        tl = svc.active_timeline
+        orphans = [e for e in tl.edits if e.analysis_id == "manual_hl_gone"]
+        assert len(orphans) == 0, f"Orphan edit should be removed: {orphans}"

@@ -66,6 +66,7 @@ const {
   startSmartDelete,
   startSubtitleCorrection,
   startHighlight,
+  hydrateHighlightsFromProject,
 } = useLlmTasks()
 
 // v2.1.0 Phase 4: pessimistic lock (D-67)
@@ -78,13 +79,18 @@ const showSettingsModal = ref(false)
 
 // v2.1.0 Phase 2: P1 review -- corrections come from backend pending list.
 // subtitleCorrectionResult now only carries stored_count metadata.
-const subtitleCorrectionCount = computed(
-  () => subtitleCorrectionResult.value?.stored_count ?? pendingCorrections.value.length,
-)
+const subtitleCorrectionCount = computed(() => pendingCorrections.value.length)
 
-// §10.3: Show toast when subtitle correction completes
+let correctionToastShown = false
+
+// §10.3: Show toast when subtitle correction completes (with dedup guard)
 watch(subtitleCorrectionResult, (result) => {
-  if (result && result.stored_count !== undefined && result.stored_count > 0) {
+  if (result === null) {
+    correctionToastShown = false
+    return
+  }
+  if (result?.stored_count && result.stored_count > 0 && !correctionToastShown) {
+    correctionToastShown = true
     showToast(`字幕修正完成，发现 ${result.stored_count} 条修改`, "success", 3000)
   }
 })
@@ -184,7 +190,7 @@ let rafId: number | null = null
 
 const deleteRanges = computed(() => {
   return edits.value
-    .filter(e => e.status === "confirmed" && e.action === "delete")
+    .filter(e => e.action === "delete" && (e.status === "confirmed" || e.source === "subtitle_trim"))
     .map(e => ({ start: e.start, end: e.end }))
     .sort((a, b) => a.start - b.start)
 })
@@ -566,6 +572,10 @@ watch(() => props.project.media?.path, () => {
   loadVideoUrl()
 })
 watch(() => props.project.project?.name, () => { clearHistory() })
+// v2.1.1: Hydrate highlight state from persisted project data on reopen (Bug C)
+watch(() => props.project, (newProject) => {
+  hydrateHighlightsFromProject(newProject)
+}, { immediate: true })
 
 async function loadSilenceSettings() {
   const res = await call<Record<string, unknown>>("get_settings")
@@ -1022,6 +1032,14 @@ async function handleStartHighlight(targetMinutes: number) {
     showToast("请先配置 LLM", "error", 3000)
     return
   }
+  // v2.1.1: Warn if re-running (Bug D -- old data will be replaced)
+  if (highlightResults.value.length > 0) {
+    if (!window.confirm(
+      "重新提取精华将清除当前所有精华片段数据。\n\n确认继续？",
+    )) {
+      return
+    }
+  }
   await startHighlight(targetMinutes)
   showToast("精华提取已启动", "info", 2000)
 }
@@ -1264,7 +1282,7 @@ function handleGoToSettings() {
 // §11.5.2: Remove highlight via context menu (right-click on highlight card)
 async function handleRemoveHighlight(segmentId: string) {
   if (!window.confirm("确认移除此精华片段？")) return
-  const res = await call("remove_highlight_segment", { segment_id: segmentId })
+  const res = await call("remove_highlight_segment", segmentId)
   if (res.success) {
     showToast("精华片段已移除", "success", 2000)
   } else {
@@ -1274,7 +1292,7 @@ async function handleRemoveHighlight(segmentId: string) {
 
 // §11.5.2: Add segment to highlights via right-click "加入精华"
 async function handleAddToHighlight(segmentId: string) {
-  const res = await call("add_highlight_segment", { segment_id: segmentId })
+  const res = await call("add_highlight_segment", segmentId)
   if (res.success) {
     showToast("已加入精华", "success", 2000)
   } else {
@@ -2085,8 +2103,6 @@ onUnmounted(() => {
             @reject-suggestion-batch="(ids: string[]) => batchUpdateEdits(ids, 'rejected')"
             @reset-suggestion-batch="(ids: string[]) => batchUpdateEdits(ids, 'pending')"
             @delete-suggestion-batch="(ids: string[]) => deleteEdits(ids)"
-            @confirm-all="handleConfirmAllSuggestions"
-            @reject-all="handleRejectAllSuggestions"
             @seek-suggestion="handleSeek"
             @toggle-edit-mode="globalEditMode = !globalEditMode"
             @start-smart-delete="handleStartSmartDelete"

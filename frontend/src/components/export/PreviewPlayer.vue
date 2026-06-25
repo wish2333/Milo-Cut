@@ -29,7 +29,7 @@ let rafId: number | null = null
 
 const deleteRanges = computed(() => {
   return props.edits
-    .filter(e => e.status === "confirmed" && e.action === "delete")
+    .filter(e => e.action === "delete" && (e.status === "confirmed" || e.source === "subtitle_trim"))
     .map(e => ({ start: e.start, end: e.end }))
     .sort((a, b) => a.start - b.start)
 })

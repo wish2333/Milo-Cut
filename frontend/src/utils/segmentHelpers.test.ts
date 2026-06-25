@@ -241,4 +241,22 @@ describe("resolveSegmentState", () => {
     expect(state.activeEdit).toBe(user)
     expect(state.styleClass).toBe("kept")
   })
+
+  it("ignores llm_highlight and manual_highlight source edits", () => {
+    const hlEdit = edit({ id: "hl", target_id: "seg-1", source: "llm_highlight", action: "delete", status: "pending" })
+    const manualHlEdit = edit({ id: "mhl", target_id: "seg-1", source: "manual_highlight", action: "delete", status: "pending" })
+    const silenceEdit = edit({ id: "sil", target_id: "seg-1", source: "silence_detection", action: "delete", status: "pending" })
+    // Highlight edits should be ignored; only silence edit affects state
+    const state = resolveSegmentState([hlEdit, manualHlEdit, silenceEdit], seg())
+    expect(state.activeEdit).toBe(silenceEdit)
+    expect(state.styleClass).toBe("masked")
+  })
+
+  it("returns normal when only highlight-source edits exist", () => {
+    const hlEdit = edit({ id: "hl", target_id: "seg-1", source: "llm_highlight", action: "delete", status: "pending" })
+    const state = resolveSegmentState([hlEdit], seg())
+    expect(state.displayStatus).toBe("none")
+    expect(state.styleClass).toBe("normal")
+    expect(state.activeEdit).toBeUndefined()
+  })
 })
