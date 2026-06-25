@@ -841,15 +841,18 @@ class MiloCutApi(Bridge):
             raise ValueError("No project open")
 
         from core.llm_service import analyze_highlights
+        from core.timeline_utils import collect_confirmed_deleted_seg_ids
 
         timeline = self._get_target_timeline(task)
 
         target_minutes = task.payload.get("target_duration_minutes", 10)
 
+        # P0-5: filter out confirmed-deleted segments before LLM highlight analysis
+        deleted_seg_ids = collect_confirmed_deleted_seg_ids(timeline)
         segments = [
             s.model_dump()
             for s in timeline.transcript.segments
-            if s.type == SegmentType.SUBTITLE
+            if s.type == SegmentType.SUBTITLE and s.id not in deleted_seg_ids
         ]
         if not segments:
             raise ValueError("No subtitle segments to analyze")
@@ -886,30 +889,12 @@ class MiloCutApi(Bridge):
         token_usage = result["data"]["token_usage"]
         total_duration = result["data"]["total_highlight_duration"]
 
-        # Convert highlights to EditDecisions with action="keep"
-        from datetime import datetime as _dt
-
         seg_map = {s.id: s for s in timeline.transcript.segments}
-        edits = []
-        for i, r in enumerate(all_results):
-            seg = seg_map.get(r["segment_id"])
-            if seg is None:
-                continue
-            edits.append(
-                {
-                    "id": f"llm_hl_{int(_dt.now().timestamp() * 1000)}_{i}",
-                    "start": seg.start,
-                    "end": seg.end,
-                    "action": "keep",
-                    "source": "llm_highlight",
-                    "target_type": "segment",
-                    "target_id": seg.id,
-                    "priority": 30,
-                }
-            )
 
         # Store as analysis results
         if all_results:
+            from datetime import datetime as _dt
+
             analysis_results = [
                 {
                     "id": f"llm_hl_{int(_dt.now().timestamp() * 1000)}",
@@ -931,7 +916,6 @@ class MiloCutApi(Bridge):
             "llm:highlight_completed",
             {
                 "results": all_results,
-                "edits": edits,
                 "total_duration": total_duration,
                 "target_duration": result["data"]["target_duration"],
             },
@@ -940,7 +924,6 @@ class MiloCutApi(Bridge):
 
         return {
             "results": all_results,
-            "edits": edits,
             "total_duration": total_duration,
             "token_usage": token_usage,
             "project": self._project.current.model_dump() if self._project.current else None,
@@ -2414,7 +2397,7 @@ class MiloCutApi(Bridge):
         Returns:
             {"success": True, "data": {"jump_cuts": [...]}}
         """
-        from core.export_service import detect_jump_cuts, get_highlight_ranges
+        from core.export_service import detect_jump_cuts
 
         if self._project.current is None:
             return {"success": False, "error": "No project open"}
@@ -2425,7 +2408,14 @@ class MiloCutApi(Bridge):
         if timeline is None:
             return {"success": False, "error": f"Timeline {tl_id} not found"}
 
-        ranges = get_highlight_ranges([e.model_dump() for e in timeline.edits])
+        # P0-4: derive highlight ranges from AnalysisResult instead of timeline.edits
+        analysis_results = [r for r in timeline.analysis.results if r.type == "llm_highlight"]
+        seg_ids: set[str] = set()
+        for r in analysis_results:
+            seg_ids.update(r.segment_ids)
+        seg_map = {s.id: s for s in timeline.transcript.segments if s.type == SegmentType.SUBTITLE}
+        ranges = [(seg_map[sid].start, seg_map[sid].end) for sid in seg_ids if sid in seg_map]
+        ranges.sort()
         if not ranges:
             return {"success": True, "data": {"jump_cuts": [], "highlight_count": 0}}
 

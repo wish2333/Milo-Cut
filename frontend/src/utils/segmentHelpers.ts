@@ -23,7 +23,7 @@ export function resolveSegmentState(
   seg: Segment,
 ): SegmentState {
   const related = edits.filter(e =>
-    e.target_id === seg.id || isOverlapping(e, seg, 0.3),
+    (e.target_id === seg.id || isOverlapping(e, seg, 0.3)) && e.source !== "llm_highlight",
   )
 
   const all = related

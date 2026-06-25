@@ -477,16 +477,55 @@ def detect_jump_cuts(
     return jump_cuts
 
 
-def get_highlight_ranges(edits: list[dict]) -> list[tuple[float, float]]:
-    """Extract confirmed highlight (keep) ranges from edit decisions.
+def get_highlight_ranges(
+    analysis_results: list,
+    transcript_segments: list | None = None,
+) -> list[tuple[float, float]]:
+    """Extract highlight ranges from AnalysisResult objects.
 
-    Used for highlight reel export: only segments with action="keep" and
-    source="llm_highlight" (or status confirmed) are included.
+    Used for highlight reel export: reads from AnalysisResult(type="llm_highlight")
+    and derives ranges from segment_ids + transcript segments.
+
+    For backwards compatibility, if analysis_results items have a "source" key
+    (old edit-dict format), they are filtered by source="llm_highlight" + action="keep".
+
+    Args:
+        analysis_results: list of AnalysisResult objects (or dicts with segment_ids).
+        transcript_segments: list of Segment objects to resolve segment_ids to
+            (start, end) times. If None and results have start/end, those are used.
     """
     result = []
-    for edit in edits:
-        if edit.get("action") == "keep" and edit.get("source", "").startswith("llm_highlight"):
-            result.append((edit["start"], edit["end"]))
+
+    # Check if we have old-style edit dicts (have "source" key)
+    is_old_style = (
+        analysis_results
+        and isinstance(analysis_results[0], dict)
+        and "source" in analysis_results[0]
+    )
+
+    if is_old_style:
+        # Legacy path: filter edits by source/action
+        for item in analysis_results:
+            if (
+                item.get("action") == "keep"
+                and item.get("source", "").startswith("llm_highlight")
+            ):
+                result.append((item["start"], item["end"]))
+    else:
+        # New path: derive from AnalysisResult segment_ids
+        seg_ids: set[str] = set()
+        for r in analysis_results:
+            ids = getattr(r, "segment_ids", None) or r.get("segment_ids", [])
+            seg_ids.update(ids)
+
+        if transcript_segments is not None:
+            seg_map = {s.id: s for s in transcript_segments}
+            for sid in seg_ids:
+                seg = seg_map.get(sid)
+                if seg is not None:
+                    result.append((seg.start, seg.end))
+        # If no transcript_segments provided, return empty — caller must supply them.
+
     result.sort(key=lambda x: x[0])
     return result
 
