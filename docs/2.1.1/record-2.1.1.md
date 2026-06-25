@@ -745,3 +745,28 @@ spec-2.1.1-6.md 定义了 v2.1.1 的 UI/UX 优化范围（侧边栏内联化、�
 ### 提交
 
 commit: `fix(project): 高亮/建议级联清理 + Bug C/D/E/F/G 修复 + UI 收尾`
+
+## 审查问题修复批次 (Spec-2.1.1-9 修复)
+
+对上一批次代码审查发现的 M1/M2/L1/L2/L3 全部修复并复测。
+
+| ID | 严重 | 文件 | 修复内容 |
+|----|------|------|----------|
+| M1 | Medium | `core/project_service.py:1382-1390` | `add_analysis_results` 的 `clear_existing` 分支运算符优先级陷阱。原 `if r.type == analysis_results[0].type if analysis_results else None:` 解析为嵌套三元 (虽结果正确但语义不透明)。重构为先提取 `target_type` 再用显式 `if target_type is not None and r.type == target_type:` 判断 |
+| M2 | Medium | `frontend/src/components/workspace/Timeline.vue` | 移除死代码 emit 桥接：SuggestionPanel 已删 confirm-all/reject-all 按钮、WorkspacePage 也不再绑定，但 Timeline 仍声明 emit (行 68-69) 并内部 re-emit (行 392-393)。删除这 4 行死代码。注意：WorkspacePage 的 Ctrl+Shift+A/D 快捷键走 composable 的 `confirmAllSuggestions()`/`rejectAllSuggestions()`，不受影响 |
+| L1 | Low | `core/project_service.py:277-313` | `_migrate_highlights` orphan 清理泛化：原仅对 highlight source 生效，改为任意带 `analysis_id` 且 analysis_id 不在 results 中的 EditDecision 都视为 orphan 并移除。docstring 与日志同步更新 |
+| L2 | Low | `tests/test_highlight_segment.py` | 消除 `_ServiceStub` 对 `add_analysis_results` 的逻辑复制 (70+ 行重复代码)。重写 fixture 改用真实 `ProjectService` + `tmp_path`/`monkeypatch` 隔离，通过 `update_transcript` 播种 segments。API 层端到端覆盖，service 层边界由 `test_project_service.py` 互补 |
+| L3 | Low | `.gitignore:231` | `reasonix.toml` 已在 Phase 1 加入 .gitignore，`git check-ignore` 确认生效，不进版本控制 |
+
+### 验证
+
+| 检查 | 命令 | 结果 |
+|------|------|------|
+| 后端测试 | `uv run python -m pytest tests/test_highlight_segment.py tests/test_project_service.py -q` | **48 passed** |
+| 前端类型检查 + 构建 | `cd frontend && bun run build` | **pass** (vue-tsc 0 错误, vite build 成功) |
+| 前端 segmentHelpers 单测 | `bun run test src/utils/segmentHelpers.test.ts` | **34 passed** |
+| 死代码清理确认 | `grep -rn "confirm-all\|reject-all" src/` | **无匹配** (M2 彻底清除) |
+
+### 提交
+
+commit: `refactor(review): 修复代码审查发现的 M1/M2/L1/L2 问题`

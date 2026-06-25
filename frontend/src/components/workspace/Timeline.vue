@@ -65,8 +65,6 @@ const emit = defineEmits<{
   "reject-suggestion-batch": [editIds: string[]]
   "reset-suggestion-batch": [editIds: string[]]
   "delete-suggestion-batch": [editIds: string[]]
-  "confirm-all": []
-  "reject-all": []
   "seek-suggestion": [time: number]
   "toggle-edit-mode": []
   // Phase 2: LLM events
@@ -389,8 +387,6 @@ watch(
               @reject-edit-batch="(ids) => emit('reject-suggestion-batch', ids)"
               @reset-edit-batch="(ids) => emit('reset-suggestion-batch', ids)"
               @delete-edit-batch="(ids) => emit('delete-suggestion-batch', ids)"
-              @confirm-all="emit('confirm-all')"
-              @reject-all="emit('reject-all')"
               @seek="handleSuggestionSeek"
               @review-corrections="emit('open-subtitle-fullscreen')"
             />

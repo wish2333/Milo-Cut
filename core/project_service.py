@@ -274,10 +274,11 @@ class ProjectService:
             self._update_active_timeline(edits=fixed)
 
     def _migrate_highlights(self) -> None:
-        """One-time migration: fix highlight EditDecisions created before Bug E fix.
+        """One-time migration: fix legacy EditDecisions created before Bug E/G fix.
 
-        - Set action="keep" for all highlight-source EditDecisions
-        - Remove orphan EditDecisions whose analysis_id no longer exists
+        - Remove ANY orphan EditDecision whose analysis_id no longer exists
+          (not limited to highlights; covers all analysis-driven sources)
+        - Set action="keep" for highlight-source EditDecisions still on "delete"
         Idempotent: safe to run multiple times.
         """
         if not self._current:
@@ -291,10 +292,9 @@ class ProjectService:
         orphan_removed = 0
         for e in tl.edits:
             is_highlight = e.source in ("llm_highlight", "manual_highlight")
-            is_orphan = e.analysis_id and e.analysis_id not in ar_ids
-
-            if is_highlight and is_orphan:
-                # Bug G legacy: orphan EditDecision whose analysis result was deleted
+            # An edit with analysis_id pointing at a non-existent result is an
+            # orphan regardless of source -- its driving analysis was deleted.
+            if e.analysis_id and e.analysis_id not in ar_ids:
                 orphan_removed += 1
                 continue
 
@@ -1381,10 +1381,11 @@ class ProjectService:
 
         if clear_existing:
             # Clear existing results of the SAME type and their edits
+            target_type = analysis_results[0].type if analysis_results else None
             removed_ar_ids: set[str] = set()
             existing_results = []
             for r in self.active_timeline.analysis.results:
-                if r.type == analysis_results[0].type if analysis_results else None:
+                if target_type is not None and r.type == target_type:
                     removed_ar_ids.add(r.id)
                 else:
                     existing_results.append(r)

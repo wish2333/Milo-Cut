@@ -1,148 +1,66 @@
 """Tests for add_highlight_segment / remove_highlight_segment API methods.
 
 Covers the manual highlight CRUD exposed in ``MiloCutApi``, which delegates to
-``ProjectService.add_analysis_results`` and ``_update_timeline_by_id``.
+the real ``ProjectService`` (``add_analysis_results`` / ``_update_timeline_by_id``).
 
-Audit R-06 M5: these two methods previously had zero test coverage.
+These tests instantiate the real ``ProjectService`` against an isolated tmp dir
+so the API layer is exercised end-to-end without any duplicated service logic.
+Service-level edge cases (clear_existing, cascade cleanup, migration) are
+covered separately in ``tests/test_project_service.py``.
+
+Audit R-06 M5: these two API methods previously had zero test coverage.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from core.models import (
-    AnalysisData,
-    AnalysisResult,
-    MediaInfo,
-    Project,
-    ProjectMeta,
-    Segment,
-    SegmentType,
-    Timeline,
-    TranscriptData,
-)
+from core.models import Segment, SegmentType
+from core.project_service import ProjectService
 from main import MiloCutApi
 
 
 # ── helpers ──────────────────────────────────────────────────────────
 
 
-def _make_project_with_segments(
-    segments: list[Segment] | None = None,
-    *,
-    timeline_id: str = "default",
-) -> Project:
-    """Build a minimal Project with a single timeline."""
-    if segments is None:
-        segments = [
-            Segment(id="s1", type=SegmentType.SUBTITLE, start=0.0, end=2.0, text="hello"),
-            Segment(id="s2", type=SegmentType.SUBTITLE, start=2.0, end=4.0, text="world"),
-        ]
-    timeline = Timeline(
-        id=timeline_id,
-        label="Main",
-        source="default",
-        transcript=TranscriptData(segments=segments),
-        analysis=AnalysisData(),
-        edits=[],
-    )
-    return Project(
-        meta=ProjectMeta(name="test", media_path="/fake.mp4"),
-        media=MediaInfo(path="/fake.mp4", duration=10.0),
-        timelines=[timeline],
-        active_timeline_id=timeline_id,
-    )
+def _create_service(tmp_path, monkeypatch) -> ProjectService:
+    """Real ProjectService with isolated paths (no global state leakage)."""
+    monkeypatch.setattr("core.paths.get_projects_dir", lambda: tmp_path / "projects")
+    monkeypatch.setattr("core.paths.get_data_dir", lambda: tmp_path)
+    return ProjectService()
 
 
-class _ServiceStub:
-    """Minimal stub of ProjectService exposing add_analysis_results and
-    _update_timeline_by_id so the API methods can operate on an in-memory
-    Project without filesystem or window dependencies."""
+def _create_media_file(tmp_path) -> str:
+    media_file = tmp_path / "test.mp4"
+    media_file.write_bytes(b"fake media content")
+    return str(media_file)
 
-    def __init__(self, project: Project):
-        self.current = project
 
-    def add_analysis_results(self, results: list[dict], source: str, clear_existing: bool = False) -> dict:
-        results_parsed = [AnalysisResult.model_validate(r) for r in results]
-        tl = self.current.active_timeline
+def _seed_segments(svc: ProjectService, segments: list[Segment]) -> None:
+    """Populate the active timeline transcript with the given segments."""
+    svc.update_transcript([s.model_dump() for s in segments])
 
-        if clear_existing and results_parsed:
-            target_type = results_parsed[0].type
-            removed_ar_ids = {r.id for r in tl.analysis.results if r.type == target_type}
-            existing_results = [r for r in tl.analysis.results if r.type != target_type]
-            existing_edits = [e for e in tl.edits if e.analysis_id not in removed_ar_ids]
-        else:
-            existing_results = list(tl.analysis.results)
-            existing_edits = list(tl.edits)
 
-        # Build EditDecisions (matches production add_analysis_results logic)
-        seg_map = {s.id: s for s in tl.transcript.segments}
-        existing_edit_ids = {e.id for e in existing_edits}
-        new_edits = []
-        for ar in results_parsed:
-            matching_segs = [seg_map[sid] for sid in ar.segment_ids if sid in seg_map]
-            if not matching_segs:
-                continue
-            start = min(s.start for s in matching_segs)
-            end = max(s.end for s in matching_segs)
-            edit_id = f"edit-{ar.id}"
-            if edit_id in existing_edit_ids:
-                n = 2
-                while f"{edit_id}_dup{n}" in existing_edit_ids:
-                    n += 1
-                edit_id = f"{edit_id}_dup{n}"
-            existing_edit_ids.add(edit_id)
-            from core.models import EditDecision, EditStatus
-            action = "keep" if source in ("llm_highlight", "manual_highlight") else "delete"
-            new_edits.append(EditDecision(
-                id=edit_id,
-                start=start,
-                end=end,
-                action=action,
-                source=source,
-                analysis_id=ar.id,
-                status=EditStatus.PENDING,
-                priority=100,
-                target_type="segment",
-                target_id=ar.segment_ids[0],
-            ))
-
-        self.current = self.current.model_copy(
-            update={
-                "timelines": [
-                    t.model_copy(
-                        update={
-                            "analysis": t.analysis.model_copy(
-                                update={"results": existing_results + results_parsed}
-                            ),
-                            "edits": existing_edits + new_edits,
-                        }
-                    )
-                    if t.id == tl.id
-                    else t
-                    for t in self.current.timelines
-                ]
-            }
-        )
-        return {"success": True}
-
-    def _update_timeline_by_id(self, tl_id: str, **updates) -> None:
-        self.current = self.current.model_copy(
-            update={
-                "timelines": [
-                    t.model_copy(update=updates) if t.id == tl_id else t
-                    for t in self.current.timelines
-                ]
-            }
-        )
+def _default_segments() -> list[Segment]:
+    return [
+        Segment(id="s1", type=SegmentType.SUBTITLE, start=0.0, end=2.0, text="hello"),
+        Segment(id="s2", type=SegmentType.SUBTITLE, start=2.0, end=4.0, text="world"),
+    ]
 
 
 @pytest.fixture
-def api():
-    """MiloCutApi with an in-memory project stub and no side-effects."""
+def api(tmp_path, monkeypatch) -> MiloCutApi:
+    """MiloCutApi wired to a real ProjectService seeded with two subtitle segments.
+
+    Uses ``__new__`` to skip Bridge/window initialization; only the two API
+    methods under test (and the real service they delegate to) are exercised.
+    """
+    svc = _create_service(tmp_path, monkeypatch)
+    svc.create_project("test", _create_media_file(tmp_path), {"duration": 60.0})
+    _seed_segments(svc, _default_segments())
+
     api = MiloCutApi.__new__(MiloCutApi)
-    proj = _make_project_with_segments()
-    api._project = _ServiceStub(proj)
+    api._project = svc
     api._mark_dirty = lambda store: store
     return api
 
@@ -169,18 +87,18 @@ class TestAddHighlightSegment:
         assert "not found" in result["error"]
 
     def test_rejects_non_subtitle_segment(self, api):
-        # Build a project where s1 is a silence segment
-        segs = [
+        # Reseed: s1 is a silence segment, only s2 is subtitle
+        svc = api._project
+        _seed_segments(svc, [
             Segment(id="s1", type=SegmentType.SILENCE, start=0.0, end=2.0, text=""),
             Segment(id="s2", type=SegmentType.SUBTITLE, start=2.0, end=4.0, text="ok"),
-        ]
-        api._project.current = _make_project_with_segments(segs)
+        ])
         result = api.add_highlight_segment("s1")
         assert not result["success"]
         assert "not found or not a subtitle" in result["error"]
 
     def test_rejects_when_no_project(self, api):
-        api._project.current = None
+        api._project.close_project()
         result = api.add_highlight_segment("s1")
         assert not result["success"]
         assert "No project open" in result["error"]
@@ -238,7 +156,8 @@ class TestRemoveHighlightSegment:
 
         from core.models import AnalysisResult
 
-        tl = api._project.current.active_timeline
+        svc = api._project
+        tl = svc.current.active_timeline
         existing = list(tl.analysis.results)
         existing.append(
             AnalysisResult(
@@ -249,17 +168,9 @@ class TestRemoveHighlightSegment:
                 detail="Duplicate",
             )
         )
-        api._project.current = api._project.current.model_copy(
-            update={
-                "timelines": [
-                    t.model_copy(
-                        update={"analysis": t.analysis.model_copy(update={"results": existing})}
-                    )
-                    if t.id == tl.id
-                    else t
-                    for t in api._project.current.timelines
-                ]
-            }
+        svc._update_timeline_by_id(
+            tl.id,
+            analysis=tl.analysis.model_copy(update={"results": existing}),
         )
 
         result = api.remove_highlight_segment("s1")
@@ -267,7 +178,7 @@ class TestRemoveHighlightSegment:
         assert result["data"]["removed_count"] == 2
 
     def test_rejects_when_no_project(self, api):
-        api._project.current = None
+        api._project.close_project()
         result = api.remove_highlight_segment("s1")
         assert not result["success"]
         assert "No project open" in result["error"]
@@ -315,7 +226,6 @@ class TestHighlightActionBySource:
 
     def test_non_highlight_source_creates_delete_action(self, api):
         """Non-highlight sources should still create action='delete'."""
-        from core.models import AnalysisResult
         api._project.add_analysis_results(
             [{
                 "id": "test_ar_1",
