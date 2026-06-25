@@ -83,18 +83,6 @@ const sortedHighlights = computed<DisplayHighlight[]>(() => {
     .sort((a, b) => a.startTime - b.startTime)
 })
 
-function densityBadge(density: "high" | "medium" | "low"): string {
-  switch (density) {
-    case "high":
-      return "bg-green-100 text-green-800"
-    case "medium":
-      return "bg-yellow-100 text-yellow-800"
-    case "low":
-    default:
-      return "bg-gray-100 text-gray-500"
-  }
-}
-
 function densityLabel(density: "high" | "medium" | "low"): string {
   switch (density) {
     case "high":
@@ -200,23 +188,27 @@ function handleSeek(time: number) {
         :key="item.highlight.segment_id"
         class="mb-2 rounded-lg border border-gray-200 bg-white p-2 text-xs"
       >
-        <!-- Segment header -->
-        <div class="mb-1 flex items-center gap-2">
+        <!-- First row: density dot + time + segment text -->
+        <div class="mb-1 flex items-center gap-2 min-w-0">
+          <!-- Density dot (8px circle) -->
+          <span
+            class="inline-block h-2 w-2 shrink-0 rounded-full"
+            :class="{
+              'bg-green-500': item.highlight.density === 'high',
+              'bg-yellow-500': item.highlight.density === 'medium',
+              'bg-gray-400': item.highlight.density === 'low',
+            }"
+            :title="densityLabel(item.highlight.density)"
+          ></span>
           <button
-            class="cursor-pointer text-gray-500 hover:text-gray-700 hover:underline"
+            class="shrink-0 cursor-pointer text-gray-500 hover:text-gray-700 hover:underline"
             @click="handleSeek(item.startTime)"
           >
             {{ formatTimeShort(item.startTime) }}
           </button>
-          <span
-            class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
-            :class="densityBadge(item.highlight.density)"
-          >
-            {{ densityLabel(item.highlight.density) }}
-          </span>
+          <span class="truncate text-gray-500">{{ item.segment?.text }}</span>
         </div>
-
-        <!-- Reason text -->
+        <!-- Second row: reason -->
         <div class="text-gray-600">
           {{ item.highlight.highlight_reason }}
         </div>
