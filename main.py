@@ -1394,6 +1394,49 @@ class MiloCutApi(Bridge):
         return self._mark_dirty(self._project.add_analysis_results(results, source=source))
 
     @expose
+    def add_highlight_segment(self, segment_id: str, timeline_id: str = "") -> dict:
+        """Add a single segment to highlights via AnalysisResult.
+
+        Args:
+            segment_id: The segment ID to add to highlights.
+            timeline_id: Target timeline (defaults to active_timeline_id).
+
+        Returns:
+            {"success": True, "data": {"result": dict}}
+        """
+        if self._project.current is None:
+            return {"success": False, "error": "No project open"}
+
+        project = self._project.current
+        tl_id = timeline_id or project.active_timeline_id
+        timeline = project.get_timeline(tl_id)
+        if timeline is None:
+            return {"success": False, "error": f"Timeline {tl_id} not found"}
+
+        # Verify segment exists
+        seg = next((s for s in timeline.transcript.segments if s.id == segment_id), None)
+        if seg is None or seg.type != "subtitle":
+            return {"success": False, "error": f"Segment {segment_id} not found or not a subtitle"}
+
+        import uuid
+        result = {
+            "id": f"manual_hl_{uuid.uuid4().hex[:12]}",
+            "type": "llm_highlight",
+            "segment_ids": [segment_id],
+            "confidence": 1.0,
+            "detail": "手动添加",
+        }
+
+        store = self._mark_dirty(
+            self._project.add_analysis_results([result], source="manual_highlight")
+        )
+
+        if not store["success"]:
+            return {"success": False, "error": store.get("error", "Failed to store highlight")}
+
+        return {"success": True, "data": {"result": result}}
+
+    @expose
     def update_segment(self, segment_id: str, updates: dict) -> dict:
         return self._mark_dirty(self._project.update_segment(segment_id, updates))
 
