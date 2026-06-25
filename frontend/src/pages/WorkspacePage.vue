@@ -81,6 +81,13 @@ const showSettingsModal = ref(false)
 const subtitleCorrectionCount = computed(
   () => subtitleCorrectionResult.value?.stored_count ?? pendingCorrections.value.length,
 )
+
+// §10.3: Show toast when subtitle correction completes
+watch(subtitleCorrectionResult, (result) => {
+  if (result && result.stored_count !== undefined && result.stored_count > 0) {
+    showToast(`字幕修正完成，发现 ${result.stored_count} 条修改`, "success", 3000)
+  }
+})
 const highConfidenceCorrections = computed(() =>
   pendingCorrections.value.filter((c) => c.confidence >= 0.8),
 )
