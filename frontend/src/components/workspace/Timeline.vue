@@ -60,10 +60,8 @@ const emit = defineEmits<{
   "delete-segment": [segment: Segment]
   "confirm-suggestion": [editId: string]
   "reject-suggestion": [editId: string]
-  "reset-suggestion": [editId: string]
   "confirm-suggestion-batch": [editIds: string[]]
   "reject-suggestion-batch": [editIds: string[]]
-  "reset-suggestion-batch": [editIds: string[]]
   "delete-suggestion-batch": [editIds: string[]]
   "seek-suggestion": [time: number]
   "toggle-edit-mode": []
@@ -382,10 +380,8 @@ watch(
               :pending-correction-count="pendingCorrectionCount ?? 0"
               @confirm-edit="(editId) => emit('confirm-suggestion', editId)"
               @reject-edit="(editId) => emit('reject-suggestion', editId)"
-              @reset-edit="(editId) => emit('reset-suggestion', editId)"
               @confirm-edit-batch="(ids) => emit('confirm-suggestion-batch', ids)"
               @reject-edit-batch="(ids) => emit('reject-suggestion-batch', ids)"
-              @reset-edit-batch="(ids) => emit('reset-suggestion-batch', ids)"
               @delete-edit-batch="(ids) => emit('delete-suggestion-batch', ids)"
               @seek="handleSuggestionSeek"
               @review-corrections="emit('open-subtitle-fullscreen')"

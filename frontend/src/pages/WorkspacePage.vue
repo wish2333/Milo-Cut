@@ -83,15 +83,23 @@ const subtitleCorrectionCount = computed(() => pendingCorrections.value.length)
 
 let correctionToastShown = false
 
-// §10.3: Show toast when subtitle correction completes (with dedup guard)
-watch(subtitleCorrectionResult, (result) => {
+// §10.3: Show toast when subtitle correction completes (with dedup guard).
+// Also auto-load stored corrections so the "查看修正结果" button appears.
+watch(subtitleCorrectionResult, async (result) => {
   if (result === null) {
     correctionToastShown = false
     return
   }
-  if (result?.stored_count && result.stored_count > 0 && !correctionToastShown) {
-    correctionToastShown = true
-    showToast(`字幕修正完成，发现 ${result.stored_count} 条修改`, "success", 3000)
+  if (result?.stored_count && result.stored_count > 0) {
+    // Auto-load corrections from backend so the review entry button shows.
+    const tlId = props.project.active_timeline_id
+    if (tlId) {
+      await loadCorrections(tlId)
+    }
+    if (!correctionToastShown) {
+      correctionToastShown = true
+      showToast(`字幕修正完成，发现 ${result.stored_count} 条修改`, "success", 3000)
+    }
   }
 })
 const highConfidenceCorrections = computed(() =>
@@ -121,7 +129,6 @@ const {
   runTranscription,
   confirmEdit,
   rejectEdit,
-  resetEdit,
   batchUpdateEdits,
   deleteEdits,
 } = useAnalysis(projectRef, pushSnapshot)
@@ -572,9 +579,15 @@ watch(() => props.project.media?.path, () => {
   loadVideoUrl()
 })
 watch(() => props.project.project?.name, () => { clearHistory() })
-// v2.1.1: Hydrate highlight state from persisted project data on reopen (Bug C)
-watch(() => props.project, (newProject) => {
+// v2.1.1: Hydrate highlight state from persisted project data on reopen (Bug C).
+// Also hydrate subtitle corrections so the "查看修正结果" button persists across
+// sessions (Issue 4).
+watch(() => props.project, async (newProject) => {
   hydrateHighlightsFromProject(newProject)
+  const tlId = newProject.active_timeline_id
+  if (tlId) {
+    await loadCorrections(tlId)
+  }
 }, { immediate: true })
 
 async function loadSilenceSettings() {
@@ -1279,21 +1292,31 @@ function handleGoToSettings() {
   showSettingsModal.value = true
 }
 
-// §11.5.2: Remove highlight via context menu (right-click on highlight card)
+// §11.5.2: Remove highlight via context menu (right-click on highlight card).
+// Issue 5: hydrate highlight state in real time from returned project.
 async function handleRemoveHighlight(segmentId: string) {
   if (!window.confirm("确认移除此精华片段？")) return
-  const res = await call("remove_highlight_segment", segmentId)
+  const res = await call<{ removed_count?: number; project?: Project }>("remove_highlight_segment", segmentId)
   if (res.success) {
+    if (res.data?.project) {
+      emit("project-updated", res.data.project)
+      await hydrateHighlightsFromProject(res.data.project)
+    }
     showToast("精华片段已移除", "success", 2000)
   } else {
     showToast("移除失败: " + (res.error ?? "未知错误"), "error", 3000)
   }
 }
 
-// §11.5.2: Add segment to highlights via right-click "加入精华"
+// §11.5.2: Add segment to highlights via right-click "加入精华".
+// Issue 5: hydrate highlight state in real time from returned project.
 async function handleAddToHighlight(segmentId: string) {
-  const res = await call("add_highlight_segment", segmentId)
+  const res = await call<{ result?: unknown; project?: Project }>("add_highlight_segment", segmentId)
   if (res.success) {
+    if (res.data?.project) {
+      emit("project-updated", res.data.project)
+      await hydrateHighlightsFromProject(res.data.project)
+    }
     showToast("已加入精华", "success", 2000)
   } else {
     showToast("加入失败: " + (res.error ?? "未知错误"), "error", 3000)
@@ -2098,10 +2121,8 @@ onUnmounted(() => {
             @delete-segment="(seg) => handleDeleteSegment(seg.id)"
             @confirm-suggestion="confirmEdit"
             @reject-suggestion="rejectEdit"
-            @reset-suggestion="resetEdit"
             @confirm-suggestion-batch="(ids: string[]) => batchUpdateEdits(ids, 'confirmed')"
             @reject-suggestion-batch="(ids: string[]) => batchUpdateEdits(ids, 'rejected')"
-            @reset-suggestion-batch="(ids: string[]) => batchUpdateEdits(ids, 'pending')"
             @delete-suggestion-batch="(ids: string[]) => deleteEdits(ids)"
             @seek-suggestion="handleSeek"
             @toggle-edit-mode="globalEditMode = !globalEditMode"

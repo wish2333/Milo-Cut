@@ -13,10 +13,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   "confirm-edit": [editId: string]
   "reject-edit": [editId: string]
-  "reset-edit": [editId: string]
   "confirm-edit-batch": [editIds: string[]]
   "reject-edit-batch": [editIds: string[]]
-  "reset-edit-batch": [editIds: string[]]
   "delete-edit-batch": [editIds: string[]]
   "seek": [time: number]
   "review-corrections": []
@@ -113,11 +111,10 @@ function toggleGroup(type: string) {
 }
 function isExpanded(type: string): boolean { return expandedGroups.value.has(type) }
 function handleSeek(item: SuggestionItem) { emit("seek", item.start) }
-function handleAction(item: SuggestionItem, action: "confirm" | "reject" | "reset") {
+function handleAction(item: SuggestionItem, action: "confirm" | "reject") {
   if (!item.editId) return
   if (action === "confirm") emit("confirm-edit", item.editId)
-  else if (action === "reject") emit("reject-edit", item.editId)
-  else emit("reset-edit", item.editId)
+  else emit("reject-edit", item.editId)
 }
 
 // -- Context menu --------------------------------------------------------
@@ -150,12 +147,11 @@ function groupEditIds(group: GroupedResult): string[] {
   return group.items.map(i => i.editId).filter((id): id is string => !!id)
 }
 
-function runGroupAction(group: GroupedResult, action: "confirm" | "reject" | "reset" | "delete") {
+function runGroupAction(group: GroupedResult, action: "confirm" | "reject" | "delete") {
   const ids = groupEditIds(group)
   if (ids.length === 0) { closeContextMenu(); return }
   if (action === "confirm") emit("confirm-edit-batch", ids)
   else if (action === "reject") emit("reject-edit-batch", ids)
-  else if (action === "reset") emit("reset-edit-batch", ids)
   else if (action === "delete") {
     // Permanent deletion is irreversible; confirm with explicit wording
     if (!confirm(`确认永久删除「${group.label}」中的 ${ids.length} 条建议（含已确认/已忽略）？此操作不可撤销。`)) {
@@ -167,7 +163,7 @@ function runGroupAction(group: GroupedResult, action: "confirm" | "reject" | "re
   closeContextMenu()
 }
 
-function runItemActionFromMenu(action: "confirm" | "reject" | "reset") {
+function runItemActionFromMenu(action: "confirm" | "reject") {
   const item = contextMenu.value?.item
   if (item) handleAction(item, action)
   closeContextMenu()
@@ -284,14 +280,6 @@ onBeforeUnmount(() => {
             >
               忽略
             </button>
-            <button
-              v-if="item.status !== 'pending'"
-              class="text-xs px-2 py-0.5 rounded border border-gray-300 text-gray-500 hover:bg-gray-100"
-              title="撤销状态恢复待处理"
-              @click.stop="handleAction(item, 'reset')"
-            >
-              撤销
-            </button>
           </span>
         </div>
       </div>
@@ -320,13 +308,6 @@ onBeforeUnmount(() => {
           >
             忽略此项
           </button>
-          <button
-            v-if="contextMenu.item?.status !== 'pending'"
-            class="block w-full text-left px-3 py-1.5 hover:bg-gray-100 text-gray-700"
-            @click="runItemActionFromMenu('reset')"
-          >
-            撤销此项
-          </button>
         </template>
         <template v-else-if="contextMenu.scope === 'group' && contextMenu.group">
           <button
@@ -340,12 +321,6 @@ onBeforeUnmount(() => {
             @click="runGroupAction(contextMenu.group, 'reject')"
           >
             全部忽略本组 ({{ contextMenu.group.items.length }})
-          </button>
-          <button
-            class="block w-full text-left px-3 py-1.5 hover:bg-gray-100 text-gray-700"
-            @click="runGroupAction(contextMenu.group, 'reset')"
-          >
-            全部撤销本组
           </button>
           <button
             class="block w-full text-left px-3 py-1.5 hover:bg-red-50 text-red-600"

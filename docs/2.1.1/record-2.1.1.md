@@ -770,3 +770,29 @@ commit: `fix(project): 高亮/建议级联清理 + Bug C/D/E/F/G 修复 + UI 收
 ### 提交
 
 commit: `refactor(review): 修复代码审查发现的 M1/M2/L1/L2 问题`
+
+## 建议面板/高亮/字幕纠错 UI 修复批次
+
+用户反馈的 5 项问题全部修复。
+
+### 改动列表
+
+| # | 文件 | 修复 |
+|---|------|------|
+| 1 | `SuggestionPanel.vue` | 移除建议分组右键菜单中的"全部撤销本组"选项 |
+| 2 | `SuggestionPanel.vue`, `Timeline.vue`, `WorkspacePage.vue` | 移除建议条目操作按钮中的"撤销"、右键菜单中的"撤销此项"；清理整条 reset emit 链（SuggestionPanel reset-edit/reset-edit-batch → Timeline reset-suggestion → WorkspacePage @reset-suggestion 绑定 + resetEdit import）。grep 确认零残留 |
+| 3 | `core/project_service.py` | `add_analysis_results` 中 `partial_delete` 分类的 EditDecision 默认 status 改为 `REJECTED`（保留），不再默认建议删除 |
+| 4 | `frontend/src/pages/WorkspacePage.vue` | 字幕纠错完成回调中补调用 `loadCorrections` 加载已存储修正，修复"查看修正结果"按钮不出现的问题；reopen 项目时也自动 hydrate corrections |
+| 5 | `main.py`, `WorkspacePage.vue` | `add_highlight_segment` / `remove_highlight_segment` 返回完整 `project`；前端成功后调用 `hydrateHighlightsFromProject` + `emit("project-updated")` 实现精华增删实时刷新 |
+
+### 验证
+
+| 检查 | 命令 | 结果 |
+|------|------|------|
+| 后端测试 | `uv run python -m pytest tests/test_highlight_segment.py tests/test_project_service.py -q` | **48 passed** |
+| 前端类型检查 + 构建 | `cd frontend && bun run build` | **pass** |
+| reset 残留清理确认 | `grep -rn "reset-edit\|reset-suggestion" src/ --include="*.vue" --include="*.ts"` | **零匹配** |
+
+### 提交
+
+commit: `fix(sidebar): 精华实时刷新 + 字幕纠错按钮修复 + 撤销按钮移除 + partial_delete 默认保留`

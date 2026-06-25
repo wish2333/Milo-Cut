@@ -1436,7 +1436,9 @@ class MiloCutApi(Bridge):
         if not store["success"]:
             return {"success": False, "error": store.get("error", "Failed to store highlight")}
 
-        return {"success": True, "data": {"result": result}}
+        # Return full project so the frontend can hydrate highlight state
+        # in real time (Issue 5) without a separate reload.
+        return {"success": True, "data": {"result": result, "project": self._project.current.model_dump()}}
 
     @expose
     def remove_highlight_segment(self, segment_id: str, timeline_id: str = "") -> dict:
@@ -1485,7 +1487,12 @@ class MiloCutApi(Bridge):
             "Removed highlight for segment %s: %d results + %d edits",
             segment_id, len(removed), removed_edit_count,
         )
-        return {"success": True, "data": {"removed_count": len(removed)}}
+        # Return full project so the frontend can hydrate highlight state
+        # in real time (Issue 5) without a separate reload.
+        return {"success": True, "data": {
+            "removed_count": len(removed),
+            "project": self._project.current.model_dump(),
+        }}
 
     @expose
     def update_segment(self, segment_id: str, updates: dict) -> dict:

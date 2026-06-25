@@ -1425,6 +1425,10 @@ class ProjectService:
 
             # Highlight sources keep segments (not delete them).
             action = "keep" if source in ("llm_highlight", "manual_highlight") else "delete"
+            # partial_delete: manual-handling items default to keep (rejected),
+            # so they are surfaced but never auto-deleted.
+            is_partial = source == "llm_smart" and getattr(ar, "category", "") == "partial_delete"
+            status = EditStatus.REJECTED if is_partial else EditStatus.PENDING
 
             new_edits.append(EditDecision(
                 id=edit_id,
@@ -1433,7 +1437,7 @@ class ProjectService:
                 action=action,
                 source=source,
                 analysis_id=ar.id,
-                status=EditStatus.PENDING,
+                status=status,
                 priority=100,
                 target_type="segment",
                 target_id=ar.segment_ids[0],
