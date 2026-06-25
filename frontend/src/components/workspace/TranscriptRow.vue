@@ -106,31 +106,30 @@ const originalText = ref("")
 // Time editing (click on time value)
 const editingTimeField = ref<"start" | "end" | null>(null)
 const editingTimeValue = ref("")
+const editingTimeSeconds = ref<number>(0)
 const timeInputRef = ref<HTMLInputElement | null>(null)
 
 function startTimeEdit(field: "start" | "end", e: MouseEvent) {
   e.stopPropagation()
-  editingTimeValue.value = formatTime(field === "start" ? props.segment.start : props.segment.end)
+  const seconds = field === "start" ? props.segment.start : props.segment.end
+  editingTimeSeconds.value = seconds
+  editingTimeValue.value = formatTime(seconds)
   editingTimeField.value = field
   nextTick(() => timeInputRef.value?.select())
 }
 
 function applyTimeEdit() {
+  // Prefer parsed input value (user may have typed manually)
   const parsed = parseTime(editingTimeValue.value)
-  if (parsed !== null && editingTimeField.value) {
-    emit("update-time", props.segment.id, editingTimeField.value, parsed)
+  const finalSeconds = parsed !== null ? parsed : editingTimeSeconds.value
+  if (editingTimeField.value) {
+    emit("update-time", props.segment.id, editingTimeField.value, finalSeconds)
   }
   editingTimeField.value = null
 }
 
 function cancelTimeEdit() {
   editingTimeField.value = null
-}
-
-function adjustTime(delta: number) {
-  const current = parseFloat(editingTimeValue.value) || 0
-  editingTimeValue.value = (current + delta).toFixed(1)
-  applyTimeEdit()
 }
 
 function handleTimeEditKeydown(e: KeyboardEvent) {
@@ -142,14 +141,14 @@ function handleTimeEditKeydown(e: KeyboardEvent) {
     // v2.1.1 M4-2: ArrowUp = +0.1s (Shift = +1.0s)
     e.preventDefault()
     const step = e.shiftKey ? 1.0 : 0.1
-    const current = parseFloat(editingTimeValue.value) || 0
-    editingTimeValue.value = (current + step).toFixed(1)
+    editingTimeSeconds.value += step
+    editingTimeValue.value = formatTime(editingTimeSeconds.value)
   } else if (e.key === "ArrowDown") {
     // v2.1.1 M4-2: ArrowDown = -0.1s (Shift = -1.0s)
     e.preventDefault()
     const step = e.shiftKey ? 1.0 : 0.1
-    const current = parseFloat(editingTimeValue.value) || 0
-    editingTimeValue.value = (current - step).toFixed(1)
+    editingTimeSeconds.value = Math.max(0, editingTimeSeconds.value - step)
+    editingTimeValue.value = formatTime(editingTimeSeconds.value)
   }
 }
 
@@ -256,52 +255,28 @@ const statusClass = computed(() => {
     <!-- Time column: fixed width, no overlap -->
     <div class="text-xs text-gray-400 w-[150px] shrink-0 pt-0.5 font-mono overflow-hidden whitespace-nowrap">
       <template v-if="editingTimeField === 'start'">
-        <div class="flex items-center gap-0.5">
-          <button
-            class="text-[10px] text-gray-400 hover:text-blue-500 px-0.5 select-none"
-            title="-0.1s (Shift = -1s)"
-            @click.stop="adjustTime(-0.1)"
-          >&minus;</button>
-          <input
-            ref="timeInputRef"
-            v-model="editingTimeValue"
-            class="w-[55px] bg-white border border-blue-400 rounded px-0.5 py-0 text-[11px] font-mono outline-none"
-            @keydown="handleTimeEditKeydown"
-            @blur="applyTimeEdit"
-            @click.stop
-          />
-          <button
-            class="text-[10px] text-gray-400 hover:text-blue-500 px-0.5 select-none"
-            title="+0.1s (Shift = +1s)"
-            @click.stop="adjustTime(0.1)"
-          >+</button>
-        </div>
+        <input
+          ref="timeInputRef"
+          v-model="editingTimeValue"
+          class="w-[55px] bg-white border border-blue-400 rounded px-0.5 py-0 text-[11px] font-mono outline-none"
+          @keydown="handleTimeEditKeydown"
+          @blur="applyTimeEdit"
+          @click.stop
+        />
       </template>
       <template v-else>
         <span class="cursor-pointer hover:text-blue-500 hover:underline" title="Click to edit (Arrows = ±0.1s)" @mousedown="onTimeMouseDown('start', $event)">{{ formatTime(segment.start) }}</span>
       </template>
       <span class="mx-0.5">&rarr;</span>
       <template v-if="editingTimeField === 'end'">
-        <div class="flex items-center gap-0.5">
-          <button
-            class="text-[10px] text-gray-400 hover:text-blue-500 px-0.5 select-none"
-            title="-0.1s (Shift = -1s)"
-            @click.stop="adjustTime(-0.1)"
-          >&minus;</button>
-          <input
-            ref="timeInputRef"
-            v-model="editingTimeValue"
-            class="w-[55px] bg-white border border-blue-400 rounded px-0.5 py-0 text-[11px] font-mono outline-none"
-            @keydown="handleTimeEditKeydown"
-            @blur="applyTimeEdit"
-            @click.stop
-          />
-          <button
-            class="text-[10px] text-gray-400 hover:text-blue-500 px-0.5 select-none"
-            title="+0.1s (Shift = +1s)"
-            @click.stop="adjustTime(0.1)"
-          >+</button>
-        </div>
+        <input
+          ref="timeInputRef"
+          v-model="editingTimeValue"
+          class="w-[55px] bg-white border border-blue-400 rounded px-0.5 py-0 text-[11px] font-mono outline-none"
+          @keydown="handleTimeEditKeydown"
+          @blur="applyTimeEdit"
+          @click.stop
+        />
       </template>
       <template v-else>
         <span class="cursor-pointer hover:text-blue-500 hover:underline" title="Click to edit (Arrows = ±0.1s)" @mousedown="onTimeMouseDown('end', $event)">{{ formatTime(segment.end) }}</span>

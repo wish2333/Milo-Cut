@@ -92,7 +92,12 @@ function onGoBackToWorkspace() {
   showExportPage.value = false
 }
 
+const isFileDrag = (e: DragEvent): boolean => {
+  return e.dataTransfer?.types.includes("Files") ?? false
+}
+
 function handleWindowDragEnter(e: DragEvent) {
+  if (!isFileDrag(e)) return
   e.preventDefault()
   dragCounter++
   if (dragCounter === 1) {
@@ -101,10 +106,12 @@ function handleWindowDragEnter(e: DragEvent) {
 }
 
 function handleWindowDragOver(e: DragEvent) {
+  if (!isFileDrag(e)) return
   e.preventDefault()
 }
 
 function handleWindowDragLeave(e: DragEvent) {
+  if (!isFileDrag(e)) return
   e.preventDefault()
   dragCounter--
   if (dragCounter <= 0) {
@@ -114,6 +121,7 @@ function handleWindowDragLeave(e: DragEvent) {
 }
 
 async function handleWindowDrop(e: DragEvent) {
+  if (!isFileDrag(e)) return
   e.preventDefault()
   dragCounter = 0
   isDragging.value = false
