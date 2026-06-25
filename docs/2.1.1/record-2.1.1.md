@@ -572,3 +572,131 @@ watch(isDirty, (dirty, _old, onCleanup) => {
 - 测试净增: ~220 行
 - 全部测试: 367/367 通过
 
+## Spec-6: UI/UX 优化实施 (audit-report-2.1.1-6)
+
+**日期**: 2026-06-25
+**依据**: `docs/2.1.1/spec-2.1.1-6.md` + `docs/2.1.1/audit-report-2.1.1-6.md`
+**方法**: Subagent-Driven Development (5 批次, 13 commits)
+
+### 背景
+
+spec-2.1.1-6.md 定义了 v2.1.1 的 UI/UX 优化范围（侧边栏内联化、时间列重构、全局视觉精炼、Bug 修正、精华提取重构等 12 节）。审计报告核查后发现符合率仅 34%，按性质分为 A 类缺陷（现有 Bug ×5）和 B 类重构（新增布局/交互 ×2），制定 5 批实施计划。
+
+### 实施批次
+
+| 批次 | 优先级 | 内容 | 状态 |
+|------|--------|------|------|
+| 第零批 | Hotfix | P0-3 字幕修正 NameError 崩溃 | **完成** |
+| 第一批 | P0 Bug | P0-1 拖拽 guard + P0-2/P0-8 步进修复 + P0-7 移除 ± 按钮 | **完成** |
+| 第二批 | P0 数据 | P0-5 过滤已删除段 + P0-4 移除 EditDecision 污染 + 适配 jump_cuts/segmentHelpers | **完成** |
+| 第三批 | P0 布局 | P0-6 侧边栏内联化重构 | **完成** |
+| 第四批 | P1/P2 | 快捷键 Tab、HighlightModeView 重构、toast、API、右键菜单、按钮统一、CTRL+F/I/O/Ctrl+Shift+A/D | **完成** |
+
+### 第零批: P0-3 NameError Hotfix (61264c1)
+
+**问题**: `main.py:819` `_handle_subtitle_correction` 中 `timeline_id` 未定义。`_get_target_timeline` 内部计算了 `timeline_id` 但只返回 timeline 对象。
+
+**修复**: 在 `main.py:761` 补充 `timeline_id = task.payload.get("timeline_id", "") or self._project.current.active_timeline_id`，与 helper 内部逻辑一致。
+
+### 第一批: P0 Bug 修复 (7b00852)
+
+| Bug | 文件 | 修复 |
+|-----|------|------|
+| P0-1 | `App.vue` | 新增 `isFileDrag(e)` helper + 4 个 drag handler 增加 early return guard |
+| P0-2/P0-8 | `TranscriptRow.vue` | 引入 `editingTimeSeconds: ref<number>` 替代 `parseFloat(editingTimeValue)`；ArrowDown 加 `Math.max(0, ...)` 防负值；`applyTimeEdit` 处理手动输入与方向键两种情况 |
+| P0-7 | `TranscriptRow.vue` | 移除 4 个 ± 按钮元素 + 移除 `adjustTime` 函数 |
+
+### 第二批: 精华提取数据修复 (dfe767c)
+
+| Bug | 文件 | 修复 |
+|-----|------|------|
+| P0-5 | `main.py` | `_handle_highlight` 增加 `collect_confirmed_deleted_seg_ids` 过滤，与 smart_delete/subtitle_correction 一致 |
+| P0-4 | `main.py` | 移除 `llm_highlight` EditDecision 创建（~20 行代码块）；事件和返回值去 `edits` 字段 |
+| P0-4 | `main.py:detect_highlight_jump_cuts` | 改为从 `AnalysisResult(type="llm_highlight")` 读取范围 |
+| P0-4 | `core/export_service.py:get_highlight_ranges` | 新增 `analysis_results` + `transcript_segments` 参数；保留旧 dict 路径向后兼容 |
+| P0-4 | `segmentHelpers.ts` | `resolveSegmentState` 过滤 `source !== "llm_highlight"` |
+
+### 第三批: 侧边栏内联化 (aca148d)
+
+**文件**: `Timeline.vue` (+104 −125)
+
+| 变更 | 旧 | 新 |
+|------|-----|-----|
+| 定位方式 | `<Teleport to="body">` + `fixed top-0 bottom-0 right-0 shadow-2xl z-40` | flex 容器第三子元素，与字幕列表同平面 |
+| 过渡动画 | `transform translate-x` | `transition: width 200ms ease-out`（Vue Transition CSS） |
+| 标题栏 | 单行横贯 | 左右分区：左侧 Timeline 工具 + 右侧 Tab 按钮 + 收起箭头 |
+| 分隔条 | `w-1.5 bg-gray-200/0` | `w-px bg-gray-200 hover:bg-blue-400` + 透明 6px hit area |
+| 默认状态 | `sidebarOpen = false` | `sidebarOpen = true` |
+| 独立按钮 | `absolute` hamburger 菜单图标 | 移除，由标题栏箭头替代 |
+
+### 第四批: P1/P2 视觉精炼 + 功能补全 (e4aa36d..ed56a08)
+
+| 子项 | 文件 | 内容 |
+|------|------|------|
+| 快捷键 Tab | `SettingsModal.vue` | 新增 `'shortcuts'` Tab + 4 组快捷键展示（播放/编辑/微调/建议面板） |
+| HighlightModeView 重构 | `HighlightModeView.vue` | 密度文字徽章 → 8px 颜色圆点（green/yellow/gray）；第一行显示 `segment.text`（truncate） |
+| 字幕修正 toast | `WorkspacePage.vue` | 监听 `llm:subtitle_correction_completed` → `showToast("字幕修正完成，发现 N 条修改")` |
+| 后端 API | `main.py` | 新增 `add_highlight_segment(segment_id, timeline_id)` → Pydantic AnalysisResult 写入 |
+| 精华右键移除 | `HighlightModeView.vue` → `Timeline.vue` → `WorkspacePage.vue` | 完整 emit 链 + 后端 `remove_highlight_segment` |
+| 字幕右键加入精华 | `TranscriptRow.vue` → `Timeline.vue` → `WorkspacePage.vue` | 右键菜单项 → 调用 `add_highlight_segment` API |
+| 缺失快捷键 | `WorkspacePage.vue` | Ctrl+F 搜索、I/O 跳转片段首尾、Ctrl+Shift+A/D 全部确认/忽略 |
+| 按钮统一 | `Timeline.vue`, `HighlightModeView.vue`, `ExportPage.vue` | 主要按钮加 `active:scale-95`；统一 `rounded-md` |
+| 测试更新 | `HighlightModeView.test.ts` | 测试适配密度圆点 UI |
+
+### 审查修正 (fccb2fe)
+
+最终全分支审查发现 1 个 Critical + 2 个 Important 问题：
+
+| ID | 严重 | 文件 | 问题 | 修复 |
+|----|------|------|------|------|
+| C1 | Critical | `main.py:remove_highlight_segment` | `r.get("segment_ids", [])` 在 Pydantic 对象上调用 → AttributeError；直接赋值 `timeline.analysis.results = remaining` → frozen 模型 ValidationError | 改用 `r.segment_ids` 属性访问 + `_update_timeline_by_id` + `model_copy(update=...)` 模式 |
+| I1 | Important | `main.py:remove_highlight_segment` | 绕过 ProjectService 不可变契约 | 同上修复 |
+| I2 | Important | `WorkspacePage.vue` | I/O 快捷键无条件 `return` 消费按键 | `return` 移入成功 seek 分支内 |
+
+### 已知剩余问题（可延后）
+
+| # | 严重 | 描述 |
+|---|------|------|
+| M1 | Minor | `duration-150` 未添加到 `active:scale-95` 按钮（scale 动画不可见） |
+| M2 | Minor | SettingsModal save/cancel 按钮使用 `rounded-lg`（应为 `rounded-md`） |
+| M3 | Minor | Timeline merge 按钮使用 `rounded`（应为 `rounded-md`） |
+| M4 | Minor | 字幕修正 toast 无去重 guard |
+| M5 | Minor | `add_highlight_segment` / `remove_highlight_segment` 缺少后端单测 |
+
+### 变更文件清单
+
+#### 后端 (4 文件)
+
+| 文件 | 模块 | 变更 |
+|------|------|------|
+| `main.py` | 第零批+第二批+第四批 | `_handle_subtitle_correction` 补充 `timeline_id`；`_handle_highlight` 加过滤 + 移除 edits；`detect_highlight_jump_cuts` 改读 AnalysisResult；新增 `add_highlight_segment` + `remove_highlight_segment` API |
+| `core/export_service.py` | 第二批 | `get_highlight_ranges` 新签名 + 向后兼容 |
+| `core/timeline_utils.py` | (已有) | `collect_confirmed_deleted_seg_ids` 已在 AUD-4 新建，本次复用 |
+
+#### 前端 (8 文件)
+
+| 文件 | 模块 | 变更 |
+|------|------|------|
+| `App.vue` | 第一批 | `isFileDrag` helper + 4 handler guard |
+| `TranscriptRow.vue` | 第一批+第四批 | `editingTimeSeconds` ref + 移除 ± 按钮 + 右键"加入精华"菜单项 |
+| `Timeline.vue` | 第三批+第四批 | 侧边栏内联化重构 + 标题栏分区 + 分隔条 + 事件透传 |
+| `SettingsModal.vue` | 第四批 | 快捷键 Tab + 类型联合扩展 |
+| `HighlightModeView.vue` | 第四批 | 密度圆点 + 段落文本 + 右键移除 emit |
+| `WorkspacePage.vue` | 第四批+修正 | 字幕修正 toast + Ctrl+F/I/O/Ctrl+Shift+A/D 快捷键 + `handleRemoveHighlight` |
+| `segmentHelpers.ts` | 第二批 | `resolveSegmentState` 过滤 `llm_highlight` |
+| `useLlmTasks.ts` | (不改) | 事件监听不消费 `edits` 字段 |
+
+#### 测试 (1 文件)
+
+| 文件 | 模块 | 变更 |
+|------|------|------|
+| `frontend/src/components/workspace/__tests__/HighlightModeView.test.ts` | 第四批 | 适配密度圆点 UI |
+
+### 统计
+
+- 新增后端 API: 2 (`add_highlight_segment`, `remove_highlight_segment`)
+- 修改文件: 13
+- Commits: 13
+- 后端测试: 353/353 通过（无新增后端测试）
+- 前端构建: 0 错误
+
