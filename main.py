@@ -1456,15 +1456,17 @@ class MiloCutApi(Bridge):
         if timeline is None:
             return {"success": False, "error": f"Timeline {tl_id} not found"}
 
-        # Find and remove analysis results whose segment_ids include this segment
         results = timeline.analysis.results
-        removed = [r for r in results if segment_id in r.get("segment_ids", [])]
+        # AnalysisResult is a Pydantic model — use attribute access, not .get()
+        removed = [r for r in results if segment_id in r.segment_ids]
         if not removed:
             return {"success": False, "error": f"No highlight found for segment {segment_id}"}
 
-        # Remove by filtering out
-        remaining = [r for r in results if segment_id not in r.get("segment_ids", [])]
-        timeline.analysis.results = remaining
+        remaining = [r for r in results if segment_id not in r.segment_ids]
+        self._project._update_timeline_by_id(
+            tl_id,
+            analysis=timeline.analysis.model_copy(update={"results": remaining}),
+        )
         self._mark_dirty({"success": True})
 
         return {"success": True, "data": {"removed_count": len(removed)}}

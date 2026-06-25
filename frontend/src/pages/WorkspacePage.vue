@@ -1453,9 +1453,9 @@ function handleGlobalKeydown(e: KeyboardEvent) {
       if (seg) {
         e.preventDefault()
         handleSeek(seg.start)
+        return
       }
     }
-    return
   }
   if (e.key === "o" || e.key === "O") {
     if (editSelectedSegmentId.value) {
@@ -1463,9 +1463,9 @@ function handleGlobalKeydown(e: KeyboardEvent) {
       if (seg) {
         e.preventDefault()
         handleSeek(seg.end)
+        return
       }
     }
-    return
   }
   // §8: Ctrl+Shift+A confirm all, Ctrl+Shift+D reject all
   if (e.ctrlKey && e.shiftKey && e.key === "A") {
