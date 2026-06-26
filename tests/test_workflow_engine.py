@@ -379,67 +379,40 @@ class TestApplyDiscard:
         assert engine._active is None
 
     def test_apply_no_active(self, engine):
+        """v2.2.0: stub is idempotent — no active workflow returns success, applied_count 0."""
         result = engine.apply_workflow()
-        assert not result["success"]
+        assert result["success"]
+        assert result["data"]["applied_count"] == 0
 
-    def test_apply_hash_mismatch(self, engine, mock_deps):
-        """D-67: segments hash mismatch blocks apply."""
-        _task_mgr, project_svc, _emit = mock_deps
-        from tests.mocks.factories import make_project, make_segment
-
-        segs = [make_segment(id="seg-1", start=0, end=5, text="original")]
-        project = make_project(segments=segs)
-        project_svc.current = project
-
+    def test_apply_clears_active(self, engine):
+        """v2.2.0: non-sandbox stub clears _active and deletes snapshot, writes no project state."""
         engine._active = {
             "workflow_instance_id": "wfi-test",
             "workflow_id": "wf-1",
             "workflow_name": "test",
             "timeline_id": "default",
-            "segments_hash": "completely-different-hash",
-            "accumulated_edits": [],
-        }
-        result = engine.apply_workflow()
-        assert not result["success"]
-        assert "失效" in result["error"]
-
-    def test_apply_success(self, engine, mock_deps):
-        """Valid apply writes edits to project."""
-        _task_mgr, project_svc, _emit = mock_deps
-        from tests.mocks.factories import make_project, make_segment
-
-        segs = [make_segment(id="seg-1", start=0, end=5, text="original")]
-        project = make_project(segments=segs)
-        project_svc.current = project
-
-        # Compute the correct hash
-        import hashlib as _hash
-        import json as _json
-
-        payload = _json.dumps(
-            [{"id": s.id, "s": s.start, "e": s.end, "t": s.text} for s in segs],
-            ensure_ascii=False, sort_keys=True,
-        )
-        correct_hash = _hash.sha256(payload.encode()).hexdigest()
-
-        engine._active = {
-            "workflow_instance_id": "wfi-test",
-            "workflow_id": "wf-1",
-            "workflow_name": "测试工作流",
-            "timeline_id": "default",
-            "segments_hash": correct_hash,
-            "accumulated_edits": [
-                {"id": "edit-1", "start": 0, "end": 5, "action": "delete",
-                 "target_type": "segment", "target_id": "seg-1", "priority": 100},
-            ],
         }
         result = engine.apply_workflow()
         assert result["success"]
-        assert result["data"]["applied_count"] == 1
-        assert "workflow:wf-1:测试工作流" == result["data"]["source"]
-        # Project should have the new edit
-        assert len(project_svc.current.timelines[0].edits) == 1
-        # Snapshot cleared
+        assert result["data"]["applied_count"] == 0
+        # Stub must not touch project state — only clear the active workflow.
+        assert engine._active is None
+
+    def test_apply_does_not_write_project(self, engine, mock_deps):
+        """v2.2.0: apply must NOT read or write project_svc.current (B5)."""
+        _task_mgr, project_svc, _emit = mock_deps
+        # project_svc.current intentionally left as the MagicMock default;
+        # the stub must not dereference it.
+        engine._active = {
+            "workflow_instance_id": "wfi-test",
+            "workflow_id": "wf-1",
+            "workflow_name": "test",
+            "timeline_id": "default",
+        }
+        result = engine.apply_workflow()
+        assert result["success"]
+        # No save_project / current write attempted on the project service
+        project_svc.save_project.assert_not_called()
         assert engine._active is None
 
 

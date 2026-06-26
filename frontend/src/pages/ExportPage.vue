@@ -130,6 +130,20 @@ const subtitleCount = computed(() =>
   activeTimeline.value?.transcript?.segments?.filter(s => s.type === "subtitle").length ?? 0
 )
 
+// v2.2.0: Highlight export support
+const highlightCount = computed(() => {
+  const results = activeTimeline.value?.analysis?.results ?? []
+  const segIds = new Set<string>()
+  for (const r of results) {
+    if (r.type === "llm_highlight") {
+      for (const sid of r.segment_ids ?? []) {
+        segIds.add(sid)
+      }
+    }
+  }
+  return segIds.size
+})
+
 const sortedSegments = computed<Segment[]>(() =>
   [...(activeTimeline.value?.transcript?.segments ?? [])].sort((a, b) => a.start - b.start)
 )
@@ -209,6 +223,68 @@ async function handleExportVtt() {
   if (!task) {
     statusMessage.value = ""
     showToast("VTT 导出失败", "error")
+  }
+}
+
+// v2.2.0: Highlight reel export (video + audio + SRT)
+async function executeExportHighlightVideo() {
+  errorMessage.value = ""
+  statusMessage.value = "正在导出精华视频..."
+  await call("update_settings", {
+    export_video_codec: encodingSettings.value.videoCodec,
+    export_audio_codec: encodingSettings.value.audioCodec,
+    export_audio_bitrate: encodingSettings.value.audioBitrate,
+    export_preset: encodingSettings.value.preset,
+    export_crf: encodingSettings.value.quality,
+    export_resolution: encodingSettings.value.resolution,
+    export_ffmpeg_fade_duration: otioFadeDuration.value,
+    export_ffmpeg_fade_mode: otioFadeMode.value,
+  })
+  const task = await createExportTask("export_video", { highlight_mode: true })
+  if (task) {
+    pendingExportTasks.set(task, { type: "export_video", label: "精华视频导出" })
+  }
+  if (!task) {
+    statusMessage.value = ""
+    showToast("精华视频导出失败", "error")
+  }
+}
+
+function handleExportHighlightVideo() {
+  executeExportHighlightVideo()
+}
+
+async function executeExportHighlightAudio() {
+  errorMessage.value = ""
+  statusMessage.value = "正在导出精华音频..."
+  await call("update_settings", {
+    export_ffmpeg_fade_duration: otioFadeDuration.value,
+    export_ffmpeg_fade_mode: otioFadeMode.value,
+  })
+  const task = await createExportTask("export_audio", { highlight_mode: true })
+  if (task) {
+    pendingExportTasks.set(task, { type: "export_audio", label: "精华音频导出" })
+  }
+  if (!task) {
+    statusMessage.value = ""
+    showToast("精华音频导出失败", "error")
+  }
+}
+
+function handleExportHighlightAudio() {
+  executeExportHighlightAudio()
+}
+
+async function handleExportHighlightSrt() {
+  errorMessage.value = ""
+  statusMessage.value = "正在导出精华字幕..."
+  const task = await createExportTask("export_subtitle", { highlight_mode: true })
+  if (task) {
+    pendingExportTasks.set(task, { type: "export_subtitle", label: "精华字幕导出" })
+  }
+  if (!task) {
+    statusMessage.value = ""
+    showToast("精华字幕导出失败", "error")
   }
 }
 
@@ -379,6 +455,43 @@ function formatTimeShort(seconds: number): string {
             <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
             导出 VTT
           </button>
+
+          <!-- Highlight export section -->
+          <div class="border-t border-gray-200 pt-3 mt-3">
+            <h4 class="text-xs font-medium text-gray-500 mb-2">
+              精华导出
+              <span v-if="highlightCount > 0" class="text-gray-400">({{ highlightCount }} 个片段)</span>
+            </h4>
+            <div class="space-y-2">
+              <button
+                class="w-full flex items-center gap-2 rounded-md bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700 active:scale-95 transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50"
+                :disabled="isExporting || highlightCount === 0"
+                @click="handleExportHighlightVideo"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" /></svg>
+                精华视频
+              </button>
+              <button
+                class="w-full flex items-center gap-2 rounded-md bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700 active:scale-95 transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50"
+                :disabled="isExporting || highlightCount === 0"
+                @click="handleExportHighlightAudio"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z" /></svg>
+                精华音频
+              </button>
+              <button
+                class="w-full flex items-center gap-2 rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 active:scale-95 transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50"
+                :disabled="isExporting || highlightCount === 0"
+                @click="handleExportHighlightSrt"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                精华字幕
+              </button>
+              <p v-if="highlightCount === 0" class="text-xs text-gray-400">
+                暂无精华片段。在工作区右键字幕片段可选择"加入精华"。
+              </p>
+            </div>
+          </div>
 
           <!-- Transition settings (applies to OTIO + FFmpeg export) -->
           <div class="border-t border-gray-200 pt-3 mt-3">

@@ -137,7 +137,6 @@ describe("AIAssistantPanel -- workflow mode", () => {
     await workflowTab?.trigger("click")
 
     const text = wrapper.text()
-    expect(text).toContain("规则分析")
     expect(text).toContain("P0 智能删除")
     expect(text).toContain("P1 字幕修正")
     expect(text).toContain("P2 精华提取")
@@ -188,7 +187,7 @@ describe("AIAssistantPanel -- workflow mode", () => {
     expect(wrapper.text()).toContain("等待系统资源")
   })
 
-  it("shows apply/discard buttons after workflow completes", async () => {
+  it("shows completion status and return-to-config button after workflow completes", async () => {
     _isActive.value = false
     _instanceId.value = "wfi-test"
 
@@ -198,7 +197,10 @@ describe("AIAssistantPanel -- workflow mode", () => {
     await workflowTab?.trigger("click")
 
     const text = wrapper.text()
-    expect(text).toContain("应用结果到项目")
-    expect(text).toContain("放弃")
+    // v2.2.0: Apply/Discard removed; completion view shows status + return button
+    expect(text).toContain("工作流已完成")
+    expect(text).toContain("返回配置")
+    expect(text).not.toContain("应用结果到项目")
+    expect(text).not.toContain("放弃")
   })
 })

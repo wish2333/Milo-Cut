@@ -67,8 +67,10 @@ const currentPresetId = ref("")           // shared preset for single-function o
 const newWorkflowName = ref("")
 const newWorkflowSteps = ref<WorkflowStep[]>([
   { type: "llm_smart_delete", preset_id: null },
+  { type: "llm_subtitle_correction", preset_id: null },
 ])
 const selectedWorkflowId = ref("")
+const autoSavedWorkflowId = ref("") // v2.2.1: track auto-saved workflows for cleanup
 
 const stepLabels: Record<string, string> = {
   llm_smart_delete: "P0 智能删除",
@@ -186,7 +188,20 @@ async function handleSaveWorkflow() {
 }
 
 async function handleStartWorkflow() {
-  if (!selectedWorkflowId.value) return
+  if (newWorkflowSteps.value.length === 0) return
+
+  // Auto-save before start if no workflow selected
+  if (!selectedWorkflowId.value) {
+    const name = newWorkflowName.value.trim() || `工作流 ${new Date().toLocaleTimeString()}`
+    const res = await wf.saveWorkflow(name, newWorkflowSteps.value)
+    if (!res.success) {
+      return
+    }
+    autoSavedWorkflowId.value = res.data?.id || ""
+    selectedWorkflowId.value = res.data?.id || ""
+    newWorkflowName.value = name
+  }
+
   await wf.startWorkflow(selectedWorkflowId.value)
 }
 
@@ -200,13 +215,20 @@ async function handleCancelWorkflow(mode: "immediate" | "after_current") {
   await wf.cancelWorkflow(mode)
 }
 
-async function handleApplyWorkflow() {
-  await wf.applyWorkflow()
+// v2.2.0: 非沙箱模式 — 工作流步骤已直接写入 project，完成后仅提供「返回配置」
+function handleReturnToConfig() {
+  // 清除 instanceId，回到配置视图（v-else 分支）
+  wf.instanceId.value = null
 }
 
-async function handleDiscardWorkflow() {
-  await wf.discardWorkflow()
-}
+// v2.2.1: 自动清理无配置启动时自动保存的工作流
+watch(() => wf.isActive.value, (newVal, oldVal) => {
+  if (!newVal && oldVal && autoSavedWorkflowId.value) {
+    const id = autoSavedWorkflowId.value
+    autoSavedWorkflowId.value = ""
+    wf.deleteWorkflow(id)
+  }
+})
 
 onMounted(() => {
   wf.loadWorkflows()
@@ -411,16 +433,15 @@ function handleSearchSeek(time: number) {
           </div>
         </Teleport>
 
-        <!-- Apply / Discard (after completion, D-10, D-17) -->
+        <!-- v2.2.0: 完成状态视图 — 移除 Apply/Discard，改为「返回配置」 -->
         <div v-if="!wf.isActive.value && wf.instanceId.value" class="flex flex-col gap-2">
-          <button
-            class="rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700"
-            @click="handleApplyWorkflow"
-          >应用结果到项目</button>
+          <div class="rounded-md bg-green-50 px-3 py-2 text-xs text-green-700">
+            工作流已完成 — 结果已写入项目
+          </div>
           <button
             class="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
-            @click="handleDiscardWorkflow"
-          >放弃</button>
+            @click="handleReturnToConfig"
+          >返回配置</button>
         </div>
       </div>
 
@@ -429,7 +450,7 @@ function handleSearchSeek(time: number) {
         <!-- Big "启动" button at top -->
         <button
           class="w-full rounded-md bg-blue-600 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-          :disabled="!selectedWorkflowId"
+          :disabled="newWorkflowSteps.length === 0"
           @click="handleStartWorkflow"
         >工作流启动</button>
 
