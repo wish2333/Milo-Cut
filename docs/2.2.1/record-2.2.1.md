@@ -83,3 +83,49 @@ v2.2.1 修复 macOS 首次启动时多个页面空白的竞态问题。
 
 1. **macOS 全新环境回归**：清空 `~/Library/Application Support/MiloCut/` 后冷启动，确认所有页面正常；重启 5 次均正常
 2. **平台回归**：Windows / Linux 运行一遍 — `loaded` 事件竞态跨平台存在，只是触发概率不同
+
+---
+
+## 发布：v2.2.1 合并 main
+
+### 合并范围
+
+- 基准：`main` @ `af2bddc` (v2.2.0 release)
+- 合并分支：`dev-2.2.1` -> `main`
+- 净增 commits：3 个（927fccb, 92168ac, 0cab462）
+
+### Merge Message
+
+```
+release: v2.2.1 -- macOS 首次启动页面空白修复
+
+修复:
+- pywebview 桥竞态修复：后端 __BRIDGE_READY__ 信号 + 前端双信号轮询
+- SettingsModal 延迟挂载：v-if 控制，冷启动不再发起调用风暴
+- call() 层兜底：桥未就绪时先等待再发起调用
+- env.d.ts 补充 __BRIDGE_READY__ 类型声明
+
+验证:
+- 前端测试 171 全通过（14 文件）
+- 前端构建成功（vue-tsc + vite build）
+```
+
+### Release Note (v2.2.1)
+
+**版本**: 2.2.1
+**发布日期**: 2026-06-26
+**基准**: v2.2.0
+**分支**: `dev-2.2.1` -> `main`
+
+#### Bug 修复
+
+- **macOS 首次启动空白页**：修复因 pywebview 桥竞态（`js_api` 注入早于 `loaded` 事件）导致冷启动时所有桥调用被 WebKit 静默丢弃的问题。
+  - 后端 `on_loaded` 显式设置 `window.__BRIDGE_READY__` 信号
+  - 前端 `waitForPyWebView` 改为双信号轮询（api 存在 + READY 标志），避免 `loaded` 前误判就绪
+  - SettingsModal 改为 `v-if` 延迟挂载，冷启动不再并发发起 10+ 桥调用
+  - `call()` 入口增加桥未就绪等待兜底
+
+#### 质量基线
+
+- 前端测试：171 全通过（14 文件）
+- 前端构建：成功（vue-tsc + vite build）
