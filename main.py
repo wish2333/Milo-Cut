@@ -400,6 +400,14 @@ class MiloCutApi(Bridge):
             )
             if not edits_data:
                 raise ValueError("No highlight segments to export")
+            logger.info(
+                "highlight export: {} segments, {} virtual edits, "
+                "analysis_results={}, media_duration={}",
+                len(segments_data),
+                len(edits_data),
+                len(timeline.analysis.results),
+                media_duration,
+            )
         else:
             edits_data = [e.model_dump() for e in timeline.edits]
         return segments_data, edits_data

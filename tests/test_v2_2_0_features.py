@@ -162,6 +162,38 @@ class TestGetHighlightRanges:
         ranges = get_highlight_ranges(results, segments)
         assert ranges == [(0, 5), (10, 15)]
 
+    def test_ignores_non_highlight_analysis_types(self):
+        """Regression: llm_smart_delete / llm_subtitle_correction segment_ids
+        must NOT be treated as highlights.
+
+        Before the fix, get_highlight_ranges collected segment_ids from ALL
+        AnalysisResult types, so a project that had run P0 smart-delete
+        analysis would export ~the entire suggested-delete set as the
+        "highlight reel" instead of just the marked highlights.
+        """
+        results = [
+            # The single real highlight
+            AnalysisResult(id="hl-1", type="llm_highlight", segment_ids=["s2"]),
+            # P0 smart-delete suggestion carrying many segment_ids
+            AnalysisResult(
+                id="sd-1", type="llm_smart_delete",
+                segment_ids=["s1", "s3", "s4"],
+            ),
+            # P1 subtitle correction carrying another segment_id
+            AnalysisResult(
+                id="sc-1", type="llm_subtitle_correction", segment_ids=["s4"],
+            ),
+        ]
+        segments = [
+            {"id": "s1", "start": 0, "end": 5},
+            {"id": "s2", "start": 5, "end": 10},
+            {"id": "s3", "start": 10, "end": 15},
+            {"id": "s4", "start": 15, "end": 20},
+        ]
+        ranges = get_highlight_ranges(results, segments)
+        # Only s2 (the llm_highlight) should remain
+        assert ranges == [(5, 10)]
+
 
 class TestBuildHighlightExportEdits:
     """Tests for build_highlight_export_edits()."""

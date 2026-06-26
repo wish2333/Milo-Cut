@@ -512,9 +512,16 @@ def get_highlight_ranges(
             ):
                 result.append((item["start"], item["end"]))
     else:
-        # New path: derive from AnalysisResult segment_ids
+        # New path: derive from AnalysisResult segment_ids.
+        # CRITICAL: only collect segment_ids from llm_highlight results —
+        # llm_smart_delete / llm_subtitle_correction results also carry
+        # segment_ids, and including them would treat every suggested-delete
+        # segment as a highlight (bug: highlight reel exported ~entire video).
         seg_ids: set[str] = set()
         for r in analysis_results:
+            r_type = getattr(r, "type", None) or (r.get("type") if isinstance(r, dict) else None)
+            if r_type != "llm_highlight":
+                continue
             ids = getattr(r, "segment_ids", None) or r.get("segment_ids", [])
             seg_ids.update(ids)
 
