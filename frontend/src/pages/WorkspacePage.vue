@@ -2188,6 +2188,7 @@ onUnmounted(() => {
 
     <!-- Phase 2: Settings modal (opened from AI assistant "go to settings") -->
     <SettingsModal
+      v-if="showSettingsModal"
       :visible="showSettingsModal"
       @close="handleSettingsClosed"
     />

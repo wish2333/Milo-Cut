@@ -152,6 +152,7 @@ function formatRelativeTime(iso: string): string {
   </div>
 
   <SettingsModal
+    v-if="showSettings"
     :visible="showSettings"
     @close="showSettings = false"
   />
