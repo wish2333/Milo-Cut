@@ -545,6 +545,7 @@ def build_highlight_export_edits(
     segments: list[dict],
     analysis_results: list,
     media_duration: float = 0.0,
+    existing_edits: list[dict] | None = None,
 ) -> list[dict]:
     """Build virtual edit-decision list for highlight reel export.
 
@@ -557,11 +558,18 @@ def build_highlight_export_edits(
     segment_ids (covers both LLM-extracted and manually-added highlights
     via source="manual_highlight" which also stores type="llm_highlight").
 
+    If ``existing_edits`` is provided, user-confirmed deletes are subtracted
+    from the highlight ranges so that content the user already cut is NOT
+    re-included in the highlight reel.
+
     Args:
         segments: Transcript segment dicts with 'id', 'start', 'end'.
         analysis_results: AnalysisResult objects (or dicts) from the timeline.
         media_duration: Total media duration (to compute deletion ranges that
             extend beyond the last highlight).
+        existing_edits: Optional list of EditDecision dicts from the timeline.
+            Confirmed deletes are honored: their ranges are removed from the
+            highlight keep-ranges.
 
     Returns:
         Edit-decision dicts with action="delete", status="confirmed" for all
@@ -574,7 +582,19 @@ def build_highlight_export_edits(
     # Merge overlapping highlight ranges
     merged = _merge_ranges(highlight_ranges)
 
-    # Compute the inverse: ranges that are NOT highlights (to delete)
+    # v2.2.0 fix: subtract user-confirmed deletes from highlight ranges so
+    # that content the user already cut is not re-included in the reel.
+    if existing_edits:
+        confirmed_deletes = [
+            (e["start"], e["end"])
+            for e in existing_edits
+            if e.get("action") == "delete" and e.get("status") == "confirmed"
+        ]
+        if confirmed_deletes:
+            merged = _subtract_ranges(merged, _merge_ranges(confirmed_deletes))
+
+    # After subtraction, highlight ranges may become empty or fragmented.
+    # Recompute the inverse: ranges that are NOT (remaining) highlights.
     total_duration = media_duration
     if segments:
         total_duration = max(total_duration, max(s.get("end", 0) for s in segments))
@@ -601,6 +621,38 @@ def build_highlight_export_edits(
         }
         for i, (start, end) in enumerate(deletion_ranges)
     ]
+
+
+def _subtract_ranges(
+    base: list[tuple[float, float]],
+    subtract: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    """Subtract ``subtract`` ranges from ``base`` ranges.
+
+    Both inputs must be sorted and non-overlapping (use _merge_ranges first).
+    Returns the resulting list of (start, end) tuples, also sorted and merged.
+    """
+    if not subtract:
+        return base
+    result: list[tuple[float, float]] = []
+    for b_start, b_end in base:
+        # Start with the full base range, then punch holes
+        fragments: list[tuple[float, float]] = [(b_start, b_end)]
+        for s_start, s_end in subtract:
+            new_fragments: list[tuple[float, float]] = []
+            for f_start, f_end in fragments:
+                if s_end <= f_start or s_start >= f_end:
+                    # No overlap
+                    new_fragments.append((f_start, f_end))
+                else:
+                    # Overlap: split into up to 2 fragments
+                    if f_start < s_start:
+                        new_fragments.append((f_start, s_start))
+                    if s_end < f_end:
+                        new_fragments.append((s_end, f_end))
+            fragments = new_fragments
+        result.extend(fragments)
+    return _merge_ranges(result) if result else []
 
 
 def _get_media_duration(

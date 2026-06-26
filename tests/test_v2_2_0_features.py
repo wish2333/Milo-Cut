@@ -265,3 +265,68 @@ class TestBuildHighlightExportEdits:
         assert len(edits) == 1
         assert edits[0]["start"] == 25
         assert edits[0]["end"] == 30
+
+    def test_existing_confirmed_deletes_subtracted(self):
+        """v2.2.0 BUG2 fix: user-confirmed deletes inside highlight ranges
+        are honored -- the deleted portion is NOT re-included in the reel."""
+        results = [
+            AnalysisResult(id="ar1", type="llm_highlight", segment_ids=["s1", "s2"]),
+        ]
+        segments = [
+            {"id": "s1", "start": 0, "end": 10},
+            {"id": "s2", "start": 10, "end": 20},
+        ]
+        # User deleted 4-6 (inside highlight s1 range)
+        existing_edits = [
+            {"id": "ed1", "start": 4, "end": 6, "action": "delete", "status": "confirmed"},
+        ]
+        edits = build_highlight_export_edits(
+            segments, results, media_duration=20, existing_edits=existing_edits
+        )
+        # Highlight range was 0-20, minus 4-6 -> keep 0-4 and 6-20
+        # So deletions should be 4-6 only (nothing outside highlight)
+        assert len(edits) == 1
+        assert edits[0]["start"] == 4
+        assert edits[0]["end"] == 6
+
+    def test_existing_deletes_outside_highlights_redundant(self):
+        """Confirmed deletes outside highlight ranges don't cause duplicates."""
+        results = [
+            AnalysisResult(id="ar1", type="llm_highlight", segment_ids=["s2"]),
+        ]
+        segments = [
+            {"id": "s1", "start": 0, "end": 10},
+            {"id": "s2", "start": 10, "end": 20},
+        ]
+        # User deleted 0-5 (outside highlight, already in non-highlight deletion)
+        existing_edits = [
+            {"id": "ed1", "start": 0, "end": 5, "action": "delete", "status": "confirmed"},
+        ]
+        edits = build_highlight_export_edits(
+            segments, results, media_duration=20, existing_edits=existing_edits
+        )
+        # Highlight is s2 (10-20), non-highlight 0-10 already deleted.
+        # User delete 0-5 is subset, no extra deletion needed.
+        # Result: single deletion 0-10
+        assert len(edits) == 1
+        assert edits[0]["start"] == 0
+        assert edits[0]["end"] == 10
+
+    def test_existing_pending_edits_ignored(self):
+        """Only confirmed deletes affect highlight ranges; pending ones ignored."""
+        results = [
+            AnalysisResult(id="ar1", type="llm_highlight", segment_ids=["s1", "s2"]),
+        ]
+        segments = [
+            {"id": "s1", "start": 0, "end": 10},
+            {"id": "s2", "start": 10, "end": 20},
+        ]
+        # Pending delete (not confirmed) should be ignored
+        existing_edits = [
+            {"id": "ed1", "start": 4, "end": 6, "action": "delete", "status": "pending"},
+        ]
+        edits = build_highlight_export_edits(
+            segments, results, media_duration=20, existing_edits=existing_edits
+        )
+        # No deletions since highlight covers entire range and pending is ignored
+        assert edits == []

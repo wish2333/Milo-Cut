@@ -219,7 +219,8 @@ class MiloCutApi(Bridge):
             output_path = task.payload.get("output_path", "")
             if not output_path:
                 base, ext = os.path.splitext(media_path)
-                output_path = f"{base}_cut{ext}"
+                suffix = "_highlight" if task.payload.get("highlight_mode") else "_cut"
+                output_path = f"{base}{suffix}{ext}"
 
             # Read encoding settings from project settings
             settings = load_settings()
@@ -284,7 +285,8 @@ class MiloCutApi(Bridge):
         segments_data, edits_data = self._get_export_segments_and_edits(task, timeline)
         output_path = task.payload.get("output_path", "")
         if not output_path:
-            output_path = os.path.splitext(project.media.path)[0] + "_cut.srt"
+            suffix = "_highlight.srt" if task.payload.get("highlight_mode") else "_cut.srt"
+            output_path = os.path.splitext(project.media.path)[0] + suffix
 
         media_duration = project.media.duration if project.media else 0.0
         return export_srt(
@@ -305,7 +307,8 @@ class MiloCutApi(Bridge):
         segments_data, edits_data = self._get_export_segments_and_edits(task, timeline)
         output_path = task.payload.get("output_path", "")
         if not output_path:
-            output_path = os.path.splitext(project.media.path)[0] + "_cut.vtt"
+            suffix = "_highlight.vtt" if task.payload.get("highlight_mode") else "_cut.vtt"
+            output_path = os.path.splitext(project.media.path)[0] + suffix
 
         media_duration = project.media.duration if project.media else 0.0
         return export_vtt(
@@ -328,7 +331,8 @@ class MiloCutApi(Bridge):
         output_path = task.payload.get("output_path", "")
         if not output_path:
             base, _ = os.path.splitext(media_path)
-            output_path = f"{base}_cut.m4a"
+            suffix = "_highlight" if task.payload.get("highlight_mode") else "_cut"
+            output_path = f"{base}{suffix}.m4a"
 
         settings = load_settings()
         fade_dur = float(settings.get("export_ffmpeg_fade_duration", 0.0))
@@ -392,6 +396,7 @@ class MiloCutApi(Bridge):
                 segments_data,
                 timeline.analysis.results,
                 media_duration=media_duration,
+                existing_edits=[e.model_dump() for e in timeline.edits],
             )
             if not edits_data:
                 raise ValueError("No highlight segments to export")
