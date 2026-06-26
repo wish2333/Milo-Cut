@@ -519,15 +519,88 @@ def get_highlight_ranges(
             seg_ids.update(ids)
 
         if transcript_segments is not None:
-            seg_map = {s.id: s for s in transcript_segments}
+            # Support both Segment objects (.id) and dict segments ("id")
+            seg_map: dict[str, Any] = {}
+            for s in transcript_segments:
+                sid = getattr(s, "id", None) or (s.get("id") if isinstance(s, dict) else None)
+                if sid:
+                    seg_map[sid] = s
             for sid in seg_ids:
                 seg = seg_map.get(sid)
                 if seg is not None:
-                    result.append((seg.start, seg.end))
+                    start = getattr(seg, "start", None)
+                    end = getattr(seg, "end", None)
+                    if start is None and isinstance(seg, dict):
+                        start = seg.get("start")
+                        end = seg.get("end")
+                    if start is not None and end is not None:
+                        result.append((start, end))
         # If no transcript_segments provided, return empty — caller must supply them.
 
     result.sort(key=lambda x: x[0])
     return result
+
+
+def build_highlight_export_edits(
+    segments: list[dict],
+    analysis_results: list,
+    media_duration: float = 0.0,
+) -> list[dict]:
+    """Build virtual edit-decision list for highlight reel export.
+
+    v2.2.0: Instead of deleting unwanted ranges, we keep ONLY highlight ranges
+    and mark everything else as confirmed-delete. This lets the existing
+    export_video / export_audio / export_srt pipeline produce a highlight
+    reel without any FFmpeg-level changes.
+
+    Highlight ranges are derived from AnalysisResult(type="llm_highlight")
+    segment_ids (covers both LLM-extracted and manually-added highlights
+    via source="manual_highlight" which also stores type="llm_highlight").
+
+    Args:
+        segments: Transcript segment dicts with 'id', 'start', 'end'.
+        analysis_results: AnalysisResult objects (or dicts) from the timeline.
+        media_duration: Total media duration (to compute deletion ranges that
+            extend beyond the last highlight).
+
+    Returns:
+        Edit-decision dicts with action="delete", status="confirmed" for all
+        non-highlight ranges. If no highlights exist, returns an empty list.
+    """
+    highlight_ranges = get_highlight_ranges(analysis_results, segments)
+    if not highlight_ranges:
+        return []
+
+    # Merge overlapping highlight ranges
+    merged = _merge_ranges(highlight_ranges)
+
+    # Compute the inverse: ranges that are NOT highlights (to delete)
+    total_duration = media_duration
+    if segments:
+        total_duration = max(total_duration, max(s.get("end", 0) for s in segments))
+
+    deletion_ranges: list[tuple[float, float]] = []
+    current = 0.0
+    for hl_start, hl_end in merged:
+        if current < hl_start:
+            deletion_ranges.append((current, hl_start))
+        current = max(current, hl_end)
+    if current < total_duration:
+        deletion_ranges.append((current, total_duration))
+
+    # Build virtual edit dicts in the format export functions expect
+    return [
+        {
+            "id": f"highlight_cut_{i}",
+            "start": start,
+            "end": end,
+            "action": "delete",
+            "status": "confirmed",
+            "source": "highlight_export",
+            "target_type": "range",
+        }
+        for i, (start, end) in enumerate(deletion_ranges)
+    ]
 
 
 def _get_media_duration(

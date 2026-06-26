@@ -386,17 +386,21 @@ def _build_structured_user_message(
     Returns:
         JSON string suitable for the LLM user message.
     """
-    payload: dict[str, Any] = {
-        "segments": [
-            {
-                "id": str(s.get("id", s.get("segment_id", "?"))),
-                "text": str(s.get("text", "")).strip(),
-                "start": s.get("start"),
-                "end": s.get("end"),
-            }
-            for s in segments
-        ],
-    }
+    seg_list: list[dict[str, Any]] = []
+    for s in segments:
+        item: dict[str, Any] = {
+            "id": str(s.get("id", s.get("segment_id", "?"))),
+            "text": str(s.get("text", "")).strip(),
+            "start": s.get("start"),
+            "end": s.get("end"),
+        }
+        # v2.2.0: forward optional edit_hint (e.g. partial_delete reason)
+        # so downstream LLM features can leverage prior edit decisions.
+        edit_hint = s.get("edit_hint")
+        if edit_hint:
+            item["edit_hint"] = str(edit_hint)
+        seg_list.append(item)
+    payload: dict[str, Any] = {"segments": seg_list}
     if extra_context:
         payload.update(extra_context)
     return json.dumps(payload, ensure_ascii=False)

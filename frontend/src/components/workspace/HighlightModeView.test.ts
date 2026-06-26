@@ -32,7 +32,9 @@ describe("HighlightModeView", () => {
     const wrapper = mount(HighlightModeView, {
       props: { highlights: [], segments, llmConfigured: false },
     })
-    expect(wrapper.text()).toContain("请先在设置中配置")
+    expect(wrapper.text()).toContain("自动提取需要配置 LLM")
+    // v2.2.0: should also guide user to manual add via right-click
+    expect(wrapper.text()).toContain("手动加入精华")
   })
 
   it("renders highlights sorted by start time", () => {

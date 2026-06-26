@@ -213,8 +213,8 @@ class MiloCutApi(Bridge):
             if self._project.current.media is None:
                 raise ValueError("No media in project")
             project = self._project.current
-            segments_data = [s.model_dump() for s in project.active_timeline.transcript.segments]
-            edits_data = [e.model_dump() for e in project.active_timeline.edits]
+            timeline = project.active_timeline
+            segments_data, edits_data = self._get_export_segments_and_edits(task, timeline)
             media_path = project.media.path
             output_path = task.payload.get("output_path", "")
             if not output_path:
@@ -280,8 +280,8 @@ class MiloCutApi(Bridge):
         if self._project.current.media is None:
             raise ValueError("No media in project")
         project = self._project.current
-        segments_data = [s.model_dump() for s in project.active_timeline.transcript.segments]
-        edits_data = [e.model_dump() for e in project.active_timeline.edits]
+        timeline = project.active_timeline
+        segments_data, edits_data = self._get_export_segments_and_edits(task, timeline)
         output_path = task.payload.get("output_path", "")
         if not output_path:
             output_path = os.path.splitext(project.media.path)[0] + "_cut.srt"
@@ -301,8 +301,8 @@ class MiloCutApi(Bridge):
         if self._project.current.media is None:
             raise ValueError("No media in project")
         project = self._project.current
-        segments_data = [s.model_dump() for s in project.active_timeline.transcript.segments]
-        edits_data = [e.model_dump() for e in project.active_timeline.edits]
+        timeline = project.active_timeline
+        segments_data, edits_data = self._get_export_segments_and_edits(task, timeline)
         output_path = task.payload.get("output_path", "")
         if not output_path:
             output_path = os.path.splitext(project.media.path)[0] + "_cut.vtt"
@@ -322,8 +322,8 @@ class MiloCutApi(Bridge):
         if self._project.current.media is None:
             raise ValueError("No media in project")
         project = self._project.current
-        segments_data = [s.model_dump() for s in project.active_timeline.transcript.segments]
-        edits_data = [e.model_dump() for e in project.active_timeline.edits]
+        timeline = project.active_timeline
+        segments_data, edits_data = self._get_export_segments_and_edits(task, timeline)
         media_path = project.media.path
         output_path = task.payload.get("output_path", "")
         if not output_path:
@@ -366,6 +366,38 @@ class MiloCutApi(Bridge):
         if timeline is None:
             raise ValueError(f"Timeline {timeline_id} not found")
         return timeline
+
+    def _get_export_segments_and_edits(self, task, timeline):
+        """Get segments and edits for export, applying highlight mode if requested.
+
+        v2.2.0: When ``task.payload["highlight_mode"]`` is true, replaces the
+        normal edit list with virtual edits that delete all non-highlight ranges,
+        so the existing export pipeline produces a highlight reel.
+
+        Returns ``(segments_data, edits_data)``.
+        """
+        segments_data = [s.model_dump() for s in timeline.transcript.segments]
+        if task.payload.get("highlight_mode"):
+            from core.export_service import build_highlight_export_edits
+
+            # Use actual media duration (not just last segment end) so trailing
+            # content after the last subtitle is correctly excluded from the
+            # highlight reel.
+            media_duration = 0.0
+            if self._project.current and self._project.current.media:
+                media_duration = self._project.current.media.duration
+            if not media_duration and segments_data:
+                media_duration = max(s["end"] for s in segments_data)
+            edits_data = build_highlight_export_edits(
+                segments_data,
+                timeline.analysis.results,
+                media_duration=media_duration,
+            )
+            if not edits_data:
+                raise ValueError("No highlight segments to export")
+        else:
+            edits_data = [e.model_dump() for e in timeline.edits]
+        return segments_data, edits_data
 
     def _handle_waveform_generation(self, task, cancel_event, progress_cb):
         """Generate waveform peak data for the project media."""
@@ -755,7 +787,10 @@ class MiloCutApi(Bridge):
             raise ValueError("No project open")
 
         from core.llm_service import analyze_subtitle_correction
-        from core.timeline_utils import collect_confirmed_deleted_seg_ids
+        from core.timeline_utils import (
+            collect_confirmed_deleted_seg_ids,
+            collect_partial_delete_hints,
+        )
 
         timeline = self._get_target_timeline(task)
         timeline_id = task.payload.get("timeline_id", "") or self._project.current.active_timeline_id
@@ -766,11 +801,19 @@ class MiloCutApi(Bridge):
 
         # Audit #8: filter out confirmed-deleted segments before LLM correction
         deleted_seg_ids = collect_confirmed_deleted_seg_ids(timeline)
-        segments = [
-            s.model_dump()
-            for s in timeline.transcript.segments
-            if s.type == SegmentType.SUBTITLE and s.id not in deleted_seg_ids
-        ]
+        # v2.2.0: collect partial_delete hints from prior smart-delete analysis
+        # so the subtitle correction LLM can leverage them (e.g. intra-sentence
+        # errors that cannot be wholesale deleted but should be textually fixed).
+        partial_hints = collect_partial_delete_hints(timeline)
+        segments = []
+        for s in timeline.transcript.segments:
+            if s.type != SegmentType.SUBTITLE or s.id in deleted_seg_ids:
+                continue
+            seg_dict = s.model_dump()
+            hint = partial_hints.get(s.id)
+            if hint:
+                seg_dict["edit_hint"] = hint
+            segments.append(seg_dict)
         if not segments:
             raise ValueError("No subtitle segments to correct")
 

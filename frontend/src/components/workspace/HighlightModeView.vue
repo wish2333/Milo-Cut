@@ -122,7 +122,7 @@ function onHighlightContextMenu(e: MouseEvent, segmentId: string) {
 
     <!-- Not configured warning -->
     <div v-if="!llmConfigured" class="rounded-lg border border-yellow-200 bg-yellow-50 p-2 text-xs text-yellow-800">
-      <span>请先在设置中配置 LLM 连接</span>
+      <span>自动提取需要配置 LLM 连接。你也可以右键字幕片段手动加入精华。</span>
     </div>
 
     <!-- Error -->
@@ -223,9 +223,10 @@ function onHighlightContextMenu(e: MouseEvent, segmentId: string) {
     <!-- Empty state -->
     <div
       v-if="sortedHighlights.length === 0 && !loading"
-      class="flex flex-1 items-center justify-center text-xs text-gray-400"
+      class="flex flex-1 items-center justify-center text-center text-xs text-gray-400"
     >
-      暂无高光片段，输入目标时长后开始提取
+      <span v-if="llmConfigured">暂无高光片段，输入目标时长后开始提取</span>
+      <span v-else>暂无精华片段。右键字幕片段选择"加入精华"即可手动添加</span>
     </div>
   </div>
 </template>
