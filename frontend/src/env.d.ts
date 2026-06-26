@@ -10,4 +10,6 @@ interface PyWebView {
 
 interface Window {
   pywebview?: PyWebView;
+  /** Set by the backend's ``on_loaded`` handler once the bridge is ready. */
+  __BRIDGE_READY__?: boolean;
 }

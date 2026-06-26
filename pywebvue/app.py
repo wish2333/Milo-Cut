@@ -125,6 +125,13 @@ class App:
             handler = DOMEventHandler(self._bridge._on_drop, prevent_default=True)
             doc.on("drop", handler)
 
+            # Mark the bridge as fully ready. The frontend's
+            # ``waitForPyWebView`` waits for this flag in addition to
+            # ``window.pywebview.api`` to avoid the pywebview race where
+            # js_api calls issued before the ``loaded`` event are silently
+            # dropped by WebKit (see pywebview issue #431).
+            window.evaluate_js("window.__BRIDGE_READY__ = true;")
+
             window.evaluate_js(
                 f"(function loop() {{"
                 f"  window.pywebview.api.tick()"
