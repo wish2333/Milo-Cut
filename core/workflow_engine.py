@@ -1,6 +1,6 @@
 """Workflow engine for v2.1.0 Phase 3 -- one-click cleanup workflows.
 
-Manages configurable task chains (rule analysis + P0 + P1 + P2 in any
+Manages configurable task chains (P0 + P1 + P2 in any
 combination), serial execution with step-level data isolation, conflict
 detection (segment-id dimension), and cross-session snapshot persistence.
 
@@ -9,7 +9,7 @@ Architecture (D-18):
     TaskManager    = execution layer
 
 The engine does NOT execute analysis directly. It dispatches individual
-steps through TaskManager (which calls the existing LLM/rule handlers),
+steps through TaskManager (which calls the existing LLM handlers),
 but sets a ``_workflow_accumulate`` flag in the task payload so handlers
 return raw results WITHOUT writing to the real project. The engine
 accumulates edits into an in-memory snapshot and only applies them when
@@ -232,7 +232,11 @@ class WorkflowEngine:
         return self._snapshot_dir() / f"_workflow_{instance_id}.json"
 
     def _compute_segments_hash(self, segments: list[dict]) -> str:
-        """Compute a content hash over segment ids + start + end + text (D-67)."""
+        """Compute a content hash over segment ids + start + end + text (D-67).
+
+        v2.2.0 deprecated: only used by the old apply_workflow hash-validation
+        path, which was removed. Retained for potential future use; safe to delete.
+        """
         # Only hash subtitle segments (the ones analysis operates on)
         payload = json.dumps(
             [{"id": s["id"], "s": s["start"], "e": s["end"], "t": s.get("text", "")}
@@ -372,6 +376,10 @@ class WorkflowEngine:
 
     def detect_conflicts(self) -> dict:
         """Detect EditDecision conflicts in the snapshot's accumulated_edits.
+
+        v2.2.0 deprecated: non-sandbox mode no longer accumulates edits or
+        runs conflict detection. Not exposed via @expose (no frontend caller).
+        Retained for potential future use; safe to delete.
 
         A conflict = same segment_id has multiple decisions from different
         steps/sources (D-15: segment-id dimension).
@@ -591,23 +599,25 @@ class WorkflowEngine:
                         # abort
                         break
 
-                # Step succeeded -- accumulate results
-                edits = self._extract_edits_from_result(result.get("data", {}), step_type, step_index)
-                snapshot["accumulated_edits"].extend(edits)
+                # v2.2.0: handler 已直接写 project，无需累积 edits
                 snapshot["step_results"][step_index]["status"] = "completed"
-                snapshot["step_results"][step_index]["edits_count"] = len(edits)
                 snapshot["current_step_index"] = step_index + 1
 
                 with self._lock:
                     self._active = snapshot
                 self._save_snapshot(snapshot)
 
+                # v2.2.1: 计算 edits_count 供前端显示
+                step_data = result.get("data", {})
+                edits_list = step_data.get("edits") or step_data.get("corrections") or []
+                edits_count = len(edits_list)
+
                 self._emit(WORKFLOW_STEP_COMPLETED, {
                     "workflow_instance_id": instance_id,
                     "step_index": step_index,
                     "step_type": step_type,
                     "step_name": step_name,
-                    "edits_count": len(edits),
+                    "edits_count": edits_count,
                 })
 
             # Execution finished -- determine outcome
@@ -625,21 +635,16 @@ class WorkflowEngine:
                 })
             else:
                 snapshot["status"] = "completed"
-                self._save_snapshot(snapshot)
                 self._emit(WORKFLOW_COMPLETED, {
                     "workflow_instance_id": instance_id,
                     "workflow_name": snapshot["workflow_name"],
-                    "total_edits": len(snapshot["accumulated_edits"]),
                     "step_results": snapshot["step_results"],
                 })
 
-                # Run conflict detection (D-24: one-shot after all steps)
-                conflict_result = self.detect_conflicts()
-                self._emit(WORKFLOW_CONFLICTS_DETECTED, {
-                    "workflow_instance_id": instance_id,
-                    "conflicts": conflict_result.get("data", {}).get("conflicts", []),
-                    "total_conflicts": conflict_result.get("data", {}).get("total_conflicts", 0),
-                })
+                # v2.2.0: 非沙箱模式 — 完成后清理 snapshot，不再运行冲突检测
+                self._delete_snapshot(instance_id)
+                with self._lock:
+                    self._active = None
 
         except Exception as e:
             logger.exception("Workflow {} crashed", instance_id)
@@ -664,13 +669,10 @@ class WorkflowEngine:
         step_type = step_def["type"]
         task_type_str = STEP_TO_TASK_TYPE[step_type].value
 
-        # Build payload with workflow accumulation flag
+        # v2.2.0: 非沙箱模式 — 不再传入 _workflow_accumulate 等标记，
+        # handler 走正常路径直接写 project（与单功能模式行为一致）。
         payload: dict[str, Any] = {
             "timeline_id": snapshot["timeline_id"],
-            "_workflow_accumulate": True,
-            "_workflow_instance_id": instance_id,
-            "_workflow_step_index": step_index,
-            "_workflow_step_type": step_type,
         }
 
         # Apply preset if specified (D-43, D-45)
@@ -736,6 +738,10 @@ class WorkflowEngine:
         self, result: dict, step_type: str, step_index: int,
     ) -> list[dict]:
         """Extract EditDecision dicts from a step's task result.
+
+        v2.2.0 deprecated: non-sandbox mode no longer accumulates edits.
+        _run_steps no longer calls this method. Instance method (no module-level
+        import risk); retained for potential future use, safe to delete.
 
         Different step types return results in different shapes:
         - smart_delete / highlight: ``{"edits": [edit dicts], ...}`` -- use directly
@@ -844,91 +850,22 @@ class WorkflowEngine:
     # ------------------------------------------------------------------
 
     def apply_workflow(self) -> dict:
-        """Apply accumulated edits to the real project.
+        """v2.2.0: 非沙箱模式下，步骤已直接写入 project，本方法仅清理状态。
 
-        Validates segments hash (D-67) before applying. The edits are written
-        as EditDecisions with source ``workflow:<wf_id>:<name>`` (D-65).
+        保留方法签名以兼容前端 call()，不再执行任何 project 写入。
+        仅读取 self._active（避免并发问题），不触碰 project 状态。
         """
         with self._lock:
             snap = self._active
-
-        if snap is None:
-            return {"success": False, "error": "没有活跃的工作流快照"}
-
-        project = self._project_service.current
-        if project is None:
-            return {"success": False, "error": "未打开项目"}
-
-        timeline = project.get_timeline(snap["timeline_id"])
-        if timeline is None:
-            return {"success": False, "error": "Timeline 不存在"}
-
-        # Hash validation (D-67: pessimistic lock + content hash)
-        current_segments = [s.model_dump() for s in timeline.transcript.segments]
-        current_hash = self._compute_segments_hash(current_segments)
-        if current_hash != snap.get("segments_hash"):
-            return {
-                "success": False,
-                "error": "Timeline 已发生显著变化，工作流已失效，请重新创建",
-            }
-
-        # Build EditDecision models from accumulated edits
-        from core.models import EditDecision
-        source = f"workflow:{snap['workflow_id']}:{snap['workflow_name']}"
-        existing_edits = list(timeline.edits)
-        new_edits: list[EditDecision] = []
-
-        for e in snap["accumulated_edits"]:
-            try:
-                edit = EditDecision(
-                    id=e["id"],
-                    start=e["start"],
-                    end=e["end"],
-                    action=e.get("action", "delete"),
-                    source=source,
-                    analysis_id=e.get("analysis_id"),
-                    status="pending",
-                    priority=e.get("priority", 100),
-                    target_type=e.get("target_type", "range"),
-                    target_id=e.get("target_id"),
-                )
-                new_edits.append(edit)
-            except Exception as ex:
-                logger.warning("Skipping invalid edit in workflow apply: {} ({})", e, ex)
-
-        # Apply to project
-        updated_timeline = timeline.model_copy(update={
-            "edits": existing_edits + new_edits,
-        })
-        new_timelines = [
-            updated_timeline if t.id == timeline.id else t
-            for t in project.timelines
-        ]
-        self._project_service.current = project.model_copy(update={
-            "timelines": new_timelines,
-        })
-
-        # Save project
-        self._project_service.save_project()
-
-        # Clean up snapshot
-        instance_id = snap["workflow_instance_id"]
-        self._delete_snapshot(instance_id)
-        with self._lock:
+            if snap is None:
+                # 已完成或无活跃工作流 — 视为成功（幂等）
+                return {"success": True, "data": {"applied_count": 0}}
+            instance_id = snap["workflow_instance_id"]
             self._active = None
 
-        logger.info(
-            "Applied workflow {} ({} edits) to project",
-            snap["workflow_name"], len(new_edits),
-        )
-        return {
-            "success": True,
-            "data": {
-                "applied_count": len(new_edits),
-                "source": source,
-                "project": self._project_service.current.model_dump(),
-            },
-        }
+        self._delete_snapshot(instance_id)
+        logger.info("Workflow {} state cleared (non-sandbox mode)", instance_id)
+        return {"success": True, "data": {"applied_count": 0}}
 
     def discard_workflow(self) -> dict:
         """Discard the workflow snapshot without applying (D-17 skip path)."""

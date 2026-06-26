@@ -103,6 +103,8 @@ describe("TranscriptRow", () => {
     const input = wrapper.find("input")
     await input.setValue("Changed text")
     await input.trigger("blur")
+    // v2.2.1: handleTextEditBlur uses setTimeout(150ms), wait for it
+    await new Promise((r) => setTimeout(r, 160))
     expect(wrapper.emitted("update-text")).toBeTruthy()
     expect(wrapper.emitted("update-text")![0]).toEqual(["seg-0001", "Changed text"])
     expect(wrapper.find("input").exists()).toBe(false)

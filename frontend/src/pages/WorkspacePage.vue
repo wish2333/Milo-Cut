@@ -22,7 +22,6 @@ import ProgressBar from "@/components/common/ProgressBar.vue"
 import SplitPanel from "@/components/common/SplitPanel.vue"
 import Timeline from "@/components/workspace/Timeline.vue"
 import TimelineSwitcher from "@/components/workspace/TimelineSwitcher.vue"
-import { useWorkflow } from "@/composables/useWorkflow"
 import WaveformEditor from "@/components/waveform/WaveformEditor.vue"
 import SearchReplaceBar from "@/components/workspace/SearchReplaceBar.vue"
 import VideoControls from "@/components/workspace/VideoControls.vue"
@@ -68,9 +67,6 @@ const {
   startHighlight,
   hydrateHighlightsFromProject,
 } = useLlmTasks()
-
-// v2.1.0 Phase 4: pessimistic lock (D-67)
-const wf = useWorkflow()
 
 // P1 fullscreen diff view state (D-16)
 const showSubtitleFullscreen = ref(false)
@@ -2079,14 +2075,6 @@ onUnmounted(() => {
         <template #right>
           <!-- Right: Timeline (transcript editor + suggestion panel) -->
           <div class="relative flex flex-1 flex-col overflow-hidden rounded-lg border border-gray-200 bg-white">
-            <!-- D-67: Workflow pessimistic lock banner -->
-            <div
-              v-if="wf.isActive.value"
-              class="flex items-center gap-2 bg-amber-50 px-4 py-2 text-xs text-amber-700"
-            >
-              <span class="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-400"></span>
-              <span>工作流执行中 -- Timeline 编辑已锁定</span>
-            </div>
           <Timeline
             :segments="mergedSegments"
             :edits="edits"
@@ -2100,7 +2088,6 @@ onUnmounted(() => {
             :selected-count="selectedCount"
             :show-search-bar="showSearchBar"
             :current-time="currentTime"
-            :workflow-locked="wf.isActive.value"
             :llm-configured="llmConfig.configured"
             :llm-model="llmConfig.model"
             :llm-is-running="llmIsRunning"

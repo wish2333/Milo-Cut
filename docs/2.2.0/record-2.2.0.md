@@ -142,3 +142,137 @@ BUG3 暴露了测试覆盖的盲区：`test_v2_2_0_features.py` 中 `TestGetHigh
 | `frontend/src/pages/ExportPage.vue` | 新增精华导出按钮和逻辑 |
 | `frontend/src/components/workspace/HighlightModeView.vue` | UI 改进（LLM 未配置时引导） |
 | `tests/test_v2_2_0_features.py` | 新增 22 个测试（含 1 个混合类型回归测试） |
+
+---
+
+## 功能 C：工作流非沙箱化改造（spec-2.2.0-1）
+
+> **基准提交**: `b791369`（BUG3 修复）。本节为本次会话完成、尚未提交的改动。
+> **依据**: `docs/2.2.0/spec-2.2.0-1.md` + `docs/2.2.0/audit-report-2.2.0-1.md`
+
+### 背景
+
+v2.1.0 的工作流采用**沙箱-确认**模式：每步骤带 `_workflow_accumulate=True` → handler 跳过写 project → 累积 edits → 用户点击 Apply 再写入。审计发现该模式存在 6 项缺陷（P0–P5），核心阻断是 P0——`apply_workflow()` 直接赋值 `self._project_service.current = ...`，但 `current` 是只读 `@property` 无 setter，导致 Apply 永远抛 `AttributeError` 被 `@expose` 吞成失败响应。
+
+### 设计决策（采纳审计结论）
+
+- **删除沙箱模式**：handler 走正常写 project 路径（与单功能模式一致），不再累积 edits
+- **P0 通过删除 apply 写入逻辑自然消除**——无需给 `ProjectService.current` 加 setter
+- **B1（关键）**：前端 `WorkspacePage.vue` 已有对 `llm_smart_delete`/`llm_subtitle_correction`/`llm_highlight` 三类 `task:completed` 的 `project-updated` 刷新监听，工作流步骤经 TaskManager 调度天然复用，**无需新增刷新代码**
+- **B5**：`apply_workflow`/`discard_workflow` 保留为 stub，仅清 `_active`，不读 project 状态，固定返回 `{applied_count:0}`
+- **死代码保留**：`_extract_edits_from_result`/`detect_conflicts`/`_compute_segments_hash` 加 v2.2.0 deprecated 注释，暂不删
+
+### 实施
+
+#### 后端 `core/workflow_engine.py`（净减 ~99 行）
+
+1. **`_dispatch_step`**: payload 移除 `_workflow_accumulate`/`_workflow_instance_id`/`_workflow_step_index`/`_workflow_step_type` 四字段，仅保留 `timeline_id`（+ 可选 `_workflow_preset_id`）
+2. **`_run_steps` 成功分支**: 删除 `_extract_edits_from_result` 调用与 `accumulated_edits` 累积；`WORKFLOW_STEP_COMPLETED` 去掉 `edits_count`
+3. **`_run_steps` 完成分支**: `WORKFLOW_COMPLETED` 去掉 `total_edits`；删除 `detect_conflicts()` 调用与 `WORKFLOW_CONFLICTS_DETECTED` 事件；完成后改用 `_delete_snapshot` + `self._active = None`
+4. **`apply_workflow`**: 86 行主体整体替换为 17 行 stub（仅清 `_active` + 删 snapshot）
+5. **死代码标注**: 3 个废弃方法 docstring 加 deprecated 说明
+
+#### 前端
+
+- **`AIAssistantPanel.vue`**: 删 Apply/Discard 按钮 + `handleApplyWorkflow`/`handleDiscardWorkflow` + `workflow-applied` emit；加「工作流已完成 — 结果已写入项目」+「返回配置」按钮（`handleReturnToConfig` 置 `instanceId.value = null`）
+- **`WorkspacePage.vue`**: 删 D-67 锁横幅、`:workflow-locked` 传参、`@workflow-applied` 处理；顺带清理变成 dead 的 `wf = useWorkflow()` 与 import
+- **`Timeline.vue`**: 删 `workflowLocked` prop、`workflow-applied` emit、子组件透传
+
+#### 测试
+
+- **`tests/test_workflow_engine.py`**: 重写 3 个 `TestApplyDiscard` 用例匹配新 stub 契约：
+  - `test_apply_no_active` → 幂等成功（无活跃工作流返回 `applied_count:0`）
+  - `test_apply_hash_mismatch` → `test_apply_clears_active`（清 `_active`，不触碰 project）
+  - `test_apply_success` → `test_apply_does_not_write_project`（验证不调用 `save_project`，落实 B5）
+- **`AIAssistantPanel.test.ts`**: 完成状态用例改为验证「返回配置」按钮 + 断言旧按钮已移除
+
+### 改动统计
+
+| 文件 | 净变化 |
+|------|--------|
+| `core/workflow_engine.py` | -99 行（133 改动，净减） |
+| `frontend/.../AIAssistantPanel.vue` | 重构 ~40 行 |
+| `frontend/.../AIAssistantPanel.test.ts` | ~10 行 |
+| `frontend/.../Timeline.vue` | -2 行 |
+| `frontend/.../WorkspacePage.vue` | -13 行 |
+| `tests/test_workflow_engine.py` | 重写 3 用例 |
+| `docs/2.2.0/spec-2.2.0-1.md` | 补充 B1/B5 审计说明 + 2 条验证项 |
+
+### 验证
+
+- 后端 `pytest --ignore=tests/test_transcription.py`: 380 全通过
+- 前端 `bun run build`（vue-tsc + vite）: 成功
+- 前端 `bun run test`: 170/171 通过（唯一失败 `TranscriptRow > saves edit on blur` 在未修改文件中，预存问题；见下方 BUG6 修复）
+
+### 仍需后续
+
+- 版本号 bump + 合并 main
+- handler 中的 `_workflow_accumulate` 分支（`main.py:782,866,966`）现为死代码，留待后续清理
+- `frontend/package.json` 由 build 时 `sync-version` 自动改动，不计入本次改动
+
+---
+
+## BUG4: 工作流自动保存的预设未清理
+
+### 问题
+
+`AIAssistantPanel.vue` 的 `handleStartWorkflow()` 在无已选 workflow 时自动调用 `wf.saveWorkflow()` 创建一条 workflow 定义并持久化到 `settings.json`。任务完成后，该临时 workflow 未被删除，成为无效残留数据。
+
+### 修复
+
+**文件**: `frontend/src/components/workspace/AIAssistantPanel.vue`
+
+- 新增 `autoSavedWorkflowId` ref 标记本次临时创建的 workflow
+- 在 `handleStartWorkflow()` 中创建时记录 ID
+- 通过 `watch(wf.isActive.value)` 监听 workflow 执行结束（`true → false`），自动调用 `wf.deleteWorkflow(id)` 清理
+
+## BUG5: 工作流步骤建议数显示为空
+
+### 问题
+
+v2.2.0 非沙箱化改造（功能 C）删除了 `WORKFLOW_STEP_COMPLETED` event payload 中的 `edits_count` 字段。前端 `useWorkflow.ts` 读取 `d.edits_count` 结果为 `undefined`，Vue 渲染 `{{ step.edits_count }} 条` 仅剩"条"字。
+
+### 修复
+
+**文件**: `core/workflow_engine.py`
+
+- 在 `WORKFLOW_STEP_COMPLETED` 事件的 emit 处，从步骤执行结果中提取编辑建议列表：优先取 `result.data.edits`，其次取 `result.data.corrections`
+- 计算 `len()` 作为 `edits_count` 加入 event payload
+- 前端原有代码直接使用该值即可恢复正确显示
+
+### 数据流
+
+```
+_dispatch_step() 返回 {"success": true, "data": {"edits": [...]}}
+  → step_data = result["data"]
+  → edits_list = step_data.get("edits") or step_data.get("corrections", [])
+  → edits_count = len(edits_list)  →  加入 WORKFLOW_STEP_COMPLETED payload
+```
+
+## BUG6: 前端测试因 setTimeout 延迟失败
+
+### 问题
+
+`TranscriptRow.test.ts` 中 `saves edit on blur` 测试在 `input.trigger("blur")` 后立即检查 `wrapper.emitted("update-text")`。但组件内 `handleTextEditBlur()` 使用了 `setTimeout(150ms)` 延迟保存（用于屏蔽拖选文本的误触发，v2.1.1 A-2.2），因此测试断言执行时 `update-text` 事件尚未发射，`emitted()` 返回 `undefined`。
+
+该失败在功能 C 的验证中被列为"预存问题"（170/171 通过，唯一失败在未修改文件）。
+
+### 修复
+
+**文件**: `frontend/src/components/workspace/TranscriptRow.test.ts`
+
+- 在 `trigger("blur")` 后添加 `await new Promise((r) => setTimeout(r, 160))`，等待 150ms 定时器完成后再做断言
+
+## 最终测试基线
+
+- 前端测试: **171 通过**（14 文件，预存失败已修复）
+- 前端构建: 成功（vue-tsc + vite build）
+
+## 涉及文件（本次新增）
+
+| 文件 | 改动 |
+|------|------|
+| `frontend/src/components/workspace/AIAssistantPanel.vue` | 新增 `autoSavedWorkflowId` + watch 自动清理 |
+| `core/workflow_engine.py` | `WORKFLOW_STEP_COMPLETED` 事件新增 `edits_count` 字段 |
+| `frontend/src/components/workspace/TranscriptRow.test.ts` | blur 测试添加 160ms 等待 |
+| `docs/2.2.0/record-2.2.0.md` | 本记录 |

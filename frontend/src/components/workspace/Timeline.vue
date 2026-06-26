@@ -46,8 +46,6 @@ const props = defineProps<{
     from_end: number
     to_start: number
   }>
-  /** v2.1.0 Phase 4: pessimistic lock when workflow active (D-67) */
-  workflowLocked?: boolean
 }>()
 
 const emit = defineEmits<{
