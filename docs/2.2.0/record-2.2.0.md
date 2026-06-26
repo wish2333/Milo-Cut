@@ -276,3 +276,77 @@ _dispatch_step() 返回 {"success": true, "data": {"edits": [...]}}
 | `core/workflow_engine.py` | `WORKFLOW_STEP_COMPLETED` 事件新增 `edits_count` 字段 |
 | `frontend/src/components/workspace/TranscriptRow.test.ts` | blur 测试添加 160ms 等待 |
 | `docs/2.2.0/record-2.2.0.md` | 本记录 |
+
+---
+
+## 发布：v2.2.0 合并 main
+
+### 合并范围
+
+- 基准：`main` @ `444731b` (v2.1.1 release)
+- 合并分支：`dev-2.2.0` -> `main`
+- 净增 commits：4 个（d753d14, a57be34, b791369, 05b2a8b）
+
+### Merge Message
+
+```
+release: v2.2.0 -- 字幕纠错集成 partial_delete、精华提取修复、工作流非沙箱化
+
+功能:
+- 字幕纠错集成 partial_delete 意见，LLM 输入携带前序快速清理分析结果
+- 精华提取导出功能（视频/音频/SRT），文件名覆盖修复，已删除片段不再混入
+- 工作流非沙箱化改造：移除沙箱-确认模式，步骤直接写 project
+- 工作流临时定义自动清理（autoSavedWorkflowId）
+- WORKFLOW_STEP_COMPLETED 事件恢复 edits_count 字段
+
+修复:
+- BUG1: 精华导出文件名覆盖（视频/音频/SRT 同名冲突）
+- BUG2: 已删除片段重新混入精华导出
+- BUG3: get_highlight_ranges 过滤非 llm_highlight 类型
+- BUG4: 工作流临时定义残留为无效数据
+- BUG5: 工作流步骤建议数显示为空
+- BUG6: TranscriptRow blur 测试 setTimeout 时序失败
+
+测试:
+- 前端测试 171 通过（14 文件）
+- 前端构建成功（vue-tsc + vite build）
+```
+
+### Release Note (v2.2.0)
+
+**版本**: 2.2.0
+**发布日期**: 2026-06-26
+**基准**: v2.1.1
+**分支**: `dev-2.2.0` -> `main`
+
+#### 新增功能
+
+1. **字幕纠错集成 partial_delete 意见**
+   - 字幕纠错 LLM 现在接收前序"快速清理"（smart delete）中 `partial_delete` 类别的分析结果
+   - 句内口误/重复（如"他是那段历史中的他是那段历史的亲历者"）信息跟随 segment 传递，辅助 LLM 做更精准的修正
+   - 修改后端数据整合、传递逻辑及 LLM 功能提示词
+
+2. **精华提取导出功能**
+   - 新增精华内容导出（视频/音频/SRT），支持编码参数设置
+   - 导出过程尊重用户手动添加、删除操作，不漏掉手动编辑
+   - 文件名覆盖机制修复，视频/音频/SRT 不再因同名冲突
+
+3. **工作流非沙箱化改造**
+   - 移除 v2.1.0 的沙箱-确认模式，改为步骤直接写 project 的串行批处理
+   - 移除 Apply/Discard 确认步骤，完成后直接返回配置视图
+   - 无配置启动时自动保存的工作流，执行结束后自动清理
+
+#### Bug 修复
+
+- **BUG1**: 精华导出视频/音频/SRT 文件名覆盖冲突
+- **BUG2**: 已删除片段重新混入精华导出结果
+- **BUG3**: `get_highlight_ranges` 误过滤非 `llm_highlight` 类型，导致精华范围计算错误
+- **BUG4**: 工作流临时定义（无配置启动自动创建）完成后残留为无效数据
+- **BUG5**: 工作流步骤建议数显示为空（`edits_count` 字段丢失）
+- **BUG6**: `TranscriptRow` blur 测试因 `setTimeout(150ms)` 延迟导致断言时序失败
+
+#### 质量基线
+
+- 前端测试：171 通过（14 文件）
+- 前端构建：成功（vue-tsc + vite build）
+- 工作流引擎重构后功能验证通过
