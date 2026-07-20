@@ -145,6 +145,86 @@ describe("useSegmentEdit", () => {
       expect(mockCall).not.toHaveBeenCalledWith("mark_segments", expect.anything(), expect.anything(), expect.anything())
       expect(mockCall).toHaveBeenCalledWith("update_edit_decision", "ed-rejected", "confirmed")
     })
+
+    // v2.3.2 G3 regression: one toggle must produce exactly one write request
+    // in the happy path. The previous implementation always issued a second
+    // `get_project()` even when the write call already returned the full
+    // Project. See docs/2.3.0/2.3.2-fix-report.md G3.
+
+    it("uses update_edit_decision return value and skips get_project", async () => {
+      project.value = {
+        ...mockProject(),
+        timelines: [{ ...mockProject().timelines[0], edits: [{
+          id: "ed-1",
+          start: 1,
+          end: 5,
+          action: "delete",
+          source: "test",
+          status: "confirmed",
+          priority: 100,
+          target_type: "segment",
+          target_id: "seg-1",
+        }] }],
+      }
+      const returnedProj = mockProject({ project: { name: "after-update", created_at: "", updated_at: "" } })
+      mockCall.mockResolvedValue({ success: true, data: returnedProj })
+
+      const { toggleEditStatus } = useSegmentEdit(project, onProjectUpdate)
+      await toggleEditStatus(mockSegment())
+
+      const methods = mockCall.mock.calls.map(c => c[0])
+      expect(methods).toContain("update_edit_decision")
+      expect(methods).not.toContain("get_project")
+      expect(methods.filter(m => m === "update_edit_decision").length).toBe(1)
+      expect(onProjectUpdate).toHaveBeenCalledWith(returnedProj)
+    })
+
+    it("uses mark_segments return value and skips get_project", async () => {
+      const returnedProj = mockProject({ project: { name: "after-mark", created_at: "", updated_at: "" } })
+      mockCall.mockResolvedValue({ success: true, data: returnedProj })
+
+      const { toggleEditStatus } = useSegmentEdit(project, onProjectUpdate)
+      await toggleEditStatus(mockSegment())
+
+      const methods = mockCall.mock.calls.map(c => c[0])
+      expect(methods).toContain("mark_segments")
+      expect(methods).not.toContain("get_project")
+      expect(methods.filter(m => m === "mark_segments").length).toBe(1)
+      expect(onProjectUpdate).toHaveBeenCalledWith(returnedProj)
+    })
+
+    it("falls back to get_project when write call returns no data", async () => {
+      // Simulate an older backend or protocol mismatch: write succeeds but
+      // returns no Project payload. The fallback must refresh from source.
+      mockCall.mockImplementation(async (method: string) => {
+        if (method === "get_project") {
+          return { success: true, data: mockProject({ project: { name: "refreshed", created_at: "", updated_at: "" } }) }
+        }
+        return { success: true }
+      })
+
+      const { toggleEditStatus } = useSegmentEdit(project, onProjectUpdate)
+      await toggleEditStatus(mockSegment())
+
+      const methods = mockCall.mock.calls.map(c => c[0])
+      expect(methods).toContain("mark_segments")
+      expect(methods).toContain("get_project")
+    })
+
+    it("falls back to get_project when write call fails", async () => {
+      mockCall.mockImplementation(async (method: string) => {
+        if (method === "get_project") {
+          return { success: true, data: mockProject() }
+        }
+        return { success: false, error: "write failed" }
+      })
+
+      const { toggleEditStatus } = useSegmentEdit(project, onProjectUpdate)
+      await toggleEditStatus(mockSegment())
+
+      const methods = mockCall.mock.calls.map(c => c[0])
+      expect(methods).toContain("get_project")
+    })
   })
 
   describe("resolveState", () => {

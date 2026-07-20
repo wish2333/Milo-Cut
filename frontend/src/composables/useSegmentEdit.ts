@@ -196,11 +196,19 @@ export function useSegmentEdit(
   }
 
   // -- Toggle edit status -----------------------------------------------
+  //
+  // v2.3.2 G3 fix: consume the write call's return value (the backend's
+  // `update_edit_decision` / `mark_segments` already return the full updated
+  // Project). Fallback to `get_project()` only when the write call did not
+  // return a usable Project payload, so one toggle never triggers two bridge
+  // round-trips in the happy path. See docs/2.3.0/2.3.2-fix-report.md G3.
 
   async function toggleEditStatus(segment: Segment, nextStatus?: string): Promise<void> {
     if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value)
     const edits = activeEdits(project.value)
     const state = resolveSegmentState(edits, segment)
+
+    let writeRes: { success: boolean; data?: Project | null; error?: string } | null = null
 
     if (state.activeEdit) {
       const status = nextStatus ?? (
@@ -208,16 +216,24 @@ export function useSegmentEdit(
         : state.activeEdit.status === "rejected" ? "confirmed"
         : "confirmed"
       )
-      await call<Project>("update_edit_decision", state.activeEdit.id, status)
+      writeRes = await call<Project>("update_edit_decision", state.activeEdit.id, status)
     } else if (state.displayStatus === "rejected") {
       const rejectedEdit = getEditForSegment(edits, segment)
       if (rejectedEdit) {
-        await call<Project>("update_edit_decision", rejectedEdit.id, "confirmed")
+        writeRes = await call<Project>("update_edit_decision", rejectedEdit.id, "confirmed")
       }
     } else {
-      await call("mark_segments", [segment.id], "delete", "confirmed")
+      writeRes = await call<Project>("mark_segments", [segment.id], "delete", "confirmed")
     }
 
+    if (writeRes && writeRes.success && writeRes.data) {
+      onProjectUpdate(writeRes.data)
+      return
+    }
+
+    // Defensive fallback: write call returned no usable payload (e.g. older
+    // backend, schema mismatch, or unexpected error). Refresh from source so
+    // the UI reflects authoritative backend state instead of going stale.
     const projRes = await call<Project>("get_project")
     if (projRes.success && projRes.data) {
       onProjectUpdate(projRes.data)

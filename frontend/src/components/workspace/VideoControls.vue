@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onUnmounted } from "vue"
 import { formatTime } from "@/utils/format"
+import DeleteRangesOverlay from "./DeleteRangesOverlay.vue"
 
 interface DeleteRange {
   start: number
@@ -221,18 +222,12 @@ onUnmounted(() => {
           class="absolute top-0 left-0 h-full bg-blue-500 rounded-full transition-none"
           :style="{ width: progressPercent + '%' }"
         />
-        <!-- Delete ranges overlay -->
-        <template v-if="previewMode === 'edited' && deleteRanges?.length">
-          <div
-            v-for="(range, i) in deleteRanges"
-            :key="i"
-            class="absolute top-0 h-full bg-red-500/30"
-            :style="{
-              left: duration > 0 ? (range.start / duration) * 100 + '%' : '0%',
-              width: duration > 0 ? ((range.end - range.start) / duration) * 100 + '%' : '0%',
-            }"
-          />
-        </template>
+        <!-- Delete ranges overlay (extracted to child for render isolation) -->
+        <DeleteRangesOverlay
+          v-if="previewMode === 'edited' && deleteRanges && deleteRanges.length > 0"
+          :ranges="deleteRanges"
+          :duration="duration"
+        />
         <div
           class="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-blue-400 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
           :style="{ left: progressPercent + '%', transform: 'translate(-50%, -50%)' }"
