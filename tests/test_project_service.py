@@ -512,6 +512,357 @@ class TestProjectService:
             f"Migration should fix action to 'keep', got '{hl_edits[0].action}'"
         )
 
+    # --- Bug fix: silence detection must not overwrite user/AI decisions ---
+
+    def _add_subtitle_with_user_edit(
+        self, svc, seg_id, start, end, action="delete", status="rejected"
+    ):
+        """Helper: add a subtitle segment and a user-source edit on it."""
+        from core.models import EditDecision, EditStatus, Segment, SegmentType
+        seg = Segment(id=seg_id, type=SegmentType.SUBTITLE, start=start, end=end, text="x")
+        svc._update_active_timeline(
+            transcript=svc.active_timeline.transcript.model_copy(
+                update={"segments": list(svc.active_timeline.transcript.segments) + [seg]}
+            ),
+        )
+        user_edit = EditDecision(
+            id=f"edit-user-{seg_id}",
+            start=start,
+            end=end,
+            action=action,
+            source="user",
+            status=EditStatus(status),
+            priority=200,
+            target_type="segment",
+            target_id=seg_id,
+        )
+        svc._update_active_timeline(
+            edits=list(svc.active_timeline.edits) + [user_edit],
+        )
+
+    def test_silence_respects_user_rejected_edit(self, tmp_dir, monkeypatch):
+        """Bug: silence detection must NOT create a delete edit overlapping a
+        user-rejected subtitle (user said 'keep'). Reproduces the overwrite bug."""
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
+        # User rejected delete on subtitle 5.0-8.0 (wants to KEEP it)
+        self._add_subtitle_with_user_edit(
+            svc, "seg-keep", start=5.0, end=8.0, action="delete", status="rejected"
+        )
+        # Silence detection finds silence 5.5-7.5 (inside the rejected subtitle)
+        result = svc.add_silence_results([{"start": 5.5, "end": 7.5}])
+        assert result["success"] is True
+        # Silence SEGMENT is created (informational)
+        sil_segs = [s for s in svc.current.active_timeline.transcript.segments
+                    if s.type == SegmentType.SILENCE]
+        assert len(sil_segs) == 1
+        # But NO silence edit should be created (respects user reject)
+        sil_edits = [e for e in svc.current.active_timeline.edits
+                     if e.source == "silence_detection"]
+        assert len(sil_edits) == 0, (
+            "Silence detection must not create a delete edit that overwrites a user rejected range. "
+            f"Got: {sil_edits}"
+        )
+
+    def test_silence_respects_user_confirmed_edit(self, tmp_dir, monkeypatch):
+        """User already confirmed delete on a subtitle; silence detection in
+        the same range must not create a competing edit."""
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
+        self._add_subtitle_with_user_edit(
+            svc, "seg-del", start=10.0, end=15.0, action="delete", status="confirmed"
+        )
+        result = svc.add_silence_results([{"start": 10.5, "end": 14.5}])
+        assert result["success"] is True
+        sil_edits = [e for e in svc.current.active_timeline.edits
+                     if e.source == "silence_detection"]
+        assert len(sil_edits) == 0, (
+            "Silence detection must not duplicate a user-confirmed delete range."
+        )
+
+    def test_silence_respects_llm_confirmed_edit(self, tmp_dir, monkeypatch):
+        """LLM smart-delete already confirmed by user; silence detection in
+        overlapping range must not override."""
+        from core.models import EditDecision, EditStatus
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
+        # Simulate a confirmed LLM smart-delete edit
+        llm_edit = EditDecision(
+            id="edit-llm-1",
+            start=20.0,
+            end=25.0,
+            action="delete",
+            source="llm_smart_delete",
+            status=EditStatus.CONFIRMED,
+            priority=100,
+            target_type="range",
+        )
+        svc._update_active_timeline(
+            edits=list(svc.active_timeline.edits) + [llm_edit],
+        )
+        result = svc.add_silence_results([{"start": 21.0, "end": 24.0}])
+        assert result["success"] is True
+        sil_edits = [e for e in svc.current.active_timeline.edits
+                     if e.source == "silence_detection"]
+        assert len(sil_edits) == 0, (
+            "Silence detection must not override a confirmed LLM decision."
+        )
+
+    def test_silence_dedupes_existing_silence_edit(self, tmp_dir, monkeypatch):
+        """Re-running silence detection in a range already covered by a silence
+        edit must not create a duplicate edit (segment is OK for idempotency)."""
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
+        # First run: creates silence edit at 5.0-6.0
+        svc.add_silence_results([{"start": 5.0, "end": 6.0}])
+        initial_edit_count = len(svc.current.active_timeline.edits)
+        # Second run: overlapping range 5.2-5.8
+        result = svc.add_silence_results([{"start": 5.2, "end": 5.8}])
+        assert result["success"] is True
+        sil_edits = [e for e in svc.current.active_timeline.edits
+                     if e.source == "silence_detection"]
+        assert len(sil_edits) == 1, (
+            f"Silence detection must dedupe overlapping silence edits. Got {len(sil_edits)}."
+        )
+
+    def test_silence_creates_for_uncovered_range(self, tmp_dir, monkeypatch):
+        """Control: no prior decisions in this range -> silence edit is created normally."""
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
+        result = svc.add_silence_results([{"start": 30.0, "end": 35.0}])
+        assert result["success"] is True
+        sil_edits = [e for e in svc.current.active_timeline.edits
+                     if e.source == "silence_detection"]
+        assert len(sil_edits) == 1
+
+    def test_silence_partial_overlap_blocks_when_significant(self, tmp_dir, monkeypatch):
+        """Silence range overlapping a user edit by > 0.3s is blocked; minor
+        touch (< 0.3s) is allowed since it's just edge adjacency."""
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
+        # User rejected 10.0-15.0
+        self._add_subtitle_with_user_edit(
+            svc, "seg-keep", start=10.0, end=15.0, action="delete", status="rejected"
+        )
+        # Overlap > 0.3s: 14.5-16.0 overlaps by 0.5s -> blocked
+        svc.add_silence_results([{"start": 14.5, "end": 16.0}])
+        sil_edits = [e for e in svc.current.active_timeline.edits
+                     if e.source == "silence_detection"]
+        assert len(sil_edits) == 0, "Overlap > 0.3s with user edit must block."
+
+    def test_migrate_silence_overlapping_user_rejected(self, tmp_dir, monkeypatch):
+        """Migration: existing silence_detection confirmed-delete edits that
+        overlap a user-rejected-delete edit should be marked rejected on project open.
+        Reproduces and repairs the user's corrupted project data scenario."""
+        from core.models import EditDecision, EditStatus, Segment, SegmentType
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("repair-test", self._create_media_file(tmp_dir), {"duration": 60.0})
+
+        # Simulate corrupted state: user rejected seg, but silence_detection confirmed-delete
+        seg = Segment(id="seg-x", type=SegmentType.SUBTITLE, start=100.0, end=110.0, text="x")
+        user_reject = EditDecision(
+            id="edit-user-seg-x", start=100.0, end=110.0,
+            action="delete", source="user", status=EditStatus.REJECTED,
+            priority=200, target_type="segment", target_id="seg-x",
+        )
+        sil_confirmed = EditDecision(
+            id="edit-sil-bad", start=101.0, end=109.0,
+            action="delete", source="silence_detection", status=EditStatus.CONFIRMED,
+            target_type="segment", target_id="sil-bad",
+        )
+        svc._update_active_timeline(
+            transcript=svc.active_timeline.transcript.model_copy(
+                update={"segments": list(svc.active_timeline.transcript.segments) + [seg]}
+            ),
+            edits=[user_reject, sil_confirmed],
+        )
+
+        # Run migration
+        svc._migrate_overlapping_silence_edits()
+
+        # Verify: the silence edit should now be rejected (respecting user decision)
+        sil_edits = [e for e in svc.active_timeline.edits if e.source == "silence_detection"]
+        assert len(sil_edits) == 1
+        assert sil_edits[0].status == EditStatus.REJECTED, (
+            f"Migration must reject silence edits overlapping user-rejected ranges. "
+            f"Got status={sil_edits[0].status}"
+        )
+
+    def test_silence_does_not_wipe_analysis_results(self, tmp_dir, monkeypatch):
+        """CRITICAL REGRESSION: add_silence_results must NOT replace the analysis
+        data object. Older versions did `analysis=AnalysisData(last_run=...)` which
+        silently wiped all LLM analysis results (smart_delete, subtitle_correction,
+        highlight) and then _migrate_highlights removed the now-orphaned edits.
+        This is the root cause of 'silence detection overwrites AI suggestions'."""
+        from core.models import AnalysisData, AnalysisResult
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
+
+        # Seed existing analysis results (simulating prior LLM smart-delete run)
+        existing_ar = AnalysisResult(
+            id="ar-llm-1",
+            type="llm_smart_delete",
+            segment_ids=["seg-0001"],
+            confidence=0.9,
+            detail="filler",
+        )
+        svc._update_active_timeline(
+            analysis=AnalysisData(
+                last_run="2025-01-01T00:00:00",
+                results=[existing_ar],
+            )
+        )
+
+        # Run silence detection
+        result = svc.add_silence_results([{"start": 30.0, "end": 35.0}])
+        assert result["success"] is True
+
+        # Analysis results MUST be preserved
+        analysis = svc.current.active_timeline.analysis
+        assert len(analysis.results) == 1, (
+            f"Silence detection must not wipe analysis results. "
+            f"Got {len(analysis.results)} results."
+        )
+        assert analysis.results[0].id == "ar-llm-1"
+
+    # --- LLM re-run must not overwrite user decisions ---
+
+    def _seed_subtitles_and_user_edit(
+        self, svc, seg_id, start, end, user_action="delete", user_status="rejected"
+    ):
+        """Helper: add a subtitle segment and a user-source edit bound to it."""
+        from core.models import EditDecision, EditStatus, Segment, SegmentType
+        seg = Segment(id=seg_id, type=SegmentType.SUBTITLE, start=start, end=end, text="x")
+        user_edit = EditDecision(
+            id=f"edit-user-{seg_id}",
+            start=start, end=end,
+            action=user_action, source="user",
+            status=EditStatus(user_status),
+            priority=200, target_type="segment", target_id=seg_id,
+        )
+        svc._update_active_timeline(
+            transcript=svc.active_timeline.transcript.model_copy(
+                update={"segments": list(svc.active_timeline.transcript.segments) + [seg]}
+            ),
+            edits=list(svc.active_timeline.edits) + [user_edit],
+        )
+
+    def test_llm_skips_edit_for_user_rejected_segment(self, tmp_dir, monkeypatch):
+        """Re-running LLM smart-delete must NOT create a competing edit on a
+        segment the user has already rejected deletion on (wants to keep).
+        Without protection, the new PENDING LLM edit becomes topActive in
+        resolveSegmentState and flips the segment back to 'pending delete'."""
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
+        # User rejected delete on seg-keep (wants to KEEP it)
+        self._seed_subtitles_and_user_edit(
+            svc, "seg-keep", start=10.0, end=15.0,
+            user_action="delete", user_status="rejected",
+        )
+
+        results = [{
+            "id": "ar-llm-1",
+            "type": "llm_smart_delete",
+            "segment_ids": ["seg-keep"],
+            "confidence": 0.9,
+            "detail": "filler",
+        }]
+        result = svc.add_analysis_results(results, source="llm_smart")
+        assert result["success"] is True
+
+        # AnalysisResult is still stored (record-keeping)
+        assert len(svc.current.active_timeline.analysis.results) == 1
+        # But NO EditDecision should be created for this segment
+        llm_edits = [e for e in svc.current.active_timeline.edits if e.source == "llm_smart"]
+        assert len(llm_edits) == 0, (
+            f"LLM must not create a competing edit on a user-rejected segment. Got: {llm_edits}"
+        )
+
+    def test_llm_skips_edit_for_user_confirmed_segment(self, tmp_dir, monkeypatch):
+        """User already confirmed delete; LLM re-run must not duplicate."""
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
+        self._seed_subtitles_and_user_edit(
+            svc, "seg-del", start=20.0, end=25.0,
+            user_action="delete", user_status="confirmed",
+        )
+        results = [{
+            "id": "ar-llm-2",
+            "type": "llm_smart_delete",
+            "segment_ids": ["seg-del"],
+            "confidence": 0.8,
+            "detail": "off-topic",
+        }]
+        svc.add_analysis_results(results, source="llm_smart")
+        llm_edits = [e for e in svc.current.active_timeline.edits if e.source == "llm_smart"]
+        assert len(llm_edits) == 0, "LLM must not duplicate a user-confirmed decision."
+
+    def test_llm_creates_edit_for_unedited_segment(self, tmp_dir, monkeypatch):
+        """Control: segment with no user edit -> LLM edit is created normally."""
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
+        self._seed_subtitles_and_user_edit(
+            svc, "seg-other", start=10.0, end=15.0,
+            user_action="delete", user_status="confirmed",
+        )
+        # Also add a segment the user has NOT touched
+        from core.models import Segment, SegmentType
+        svc._update_active_timeline(
+            transcript=svc.active_timeline.transcript.model_copy(
+                update={
+                    "segments": list(svc.active_timeline.transcript.segments) + [
+                        Segment(id="seg-free", type=SegmentType.SUBTITLE,
+                                start=30.0, end=35.0, text="y")
+                    ]
+                }
+            )
+        )
+        results = [{
+            "id": "ar-llm-3",
+            "type": "llm_smart_delete",
+            "segment_ids": ["seg-free"],
+            "confidence": 0.7,
+            "detail": "filler",
+        }]
+        svc.add_analysis_results(results, source="llm_smart")
+        llm_edits = [e for e in svc.current.active_timeline.edits if e.source == "llm_smart"]
+        assert len(llm_edits) == 1, "LLM must create edit for unedited segment."
+
+    def test_llm_skips_when_any_segment_in_result_has_user_edit(self, tmp_dir, monkeypatch):
+        """AnalysisResult references multiple segments; if ANY has a user edit,
+        the whole result's edit is skipped (user has reviewed part of this group)."""
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
+        from core.models import Segment, SegmentType
+        # seg-A has user edit, seg-B does not
+        self._seed_subtitles_and_user_edit(
+            svc, "seg-A", start=10.0, end=15.0,
+            user_action="delete", user_status="rejected",
+        )
+        svc._update_active_timeline(
+            transcript=svc.active_timeline.transcript.model_copy(
+                update={
+                    "segments": list(svc.active_timeline.transcript.segments) + [
+                        Segment(id="seg-B", type=SegmentType.SUBTITLE,
+                                start=15.0, end=20.0, text="b")
+                    ]
+                }
+            )
+        )
+        # LLM suggests deleting both A and B as a group
+        results = [{
+            "id": "ar-llm-group",
+            "type": "llm_smart_delete",
+            "segment_ids": ["seg-A", "seg-B"],
+            "confidence": 0.85,
+            "detail": "repetition",
+        }]
+        svc.add_analysis_results(results, source="llm_smart")
+        llm_edits = [e for e in svc.current.active_timeline.edits if e.source == "llm_smart"]
+        assert len(llm_edits) == 0, (
+            "If any segment in the result has a user edit, skip the whole edit."
+        )
+
     def test_migrate_highlights_removes_orphan_edits(self, tmp_dir, monkeypatch):
         """Phase 4: _migrate_highlights should remove orphan edits whose analysis_id is gone."""
         from core.models import EditDecision, EditStatus
