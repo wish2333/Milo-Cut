@@ -143,6 +143,10 @@ class ProjectService:
             # v2.1.1: Migrate legacy highlight EditDecisions (Bug E/G fix)
             self._migrate_highlights()
 
+            # v2.1.2: Reject silence_detection edits that overwrite prior user
+            # decisions (overlap-based repair; replaces fragile exact-time check)
+            self._migrate_overlapping_silence_edits()
+
             # Check media path reachability
             if self._current.media and self._current.media.path:
                 media_path = Path(self._current.media.path)
@@ -310,6 +314,59 @@ class ProjectService:
             logger.info(
                 "Highlight migration: fixed %d actions, removed %d orphans",
                 fixed, orphan_removed,
+            )
+
+    def _migrate_overlapping_silence_edits(self) -> None:
+        """Repair silence_detection edits that conflict with prior user decisions.
+
+        Background: older versions of add_silence_results used exact 0.05s
+        time-range matching for deduplication, so silence_detection edits could
+        be auto-created and then confirmed by bulk actions in ranges where the
+        user had already rejected deletion. The frontend's resolveSegmentState
+        would then show "confirmed delete" on a subtitle the user wanted to keep.
+
+        This migration marks confirmed silence_detection edits as REJECTED when
+        they overlap (>0.3s) a user edit whose effective intent is "keep".
+        Idempotent: safe to run multiple times.
+        """
+        if not self._current:
+            return
+
+        tl = self.active_timeline
+        edits = list(tl.edits)
+
+        user_edits = [e for e in edits if e.source == "user"]
+        if not user_edits:
+            return
+
+        updated: list[EditDecision] = []
+        changed = 0
+        for e in edits:
+            if e.source != "silence_detection" or e.status != EditStatus.CONFIRMED:
+                updated.append(e)
+                continue
+
+            # Effective intent "keep" = user rejected delete OR confirmed keep
+            conflict = any(
+                self._ranges_overlap(e.start, e.end, ue.start, ue.end)
+                and (
+                    (ue.status == EditStatus.REJECTED and ue.action == "delete")
+                    or (ue.status == EditStatus.CONFIRMED and ue.action == "keep")
+                )
+                for ue in user_edits
+            )
+
+            if conflict:
+                updated.append(e.model_copy(update={"status": EditStatus.REJECTED}))
+                changed += 1
+            else:
+                updated.append(e)
+
+        if changed > 0:
+            self._update_active_timeline(edits=updated)
+            logger.info(
+                "Silence overlap migration: rejected {} conflicting silence edits",
+                changed,
             )
 
     def save_project(self) -> dict:
@@ -621,6 +678,54 @@ class ProjectService:
 
         return result
 
+    # Threshold for "ranges overlap significantly". Mirrors the frontend
+    # isOverlapping(minOverlapSeconds=0.3) in segmentHelpers.ts so backend and
+    # frontend agree on what counts as a competing decision.
+    _SILENCE_OVERLAP_SECONDS: float = 0.3
+
+    def _ranges_overlap(
+        self,
+        a_start: float, a_end: float,
+        b_start: float, b_end: float,
+        min_overlap: float = _SILENCE_OVERLAP_SECONDS,
+    ) -> bool:
+        """True if ranges [a_start,a_end] and [b_start,b_end] share more than
+        ``min_overlap`` seconds. Pure function, no instance state."""
+        overlap = min(a_end, b_end) - max(a_start, b_start)
+        return overlap > min_overlap
+
+    def _has_prior_decision_for_range(
+        self,
+        edits: list[EditDecision],
+        start: float,
+        end: float,
+    ) -> bool:
+        """True if any existing edit already represents a user decision for
+        the given time range (overlap > _SILENCE_OVERLAP_SECONDS).
+
+        Blocks silence_detection from creating a competing delete edit that
+        would overwrite the prior decision in the UI (resolveSegmentState).
+
+        Rules (any one triggers blocking):
+          1. Existing ``silence_detection`` edit in the range -> dedupe.
+          2. Existing ``user``-source edit of any status -> user has explicitly
+             marked this range; respect it (covers user-confirmed AND user-rejected).
+          3. Any other source (llm_smart_delete, llm_subtitle_correction, manual_*)
+             with status CONFIRMED or REJECTED -> user has reviewed and decided.
+             Pending suggestions from these sources do NOT block (they need
+             silence detection's input to inform the pending review).
+        """
+        for e in edits:
+            if not self._ranges_overlap(e.start, e.end, start, end):
+                continue
+            if e.source == "silence_detection":
+                return True
+            if e.source == "user":
+                return True
+            if e.status in (EditStatus.CONFIRMED, EditStatus.REJECTED):
+                return True
+        return False
+
     def add_silence_results(
         self,
         silences: list[dict],
@@ -669,6 +774,7 @@ class ProjectService:
             seg_id = f"sil-{sil_idx:04d}"
             edit_id = f"edit-{sil_idx:04d}"
 
+            # Always create the silence segment (informational; shows on waveform/timeline)
             new_segments.append(Segment(
                 id=seg_id,
                 type=SegmentType.SILENCE,
@@ -677,15 +783,12 @@ class ProjectService:
                 text="",
             ))
 
-            # Skip edit if range already covered by an existing edit
-            already_covered = any(
-                e.action == "delete"
-                and e.status in (EditStatus.CONFIRMED, EditStatus.PENDING, EditStatus.REJECTED)
-                and abs(e.start - sil["start"]) < 0.05
-                and abs(e.end - sil["end"]) < 0.05
-                for e in existing_edits
-            )
-            if not already_covered:
+            # Skip creating a silence edit if the range already has a prior
+            # decision that silence detection would otherwise overwrite.
+            # See _has_prior_decision_for_range() for the blocking rules.
+            if not self._has_prior_decision_for_range(
+                existing_edits, sil["start"], sil["end"]
+            ):
                 new_edits.append(EditDecision(
                     id=edit_id,
                     start=sil["start"],
@@ -703,10 +806,14 @@ class ProjectService:
         # Note: _resolve_subtitle_overlap is deprecated. D-2 handles subtitle
         # protection via _trim_silences_around_subtitles before segment creation.
 
+        # IMPORTANT: do NOT touch analysis data here. Earlier versions did
+        # `analysis=AnalysisData(last_run=...)` which created a fresh AnalysisData
+        # with results=[] and wiped all LLM analysis results (smart_delete,
+        # subtitle_correction, highlight). On next project open, _migrate_highlights
+        # then removed the now-orphaned edits, destroying AI suggestions.
         self._update_active_timeline(
             transcript=TranscriptData(segments=all_segments),
             edits=all_edits,
-            analysis=AnalysisData(last_run=datetime.now().isoformat()),
         )
         logger.info("Added {} silence segments to project", len(new_segments))
         return {"success": True, "data": self._current.model_dump()}
@@ -1405,11 +1512,31 @@ class ProjectService:
         existing_edit_ids = {e.id for e in existing_edits}
         new_edits: list[EditDecision] = []
 
+        # v2.1.2: Collect segments that already have explicit user decisions.
+        # LLM/manual analysis must NOT create competing suggestions on segments
+        # the user has already operated on -- this is the add_analysis_results
+        # counterpart to add_silence_results._has_prior_decision_for_range.
+        # Without this, re-running LLM smart-delete would flip user-rejected
+        # ("keep") segments back to "pending delete" in resolveSegmentState.
+        user_decided_target_ids: set[str] = {
+            e.target_id for e in existing_edits
+            if e.source == "user" and e.target_id
+        }
+
+        skipped_due_to_user_edit = 0
         for ar in analysis_results:
             # Find time range from segment_ids
             matching_segs = [seg_map[sid] for sid in ar.segment_ids if sid in seg_map]
             if not matching_segs:
                 continue
+
+            # If ANY referenced segment already has a user decision, skip creating
+            # a competing edit. The AnalysisResult itself is still stored above
+            # (in all_results) for record-keeping, but no EditDecision is created.
+            if any(sid in user_decided_target_ids for sid in ar.segment_ids):
+                skipped_due_to_user_edit += 1
+                continue
+
             start = min(s.start for s in matching_segs)
             end = max(s.end for s in matching_segs)
 
@@ -1450,7 +1577,10 @@ class ProjectService:
             }),
             edits=existing_edits + new_edits,
         )
-        logger.info("Added {} analysis results from {}", len(analysis_results), source)
+        logger.info(
+            "Added {} analysis results from {} ({} edits created, {} skipped due to user decisions)",
+            len(analysis_results), source, len(new_edits), skipped_due_to_user_edit,
+        )
         return {"success": True, "data": self._current.model_dump()}
 
     # ------------------------------------------------------------------
