@@ -6,6 +6,7 @@ import {
   getEffectiveStatus,
   getEditStatus,
   resolveSegmentState,
+  buildSegmentStateMap,
 } from "./segmentHelpers"
 
 function seg(overrides: Partial<Segment> = {}): Segment {
@@ -258,5 +259,23 @@ describe("resolveSegmentState", () => {
     expect(state.displayStatus).toBe("none")
     expect(state.styleClass).toBe("normal")
     expect(state.activeEdit).toBeUndefined()
+  })
+})
+
+describe("buildSegmentStateMap", () => {
+  it("matches resolveSegmentState for every segment, including overlap rules", () => {
+    const segments = [
+      seg({ id: "seg-1", start: 1, end: 5 }),
+      seg({ id: "seg-2", start: 6, end: 10 }),
+    ]
+    const edits = [
+      edit({ id: "range", start: 4, end: 7, target_id: undefined, priority: 80 }),
+      edit({ id: "user", target_id: "seg-2", action: "keep", priority: 200, status: "confirmed" }),
+    ]
+
+    const states = buildSegmentStateMap(segments, edits)
+
+    expect(states.get("seg-1")).toEqual(resolveSegmentState(edits, segments[0]))
+    expect(states.get("seg-2")).toEqual(resolveSegmentState(edits, segments[1]))
   })
 })

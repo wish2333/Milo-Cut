@@ -2,6 +2,8 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch } from "vue"
 import { call } from "@/bridge"
 import type { EditDecision, Segment } from "@/types/project"
+import { useEditedPlayback } from "@/composables/useEditedPlayback"
+import { buildSubtitleIndex, findSubtitleAtTime } from "@/utils/editedPlayback"
 
 type PreviewMode = "edited" | "original"
 
@@ -25,7 +27,6 @@ const videoSrc = ref("")
 const volume = ref(0.75)
 const isMuted = ref(false)
 const previewMode = ref<PreviewMode>("edited")
-let rafId: number | null = null
 
 const deleteRanges = computed(() => {
   return props.edits
@@ -34,17 +35,22 @@ const deleteRanges = computed(() => {
     .sort((a, b) => a.start - b.start)
 })
 
+const subtitleSegments = computed(() => buildSubtitleIndex(props.segments ?? []))
+
 const currentSubtitleText = computed(() => {
   const time = currentTime.value
-  const segs = props.segments
-  if (!segs || segs.length === 0) return ""
-  for (let i = 0; i < segs.length; i++) {
-    const s = segs[i]
-    if (s.type === "subtitle" && time >= s.start && time <= s.end) {
-      return s.text
-    }
-  }
-  return ""
+  return findSubtitleAtTime(subtitleSegments.value, time)?.text ?? ""
+})
+
+const playback = useEditedPlayback({
+  videoRef,
+  previewMode,
+  paused: computed(() => !isPlaying.value),
+  rawDeleteRanges: deleteRanges,
+  onTimeUpdate: (time) => {
+    currentTime.value = time
+    emit("time-update", time)
+  },
 })
 
 async function loadVideoUrl() {
@@ -100,62 +106,11 @@ function seekToPosition(e: MouseEvent) {
   if (!videoRef.value || !videoDuration.value) return
   const target = e.currentTarget as HTMLElement
   const ratio = e.offsetX / target.clientWidth
-  videoRef.value.currentTime = ratio * videoDuration.value
-}
-
-function startRaf() {
-  if (rafId === null) {
-    rafId = requestAnimationFrame(animationLoop)
-  }
-}
-
-function stopRaf() {
-  if (rafId !== null) {
-    cancelAnimationFrame(rafId)
-    rafId = null
-  }
+  playback.seek(ratio * videoDuration.value)
 }
 
 function togglePreviewMode() {
-  if (previewMode.value === "edited") {
-    previewMode.value = "original"
-    stopRaf()
-  } else {
-    previewMode.value = "edited"
-    startRaf()
-  }
-}
-
-function checkSkip(time: number): boolean {
-  for (const range of deleteRanges.value) {
-    if (time >= range.start && time < range.end) {
-      videoRef.value!.currentTime = range.end
-      return true
-    }
-  }
-  return false
-}
-
-function animationLoop() {
-  if (videoRef.value && !videoRef.value.paused) {
-    const time = videoRef.value.currentTime
-    if (previewMode.value === "edited") {
-      if (!checkSkip(time)) {
-        currentTime.value = time
-        emit("time-update", time)
-      }
-    } else {
-      currentTime.value = time
-      emit("time-update", time)
-    }
-  }
-  rafId = requestAnimationFrame(animationLoop)
-}
-
-function onTimeUpdate() {
-  if (videoRef.value) {
-    currentTime.value = videoRef.value.currentTime
-  }
+  previewMode.value = previewMode.value === "edited" ? "original" : "edited"
 }
 
 function onLoadedMetadata() {
@@ -174,22 +129,11 @@ function onPause() {
   isPlaying.value = false
 }
 
-function onSeeked() {
-  if (videoRef.value) {
-    if (!videoRef.value.paused && previewMode.value === "edited") {
-      checkSkip(videoRef.value.currentTime)
-    }
-    currentTime.value = videoRef.value.currentTime
-  }
-}
-
 onMounted(() => {
-  startRaf()
   loadVideoUrl()
 })
 
 onBeforeUnmount(() => {
-  stopRaf()
   if (videoRef.value) {
     videoRef.value.pause()
     videoRef.value.removeAttribute("src")
@@ -212,11 +156,11 @@ watch(() => [props.mediaPath, props.proxyPath], () => {
         ref="videoRef"
         :src="videoSrc"
         class="max-w-full max-h-full"
-        @timeupdate="onTimeUpdate"
+        @timeupdate="playback.handleTimeUpdate"
         @loadedmetadata="onLoadedMetadata"
         @play="onPlay"
         @pause="onPause"
-        @seeked="onSeeked"
+        @seeked="playback.handleSeeked"
       />
       <div
         v-if="currentSubtitleText"

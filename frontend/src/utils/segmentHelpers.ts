@@ -55,6 +55,21 @@ export function resolveSegmentState(
   }
 }
 
+/**
+ * Resolve all segment states once per segments/edits change instead of doing
+ * edits.filter()+sort() from every rendered row on every playhead frame.
+ */
+export function buildSegmentStateMap(
+  segments: ReadonlyArray<Segment>,
+  edits: ReadonlyArray<EditDecision>,
+): Map<string, SegmentState> {
+  const states = new Map<string, SegmentState>()
+  for (const segment of segments) {
+    states.set(segment.id, resolveSegmentState(edits, segment))
+  }
+  return states
+}
+
 // -- Deprecated wrappers (kept for backwards compat) ---------------------
 
 /** @deprecated Use resolveSegmentState instead */

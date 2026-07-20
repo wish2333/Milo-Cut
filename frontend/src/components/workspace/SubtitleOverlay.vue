@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, watch, onUnmounted } from "vue"
+import { computed, ref, watch, onUnmounted } from "vue"
 import type { Segment } from "@/types/project"
+import { buildSubtitleIndex, findSubtitleAtTime } from "@/utils/editedPlayback"
 
 const props = defineProps<{
   segments: Segment[]
@@ -9,47 +10,11 @@ const props = defineProps<{
 
 const currentText = ref("")
 let rafId: number | null = null
-let cursor = 0
+
+const subtitleSegments = computed(() => buildSubtitleIndex(props.segments))
 
 function findCurrentSubtitle(time: number): string {
-  const segs = props.segments
-  if (segs.length === 0) return ""
-
-  // Fast path: check cursor position (99% of frames hit here)
-  const cur = segs[cursor]
-  if (cur && cur.type === "subtitle" && time >= cur.start && time <= cur.end) {
-    return cur.text
-  }
-
-  // Check next segment (normal forward playback)
-  const next = segs[cursor + 1]
-  if (next && next.type === "subtitle" && time >= next.start && time <= next.end) {
-    cursor++
-    return next.text
-  }
-
-  // Seek/jump: binary search for subtitle segment
-  let lo = 0
-  let hi = segs.length - 1
-  while (lo <= hi) {
-    const mid = (lo + hi) >>> 1
-    const s = segs[mid]
-    if (s.type !== "subtitle") {
-      lo = mid + 1
-      continue
-    }
-    if (time < s.start) {
-      hi = mid - 1
-    } else if (time > s.end) {
-      lo = mid + 1
-    } else {
-      cursor = mid
-      return s.text
-    }
-  }
-
-  cursor = Math.max(0, lo)
-  return ""
+  return findSubtitleAtTime(subtitleSegments.value, time)?.text ?? ""
 }
 
 function tick() {
@@ -83,11 +48,6 @@ watch(() => props.videoRef, (video, _old, onCleanup) => {
     video.removeEventListener("pause", stopTracking)
   })
 }, { immediate: true })
-
-// Reset cursor on segment change
-watch(() => props.segments, () => {
-  cursor = 0
-})
 
 onUnmounted(() => {
   stopTracking()

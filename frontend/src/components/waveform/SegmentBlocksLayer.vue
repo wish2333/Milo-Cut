@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, ref, onMounted, onUnmounted } from "vue"
 import type { Segment, EditDecision } from "@/types/project"
-import { resolveSegmentState } from "@/utils/segmentHelpers"
+import { buildSegmentStateMap } from "@/utils/segmentHelpers"
 import type { SegmentState } from "@/utils/segmentHelpers"
 import { TIMELINE_METRICS_KEY } from "./injectionKeys"
 import type { TimelineMetrics } from "@/composables/useTimelineMetrics"
@@ -59,6 +59,13 @@ interface EditRangeBlock {
   widthPercent: number
 }
 
+const segmentStateMap = computed(() => buildSegmentStateMap(props.segments, props.edits))
+const EMPTY_SEGMENT_STATE: SegmentState = {
+  displayStatus: "none",
+  styleClass: "normal",
+  activeEdit: undefined,
+}
+
 const visibleBlocks = computed<Block[]>(() => {
   const vs = metrics.viewStart.value
   const ve = metrics.viewEnd.value
@@ -70,7 +77,7 @@ const visibleBlocks = computed<Block[]>(() => {
     .map(seg => {
       const clampStart = Math.max(seg.start, vs)
       const clampEnd = Math.min(seg.end, ve)
-      const state = resolveSegmentState(props.edits, seg)
+      const state = segmentStateMap.value.get(seg.id) ?? EMPTY_SEGMENT_STATE
       return {
         seg,
         leftPercent: ((clampStart - vs) / vd) * 100,

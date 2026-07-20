@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick } from "vue"
 import type { Segment, EditDecision, AnalysisResult } from "@/types/project"
-import { resolveSegmentState } from "@/utils/segmentHelpers"
+import {
+  buildSubtitleIndex,
+  findSubtitleAtTime,
+} from "@/utils/editedPlayback"
+import { buildSegmentStateMap, type SegmentState } from "@/utils/segmentHelpers"
 import TranscriptRow from "@/components/workspace/TranscriptRow.vue"
 import SilenceRow from "@/components/workspace/SilenceRow.vue"
 import SuggestionPanel from "@/components/workspace/SuggestionPanel.vue"
@@ -143,6 +147,14 @@ const tabs: Array<{ key: RightPanelTab; label: string }> = [
   { key: "highlight", label: "精华" },
 ]
 
+const segmentStateMap = computed(() => buildSegmentStateMap(props.segments, props.edits))
+const subtitleSegments = computed(() => buildSubtitleIndex(props.segments))
+const EMPTY_SEGMENT_STATE: SegmentState = {
+  displayStatus: "none",
+  styleClass: "normal",
+  activeEdit: undefined,
+}
+
 // v2.1.1 A-2.1: playhead-aware highlight + external (SuggestionPanel) click highlight.
 // playheadSegmentId is a computed based on currentTime -- the TranscriptRow that
 // contains the playhead gets a visual cue (left blue border + light bg) via the
@@ -150,7 +162,7 @@ const tabs: Array<{ key: RightPanelTab; label: string }> = [
 // playhead movement only re-renders the two rows where playhead crosses boundary.
 const playheadSegmentId = computed<string | null>(() => {
   const t = props.currentTime ?? 0
-  const seg = props.segments.find(s => s.type === "subtitle" && t >= s.start && t <= s.end)
+  const seg = findSubtitleAtTime(subtitleSegments.value, t)
   return seg?.id ?? null
 })
 
@@ -180,7 +192,7 @@ function handleSuggestionSeek(time: number) {
 }
 
 function getSegmentState(seg: Segment) {
-  return resolveSegmentState(props.edits, seg)
+  return segmentStateMap.value.get(seg.id) ?? EMPTY_SEGMENT_STATE
 }
 
 // Cross-validation highlight: when a silence segment is selected,
