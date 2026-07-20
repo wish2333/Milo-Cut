@@ -880,7 +880,11 @@ async function handleDeleteTimeline(timelineId: string) {
 }
 
 async function handleToggleEditStatus(segment: Segment, nextStatus?: string) {
-  await toggleEditStatus(segment, nextStatus)
+  const ok = await toggleEditStatus(segment, nextStatus)
+  if (!ok) {
+    // v2.3.2 阶段 1.1: toggleEditStatus now reports total failure (write + refresh).
+    showToast("Failed to update segment status", "error", 3000)
+  }
 }
 
 async function handleImportSrt() {

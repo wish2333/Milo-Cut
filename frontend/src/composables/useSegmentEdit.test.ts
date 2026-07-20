@@ -170,8 +170,9 @@ describe("useSegmentEdit", () => {
       mockCall.mockResolvedValue({ success: true, data: returnedProj })
 
       const { toggleEditStatus } = useSegmentEdit(project, onProjectUpdate)
-      await toggleEditStatus(mockSegment())
+      const ok = await toggleEditStatus(mockSegment())
 
+      expect(ok).toBe(true)
       const methods = mockCall.mock.calls.map(c => c[0])
       expect(methods).toContain("update_edit_decision")
       expect(methods).not.toContain("get_project")
@@ -184,8 +185,9 @@ describe("useSegmentEdit", () => {
       mockCall.mockResolvedValue({ success: true, data: returnedProj })
 
       const { toggleEditStatus } = useSegmentEdit(project, onProjectUpdate)
-      await toggleEditStatus(mockSegment())
+      const ok = await toggleEditStatus(mockSegment())
 
+      expect(ok).toBe(true)
       const methods = mockCall.mock.calls.map(c => c[0])
       expect(methods).toContain("mark_segments")
       expect(methods).not.toContain("get_project")
@@ -203,12 +205,19 @@ describe("useSegmentEdit", () => {
         return { success: true }
       })
 
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
       const { toggleEditStatus } = useSegmentEdit(project, onProjectUpdate)
-      await toggleEditStatus(mockSegment())
+      const ok = await toggleEditStatus(mockSegment())
 
+      expect(ok).toBe(true)
       const methods = mockCall.mock.calls.map(c => c[0])
       expect(methods).toContain("mark_segments")
       expect(methods).toContain("get_project")
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("fell back"),
+        expect.objectContaining({ segmentId: "seg-1" }),
+      )
+      warnSpy.mockRestore()
     })
 
     it("falls back to get_project when write call fails", async () => {
@@ -219,11 +228,50 @@ describe("useSegmentEdit", () => {
         return { success: false, error: "write failed" }
       })
 
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
       const { toggleEditStatus } = useSegmentEdit(project, onProjectUpdate)
-      await toggleEditStatus(mockSegment())
+      const ok = await toggleEditStatus(mockSegment())
 
+      expect(ok).toBe(true)
       const methods = mockCall.mock.calls.map(c => c[0])
       expect(methods).toContain("get_project")
+      expect(warnSpy).toHaveBeenCalled()
+      warnSpy.mockRestore()
+    })
+
+    // v2.3.2 阶段 1.1 任务 5: total-failure observability.
+    // 写操作 + fallback 刷新都失败时，必须返回 false 并通过 console.error
+    // 暴露错误，让调用方（WorkspacePage）能向用户提示。
+    it("returns false and logs error when both write and refresh fail", async () => {
+      mockCall.mockImplementation(async () => ({ success: false, error: "backend down" }))
+
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+      const { toggleEditStatus } = useSegmentEdit(project, onProjectUpdate)
+      const ok = await toggleEditStatus(mockSegment())
+
+      expect(ok).toBe(false)
+      expect(onProjectUpdate).not.toHaveBeenCalled()
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("fully failed"),
+        expect.objectContaining({ segmentId: "seg-1" }),
+      )
+      errorSpy.mockRestore()
+    })
+
+    it("returns false and logs error when refresh returns no data after write failure", async () => {
+      mockCall.mockImplementation(async (method: string) => {
+        if (method === "get_project") return { success: true }
+        return { success: false, error: "write failed" }
+      })
+
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+      const { toggleEditStatus } = useSegmentEdit(project, onProjectUpdate)
+      const ok = await toggleEditStatus(mockSegment())
+
+      expect(ok).toBe(false)
+      expect(onProjectUpdate).not.toHaveBeenCalled()
+      expect(errorSpy).toHaveBeenCalled()
+      errorSpy.mockRestore()
     })
   })
 
