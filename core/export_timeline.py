@@ -16,6 +16,15 @@ def export_edl(
     """Export CMX3600 EDL file compatible with DaVinci Resolve / Premiere Pro."""
     try:
         fps = media_info.get("fps", 25.0)
+        # Audio-only media (.wav/.mp3) is probed with fps=0.0; NLE timelines still
+        # need a frame rate, and downstream _seconds_to_timecode would divide by
+        # zero. Fall back to 25.0 (PAL/broadcast default; matches EDL/OTIO norm).
+        if fps <= 0:
+            logger.warning(
+                "export_timeline: media_info.fps={} (audio-only?), defaulting to 25.0",
+                fps,
+            )
+            fps = 25.0
         media_path = media_info.get("path", "")
         media_filename = Path(media_path).name
 
@@ -358,6 +367,15 @@ def _build_xmeml_core(
     - <pathurl>: file:///D:/path/file.mp4 format (Windows)
     """
     fps = media_info.get("fps", 25.0)
+    # Audio-only media (.wav/.mp3) is probed with fps=0.0; NLE timelines still
+    # need a frame rate, and downstream _seconds_to_timecode would divide by
+    # zero. Fall back to 25.0 (PAL/broadcast default; matches EDL/OTIO norm).
+    if fps <= 0:
+        logger.warning(
+            "export_timeline: media_info.fps={} (audio-only?), defaulting to 25.0",
+            fps,
+        )
+        fps = 25.0
     media_path = media_info.get("path", "")
     media_name = Path(media_path).stem
     media_filename = Path(media_path).name
@@ -637,8 +655,14 @@ def _build_keep_ranges(
     if current < total_duration:
         keep_ranges.append((current, total_duration))
 
-    # Filter out ranges that produce 0 frames (floating-point rounding edge cases)
-    return [(s, e) for s, e in keep_ranges if _sec_to_frames(e - s, fps) > 0]
+    # Filter out ranges that produce 0 frames (floating-point rounding edge cases).
+    # When fps<=0 (audio-only media: .wav/.mp3 probed with fps=0.0), _sec_to_frames
+    # always returns 0, which would silently eliminate ALL keep ranges and produce
+    # an empty timeline file (bug: EDL/XML/OTIO exports for audio-only projects).
+    # Fall back to a duration-only filter for audio-only media.
+    if fps > 0:
+        return [(s, e) for s, e in keep_ranges if _sec_to_frames(e - s, fps) > 0]
+    return [(s, e) for s, e in keep_ranges if (e - s) > 0]
 
 
 def _sec_to_frames(seconds: float, fps: float) -> int:
@@ -747,6 +771,15 @@ def export_otio(
 
     try:
         fps = media_info.get("fps", 25.0)
+        # Audio-only media (.wav/.mp3) is probed with fps=0.0; NLE timelines still
+        # need a frame rate, and downstream _seconds_to_timecode would divide by
+        # zero. Fall back to 25.0 (PAL/broadcast default; matches EDL/OTIO norm).
+        if fps <= 0:
+            logger.warning(
+                "export_timeline: media_info.fps={} (audio-only?), defaulting to 25.0",
+                fps,
+            )
+            fps = 25.0
         media_path = media_info.get("path", "")
         source_duration = media_info.get("duration", 0)
 

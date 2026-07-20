@@ -149,6 +149,126 @@ class TestProjectService:
         assert result["success"] is True
         assert result["data"]["edit_count"] == 1
 
+    def test_get_edit_summary_excludes_pending(self, tmp_dir, monkeypatch):
+        """Regression for v2.3.1: summary must only count CONFIRMED deletes.
+
+        Earlier get_edit_summary filtered `status in (PENDING, CONFIRMED)`,
+        which made the export modal show inflated edit_count / delete_duration
+        / delete_percent compared to the top-right status badge (which uses
+        frontend useExport.confirmedEdits, status=="confirmed" only). The two
+        displays must stay numerically identical.
+        """
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 100.0})
+        # 3 silence segments -> 3 PENDING edits
+        svc.add_silence_results([
+            {"start": 5.0, "end": 5.5},    # 0.5s
+            {"start": 10.0, "end": 11.0},  # 1.0s
+            {"start": 20.0, "end": 22.0},  # 2.0s
+        ])
+        edits = svc.current.active_timeline.edits
+        assert len(edits) == 3
+        assert all(e.status == EditStatus.PENDING for e in edits)
+
+        # Pre-confirm: summary should report ZERO (all still pending)
+        result_all_pending = svc.get_edit_summary()
+        assert result_all_pending["success"] is True
+        assert result_all_pending["data"]["edit_count"] == 0
+        assert result_all_pending["data"]["delete_duration"] == 0.0
+
+        # Confirm only the first edit
+        svc.update_edit_decision(edits[0].id, EditStatus.CONFIRMED)
+
+        result_one_confirmed = svc.get_edit_summary()
+        assert result_one_confirmed["success"] is True
+        assert result_one_confirmed["data"]["edit_count"] == 1
+        assert abs(result_one_confirmed["data"]["delete_duration"] - 0.5) < 0.01
+
+        # Reject the second; confirm the third
+        svc.update_edit_decision(edits[1].id, EditStatus.REJECTED)
+        svc.update_edit_decision(edits[2].id, EditStatus.CONFIRMED)
+
+        result_mixed = svc.get_edit_summary()
+        assert result_mixed["success"] is True
+        assert result_mixed["data"]["edit_count"] == 2
+        # 0.5 + 2.0 = 2.5s, NOT 0.5+1.0+2.0=3.5s
+        assert abs(result_mixed["data"]["delete_duration"] - 2.5) < 0.01
+
+    def test_generate_subtitle_keep_ranges_creates_confirmed_edits(
+        self, tmp_dir, monkeypatch, sample_segments
+    ):
+        """Regression for v2.3.1 Bug C: subtitle_trim edits must be CONFIRMED.
+
+        Before: created as PENDING, which made export silently ignore them
+        while frontend preview (WorkspacePage.vue:194, PreviewPlayer.vue:30)
+        treated source=subtitle_trim as implicitly confirmed. Result: user
+        saw jumps in preview but exported file kept the gaps.
+        """
+        from core.export_service import _get_confirmed_deletions
+        from core.export_timeline import _build_keep_ranges
+
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
+        svc.update_transcript([s.model_dump() for s in sample_segments])
+
+        result = svc.generate_subtitle_keep_ranges(padding=0.3)
+        assert result["success"] is True
+        assert result["data"]["new_edits"] > 0
+
+        edits = svc.current.active_timeline.edits
+        subtitle_trim_edits = [e for e in edits if e.source == "subtitle_trim"]
+        assert len(subtitle_trim_edits) > 0
+
+        # Core regression: every subtitle_trim edit is CONFIRMED at creation
+        assert all(e.status == EditStatus.CONFIRMED for e in subtitle_trim_edits), (
+            f"subtitle_trim edits must be CONFIRMED, got statuses: "
+            f"{[e.status for e in subtitle_trim_edits]}"
+        )
+        assert all(e.action == "delete" for e in subtitle_trim_edits)
+
+        # End-to-end: these edits are now picked up by export pipelines
+        edit_dicts = [e.model_dump() for e in subtitle_trim_edits]
+
+        # export_video / export_audio / export_srt / export_vtt path
+        confirmed_deletions = _get_confirmed_deletions(edit_dicts)
+        assert len(confirmed_deletions) == len(subtitle_trim_edits), (
+            "export_service._get_confirmed_deletions must pick up all subtitle_trim edits"
+        )
+
+        # export_edl / export_xmeml / export_otio path
+        total_duration = max(s.end for s in svc.current.active_timeline.transcript.segments)
+        keep_ranges = _build_keep_ranges([], edit_dicts, total_duration, fps=30.0)
+        # With all subtitle_trim deletes applied, keep_ranges excludes every gap
+        assert len(keep_ranges) >= 1
+        kept_total = sum(e - s for s, e in keep_ranges)
+        deleted_total = sum(e[1] - e[0] for e in confirmed_deletions)
+        assert abs((kept_total + deleted_total) - total_duration) < 0.5, (
+            "keep + delete must cover the full timeline"
+        )
+
+    def test_subtitle_trim_edits_counted_in_summary(
+        self, tmp_dir, monkeypatch, sample_segments
+    ):
+        """After Bug C fix, get_edit_summary counts subtitle_trim edits too.
+
+        This keeps the export modal in sync with the top-right badge.
+        """
+        svc = self._create_service(tmp_dir, monkeypatch)
+        svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
+        svc.update_transcript([s.model_dump() for s in sample_segments])
+
+        svc.generate_subtitle_keep_ranges(padding=0.3)
+
+        result = svc.get_edit_summary()
+        assert result["success"] is True
+        assert result["data"]["edit_count"] > 0
+        assert result["data"]["delete_duration"] > 0
+        # No silence_detection / user edits involved; every counted edit is subtitle_trim
+        subtitle_trim_edits = [
+            e for e in svc.current.active_timeline.edits if e.source == "subtitle_trim"
+        ]
+        assert result["data"]["edit_count"] == len(subtitle_trim_edits)
+
     def test_add_analysis_results(self, tmp_dir, monkeypatch, sample_segments):
         svc = self._create_service(tmp_dir, monkeypatch)
         svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})

@@ -229,6 +229,8 @@ frontend_dist/
 settings.local.json
 .omo
 reasonix.toml
+resume-project-doc/
+opendesign/
 
 # Project
 project.json

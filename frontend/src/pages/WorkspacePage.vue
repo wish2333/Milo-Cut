@@ -12,6 +12,7 @@ import { useUndoRedo } from "@/composables/useUndoRedo"
 import { usePluginManager } from "@/composables/usePluginManager"
 import { useUvAvailability } from "@/composables/useUvAvailability"
 import { useLlmTasks } from "@/composables/useLlmTasks"
+import { useEditedPlayback } from "@/composables/useEditedPlayback"
 import {
   EVENT_TASK_COMPLETED,
   EVENT_TASK_CANCELLED,
@@ -189,7 +190,19 @@ const isGeneratingProxy = ref(false)
 
 // Preview mode: "edited" skips delete ranges, "original" plays full video
 const previewMode = ref<"edited" | "original">("edited")
-let rafId: number | null = null
+
+// v2.3.1 Bug D fix: declare activeTimeline/segments/edits BEFORE deleteRanges.
+// useEditedPlayback's internal watch(playbackRanges, ...) evaluates
+// playbackRanges.value during setup registration, which cascades through
+// deleteRanges into edits.value. If edits is still in TDZ at that point the
+// whole WorkspacePage setup crashes with "Cannot access 'edits' before
+// initialization". Moving these three computeds up keeps the data dependency
+// order correct without changing useEditedPlayback's contract.
+const activeTimeline = computed<TimelineData | null>(() =>
+  props.project.timelines.find(t => t.id === props.project.active_timeline_id) ?? null
+)
+const segments = computed<Segment[]>(() => activeTimeline.value?.transcript?.segments ?? [])
+const edits = computed<EditDecision[]>(() => activeTimeline.value?.edits ?? [])
 
 const deleteRanges = computed(() => {
   return edits.value
@@ -198,52 +211,21 @@ const deleteRanges = computed(() => {
     .sort((a, b) => a.start - b.start)
 })
 
-function checkSkip(time: number): boolean {
-  for (const range of deleteRanges.value) {
-    if (time >= range.start && time < range.end) {
-      videoRef.value!.currentTime = range.end
-      return true
-    }
-  }
-  return false
-}
-
-function animationLoop() {
-  if (videoRef.value && !videoRef.value.paused) {
-    const time = videoRef.value.currentTime
-    if (!checkSkip(time)) {
-      currentTime.value = time
-    }
-  }
-  rafId = requestAnimationFrame(animationLoop)
-}
-
-function handleVideoSeeked() {
-  if (videoRef.value) {
-    if (previewMode.value === "edited" && !videoRef.value.paused) {
-      checkSkip(videoRef.value.currentTime)
-    }
-    currentTime.value = videoRef.value.currentTime
-  }
-}
+const {
+  handleTimeUpdate: handlePlaybackTimeUpdate,
+  handleSeeked: handlePlaybackSeeked,
+  seek: seekPlayback,
+} = useEditedPlayback({
+  videoRef,
+  previewMode,
+  paused: videoPaused,
+  rawDeleteRanges: deleteRanges,
+  onTimeUpdate: (time) => { currentTime.value = time },
+})
 
 function togglePreviewMode() {
   previewMode.value = previewMode.value === "edited" ? "original" : "edited"
 }
-
-// RAF lifecycle: start/stop based on previewMode and play state
-watch([previewMode, videoPaused], ([mode, paused]) => {
-  if (mode === "edited" && !paused) {
-    if (rafId === null) {
-      rafId = requestAnimationFrame(animationLoop)
-    }
-  } else {
-    if (rafId !== null) {
-      cancelAnimationFrame(rafId)
-      rafId = null
-    }
-  }
-})
 
 // ASR Transcription settings - per-engine storage so switching preserves settings
 const asrSettingsPerEngine = ref<Record<string, {
@@ -402,11 +384,6 @@ watch(isDirty, (dirty, _old, onCleanup) => {
   onCleanup(() => clearTimeout(timer))
 })
 
-const activeTimeline = computed<TimelineData | null>(() =>
-  props.project.timelines.find(t => t.id === props.project.active_timeline_id) ?? null
-)
-const segments = computed<Segment[]>(() => activeTimeline.value?.transcript?.segments ?? [])
-const edits = computed<EditDecision[]>(() => activeTimeline.value?.edits ?? [])
 const duration = computed(() => props.project.media?.duration ?? 0)
 const analysisResults = computed(() => activeTimeline.value?.analysis?.results ?? [])
 
@@ -769,17 +746,12 @@ async function saveSilenceSettings() {
 }
 
 function handleSeek(time: number) {
-  if (videoRef.value) {
-    videoRef.value.currentTime = time
-    videoRef.value.play()
-  }
+  seekPlayback(time, true)
 }
 
 // v2.1.1 A-03: move playhead without playing (arrow keys, selection mode)
 function handleSetTime(time: number) {
-  if (videoRef.value) {
-    videoRef.value.currentTime = time
-  }
+  seekPlayback(time)
 }
 
 function handleVideoLoaded() {
@@ -789,9 +761,7 @@ function handleVideoLoaded() {
 }
 
 function handleTimeUpdate() {
-  if (videoRef.value) {
-    currentTime.value = videoRef.value.currentTime
-  }
+  handlePlaybackTimeUpdate()
 }
 
 function handleTogglePlay() {
@@ -804,8 +774,7 @@ function handleTogglePlay() {
 }
 
 function handleSeekTo(time: number) {
-  if (!videoRef.value) return
-  videoRef.value.currentTime = time
+  seekPlayback(time)
 }
 
 function handleVolumeChange(vol: number) {
@@ -1429,9 +1398,7 @@ async function handleDeleteSegment(segmentId: string) {
 
 function handleSeekSegment(seg: Segment) {
   editSelectedSegmentId.value = seg.id
-  if (videoRef.value) {
-    videoRef.value.currentTime = seg.start
-  }
+  seekPlayback(seg.start)
 }
 
 
@@ -1577,10 +1544,6 @@ onUnmounted(() => {
   document.removeEventListener("keydown", handleGlobalKeydown)
   document.removeEventListener("mousedown", handleClickOutside)
   if (regenPollTimer) clearInterval(regenPollTimer)
-  if (rafId !== null) {
-    cancelAnimationFrame(rafId)
-    rafId = null
-  }
 })
 </script>
 
@@ -2029,7 +1992,7 @@ onUnmounted(() => {
               @timeupdate="handleTimeUpdate"
               @play="videoPaused = false"
               @pause="videoPaused = true"
-              @seeked="handleVideoSeeked"
+              @seeked="handlePlaybackSeeked"
               @click="handleTogglePlay"
             />
             <SubtitleOverlay
