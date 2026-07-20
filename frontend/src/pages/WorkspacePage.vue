@@ -191,6 +191,19 @@ const isGeneratingProxy = ref(false)
 // Preview mode: "edited" skips delete ranges, "original" plays full video
 const previewMode = ref<"edited" | "original">("edited")
 
+// v2.3.1 Bug D fix: declare activeTimeline/segments/edits BEFORE deleteRanges.
+// useEditedPlayback's internal watch(playbackRanges, ...) evaluates
+// playbackRanges.value during setup registration, which cascades through
+// deleteRanges into edits.value. If edits is still in TDZ at that point the
+// whole WorkspacePage setup crashes with "Cannot access 'edits' before
+// initialization". Moving these three computeds up keeps the data dependency
+// order correct without changing useEditedPlayback's contract.
+const activeTimeline = computed<TimelineData | null>(() =>
+  props.project.timelines.find(t => t.id === props.project.active_timeline_id) ?? null
+)
+const segments = computed<Segment[]>(() => activeTimeline.value?.transcript?.segments ?? [])
+const edits = computed<EditDecision[]>(() => activeTimeline.value?.edits ?? [])
+
 const deleteRanges = computed(() => {
   return edits.value
     .filter(e => e.action === "delete" && (e.status === "confirmed" || e.source === "subtitle_trim"))
@@ -371,11 +384,6 @@ watch(isDirty, (dirty, _old, onCleanup) => {
   onCleanup(() => clearTimeout(timer))
 })
 
-const activeTimeline = computed<TimelineData | null>(() =>
-  props.project.timelines.find(t => t.id === props.project.active_timeline_id) ?? null
-)
-const segments = computed<Segment[]>(() => activeTimeline.value?.transcript?.segments ?? [])
-const edits = computed<EditDecision[]>(() => activeTimeline.value?.edits ?? [])
 const duration = computed(() => props.project.media?.duration ?? 0)
 const analysisResults = computed(() => activeTimeline.value?.analysis?.results ?? [])
 

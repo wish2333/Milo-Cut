@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { inject, onMounted, onUnmounted, ref, watch } from "vue"
+import { computed, inject, onMounted, onUnmounted, ref, watch } from "vue"
 import type { Segment } from "@/types/project"
 import { TIMELINE_METRICS_KEY } from "./injectionKeys"
 import type { TimelineMetrics } from "@/composables/useTimelineMetrics"
@@ -20,6 +20,38 @@ const metrics = inject<TimelineMetrics>(TIMELINE_METRICS_KEY)!
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 const peaks = ref<PeakData[] | null>(null)
 const loadError = ref(false)
+
+// v2.3.1 Bug D 热点 5: Pre-compute a silence-only timeline so drawSilenceOverlay
+// can use binary search instead of scanning all segments every redraw.
+// For the user's reference project (1167 segments = 477 subtitle + 690 silence)
+// this cuts each redraw from 1167 comparisons down to ~log2(690) + visible_count.
+const silenceSegments = computed(() =>
+  props.segments
+    .filter(seg => seg.type === "silence")
+    .sort((a, b) => a.start - b.start),
+)
+
+/**
+ * Binary search for the first silence segment that might overlap the viewport.
+ * Returns the smallest index i where silenceSegments[i].end >= viewStart, so
+ * earlier segments (entirely left of viewport) are skipped in O(log N).
+ */
+function findFirstVisibleSilence(
+  silences: readonly Segment[],
+  viewStart: number,
+): number {
+  let lo = 0
+  let hi = silences.length
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1
+    if (silences[mid].end < viewStart) {
+      lo = mid + 1
+    } else {
+      hi = mid
+    }
+  }
+  return lo
+}
 
 // -- Load waveform data -------------------------------------------------
 
@@ -139,13 +171,18 @@ function drawSilenceOverlay(ctx: CanvasRenderingContext2D, w: number, h: number)
   const vs = metrics.viewStart.value
   const vd = metrics.viewDuration.value
   if (vd <= 0) return
+  const ve = vs + vd
 
-  for (const seg of props.segments) {
-    if (seg.type !== "silence") continue
-    if (seg.end <= vs || seg.start >= vs + vd) continue
+  // v2.3.1 Bug D 热点 5: Use binary search on the pre-computed silence-only
+  // timeline instead of scanning every segment (including subtitles) on each
+  // redraw. Break as soon as a silence starts past the viewport's right edge.
+  const silences = silenceSegments.value
+  for (let i = findFirstVisibleSilence(silences, vs); i < silences.length; i++) {
+    const seg = silences[i]
+    if (seg.start >= ve) break
 
     const clampStart = Math.max(seg.start, vs)
-    const clampEnd = Math.min(seg.end, vs + vd)
+    const clampEnd = Math.min(seg.end, ve)
     const x = ((clampStart - vs) / vd) * w
     const width = ((clampEnd - clampStart) / vd) * w
 

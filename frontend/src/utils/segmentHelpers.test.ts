@@ -278,4 +278,99 @@ describe("buildSegmentStateMap", () => {
     expect(states.get("seg-1")).toEqual(resolveSegmentState(edits, segments[0]))
     expect(states.get("seg-2")).toEqual(resolveSegmentState(edits, segments[1]))
   })
+
+  it("completes within a frame budget for the user's reference project scale", () => {
+    // v2.3.1 Bug D §4.4 热点 3 回归保护：
+    // 用户基准项目 = 1167 segments (477 subtitle + 690 silence) + 989 edits
+    // 之前每行每帧调用 resolveSegmentState() 导致 ~10^7 操作/帧的持续开销。
+    // buildSegmentStateMap 把它一次性预计算成 Map，让 v-memo 直接查 Map，
+    // 而不是每帧重算。如果未来修改让它退化到 O(N²) 或更糟，此测试会失败。
+    const segments: Segment[] = []
+    let t = 0
+    for (let i = 0; i < 477; i++) {
+      segments.push(seg({
+        id: `sub-${i}`,
+        version: 1,
+        type: "subtitle",
+        start: t,
+        end: t + 2,
+        text: `subtitle ${i}`,
+        speaker: "",
+      }))
+      t += 2.5
+    }
+    for (let i = 0; i < 690; i++) {
+      segments.push(seg({
+        id: `sil-${i}`,
+        version: 1,
+        type: "silence",
+        start: i * 0.5,
+        end: i * 0.5 + 0.3,
+        text: "",
+        speaker: "",
+      }))
+    }
+
+    const edits: EditDecision[] = []
+    for (let i = 0; i < 690; i++) {
+      edits.push(edit({
+        id: `silence-${i}`,
+        source: "silence_detection",
+        action: "delete",
+        status: "confirmed",
+        priority: 100,
+        start: i * 0.5,
+        end: i * 0.5 + 0.3,
+        target_type: "range",
+      }))
+    }
+    for (let i = 0; i < 177; i++) {
+      edits.push(edit({
+        id: `strim-${i}`,
+        source: "subtitle_trim",
+        action: "delete",
+        status: "confirmed",
+        priority: 150,
+        start: i * 4 + 2,
+        end: i * 4 + 2.5,
+        target_type: "range",
+      }))
+    }
+    for (let i = 0; i < 67; i++) {
+      edits.push(edit({
+        id: `llm-${i}`,
+        source: "llm_smart",
+        action: "delete",
+        status: "confirmed",
+        priority: 200,
+        target_id: `sub-${i}`,
+        target_type: "range",
+        start: segments[i].start,
+        end: segments[i].end,
+      }))
+    }
+    for (let i = 0; i < 55; i++) {
+      edits.push(edit({
+        id: `rej-${i}`,
+        source: i < 13 ? "llm_smart" : "user",
+        action: "delete",
+        status: "rejected",
+        priority: 200,
+        target_id: `sub-${400 + i}`,
+        target_type: "range",
+        start: segments[400 + i].start,
+        end: segments[400 + i].end,
+      }))
+    }
+
+    const start = (typeof performance !== "undefined" ? performance : { now: () => Date.now() }).now()
+    const states = buildSegmentStateMap(segments, edits)
+    const elapsed = (typeof performance !== "undefined" ? performance : { now: () => Date.now() }).now() - start
+
+    expect(states.size).toBe(segments.length)
+    // 200ms budget = generous CI variance headroom. Typical local run is <30ms;
+    // a 10x regression would still be under budget but a 100x regression would
+    // trip this and force a review before the change ships.
+    expect(elapsed).toBeLessThan(200)
+  })
 })
