@@ -17,6 +17,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "playwright": "^1.61.1",
     "vue": "^3.5.0"
   },
   "devDependencies": {

@@ -1421,8 +1421,16 @@ class ProjectService:
             total_duration = max(total_duration, seg.end)
 
         # Compute delete duration
+        # IMPORTANT: only count CONFIRMED edits here. Earlier versions also included
+        # PENDING, which made the export summary modal show inflated edit_count /
+        # delete_duration / delete_percent compared to the top-right status badge
+        # (which uses frontend useExport.confirmedEdits == status=="confirmed").
+        # The two must stay in sync; otherwise users see contradictory numbers.
         delete_duration = 0.0
-        confirmed_edits = [e for e in edits if e.action == "delete" and e.status in (EditStatus.PENDING, EditStatus.CONFIRMED)]
+        confirmed_edits = [
+            e for e in edits
+            if e.action == "delete" and e.status == EditStatus.CONFIRMED
+        ]
         for edit in confirmed_edits:
             delete_duration += edit.end - edit.start
 
@@ -2148,7 +2156,25 @@ class ProjectService:
                     end=end,
                     action="delete",
                     source="subtitle_trim",
-                    status=EditStatus.PENDING,
+                    # v2.3.1: subtitle_trim is a fast, user-triggered utility
+                    # (regenerable on demand via delete_subtitle_trim_edits +
+                    # generate_subtitle_keep_ranges). Unlike LLM suggestions
+                    # that need user review, subtitle_trim edits represent
+                    # deterministic inter-subtitle gaps the user has chosen to
+                    # cut. Mark CONFIRMED at creation so that:
+                    #   1. export_video/audio/srt/vtt apply them immediately
+                    #      (via _get_confirmed_deletions: action=delete & status=confirmed)
+                    #   2. export_timeline EDL/xmeml/OTIO apply them too
+                    #      (via _build_keep_ranges: same filter)
+                    #   3. frontend useExport.confirmedEdits counts them, so
+                    #      the top-right badge and export summary modal agree
+                    #      with the WorkspacePage/PreviewPlayer deleteRanges
+                    #      which already treated source=subtitle_trim as
+                    #      implicitly confirmed (since v2.1.1).
+                    # Before this change, frontend showed them as "skipped" in
+                    # preview but export kept them, producing the "export does
+                    # not match my markings" user complaint.
+                    status=EditStatus.CONFIRMED,
                     priority=100,
                     target_type="range",
                 ))
