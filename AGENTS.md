@@ -84,22 +84,59 @@ Task types are defined in `core/models.py:TaskType`.
 
 | Service | Responsibility |
 |---------|---------------|
-| `project_service.py` | Project CRUD, segment editing, analysis storage, edit decisions. Persists to `data/projects/<name>/project.json` |
-| `export_service.py` | Video/audio/SRT export via FFmpeg segment-concat pipeline |
-| `export_timeline.py` | OTIO/EDL/FCPXML/Premiere XML timeline export |
-| `ffmpeg_service.py` | ffprobe/ffmpeg wrappers: media probing, silence detection, waveform generation |
-| `analysis_service.py` | Rule-based Chinese filler word and error trigger detection |
+| `project_service.py` | Project CRUD, segment/edit/analysis ops, `_revision` counter, `_enforce_segment_sort_invariant`. Persists to `data/projects/<name>/project.json` |
+| `project_patch.py` | v2.3.2 `ProjectPatch` schema + `apply_project_patch` + `is_stale_patch` |
+| `export_service.py` | Video/audio/SRT/VTT export via FFmpeg segment-concat pipeline; highlight virtual edits |
+| `export_timeline.py` | OTIO/EDL/FCPXML/Premiere XML timeline export (audio-only fps=0 safe since v2.3.1) |
+| `ffmpeg_service.py` | ffprobe/ffmpeg wrappers: media probing, silence detection, waveform generation, proxy generation |
+| `ffmpeg_presets.py` | Encoder registry: CRF/CQ/QP selection, pixel format probing, hardware-acceleration mapping |
+| `llm_service.py` | LLM provider abstraction (OpenAI-compatible: DeepSeek / OpenAI / Qwen / GLM / Ollama / custom) |
+| `llm_prompts.py` | System prompts with template variable injection; partial_delete hint plumbing (v2.2.0) |
+| `llm_presets.py` | Style presets for LLM prompts |
+| `workflow_engine.py` | Multi-step workflow orchestration (silence detection + smart delete + subtitle correction) |
+| `analysis_service.py` | Rule-based Chinese filler word and error-trigger detection |
 | `subtitle_service.py` | SRT parsing with multi-encoding (UTF-8, GB18030, BOM) |
+| `timeline_utils.py` | Timeline helpers, partial_delete hint collection |
+| `diff_service.py` | Subtitle correction diff generation |
 | `task_manager.py` | Background task execution with progress + cancellation |
+| `bridge_service.py` | HTTP bridge API (health, analyze endpoints) |
 | `media_server.py` | Local HTTP server for streaming video to `<video>` element |
-| `models.py` | Pydantic v2 frozen models: Project, Segment, EditDecision, MediaInfo, MiloTask |
+| `asr_service.py` | ASR plugin abstraction (faster-whisper, qwen3-asr) |
+| `plugin_manager.py` | ASR plugin install / model download lifecycle |
+| `proxy_manager.py` | Proxy video generation for large source files |
+| `config.py` | Settings storage (`data/settings.json`) |
+| `paths.py` | Cross-platform path resolution |
+| `events.py` | Event name constants (must mirror `frontend/src/utils/events.ts`) |
+| `models.py` | Pydantic v2 frozen models: Project, Timeline, Segment, EditDecision, MediaInfo, AnalysisData, ProjectPatch, MiloTask |
+| `logging.py` | Loguru setup |
 
 ### Data model
 
-All models use Pydantic v2 (`core/models.py`):
-- `Project` -> `ProjectMeta`, `MediaInfo`, `TranscriptData` (contains `Segment[]`), `AnalysisData`, `EditDecision[]`
-- `Segment` has `type` field: `subtitle | silence | gap`
-- `EditDecision` tracks edit actions (delete, keep, trim) with statuses (pending, confirmed, rejected)
+All models use Pydantic v2 (`core/models.py`) with `frozen=True`:
+
+- `Project` → `ProjectMeta`, `MediaInfo | None`, `timelines: list[Timeline]`, `active_timeline_id`
+- `Timeline` → `TranscriptData` (contains `Segment[]`), `edits: list[EditDecision]`, `AnalysisData`, `llm_prompts`
+- `Segment.type` is `subtitle | silence` (no `gap` -- media gaps are inferred from non-overlapping segment times)
+- `EditDecision` tracks edit actions (`delete` / `keep`) with statuses (`pending` / `confirmed` / `rejected`) and `target_type` (`segment` / `range`)
+- `ProjectPatch` (v2.3.2) carries layer-scoped updates: `revision`, `segments?`, `edits?`, `analysis?`, `media?`, `active_timeline_id?`, `full_project?`
+
+### v2.3.2 ProjectPatch protocol
+
+Migrated write methods (`update_edit_decision`, `update_edit_decisions_batch`, `mark_segments`, `update_segment`, `update_segment_text`) return a `ProjectPatch` envelope (`{success, data: ProjectPatch.model_dump(mode="json")}`) instead of the legacy full-Project dump. Other write methods keep the legacy `{success, data: project.model_dump()}` shape; the frontend auto-detects via the `revision` field.
+
+Frontend entry point: `App.vue:onProjectUpdated` -- applies patch via `applyProjectPatch`, rejects stale patches via `lastSeenRevision`. Undo/redo snapshots are still full Project (pushSnapshot before applying the patch).
+
+Reference: `core/project_patch.py`, `frontend/src/utils/projectPatch.ts`.
+
+### v2.3.2 Sort invariant
+
+`ProjectService._enforce_segment_sort_invariant()` guarantees `transcript.segments` is sorted by `start` ascending after any write that could disturb ordering (`update_transcript` always; `update_segment` when `start` changes). `add_segment` / `split_segment` / `merge_segments` preserve order naturally. The frontend `WorkspacePage.mergedSegments` computed relies on this and skips its per-render O(S log S) sort.
+
+Regression coverage: `tests/test_segment_sort_invariant.py` (13 tests).
+
+### v2.2.1 Bridge ready signal
+
+`pywebvue/app.py:on_loaded` sets `window.__BRIDGE_READY__ = true` before the tick loop starts draining the queue. The frontend `bridge.ts:waitForPyWebView` waits for **both** `window.pywebview.api` and `window.__BRIDGE_READY__` -- checking only the former races against the pywebview `loaded` event and silently drops calls on macOS first launch (pywebview issue #431).
 
 ### Frontend architecture
 
@@ -153,15 +190,22 @@ feat(export): 视频编码参数系统完善 -- 编码器注册表、质量参�
 
 ## Development Environment
 
-- **OS**: Windows 11
+- **OS**: Cross-platform (developed on Windows 11 + macOS 26); `dev.py` / `build.py` work on both
 - **Package Manager (backend)**: uv
 - **Package Manager (frontend)**: bun
-- **Build Check (frontend)**: `cd frontend && bun run build`
+- **Build Check (frontend)**: `cd frontend && bun run build` (runs `vue-tsc --noEmit` + `vite build`)
+- **Python version**: 3.11 (pinned in `.python-version`)
+- **Models**: Pydantic v2 with `frozen=True` for all data models
+- **Settings**: Runtime config stored in `data/settings.json` (FFmpeg paths, silence thresholds, filler words, export codecs, LLM provider)
+- **Project persistence**: Each project saves to `data/projects/<name>/project.json`
 
 ## Documentation
 
-Design specs and audit reports live in `docs/`. Key files:
+Design specs, audit reports, and per-version implementation records live in `docs/`. Key entry points:
 - `docs/design-spec.md` - Apple Edition design language
-- `docs/component-spec.md` - Component layout and interaction spec
 - `docs/backend-guide.md` / `docs/frontend-guide.md` - Developer guides
+- `docs/<version>/` - Per-version implementation records (`record-<v>.md`, audit reports, specs). Current: v0.1.0 through v2.3.2.
+- `docs/2.3.0/2.3.2-record.md` - Latest release (v2.3.2 ProjectPatch + sort invariant + perf baseline)
 - `tests/TEST_GUIDE.md` - Automated + manual test procedures
+- `tests/perf/README.md` - Backend performance baseline harness
+- `README.md` / `README_zh.md` - User-facing project overview (English / Chinese)
