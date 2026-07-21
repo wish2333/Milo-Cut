@@ -361,8 +361,8 @@ function providerSupportsThinking(providerId: string): boolean {
   return !_NO_THINK_PROVIDERS.has(providerId)
 }
 
-function isOllamaUrl(url: string): boolean {
-  return url.includes("localhost:11434")
+function isOllamaUrl(url?: string): boolean {
+  return typeof url === "string" && url.includes("localhost:11434")
 }
 
 async function detectGpu() {

@@ -7,6 +7,13 @@ export interface ApiResponse<T = unknown> {
   code?: string
 }
 
+import { callDemo } from "@/demo/demoBridge"
+
+/** Browser-only runtime used by the static Netlify demonstration. */
+export function isDemoMode(): boolean {
+  return import.meta.env.VITE_DEMO_MODE === "true"
+}
+
 function getRawApi(): PyWebViewApi {
   const pw = window.pywebview
   if (!pw || !pw.api) {
@@ -31,6 +38,10 @@ function getRawApi(): PyWebViewApi {
  */
 export function waitForPyWebView(timeout = 10_000): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (isDemoMode()) {
+      resolve()
+      return
+    }
     const start = Date.now()
     const check = () => {
       if (window.pywebview?.api && window.__BRIDGE_READY__) {
@@ -68,6 +79,9 @@ export async function call<T = unknown>(
   method: string,
   ...args: unknown[]
 ): Promise<ApiResponse<T>> {
+  if (isDemoMode()) {
+    return callDemo<T>(method, ...args)
+  }
   // Defensive fallback: if a component fires a call before the bridge's
   // ready flag is set (e.g. an early mount that bypassed App.vue's
   // waitForPyWebView gate), wait for readiness first instead of letting

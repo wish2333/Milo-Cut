@@ -1,6 +1,6 @@
 import { ref, computed } from "vue"
 import { call, onEvent } from "@/bridge"
-import { EVENT_TASK_PROGRESS, EVENT_TASK_COMPLETED, EVENT_TASK_FAILED, EVENT_TASK_CANCELLED } from "@/utils/events"
+import { EVENT_TASK_PROGRESS, EVENT_TASK_COMPLETED, EVENT_TASK_FAILED, EVENT_TASK_CANCELLED, EVENT_DEMO_RESET } from "@/utils/events"
 import type { MiloTask, TaskType } from "@/types/task"
 
 const tasks = ref<MiloTask[]>([])
@@ -19,6 +19,11 @@ let listenersRegistered = false
 function ensureListeners() {
   if (listenersRegistered) return
   listenersRegistered = true
+
+  onEvent(EVENT_DEMO_RESET, () => {
+    tasks.value = []
+    taskStartTimes.clear()
+  })
 
   // Use onEvent directly (not useBridge) so these singleton listeners
   // are NOT tied to any component's onUnmounted lifecycle.

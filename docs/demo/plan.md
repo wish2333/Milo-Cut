@@ -1,16 +1,27 @@
-# Netlify 浏览器 Demo Implementation Plan
+# Netlify 浏览器 Demo Implementation Plan（v2.4.0 UI 基线）
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** 为 Milo-Cut 增加一个不依赖 Python、FFmpeg、真实媒体文件或外部 API 的浏览器演示模式，并将其部署到 Netlify，展示核心编辑、AI 建议、冲突解决和导出流程。
+**Goal:** 以 Milo-Cut v2.4.0 已收敛的 UI 设计系统为视觉基线，增加一个不依赖 Python、FFmpeg、真实媒体文件或外部 API 的浏览器演示模式，并将其部署到 Netlify，展示核心编辑、AI 建议、冲突解决和导出流程。
 
-**Architecture:** 保留当前桌面版 pywebview bridge 作为默认运行时，新增一个由 `VITE_DEMO_MODE` 控制的浏览器 Demo runtime。Demo runtime 使用单一内存状态仓库和确定性的任务模拟器，复用现有 Workspace、Timeline、Suggestion、AI、Conflict Resolution 和 Export 页面；媒体预览与波形改为纯 DOM/Canvas 的轻量模拟，不提交 `demo.mp4`、音频、图片或波形 JSON 等大资源。
+**Architecture:** 保留当前桌面版 pywebview bridge 作为默认运行时，新增一个由 `VITE_DEMO_MODE` 控制的浏览器 Demo runtime。Demo runtime 使用单一内存状态仓库和确定性的任务模拟器，复用现有 Workspace、Timeline、Suggestion、AI、Conflict Resolution 和 Export 页面；媒体预览与波形改为纯 DOM/Canvas 的轻量模拟，不提交 `demo.mp4`、音频、图片或波形 JSON 等大资源。所有 Demo UI 必须复用 v2.4.0 的 Canvas、Parchment、Video Surface、Action Blue、状态色和 `mc-button-*` 语义，不另起一套视觉系统。
 
 **Tech Stack:** Vue 3, TypeScript, Vite, Tailwind CSS 4, Vitest, Bun, Netlify Static Hosting
 
 ---
 
 ## 1. 审议结论摘要
+
+### 1.0 版本基线变化
+
+本计划原先以 v2.3.2 前端结构为背景；现在应以 v2.4.0 的以下成果为前置条件：
+
+- `docs/2.4.0/ui-design-standard-2.4.0.md` 已定义颜色、字体、间距、圆角、按钮、状态和可访问性标准。
+- `frontend/src/style.css` 已提供 `primary-hover`、`primary-soft`、`surface-tile-1`、状态 token、`mc-button-primary/secondary/quiet/danger` 和全局 `:focus-visible`。
+- Workspace 已形成“深色视频舞台 + 白色字幕画布 + Parchment 分析面板 + 底部波形”的视觉结构。
+- v2.4.0 已验证前端测试和生产构建通过（241 tests、19 test files）。
+
+因此 Demo 不应新增普通 Tailwind 原始主色、装饰性大圆角、独立阴影体系或绿色/紫色/靛蓝主按钮。Demo 需要做的是把模拟状态接入这套视觉系统。
 
 ### 1.1 推荐方案
 
@@ -98,7 +109,22 @@ Demo 目标是展示产品交互和决策流程，不承诺真实媒体处理能
 - `frontend/src/types/project.ts` 已经定义 `Project`、`Segment`、`EditDecision`、`AnalysisResult` 等 Demo 所需模型。
 - `frontend/src/test/helpers/mockProject.ts` 可以作为测试 fixture 的字段参考。
 
-### 2.2 当前阻塞点
+### 2.2 v2.4.0 视觉复用边界
+
+Demo 接入后，页面仍必须遵守 `docs/2.4.0/ui-design-standard-2.4.0.md`：
+
+- 模拟媒体画面使用 `surface-tile-1`，不创建新的深色或渐变主题。
+- 字幕与时间轴内容使用 Canvas/白色内容层，避免额外的 `border + rounded-lg` 外层卡片。
+- AI、建议和空状态区域使用 Parchment 或既有语义 token。
+- 主操作只使用 Action Blue 或 `mc-button-primary`；次要操作使用 `mc-button-secondary` / `mc-button-quiet`。
+- 删除、待确认、保留只使用既有 `status-*` 语义，不把状态色用作普通按钮层级。
+- Demo 标签、模拟导出提示、任务进度和冲突反馈需要有 `focus-visible`、loading、success、error 状态。
+- 新增文案统一使用中文，并明确“模拟”“演示模式”“不生成文件”等边界。
+- 模拟播放应遵守 `prefers-reduced-motion`，减少动画时应仍能看见当前时间和播放状态。
+
+本计划不顺带完成 2.4.0 记录中列出的设置弹层、字幕修正全屏页和右键菜单的全部历史 Tailwind 清理；如 Demo 直接触达这些区域，只能复用已有 token，不扩张成新的 UI 重构任务。
+
+### 2.3 当前阻塞点
 
 1. `frontend/src/main.ts` 会等待 pywebview bridge。
 2. `frontend/src/App.vue` 会再次等待 `window.__BRIDGE_READY__`。
@@ -174,12 +200,13 @@ interface DemoState {
 组件职责：
 
 - 接收 `segments`、`currentTime`、`duration`、`previewMode`、`deleteRanges`。
-- 使用 CSS 渐变、网格、时间码和产品标题绘制静态视觉画面。
+- 使用 v2.4.0 的 `surface-tile-1`、既有字体和 Action Blue 语义绘制静态视觉画面；允许使用低对比度内部纹理，但不引入新的品牌色。
 - 根据 `currentTime` 找到当前字幕并显示在画面底部。
 - 根据 `previewMode` 显示“原始预览”或“已编辑预览”。
 - 在删除区间显示半透明标识。
 - 不创建 `<video>`，不请求网络，不读取本地文件。
 - 通过 `requestAnimationFrame` 或统一 playback composable 实现模拟播放。
+- 提供 `aria-label`、键盘 focus 和 reduced-motion 兼容状态。
 
 `WorkspacePage.vue` 在 Demo 模式中渲染该组件，桌面模式继续渲染现有 `<video>` 和 `SubtitleOverlay`。
 
@@ -216,6 +243,7 @@ defineProps<{
 - 不执行 `fetch()`。
 - 根据固定 seed 生成有限数量的峰值数据。
 - 使用现有 Canvas 绘制逻辑绘制波形。
+- 波形静音区使用已有状态语义和半透明处理，不新增高饱和色或外层装饰卡片。
 - 即使 Canvas 不可用，也保留现有 flat-line fallback。
 
 在桌面模式下保持现有 `waveformPath` JSON 加载流程不变。
@@ -381,6 +409,7 @@ P0 智能删除 -> P1 字幕修正 -> P2 精华提取
 - App 初始化时加载 `demoStore.reset()` 的 Project。
 - 桌面模式继续等待 `window.pywebview.api` 和 `window.__BRIDGE_READY__`。
 - Demo 模式不显示“正在连接后端”或 Bridge Error。
+- Demo 模式的初始化、重置和任务反馈使用 v2.4.0 的状态 token 和中文文案，不使用技术性英文 loading 文案。
 
 ### 7.2 WelcomePage 行为
 
@@ -455,7 +484,7 @@ status = 200
 - `frontend/src/pages/WorkspacePage.vue`：接入模拟预览、模拟播放和 Demo 波形开关。
 - `frontend/src/components/waveform/WaveformCanvas.vue`：支持本地确定性 Canvas 波形。
 - `frontend/src/components/workspace/ConflictResolutionView.vue`：必要时补充 Demo 冲突完成态和按钮反馈。
-- `frontend/src/style.css`：增加 Demo 标签、模拟媒体画面样式。
+- `frontend/src/style.css`：默认不修改；仅当验收发现缺少通用语义 token 时，才以 v2.4.0 设计标准为依据补充 token，不添加 Demo 专属颜色体系。
 - `frontend/package.json`：增加 `build:netlify`（如果最终需要与桌面构建分离）。
 
 ---
@@ -480,6 +509,8 @@ bun run test -- demoStore demoBridge DemoPreviewSurface
 - 新任务启动后，旧任务的延迟回调不会覆盖新状态。
 - cancel 会清理任务并发出取消事件。
 - Demo bridge 所有返回值符合 `{ success, data, error }` envelope。
+- Demo 新增模板不出现绿色、紫色、靛蓝主按钮或未登记的业务颜色。
+- Demo 新增交互控件具备 `focus-visible` 和 disabled 状态。
 
 ### 10.2 现有回归测试
 
@@ -497,12 +528,14 @@ bun run build
 
 1. 首屏不等待 10 秒，不显示 Bridge Error。
 2. Network 面板没有 `.mp4`、`.webm`、`.wav`、`.mp3` 或 waveform JSON 请求。
-3. 播放按钮、时间轴 seek、字幕编辑可用。
-4. AI 操作之间不会同时运行并互相覆盖。
-5. 工作流冲突可解决，解决后建议面板和导出摘要一致。
-6. 导出按钮不会发起大文件下载或真实文件系统操作。
-7. 重置演示后可以重新完整演示。
-8. 桌面模式运行 `uv run dev.py --no-vite` 时仍走原有 Python bridge。
+3. 模拟媒体区使用 Video Surface，字幕区使用内容画布，分析区使用 Parchment，三层关系与 v2.4.0 Workspace 标准一致。
+4. 播放按钮、时间轴 seek、字幕编辑可用，键盘 focus 清晰。
+5. AI 操作之间不会同时运行并互相覆盖。
+6. 工作流冲突可解决，解决后建议面板和导出摘要一致。
+7. 导出按钮不会发起大文件下载或真实文件系统操作。
+8. 重置演示后可以重新完整演示。
+9. reduced-motion 环境下仍可识别播放、进度和完成状态。
+10. 桌面模式运行 `uv run dev.py --no-vite` 时仍走原有 Python bridge。
 
 ### 10.4 Netlify 验收
 
@@ -511,6 +544,15 @@ bun run build
 - 直接访问站点根路径成功。
 - 刷新任意未来新增的 SPA 路径不会 404。
 - 发布包中不包含视频、音频和大型波形资源。
+
+### 10.5 v2.4.0 视觉验收
+
+- Demo 不新增第二套按钮 class；主、次、quiet、danger 操作分别落到既有 `mc-button-*` 语义。
+- Demo 媒体预览使用 Video Surface，字幕/时间轴使用 Canvas 或白色内容层，分析区域使用 Parchment。
+- 不新增绿色、紫色、靛蓝主按钮；确认删除、驳回/保留和待处理状态仍使用既有状态 token。
+- 不为模拟媒体区、字幕区或波形区添加装饰性多层 `border + rounded` 卡片。
+- Demo 标签、任务进度、冲突反馈和模拟导出结果具备键盘 focus、中文文案和清晰的 loading/success/error 状态。
+- 在 `prefers-reduced-motion: reduce` 下，演示仍可通过静态时间码、状态文本和进度条理解当前状态。
 
 ---
 
@@ -533,6 +575,7 @@ bun run build
 ### Phase 0：计划确认
 
 - 审议 Demo 是否接受“无真实视频、无真实波形”的模拟媒体方案。
+- 确认 Demo 直接继承 v2.4.0 视觉系统，不为 Demo 单独设计新的颜色、按钮和圆角。
 - 确认初版只展示核心编辑和 AI 冲突解决，不做真实上传/导出。
 - 确认是否需要保留 WelcomePage，还是直接打开演示项目。
 
@@ -592,4 +635,3 @@ bun run build
 - 不引入新的运行时依赖。
 - POC 约半天到一天。
 - 带完整测试、冲突状态和 Netlify 验收约 1～2 天。
-

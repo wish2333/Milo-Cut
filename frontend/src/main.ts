@@ -1,11 +1,17 @@
 import { createApp } from "vue"
 import App from "./App.vue"
-import { waitForPyWebView } from "./bridge"
+import { isDemoMode, waitForPyWebView } from "./bridge"
 import "./style.css"
 
-waitForPyWebView()
+const mount = () => createApp(App).mount("#app")
+
+if (isDemoMode()) {
+  mount()
+} else {
+  waitForPyWebView()
   .then(() => createApp(App).mount("#app"))
   .catch((err) => {
     console.error("Bridge init failed:", err)
-    createApp(App).mount("#app")
+    mount()
   })
+}
