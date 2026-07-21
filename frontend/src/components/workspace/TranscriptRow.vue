@@ -224,12 +224,23 @@ function handleRowClick(e: MouseEvent) {
   emit("seek", props.segment.start)
 }
 
+function handleRowKeydown(e: KeyboardEvent) {
+  if (e.key !== "Enter" && e.key !== " ") return
+  e.preventDefault()
+  if (props.selectionMode) {
+    emit("segment-click", props.segment.id, new MouseEvent("click"))
+    return
+  }
+  if (isEditingText.value && !props.globalEditMode) saveEdit()
+  emit("seek", props.segment.start)
+}
+
 const statusClass = computed(() => {
   switch (props.styleClass) {
-    case "masked": return "border-l-3 border-red-400 bg-red-50 line-through opacity-60"
-    case "kept": return "border-l-3 border-green-400 bg-green-50"
+    case "masked": return "border-l-3 border-red-400 bg-status-confirmed line-through opacity-60"
+    case "kept": return "border-l-3 border-green-400 bg-status-rejected"
     default:
-      if (props.isAdjacentHighlighted) return "border-l-3 border-amber-400 bg-amber-50"
+      if (props.isAdjacentHighlighted) return "border-l-3 border-amber-400 bg-status-pending"
       return ""
   }
 })
@@ -237,15 +248,17 @@ const statusClass = computed(() => {
 
 <template>
   <div
-    class="flex items-start gap-2 px-3 py-2 cursor-pointer hover:bg-gray-50 transition-colors"
+    class="flex min-h-[52px] cursor-pointer items-start gap-3 px-3 py-3 transition-colors hover:bg-parchment"
+    tabindex="0"
     :class="[statusClass, {
       'ring-1 ring-blue-500': isSelected && !isMultiSelected,
-      'ring-2 ring-blue-500 bg-blue-50': isMultiSelected,
-      'bg-blue-50 border-l-2 border-blue-400': isPlayheadInside && !isSelected && !isMultiSelected && !isHighlighted,
-      'ring-2 ring-yellow-400 bg-yellow-50': isHighlighted,
+      'ring-2 ring-primary bg-primary-soft': isMultiSelected,
+      'bg-primary-soft border-l-2 border-primary': isPlayheadInside && !isSelected && !isMultiSelected && !isHighlighted,
+      'ring-2 ring-amber-400 bg-status-pending': isHighlighted,
     }]" 
     :data-segment-id="segment.id"
     @click="handleRowClick"
+    @keydown="handleRowKeydown"
     @contextmenu="handleContextMenu"
   >
     <!-- Multi-select indicator (selection mode) -->
@@ -255,7 +268,7 @@ const statusClass = computed(() => {
       :class="isMultiSelected ? 'bg-blue-500' : 'bg-transparent'"
     ></div>
     <!-- Time column: fixed width, no overlap -->
-    <div class="text-xs text-gray-400 w-[150px] shrink-0 pt-0.5 font-mono overflow-hidden whitespace-nowrap">
+    <div class="w-[150px] shrink-0 overflow-hidden whitespace-nowrap pt-0.5 font-mono text-xs text-ink-muted">
       <template v-if="editingTimeField === 'start'">
         <input
           ref="timeInputRef"
@@ -296,14 +309,14 @@ const statusClass = computed(() => {
         @mousedown.stop
         @click.stop
       />
-      <span v-else class="text-sm block truncate">{{ segment.text }}</span>
+      <span v-else class="block truncate text-base leading-6">{{ segment.text }}</span>
     </div>
 
     <!-- Edit/Save button -->
     <div class="flex items-center gap-1 shrink-0">
       <template v-if="isEditingText">
         <span
-          class="text-xs px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 cursor-pointer hover:bg-blue-200 transition-colors"
+          class="rounded bg-primary-soft px-1.5 py-0.5 text-xs text-primary transition-colors hover:bg-primary/15"
           title="Save changes"
           @click.stop="saveEdit"
         >
@@ -332,7 +345,7 @@ const statusClass = computed(() => {
     <div class="flex items-center gap-1 shrink-0">
       <template v-if="displayStatus === 'pending'">
         <span
-          class="text-xs px-1.5 py-0.5 rounded bg-yellow-100 text-yellow-700 cursor-pointer hover:bg-yellow-200 transition-colors"
+          class="rounded bg-status-pending px-1.5 py-0.5 text-xs text-yellow-700 transition-colors hover:bg-yellow-100"
           title="Click to confirm delete"
           @click.stop="emit('confirm-edit')"
         >
@@ -348,7 +361,7 @@ const statusClass = computed(() => {
       </template>
       <template v-else-if="displayStatus === 'confirmed'">
         <span
-          class="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-700 cursor-pointer hover:bg-red-200 transition-colors"
+          class="rounded bg-status-confirmed px-1.5 py-0.5 text-xs text-red-700 transition-colors hover:bg-red-100"
           title="Click to keep"
           @click.stop="emit('toggle-status')"
         >
@@ -357,7 +370,7 @@ const statusClass = computed(() => {
       </template>
       <template v-else-if="displayStatus === 'rejected'">
         <span
-          class="text-xs px-1.5 py-0.5 rounded bg-green-100 text-green-700 cursor-pointer hover:bg-green-200 transition-colors"
+          class="rounded bg-status-rejected px-1.5 py-0.5 text-xs text-green-700 transition-colors hover:bg-green-100"
           title="Click to delete"
           @click.stop="emit('toggle-status')"
         >
@@ -366,7 +379,7 @@ const statusClass = computed(() => {
       </template>
       <template v-else>
         <span
-          class="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 cursor-pointer hover:bg-gray-200 transition-colors"
+          class="rounded bg-parchment px-1.5 py-0.5 text-xs text-ink-muted transition-colors hover:bg-hairline"
           title="Click to mark for deletion"
           @click.stop="emit('toggle-status')"
         >

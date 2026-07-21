@@ -1554,13 +1554,14 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="flex h-screen flex-col bg-white">
+  <div class="flex h-screen flex-col bg-canvas">
     <!-- Top nav -->
-    <nav class="flex h-11 items-center justify-between border-b border-gray-200 bg-gray-900 px-4">
+    <nav class="flex h-11 items-center justify-between border-b border-white/10 bg-surface-tile-1 px-4">
       <div class="flex items-center gap-3">
         <button
-          class="rounded p-1 text-gray-400 hover:text-white transition-colors"
-          title="Back to home"
+          class="mc-button mc-button-quiet min-h-8 p-1 text-gray-400 hover:bg-white/10 hover:text-white"
+          title="返回项目"
+          aria-label="返回项目"
           @click="handleCloseProject"
         >
           <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -1569,7 +1570,7 @@ onUnmounted(() => {
         </button>
         <span class="text-sm font-semibold text-white">{{ project.project.name }}</span>
         <span class="text-xs text-gray-400">
-          {{ subtitleCount }} subtitles | {{ silenceCount }} silence | {{ formatTimeShort(duration) }}
+          {{ subtitleCount }} 条字幕 · {{ silenceCount }} 段静音 · {{ formatTimeShort(duration) }}
         </span>
         <TimelineSwitcher
           :timelines="props.project.timelines"
@@ -1586,25 +1587,25 @@ onUnmounted(() => {
         />
         <button
           v-if="!props.project.media?.proxy_path"
-          class="ml-2 rounded px-2 py-0.5 text-xs text-gray-400 hover:text-white transition-colors border border-gray-700 hover:border-gray-500"
+          class="mc-button mc-button-quiet ml-2 min-h-7 border border-white/20 px-2 py-0.5 text-xs hover:border-white/50 hover:bg-white/10 hover:text-white"
           :disabled="isGeneratingProxy"
-          title="Generate proxy video for faster preview"
+          title="生成代理视频以提升预览速度"
           @click="handleRequestProxy"
         >
-          {{ isGeneratingProxy ? "Generating..." : "Generate Proxy" }}
+          {{ isGeneratingProxy ? "生成中…" : "生成代理视频" }}
         </button>
       </div>
       <div class="flex items-center gap-2">
-        <span v-if="confirmedEdits.length > 0" class="text-xs text-yellow-300">
-          {{ confirmedEdits.length }} edits | -{{ formatTimeShort(estimatedSaving) }}
+        <span v-if="confirmedEdits.length > 0" class="text-xs text-status-pending">
+          {{ confirmedEdits.length }} 处修改 · -{{ formatTimeShort(estimatedSaving) }}
         </span>
         <!-- Inline auto-save indicator -->
-        <span v-if="isSaving" class="text-xs text-blue-300">Saving...</span>
+        <span v-if="isSaving" class="text-xs text-blue-300">保存中…</span>
         <span v-else-if="isDirty" class="text-xs text-gray-400">●</span>
-        <span v-else-if="lastSavedAt" class="text-xs text-green-400">Saved</span>
+        <span v-else-if="lastSavedAt" class="text-xs text-green-400">已保存</span>
         <button
-          class="rounded px-2 py-1 text-xs text-gray-400 hover:text-white transition-colors"
-          title="Save project (Ctrl+S)"
+          class="mc-button mc-button-quiet min-h-8 px-2 py-1 text-xs hover:bg-white/10 hover:text-white"
+          title="保存项目（⌘/Ctrl+S）"
           @click="handleSaveProject"
         >
           Save
@@ -1613,39 +1614,39 @@ onUnmounted(() => {
     </nav>
 
     <!-- Toolbar -->
-    <div class="flex items-center gap-2 border-b border-gray-200 bg-gray-50 px-4 py-2">
+    <div class="flex items-center gap-2 border-b border-hairline bg-parchment px-4 py-2">
       <button
-        class="inline-flex items-center gap-1.5 rounded-md bg-blue-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600 disabled:opacity-50 transition-colors"
+        class="mc-button mc-button-primary"
         :disabled="isDetecting || isExporting"
         @click="handleImportSrt"
       >
         <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-        Import SRT
+        导入 SRT
       </button>
       <button
-        class="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors"
+        class="mc-button"
         :class="previewMode === 'edited'
-          ? 'bg-teal-600 text-white hover:bg-teal-700'
-          : 'bg-gray-600 text-gray-200 hover:bg-gray-700'"
+          ? 'mc-button-primary'
+          : 'mc-button-secondary'"
         :disabled="isDetecting || isExporting"
         title="Toggle original/edited preview (Shift+Space)"
         @click="togglePreviewMode"
       >
         <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path stroke-linecap="round" stroke-linejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
-        {{ previewMode === 'edited' ? 'Edited' : 'Original' }}
+        {{ previewMode === 'edited' ? '已剪辑预览' : '原始预览' }}
       </button>
       <div class="relative inline-flex items-center">
         <button
-          class="inline-flex items-center gap-1.5 rounded-md rounded-r-none bg-purple-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-purple-600 disabled:opacity-50 transition-colors"
+          class="mc-button mc-button-primary rounded-r-none"
           :disabled="isDetecting || isExporting || isTranscribing || !hasInstalledEngines || uvAvailable === false"
           :title="uvAvailable === false ? '需要安装 uv' : undefined"
           @click="handleTranscribe"
         >
           <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
-          {{ isTranscribing ? 'Transcribing...' : 'Transcribe' }}
+          {{ isTranscribing ? '转写中…' : '开始转写' }}
         </button>
         <button
-          class="inline-flex items-center rounded-md rounded-l-none bg-purple-600 px-1.5 py-1.5 text-xs text-white hover:bg-purple-700 disabled:opacity-50 transition-colors border-l border-purple-400"
+          class="mc-button mc-button-primary min-w-8 rounded-l-none border-l border-white/30 px-1.5"
           :disabled="isDetecting || isExporting || isTranscribing || uvAvailable === false"
           :title="uvAvailable === false ? '需要安装 uv' : 'Transcription settings'"
           @click="showTranscribeSettings = !showTranscribeSettings"
@@ -1656,7 +1657,7 @@ onUnmounted(() => {
           v-if="showTranscribeSettings && uvAvailable !== false"
           class="absolute top-full left-0 mt-1 w-72 rounded-md border border-gray-200 bg-white shadow-lg z-20 p-3"
         >
-          <div class="text-xs font-medium text-gray-700 mb-2">Transcription Settings</div>
+          <div class="mb-2 text-xs font-semibold text-ink">转写设置</div>
 
           <!-- No engines installed warning -->
           <div v-if="!hasInstalledEngines" class="text-xs text-amber-600 mb-2 p-2 bg-amber-50 rounded">
@@ -1769,34 +1770,34 @@ onUnmounted(() => {
 
             <!-- Save button -->
             <button
-              class="w-full rounded bg-purple-500 px-2 py-1 text-xs text-white hover:bg-purple-600"
+              class="mc-button mc-button-secondary w-full px-2 text-xs"
               @click="saveAsrSettings"
             >
-              Save as Default
+             保存为默认设置
             </button>
           </template>
         </div>
       </div>
       <button
-        class="inline-flex items-center gap-1.5 rounded-md bg-red-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-600 disabled:opacity-50 transition-colors"
+        class="mc-button mc-button-danger"
         :disabled="isDetecting || isExporting || isTranscribing || subtitleCount === 0"
         title="Delete all subtitle segments"
         @click="handleClearSubtitles"
       >
         <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-        Clear Subtitles
+        清空字幕
       </button>
       <div class="relative inline-flex items-center">
         <button
-          class="inline-flex items-center gap-1.5 rounded-md rounded-r-none bg-blue-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600 disabled:opacity-50 transition-colors"
+          class="mc-button mc-button-primary rounded-r-none"
           :disabled="isDetecting || isExporting"
           @click="handleDetectSilence"
         >
           <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15z" /><path stroke-linecap="round" stroke-linejoin="round" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" /></svg>
-          {{ isDetecting ? 'Detecting...' : 'Detect Silence' }}
+          {{ isDetecting ? '检测中…' : '检测静音' }}
         </button>
         <button
-          class="inline-flex items-center rounded-md rounded-l-none bg-blue-600 px-1.5 py-1.5 text-xs text-white hover:bg-blue-700 disabled:opacity-50 transition-colors border-l border-blue-400"
+          class="mc-button mc-button-primary min-w-8 rounded-l-none border-l border-white/30 px-1.5"
           :disabled="isDetecting || isExporting"
           title="Silence detection settings"
           @click="showSilenceSettings = !showSilenceSettings"
@@ -1807,7 +1808,7 @@ onUnmounted(() => {
           v-if="showSilenceSettings"
           class="absolute top-full left-0 mt-1 w-64 rounded-md border border-gray-200 bg-white shadow-lg z-20 p-3"
         >
-          <div class="text-xs font-medium text-gray-700 mb-2">Silence Detection Settings</div>
+          <div class="mb-2 text-xs font-semibold text-ink">静音检测设置</div>
           <label class="block mb-2">
             <span class="text-xs text-gray-500">Threshold (dB): {{ silenceThreshold }}</span>
             <input
@@ -1875,17 +1876,17 @@ onUnmounted(() => {
             <span class="text-xs text-gray-500">Trim overlapping subtitles</span>
           </label>
           <button
-            class="w-full rounded bg-blue-500 px-2 py-1 text-xs text-white hover:bg-blue-600"
+            class="mc-button mc-button-primary w-full px-2 text-xs"
             @click="saveSilenceSettings"
           >
-            Save Settings
+           保存设置
           </button>
         </div>
       </div>
 
       <!-- Delete all silence markers -->
       <button
-        class="inline-flex items-center rounded-md bg-red-500 px-2 py-1.5 text-xs text-white hover:bg-red-600 disabled:opacity-50 transition-colors"
+        class="mc-button mc-button-danger min-w-8 px-2"
         :disabled="isDetecting || isExporting || silenceCount === 0"
         title="Delete all silence markers"
         @click="showConfirmDeleteSilence = true"
@@ -1894,20 +1895,20 @@ onUnmounted(() => {
       </button>
 
       <!-- Separator: silence group | subtitle group -->
-      <div class="h-6 w-px bg-gray-300"></div>
+      <div class="h-6 w-px bg-hairline"></div>
 
       <div class="relative inline-flex items-center">
         <button
-          class="inline-flex items-center gap-1.5 rounded-md rounded-r-none bg-orange-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-600 disabled:opacity-50 transition-colors"
+          class="mc-button mc-button-secondary rounded-r-none"
           :disabled="isDetecting || isExporting"
           title="Auto-trim: delete gaps between subtitle segments"
           @click="handleSubtitleTrim"
         >
           <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L4.939 4.939m7.061 7.061l-2.879-2.879M12 12l2.879-2.879" /></svg>
-          Subtitle Trim
+          自动裁剪字幕间隙
         </button>
         <button
-          class="inline-flex items-center rounded-md rounded-l-none bg-orange-600 px-1.5 py-1.5 text-xs text-white hover:bg-orange-700 disabled:opacity-50 transition-colors border-l border-orange-400"
+          class="mc-button mc-button-secondary min-w-8 rounded-l-none border-l border-hairline px-1.5"
           :disabled="isDetecting || isExporting"
           title="Subtitle trim settings"
           @click="showSubtitleTrimSettings = !showSubtitleTrimSettings"
@@ -1918,7 +1919,7 @@ onUnmounted(() => {
           v-if="showSubtitleTrimSettings"
           class="absolute top-full left-0 mt-1 w-56 rounded-md border border-gray-200 bg-white shadow-lg z-20 p-3"
         >
-          <div class="text-xs font-medium text-gray-700 mb-2">Subtitle Trim Settings</div>
+          <div class="mb-2 text-xs font-semibold text-ink">字幕间隙设置</div>
           <label class="block mb-3">
             <span class="text-xs text-gray-500">Padding (s): {{ subtitleTrimPadding.toFixed(2) }}</span>
             <input
@@ -1935,7 +1936,7 @@ onUnmounted(() => {
 
       <!-- Clear subtitle trim markers -->
       <button
-        class="inline-flex items-center rounded-md bg-red-500 px-2 py-1.5 text-xs text-white hover:bg-red-600 disabled:opacity-50 transition-colors"
+        class="mc-button mc-button-danger min-w-8 px-2"
         :disabled="isDetecting || isExporting"
         title="Clear all subtitle trim markers"
         @click="handleDeleteSubtitleTrimEdits"
@@ -1946,12 +1947,12 @@ onUnmounted(() => {
       <div class="flex-1" />
 
       <button
-        class="inline-flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50 transition-colors"
+        class="mc-button mc-button-primary"
         :disabled="isExporting || (confirmedEdits.length === 0 && subtitleCount === 0)"
         @click="emit('go-to-export')"
       >
         <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" /></svg>
-        导出...
+        导出
       </button>
 
       <div v-if="isDetecting && detectionProgress" class="flex-1 max-w-xs">
@@ -1966,10 +1967,10 @@ onUnmounted(() => {
     <SearchReplaceBar ref="searchBarRef" @search-replace="handleSearchReplace" @close="showSearchBar = false" />
 
     <!-- Status messages -->
-    <div v-if="statusMessage" class="flex items-center border-b border-gray-200 bg-blue-50 px-4 py-1 text-xs text-blue-600">
+    <div v-if="statusMessage" class="flex items-center border-b border-hairline bg-primary-soft px-4 py-1 text-xs text-primary">
       <span class="flex-1">{{ statusMessage }}</span>
       <button
-        class="ml-2 shrink-0 rounded p-0.5 hover:bg-blue-100 transition-colors"
+        class="ml-2 shrink-0 rounded p-0.5 hover:bg-white transition-colors"
         @click="statusMessage = ''"
       >
         <svg class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -1977,7 +1978,7 @@ onUnmounted(() => {
         </svg>
       </button>
     </div>
-    <div v-if="errorMessage" class="border-b border-gray-200 bg-red-50 px-4 py-1 text-xs text-red-600">
+    <div v-if="errorMessage" class="border-b border-hairline bg-status-confirmed px-4 py-1 text-xs text-status-warning">
       {{ errorMessage }}
     </div>
 
@@ -1986,13 +1987,13 @@ onUnmounted(() => {
       <SplitPanel storage-key="milo-split-workspace" :min-ratio="0.25" :max-ratio="0.75">
         <template #left>
           <!-- Left: Video player area -->
-          <div class="flex h-full min-w-0 flex-col bg-gray-900">
+          <div class="flex h-full min-w-0 flex-col bg-surface-tile-1">
         <div class="flex flex-1 items-center justify-center p-2 overflow-hidden">
           <div v-if="videoUrl" class="relative flex flex-col w-full h-full items-center justify-center">
             <video
               ref="videoRef"
               :src="videoUrl"
-              class="max-h-full max-w-full rounded"
+              class="max-h-full max-w-full rounded-[var(--radius-control)] shadow-[3px_5px_30px_rgba(0,0,0,0.28)]"
               preload="metadata"
               @loadedmetadata="handleVideoLoaded"
               @timeupdate="handleTimeUpdate"
@@ -2008,20 +2009,20 @@ onUnmounted(() => {
             <!-- Proxy generation overlay -->
             <div
               v-if="isGeneratingProxy"
-              class="absolute inset-0 flex flex-col items-center justify-center bg-black/60 rounded z-10"
+              class="absolute inset-0 z-10 flex flex-col items-center justify-center rounded-[var(--radius-control)] bg-black/60"
             >
               <svg class="animate-spin h-8 w-8 text-white mb-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
               </svg>
-              <span class="text-sm text-white font-medium">Generating proxy...</span>
+              <span class="text-sm font-semibold text-white">正在生成代理视频…</span>
             </div>
           </div>
-          <div v-else class="text-center text-gray-400">
+          <div v-else class="text-center text-ink-muted">
             <svg xmlns="http://www.w3.org/2000/svg" class="mx-auto h-16 w-16 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1">
               <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 002.25-2.25v-9a2.25 2.25 0 00-2.25-2.25h-9A2.25 2.25 0 002.25 7.5v9a2.25 2.25 0 002.25 2.25z" />
             </svg>
-            <p class="mt-2 text-sm">Loading video...</p>
+            <p class="mt-2 text-sm">正在加载视频…</p>
           </div>
         </div>
         <VideoControls
@@ -2043,7 +2044,7 @@ onUnmounted(() => {
 
         <template #right>
           <!-- Right: Timeline (transcript editor + suggestion panel) -->
-          <div class="relative flex flex-1 flex-col overflow-hidden rounded-lg border border-gray-200 bg-white">
+          <div class="relative flex flex-1 flex-col overflow-hidden bg-canvas">
           <Timeline
             :segments="mergedSegments"
             :edits="edits"

@@ -53,6 +53,6 @@ export default [
     },
   },
   {
-    ignores: ["dist/**", "node_modules/**", "frontend_dist/**"],
+    ignores: ["dist/**", "node_modules/**", "frontend_dist/**", "cap.cjs"],
   },
 ];

@@ -248,14 +248,14 @@ watch(selectedWorkflowId, (id) => {
   if (!saved) return
   // Replace newWorkflowSteps with the saved workflow's steps,
   // preserving the order from the saved definition.
-  newWorkflowSteps.value = saved.steps.map((s: any) => ({
+  newWorkflowSteps.value = saved.steps.map((s) => ({
     type: s.type,
     preset_id: s.preset_id ?? null,
   }))
   // Also fill the workflow name field
   newWorkflowName.value = saved.name
   // Load presets for each step
-  saved.steps.forEach((s: any) => loadStepPresets(s.type))
+  saved.steps.forEach((s) => loadStepPresets(s.type))
 })
 
 async function handleStartSmartDelete() {

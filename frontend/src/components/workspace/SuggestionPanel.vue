@@ -91,7 +91,7 @@ const groups = computed<GroupedResult[]>(() => {
     else normalItems.push(item)
   }
   push("llm_smart", "智能删除", normalItems)
-  push("partial_delete" as any, "部分删除（需手动处理）", partialItems)
+  push("partial_delete", "部分删除（需手动处理）", partialItems)
 
   return result
 })
@@ -187,44 +187,44 @@ onBeforeUnmount(() => {
 })
 </script>
 <template>
-  <div class="border border-gray-200 rounded-lg overflow-hidden">
-    <div class="px-3 py-2 bg-gray-50 border-b border-gray-200">
-      <span class="text-sm font-medium text-gray-700">
+  <div class="overflow-hidden border border-hairline bg-parchment">
+    <div class="border-b border-hairline px-3 py-2">
+      <span class="text-sm font-semibold text-ink">
         共 {{ totalAll }} 处建议
         <template v-if="totalPending > 0">
           | {{ totalPending }} 处待处理
         </template>
       </span>
-      <span class="ml-2 text-xs text-gray-400">右键单项/组可批量操作</span>
+      <span class="ml-2 text-xs text-ink-muted">右键单项/组可批量操作</span>
     </div>
 
     <button
       v-if="(pendingCorrectionCount ?? 0) > 0"
-      class="flex w-full items-center justify-between border-b border-blue-100 bg-blue-50 px-3 py-2 text-left transition-colors hover:bg-blue-100"
+      class="flex w-full items-center justify-between border-b border-hairline bg-primary-soft px-3 py-2 text-left transition-colors hover:bg-white"
       @click="emit('review-corrections')"
     >
-      <span class="text-sm font-medium text-blue-700">
+      <span class="text-sm font-semibold text-primary">
         P1 字幕修正待审 ({{ pendingCorrectionCount }} 条)
       </span>
-      <span class="text-xs text-blue-500">查看详情 →</span>
+      <span class="text-xs text-primary">查看详情 →</span>
     </button>
 
-    <div v-if="groups.length === 0" class="px-3 py-4 text-center text-sm text-gray-400">
+    <div v-if="groups.length === 0" class="px-3 py-6 text-center text-sm text-ink-muted">
       暂无分析结果
     </div>
 
-    <div v-for="group in groups" :key="group.type" class="border-b border-gray-100 last:border-b-0">
+    <div v-for="group in groups" :key="group.type" class="border-b border-hairline last:border-b-0">
       <button
-        class="flex items-center justify-between w-full px-3 py-2 hover:bg-gray-50 transition-colors"
+          class="flex w-full items-center justify-between px-3 py-2 transition-colors hover:bg-canvas"
         @click="toggleGroup(group.type)"
         @contextmenu="openGroupMenu($event, group)"
       >
-        <span class="text-sm font-medium">
+        <span class="text-sm font-semibold">
           {{ isExpanded(group.type) ? "v" : ">" }} {{ group.label }}
         </span>
         <span class="flex items-center gap-1.5 text-xs">
           <span v-if="group.pendingCount > 0" class="text-gray-500">待{{ group.pendingCount }}</span>
-          <span v-if="group.confirmedCount > 0" class="text-green-600">已确认{{ group.confirmedCount }}</span>
+          <span v-if="group.confirmedCount > 0" class="text-green-700">已确认{{ group.confirmedCount }}</span>
           <span v-if="group.rejectedCount > 0" class="text-gray-400">已忽略{{ group.rejectedCount }}</span>
           <span class="text-gray-400">共{{ group.items.length }}</span>
         </span>
@@ -236,8 +236,8 @@ onBeforeUnmount(() => {
           :key="item.id"
           class="flex items-start gap-2 px-3 py-1.5 cursor-pointer transition-colors"
           :class="{
-            'hover:bg-gray-50': item.status === 'pending',
-            'bg-green-50/60 hover:bg-green-50': item.status === 'confirmed',
+            'hover:bg-canvas': item.status === 'pending',
+            'bg-status-rejected hover:bg-green-50': item.status === 'confirmed',
             'opacity-50 hover:opacity-70': item.status === 'rejected',
           }"
           @click="handleSeek(item)"
@@ -249,7 +249,7 @@ onBeforeUnmount(() => {
 
           <span
             v-if="item.status === 'confirmed'"
-            class="shrink-0 text-green-600 pt-0.5 font-bold"
+            class="shrink-0 pt-0.5 font-bold text-green-700"
             title="已确认"
           >[Y]</span>
           <span
@@ -268,14 +268,14 @@ onBeforeUnmount(() => {
           <span v-if="item.editId" class="flex items-center gap-1 shrink-0 pt-0.5">
             <button
               v-if="item.status !== 'confirmed'"
-              class="text-xs px-2 py-0.5 rounded bg-blue-500 text-white hover:bg-blue-600"
+              class="mc-button mc-button-primary min-h-7 px-2 py-0.5 text-xs"
               @click.stop="handleAction(item, 'confirm')"
             >
               确认
             </button>
             <button
               v-if="item.status !== 'rejected'"
-              class="text-xs px-2 py-0.5 rounded bg-gray-200 text-gray-600 hover:bg-gray-300"
+              class="mc-button mc-button-secondary min-h-7 px-2 py-0.5 text-xs"
               @click.stop="handleAction(item, 'reject')"
             >
               忽略

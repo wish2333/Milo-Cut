@@ -25,7 +25,7 @@ async function openFileDialog() {
 
 <template>
   <div
-    class="flex flex-col items-center justify-center gap-4 rounded-[var(--radius-apple-lg)] border-2 border-dashed border-hairline bg-parchment p-12 transition-colors duration-200 hover:border-primary/40"
+    class="flex flex-col items-center justify-center gap-4 rounded-[var(--radius-panel)] border-2 border-dashed border-hairline bg-parchment p-12 transition-colors duration-200 hover:border-primary/40 focus-within:border-primary"
   >
     <div class="text-4xl text-ink-muted">
       <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
@@ -36,8 +36,9 @@ async function openFileDialog() {
       拖拽媒体文件到窗口任意位置
     </p>
     <button
-      class="rounded-[var(--radius-apple-pill)] bg-primary px-6 py-2.5 text-sm font-semibold text-white transition-transform active:scale-95"
+      class="mc-button mc-button-primary min-h-11 rounded-[var(--radius-apple-pill)] px-6 text-sm font-semibold"
       :disabled="isProcessing"
+      :aria-busy="isProcessing"
       @click="openFileDialog"
     >
       {{ isProcessing ? "处理中..." : "选择文件" }}
