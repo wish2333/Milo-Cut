@@ -41,7 +41,7 @@ const menuMaxY = typeof window !== "undefined" ? window.innerHeight - 180 : 0
 
 // Focus the container on any interaction so arrow keys go to our handler,
 // not to the HTML5 video element (which seeks ±5s natively).
-function focusContainer(_e?: MouseEvent) {
+function focusContainer() {
   const el = containerRef.value
   if (el && document.activeElement !== el) el.focus()
 }
@@ -155,7 +155,7 @@ function handleBlockMouseDown(
   block: Block,
   e: MouseEvent,
 ) {
-  focusContainer(e)
+  focusContainer()
   selectedBlockId.value = block.seg.id
   const edge = detectEdge(e)
   if (edge === "body") {

@@ -91,7 +91,7 @@ const groups = computed<GroupedResult[]>(() => {
     else normalItems.push(item)
   }
   push("llm_smart", "智能删除", normalItems)
-  push("partial_delete" as any, "部分删除（需手动处理）", partialItems)
+  push("partial_delete", "部分删除（需手动处理）", partialItems)
 
   return result
 })

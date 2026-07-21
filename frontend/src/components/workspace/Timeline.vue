@@ -278,16 +278,16 @@ watch(
       </div>
       <!-- RIGHT: sidebar tabs + collapse arrow -->
       <div class="flex items-center gap-1 flex-shrink-0">
-        <button
-          v-for="tab in tabs"
-          :key="tab.key"
-          v-if="sidebarOpen"
-          class="rounded px-2 py-1 text-xs font-semibold transition-colors"
-          :class="activeTab === tab.key
-            ? 'bg-primary-soft text-primary'
-            : 'text-ink-muted hover:bg-parchment hover:text-ink'"
-          @click="activeTab = tab.key"
-        >{{ tab.label }}</button>
+        <template v-for="tab in tabs" :key="tab.key">
+          <button
+            v-if="sidebarOpen"
+            class="rounded px-2 py-1 text-xs font-semibold transition-colors"
+            :class="activeTab === tab.key
+              ? 'bg-primary-soft text-primary'
+              : 'text-ink-muted hover:bg-parchment hover:text-ink'"
+            @click="activeTab = tab.key"
+          >{{ tab.label }}</button>
+        </template>
         <button
           class="flex h-8 w-8 items-center justify-center rounded text-ink-muted transition-colors hover:bg-parchment hover:text-ink"
           :title="sidebarOpen ? '隐藏侧栏' : '显示侧栏'"
@@ -320,6 +320,8 @@ watch(
         </div>
 
         <div v-else>
+          <!-- v-memo is intentionally retained for the large transcript list. -->
+          <!-- eslint-disable vue/valid-v-memo -->
           <template v-for="seg in segments" :key="seg.id">
             <TranscriptRow
               v-if="seg.type === 'subtitle'"
@@ -361,6 +363,7 @@ watch(
               @delete="emit('delete-segment', seg)"
             />
           </template>
+          <!-- eslint-enable vue/valid-v-memo -->
         </div>
       </div>
 
