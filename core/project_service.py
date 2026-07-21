@@ -103,6 +103,26 @@ class ProjectService:
         self._revision += 1
         return self._revision
 
+    def _enforce_segment_sort_invariant(self) -> None:
+        """Sort the active timeline's segments by start time in-place.
+
+        v2.3.2 stage 3: the frontend ``mergedSegments`` computed property
+        used to re-sort on every render because the service layer did not
+        guarantee ordering. This invariant moves the cost to the write
+        path so reads stay cheap. Methods that may disturb ordering
+        (``update_transcript`` / ``update_segment`` with start changes /
+        ``import_srt``) call this after mutation.
+        """
+        if self._current is None:
+            return
+        tl = self.active_timeline
+        segs = list(tl.transcript.segments)
+        # Stable sort preserves insertion order for equal start times.
+        sorted_segs = sorted(segs, key=lambda s: s.start)
+        if [s.id for s in sorted_segs] != [s.id for s in segs]:
+            new_transcript = tl.transcript.model_copy(update={"segments": sorted_segs})
+            self._update_active_timeline(transcript=new_transcript)
+
     def _success_patch(self, **layers) -> dict:
         """Build a ProjectPatch response envelope for the active timeline.
 
@@ -570,6 +590,9 @@ class ProjectService:
         existing_silence = [s for s in existing if s.type == SegmentType.SILENCE]
 
         all_segments = new_subtitles + existing_silence
+        # Sort to enforce the start-ascending invariant (G4/G13): callers
+        # (e.g. SRT import) may pass segments in any order.
+        all_segments.sort(key=lambda s: s.start)
         new_seg_ids = {s.id for s in all_segments}
 
         # Remove orphaned EditDecisions whose target_id no longer exists
@@ -1024,6 +1047,7 @@ class ProjectService:
         # combined segments + edits patch in a single response so the
         # frontend re-renders both layers atomically.
         updated_edits = None
+        start_changed = "start" in filtered
         if updated_seg and ("start" in filtered or "end" in filtered) and old_seg.type == SegmentType.SILENCE:
             updated_edits = []
             for edit in self.active_timeline.edits:
@@ -1039,6 +1063,12 @@ class ProjectService:
             update_kwargs["edits"] = updated_edits
 
         self._update_active_timeline(**update_kwargs)
+        # If the segment's start time moved, the start-ascending invariant
+        # (G4/G13) may now be violated -- re-sort before building the patch.
+        if start_changed:
+            self._enforce_segment_sort_invariant()
+            # Reflect any re-sorting in the patch payload.
+            updated_segments = list(self.active_timeline.transcript.segments)
         patch_kwargs: dict = {"segments": updated_segments}
         if updated_edits is not None:
             patch_kwargs["edits"] = updated_edits

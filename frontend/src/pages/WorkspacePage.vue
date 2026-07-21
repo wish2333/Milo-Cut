@@ -387,9 +387,9 @@ watch(isDirty, (dirty, _old, onCleanup) => {
 const duration = computed(() => props.project.media?.duration ?? 0)
 const analysisResults = computed(() => activeTimeline.value?.analysis?.results ?? [])
 
-const mergedSegments = computed<Segment[]>(() => {
-  return [...segments.value].sort((a, b) => a.start - b.start)
-})
+// v2.3.2 stage 3: relies on backend _enforce_segment_sort_invariant.
+// See tests/test_segment_sort_invariant.py and core/project_service.py.
+const mergedSegments = computed<Segment[]>(() => segments.value)
 
 const silenceCount = computed(() => segments.value.filter(s => s.type === "silence").length)
 const subtitleCount = computed(() => segments.value.filter(s => s.type === "subtitle").length)
