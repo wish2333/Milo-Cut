@@ -75,18 +75,18 @@ const duration = computed(() => {
 
 <template>
   <div
-    class="flex items-center gap-2 px-3 h-8 cursor-pointer transition-colors"
+    class="flex h-9 cursor-pointer items-center gap-2 px-3 transition-colors hover:bg-parchment"
     :data-segment-id="segment.id"
     :class="{
-      'bg-gray-50': !displayStatus || displayStatus === 'none',
-      'bg-yellow-50 border-l-3 border-yellow-400': displayStatus === 'pending',
-      'bg-red-50 border-l-3 border-red-400 opacity-60': displayStatus === 'confirmed' || styleClass === 'masked',
-      'bg-green-50 border-l-3 border-green-400': styleClass === 'kept',
+      'bg-parchment': !displayStatus || displayStatus === 'none',
+      'bg-status-pending border-l-3 border-yellow-400': displayStatus === 'pending',
+      'bg-status-confirmed border-l-3 border-red-400 opacity-60': displayStatus === 'confirmed' || styleClass === 'masked',
+      'bg-status-rejected border-l-3 border-green-400': styleClass === 'kept',
     }"
     @click="handleRowClick"
     @contextmenu="handleContextMenu"
   >
-    <div class="text-xs text-gray-400 w-[130px] shrink-0 font-mono overflow-hidden whitespace-nowrap">
+    <div class="w-[130px] shrink-0 overflow-hidden whitespace-nowrap font-mono text-xs text-ink-muted">
       <template v-if="editingTimeField === 'start'">
         <input
           ref="timeInputRef"
@@ -121,7 +121,7 @@ const duration = computed(() => {
     <div class="flex items-center gap-1 shrink-0">
       <template v-if="displayStatus === 'pending'">
         <span
-          class="text-xs px-1.5 py-0.5 rounded bg-yellow-100 text-yellow-700 cursor-pointer hover:bg-yellow-200 transition-colors"
+          class="rounded bg-status-pending px-1.5 py-0.5 text-xs text-yellow-700 transition-colors hover:bg-yellow-100"
           title="Click to confirm delete"
           @click.stop="emit('confirm-edit')"
         >
@@ -137,7 +137,7 @@ const duration = computed(() => {
       </template>
       <template v-else-if="displayStatus === 'confirmed'">
         <span
-          class="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-700 cursor-pointer hover:bg-red-200 transition-colors"
+          class="rounded bg-status-confirmed px-1.5 py-0.5 text-xs text-red-700 transition-colors hover:bg-red-100"
           title="Click to toggle status"
           @click.stop="emit('toggle-status')"
         >
@@ -146,7 +146,7 @@ const duration = computed(() => {
       </template>
       <template v-else-if="displayStatus === 'rejected'">
         <span
-          class="text-xs px-1.5 py-0.5 rounded bg-green-100 text-green-700 cursor-pointer hover:bg-green-200 transition-colors"
+          class="rounded bg-status-rejected px-1.5 py-0.5 text-xs text-green-700 transition-colors hover:bg-green-100"
           title="Click to toggle status"
           @click.stop="emit('toggle-status')"
         >
@@ -155,7 +155,7 @@ const duration = computed(() => {
       </template>
       <template v-else>
         <span
-          class="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 cursor-pointer hover:bg-gray-200 transition-colors"
+          class="rounded bg-parchment px-1.5 py-0.5 text-xs text-ink-muted transition-colors hover:bg-hairline"
           title="Click to mark for deletion"
           @click.stop="emit('toggle-status')"
         >

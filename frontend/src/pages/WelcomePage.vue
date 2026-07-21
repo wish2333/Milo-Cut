@@ -107,8 +107,9 @@ function formatRelativeTime(iso: string): string {
         <h1 class="text-4xl font-semibold tracking-tight text-ink">Milo-Cut</h1>
         <p class="mt-2 text-base text-ink-muted">AI 驱动的口播视频预处理工具</p>
         <button
-          class="absolute top-0 right-0 p-2 text-ink-muted hover:text-ink transition-colors"
-          title="Settings"
+          class="mc-button mc-button-quiet absolute top-0 right-0 min-h-9 p-2"
+          title="打开设置"
+          aria-label="打开设置"
           @click="showSettings = true"
         >
           <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
@@ -125,17 +126,17 @@ function formatRelativeTime(iso: string): string {
       </div>
 
       <div v-if="recentProjects.length > 0" class="mt-8">
-        <h2 class="text-sm font-medium text-ink-muted mb-3">最近项目</h2>
-        <div class="rounded-lg border border-gray-200 divide-y divide-gray-100 overflow-hidden">
+        <h2 class="mb-3 text-sm font-semibold text-ink-muted">最近项目</h2>
+        <div class="overflow-hidden rounded-[var(--radius-panel)] border border-hairline divide-y divide-hairline">
           <button
             v-for="rp in recentProjects"
             :key="rp.path"
-            class="w-full text-left px-4 py-3 hover:bg-gray-50 transition-colors flex items-center justify-between gap-3 disabled:opacity-50"
+            class="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-parchment focus-visible:bg-primary-soft disabled:opacity-50"
             :disabled="loadingRecent"
             @click="openRecentProject(rp)"
           >
             <div class="min-w-0 flex-1">
-              <div class="text-sm font-medium text-ink truncate">{{ rp.name }}</div>
+              <div class="truncate text-sm font-semibold text-ink">{{ rp.name }}</div>
               <div class="text-xs text-ink-muted truncate mt-0.5">{{ rp.path }}</div>
             </div>
             <div class="text-xs text-ink-muted-48 shrink-0">

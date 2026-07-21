@@ -23,7 +23,7 @@ describe("SilenceRow", () => {
     const wrapper = mount(SilenceRow, {
       props: { segment: silenceSegment },
     })
-    expect(wrapper.classes()).toContain("bg-gray-50")
+    expect(wrapper.classes()).toContain("bg-parchment")
   })
 
   it("renders pending status with suggestion label", () => {
@@ -31,7 +31,7 @@ describe("SilenceRow", () => {
       props: { segment: silenceSegment, displayStatus: "pending" },
     })
     expect(wrapper.text()).toContain("建议删除")
-    expect(wrapper.classes()).toContain("bg-yellow-50")
+    expect(wrapper.classes()).toContain("bg-status-pending")
   })
 
   it("renders confirmed status", () => {
@@ -39,7 +39,7 @@ describe("SilenceRow", () => {
       props: { segment: silenceSegment, displayStatus: "confirmed" },
     })
     expect(wrapper.text()).toContain("已删除")
-    expect(wrapper.classes()).toContain("bg-red-50")
+    expect(wrapper.classes()).toContain("bg-status-confirmed")
   })
 
   it("renders rejected status", () => {
@@ -47,7 +47,7 @@ describe("SilenceRow", () => {
       props: { segment: silenceSegment, displayStatus: "rejected", styleClass: "kept" },
     })
     expect(wrapper.text()).toContain("已保留")
-    expect(wrapper.classes()).toContain("bg-green-50")
+    expect(wrapper.classes()).toContain("bg-status-rejected")
   })
 
   it("emits seek on click", async () => {

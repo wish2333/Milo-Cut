@@ -229,14 +229,14 @@ watch(
 
 <template>
   <div class="flex h-full w-full min-w-0 flex-col">
-    <div class="flex items-center justify-between border-b border-gray-200 px-4 py-2">
+    <div class="flex items-center justify-between border-b border-hairline px-4 py-2">
       <!-- LEFT: Timeline title + tools -->
       <div class="flex items-center gap-2 flex-1 min-w-0">
-        <span class="text-sm font-medium">Timeline</span>
+        <span class="text-sm font-semibold">字幕时间线</span>
         <!-- v2.1.1 M4-1: selection mode toggle -->
         <button
           class="rounded p-1.5 transition-colors"
-          :class="selectionMode ? 'bg-blue-100 text-blue-700' : 'text-gray-500 hover:bg-gray-100'"
+          :class="selectionMode ? 'bg-primary-soft text-primary' : 'text-ink-muted hover:bg-parchment'"
           :title="selectionMode ? '退出选择模式' : '选择模式 (框选字幕)'"
           @click="emit('toggle-selection-mode')"
         >
@@ -247,7 +247,7 @@ watch(
         <!-- v2.1.1 M4-4: search toggle -->
         <button
           class="rounded p-1.5 transition-colors"
-          :class="showSearchBar ? 'bg-blue-100 text-blue-700' : 'text-gray-500 hover:bg-gray-100'"
+          :class="showSearchBar ? 'bg-primary-soft text-primary' : 'text-ink-muted hover:bg-parchment'"
           title="搜索替换 (Ctrl+F)"
           @click="emit('toggle-search-bar')"
         >
@@ -261,20 +261,20 @@ watch(
         </span>
         <button
           v-if="selectionMode && (selectedCount ?? 0) >= 2"
-          class="rounded-md bg-blue-500 px-2 py-1 text-xs text-white hover:bg-blue-600 active:scale-95 transition-all duration-150"
+          class="mc-button mc-button-primary min-h-8 px-2 py-1 text-xs"
           @click="emit('merge-selected')"
         >
           合并选中
         </button>
         <button
           class="text-xs px-2 py-1 rounded-md transition-all duration-150 active:scale-95"
-          :class="globalEditMode ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-amber-100 text-amber-700 hover:bg-amber-200'"
+          :class="globalEditMode ? 'mc-button-primary' : 'mc-button-secondary'"
           :title="globalEditMode ? 'Exit edit mode' : 'Edit all subtitles'"
           @click="emit('toggle-edit-mode')"
         >
           {{ globalEditMode ? '退出编辑' : '编辑字幕' }}
         </button>
-        <span class="text-xs text-gray-500">{{ subtitleCount }} subtitles + {{ silenceCount }} silence</span>
+        <span class="text-xs text-ink-muted">{{ subtitleCount }} 条字幕 · {{ silenceCount }} 段静音</span>
       </div>
       <!-- RIGHT: sidebar tabs + collapse arrow -->
       <div class="flex items-center gap-1 flex-shrink-0">
@@ -282,14 +282,14 @@ watch(
           v-for="tab in tabs"
           :key="tab.key"
           v-if="sidebarOpen"
-          class="px-2 py-1 text-xs font-medium rounded transition-colors"
+          class="rounded px-2 py-1 text-xs font-semibold transition-colors"
           :class="activeTab === tab.key
-            ? 'bg-blue-100 text-blue-700'
-            : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'"
+            ? 'bg-primary-soft text-primary'
+            : 'text-ink-muted hover:bg-parchment hover:text-ink'"
           @click="activeTab = tab.key"
         >{{ tab.label }}</button>
         <button
-          class="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors"
+          class="flex h-8 w-8 items-center justify-center rounded text-ink-muted transition-colors hover:bg-parchment hover:text-ink"
           :title="sidebarOpen ? '隐藏侧栏' : '显示侧栏'"
           @click="sidebarOpen = !sidebarOpen"
         >
@@ -307,15 +307,15 @@ watch(
         <!-- v2.1.1 M4-1: selection mode banner -->
         <div
           v-if="selectionMode"
-          class="sticky top-0 z-10 flex items-center gap-2 bg-blue-50 px-4 py-2 text-xs text-blue-700 border-b border-blue-100"
+          class="sticky top-0 z-10 flex items-center gap-2 border-b border-hairline bg-primary-soft px-4 py-2 text-xs text-primary"
         >
           <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
           <span>选择模式 — 点击多选 Ctrl 切换 Shift 范围选 Enter 合并 Delete 删除</span>
         </div>
         <div v-if="segments.length === 0" class="flex h-full items-center justify-center">
           <div class="text-center">
-            <p class="text-sm text-gray-500">No segments loaded</p>
-            <p class="mt-1 text-xs text-gray-400">Click "Import SRT" to load subtitles</p>
+            <p class="text-sm text-ink-muted">暂无字幕片段</p>
+            <p class="mt-1 text-xs text-ink-muted">点击“导入 SRT”开始编辑</p>
           </div>
         </div>
 
@@ -373,14 +373,14 @@ watch(
         >
           <!-- Divider with resize handle -->
           <div
-            class="relative w-px bg-gray-200 hover:bg-blue-400 cursor-ew-resize transition-colors shrink-0"
+            class="relative w-px shrink-0 cursor-ew-resize bg-hairline transition-colors hover:bg-primary"
             @mousedown="onSidebarResizeStart"
           >
             <div class="absolute -left-1.5 -right-1.5 top-0 bottom-0 z-10"></div>
           </div>
 
           <!-- Inline sidebar -->
-          <div class="flex flex-col border-l border-gray-200 bg-white flex-1 overflow-hidden">
+          <div class="flex flex-1 flex-col overflow-hidden border-l border-hairline bg-parchment">
             <div class="flex-1 overflow-y-auto p-2">
             <SuggestionPanel
               v-show="activeTab === 'suggestion'"

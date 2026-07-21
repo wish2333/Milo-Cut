@@ -166,7 +166,7 @@ onUnmounted(() => {
 
 <template>
   <div
-    class="flex items-center gap-2 bg-gray-900/95 px-3 py-1.5 text-white text-xs"
+    class="flex items-center gap-2 bg-surface-tile-1/95 px-3 py-1.5 text-xs text-white"
     @keydown="handleKeydown"
     tabindex="0"
   >
@@ -207,7 +207,7 @@ onUnmounted(() => {
     </button>
 
     <!-- Time display -->
-    <span class="font-mono text-[11px] text-gray-300 w-24 text-center tabular-nums">
+    <span class="w-24 text-center font-mono text-[11px] tabular-nums text-gray-300">
       {{ formatTime(currentTime) }} / {{ formatTime(duration) }}
     </span>
 
@@ -217,9 +217,9 @@ onUnmounted(() => {
       class="flex-1 h-5 flex items-center cursor-pointer group"
       @mousedown="handleProgressMouseDown"
     >
-      <div class="relative w-full h-1 group-hover:h-1.5 bg-gray-600 rounded-full transition-all overflow-hidden">
+      <div class="relative h-1 w-full overflow-hidden rounded-full bg-white/20 transition-all group-hover:h-1.5">
         <div
-          class="absolute top-0 left-0 h-full bg-blue-500 rounded-full transition-none"
+          class="absolute left-0 top-0 h-full rounded-full bg-primary transition-none"
           :style="{ width: progressPercent + '%' }"
         />
         <!-- Delete ranges overlay (extracted to child for render isolation) -->
@@ -229,7 +229,7 @@ onUnmounted(() => {
           :duration="duration"
         />
         <div
-          class="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-blue-400 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+          class="absolute top-1/2 h-3 w-3 -translate-y-1/2 rounded-full bg-primary opacity-0 transition-opacity group-hover:opacity-100"
           :style="{ left: progressPercent + '%', transform: 'translate(-50%, -50%)' }"
         />
       </div>
@@ -262,17 +262,17 @@ onUnmounted(() => {
       </button>
       <div
         v-show="showVolume"
-        class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 p-2 bg-gray-800 rounded shadow-lg"
+        class="absolute bottom-full left-1/2 mb-2 -translate-x-1/2 rounded bg-surface-tile-1 p-2 shadow-lg"
         @mouseenter="showVolumePopup"
         @mouseleave="hideVolumePopup"
       >
         <div
           ref="volumeRef"
-          class="w-20 h-2 bg-gray-600 rounded-full cursor-pointer"
+          class="h-2 w-20 cursor-pointer rounded-full bg-white/20"
           @mousedown="handleVolumeMouseDown"
         >
           <div
-            class="h-full bg-blue-500 rounded-full"
+            class="h-full rounded-full bg-primary"
             :style="{ width: (volume * 100) + '%' }"
           />
         </div>
@@ -290,13 +290,13 @@ onUnmounted(() => {
       </button>
       <div
         v-if="showSpeedMenu"
-        class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 py-1 bg-gray-800 rounded shadow-lg"
+        class="absolute bottom-full left-1/2 mb-2 -translate-x-1/2 rounded bg-surface-tile-1 py-1 shadow-lg"
       >
         <button
           v-for="speed in speeds"
           :key="speed"
           class="block w-full px-3 py-1 text-left hover:bg-white/10 transition-colors whitespace-nowrap"
-          :class="{ 'text-blue-400': playbackRate === speed }"
+          :class="{ 'text-primary': playbackRate === speed }"
           @click="setSpeed(speed)"
         >
           {{ speed }}x
