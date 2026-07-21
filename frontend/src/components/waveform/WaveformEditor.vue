@@ -15,6 +15,7 @@ const props = defineProps<{
   duration: number
   currentTime: number
   waveformPath?: string
+  demoMode?: boolean
   updateTime?: (segmentId: string, field: "start" | "end", value: number) => void
   /** v2.1.1 A-03: full-text edit mode — blocks structural ops */
   globalEditMode?: boolean
@@ -125,6 +126,7 @@ function handleSplitSegment(segmentId: string, position: number) {
         :segments="segments"
         :waveform-path="waveformPath"
         :duration="duration"
+        :demo-mode="demoMode"
         style="z-index: 0; pointer-events: none"
       />
       <TimeMarksLayer

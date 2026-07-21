@@ -13,6 +13,7 @@ const props = defineProps<{
   segments: Segment[]
   waveformPath?: string
   duration?: number
+  demoMode?: boolean
 }>()
 
 const metrics = inject<TimelineMetrics>(TIMELINE_METRICS_KEY)!
@@ -68,6 +69,17 @@ async function loadWaveform(path: string) {
   } catch {
     loadError.value = true
   }
+}
+
+function createDemoPeaks(count = 720): PeakData[] {
+  let seed = 24681357
+  return Array.from({ length: count }, (_, index) => {
+    seed = (seed * 1664525 + 1013904223) >>> 0
+    const noise = (seed / 4294967296) * 0.35
+    const envelope = 0.25 + Math.abs(Math.sin(index / 21)) * 0.55
+    const amplitude = Math.min(0.95, envelope + noise)
+    return { min: -amplitude, max: amplitude }
+  })
 }
 
 // -- Canvas rendering ---------------------------------------------------
@@ -213,6 +225,9 @@ onUnmounted(() => {
 watch(() => props.waveformPath, (path) => {
   if (path) {
     loadWaveform(path)
+  } else if (props.demoMode) {
+    peaks.value = createDemoPeaks()
+    loadError.value = false
   }
 }, { immediate: true })
 

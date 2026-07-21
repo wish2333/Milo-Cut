@@ -16,6 +16,7 @@ import {
   EVENT_LLM_HIGHLIGHT_PROGRESS,
   EVENT_LLM_HIGHLIGHT_COMPLETED,
   EVENT_TASK_CANCELLED,
+  EVENT_DEMO_RESET,
 } from "@/utils/events"
 
 interface SmartDeleteResult {
@@ -89,6 +90,19 @@ let listenersRegistered = false
 function ensureListeners() {
   if (listenersRegistered) return
   listenersRegistered = true
+
+  onEvent(EVENT_DEMO_RESET, () => {
+    smartDeleteResults.value = []
+    subtitleCorrectionResult.value = null
+    pendingCorrections.value = []
+    correctionsLoading.value = false
+    highlightResults.value = []
+    highlightTotalDuration.value = 0
+    jumpCuts.value = []
+    isRunning.value = false
+    progress.value = 0
+    errorMsg.value = null
+  })
 
   // P0 smart-delete: live progress updates
   onEvent<{ results?: SmartDeleteResult[] }>(

@@ -6,9 +6,10 @@ import ExportPage from "@/pages/ExportPage.vue"
 import ToastContainer from "@/components/common/ToastContainer.vue"
 import RelinkMediaDialog from "@/components/workspace/RelinkMediaDialog.vue"
 import ConflictResolutionView from "@/components/workspace/ConflictResolutionView.vue"
-import { waitForPyWebView, call, onEvent } from "./bridge"
+import { waitForPyWebView, call, onEvent, isDemoMode } from "./bridge"
+import { resetDemoRuntime } from "@/demo/demoBridge"
 import { useUvAvailability } from "@/composables/useUvAvailability"
-import { EVENT_TASK_COMPLETED } from "@/utils/events"
+import { EVENT_DEMO_PROJECT_UPDATED, EVENT_TASK_COMPLETED } from "@/utils/events"
 import type { Project, MediaInfo, ProjectResponse } from "@/types/project"
 import { isProjectPatch } from "@/types/project"
 import { applyProjectPatch, isStalePatch } from "@/utils/projectPatch"
@@ -27,6 +28,7 @@ const showExportPage = ref(false)
 const isDragging = ref(false)
 const showRelinkDialog = ref(false)
 const relinkLostPath = ref("")
+const demoMode = isDemoMode()
 let dragCounter = 0
 
 // Page order for directional slide transitions: 0=welcome, 1=workspace, 2=export.
@@ -40,14 +42,30 @@ function setDirection(before: number, after: number) {
   transitionName.value = after > before ? "slide-forward" : "slide-backward"
 }
 
-waitForPyWebView(10_000)
-  .then(() => {
-    ready.value = true
-    checkUvAvailable()
+if (demoMode) {
+  ready.value = true
+  call<Project>("get_project").then((res) => {
+    if (res.success && res.data) project.value = res.data
   })
-  .catch((err: unknown) => {
-    bridgeError.value = err instanceof Error ? err.message : "Bridge init failed"
+} else {
+  waitForPyWebView(10_000)
+    .then(() => {
+      ready.value = true
+      checkUvAvailable()
+    })
+    .catch((err: unknown) => {
+      bridgeError.value = err instanceof Error ? err.message : "Bridge init failed"
+    })
+}
+
+function resetDemo() {
+  resetDemoRuntime()
+  project.value = null
+  showExportPage.value = false
+  call<Project>("get_project").then((res) => {
+    if (res.success && res.data) project.value = res.data
   })
+}
 
 function triggerWaveformGeneration() {
   if (!project.value?.media || project.value.media.waveform_path) return
@@ -66,6 +84,10 @@ onEvent<{ task_id: string; task_type?: string; result?: { project?: Project } }>
     }
   },
 )
+
+onEvent<Project>(EVENT_DEMO_PROJECT_UPDATED, (data) => {
+  if (demoMode) project.value = data
+})
 
 function onProjectCreated(data: Project) {
   setDirection(pageOrder(), 1)
@@ -215,6 +237,15 @@ function handleRelinkCancel() {
     @dragleave="handleWindowDragLeave"
     @drop="handleWindowDrop"
   >
+    <div
+      v-if="demoMode"
+      class="demo-mode-badge fixed right-4 top-3 z-[100] flex items-center gap-2 rounded-[var(--radius-control)] bg-surface-tile-1 px-3 py-1.5 text-xs text-white shadow-lg max-[1199px]:top-14"
+    >
+      <span class="text-white/70">浏览器演示模式</span>
+      <button class="mc-button mc-button-secondary min-h-7 border-white/20 bg-transparent px-2 py-0.5 text-white hover:bg-white/10" @click="resetDemo">
+        重置演示
+      </button>
+    </div>
     <!-- Full-window drag overlay -->
     <div
       v-if="isDragging"

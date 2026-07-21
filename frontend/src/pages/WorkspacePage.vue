@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue"
 import type { Project, Segment, EditDecision, ModelInfo, Timeline as TimelineData, ProjectResponse } from "@/types/project"
 import { formatTimeShort } from "@/utils/format"
-import { call, onEvent } from "@/bridge"
+import { call, onEvent, isDemoMode } from "@/bridge"
 import { useAnalysis } from "@/composables/useAnalysis"
 import { useExport } from "@/composables/useExport"
 import { useEdit } from "@/composables/useEdit"
@@ -28,6 +28,9 @@ import SearchReplaceBar from "@/components/workspace/SearchReplaceBar.vue"
 import VideoControls from "@/components/workspace/VideoControls.vue"
 import SubtitleOverlay from "@/components/workspace/SubtitleOverlay.vue"
 import SettingsModal from "@/components/workspace/SettingsModal.vue"
+import DemoPreviewSurface from "@/components/demo/DemoPreviewSurface.vue"
+import DemoResponsiveWorkspace from "@/components/demo/DemoResponsiveWorkspace.vue"
+import { useDemoPlayback } from "@/composables/useDemoPlayback"
 
 interface Props {
   project: Project
@@ -41,6 +44,12 @@ interface Emits {
 
 const props = defineProps<Props>()
 const emit = defineEmits<Emits>()
+const demoMode = isDemoMode()
+const isCompactDemo = ref(demoMode && window.innerWidth < 1200)
+
+function syncCompactDemo() {
+  isCompactDemo.value = demoMode && window.innerWidth < 1200
+}
 
 // Phase 2: LLM integration
 const {
@@ -223,6 +232,14 @@ const {
   onTimeUpdate: (time) => { currentTime.value = time },
 })
 
+const demoPlayback = useDemoPlayback({
+  currentTime,
+  duration: computed(() => props.project.media?.duration ?? 0),
+  paused: videoPaused,
+  playbackRate: videoPlaybackRate,
+  enabled: demoMode,
+})
+
 function togglePreviewMode() {
   previewMode.value = previewMode.value === "edited" ? "original" : "edited"
 }
@@ -399,6 +416,7 @@ const isTranscribing = computed(() => {
 })
 
 async function loadVideoUrl() {
+  if (demoMode) return
   const proxyPath = props.project.media?.proxy_path
   const originalPath = props.project.media?.path
   // Prefer proxy_path when available, fallback to original
@@ -413,6 +431,10 @@ async function loadVideoUrl() {
 let regenPollTimer: ReturnType<typeof setInterval> | null = null
 
 async function handleRegenerateWaveform() {
+  if (demoMode) {
+    showToast("演示波形由浏览器即时生成", "info", 2500)
+    return
+  }
   statusMessage.value = "Regenerating waveform..."
   const res = await call<{ task_id: string }>("regenerate_waveform")
   if (!res.success) {
@@ -442,6 +464,7 @@ async function handleRegenerateWaveform() {
 }
 
 async function resolveWaveformUrl() {
+  if (demoMode) return
   const res = await call<{ url: string }>("get_waveform_url")
   if (res.success && res.data) {
     waveformUrl.value = res.data.url + "?t=" + Date.now()
@@ -746,12 +769,14 @@ async function saveSilenceSettings() {
 }
 
 function handleSeek(time: number) {
-  seekPlayback(time, true)
+  if (demoMode) demoPlayback.seek(time, true)
+  else seekPlayback(time, true)
 }
 
 // v2.1.1 A-03: move playhead without playing (arrow keys, selection mode)
 function handleSetTime(time: number) {
-  seekPlayback(time)
+  if (demoMode) demoPlayback.seek(time)
+  else seekPlayback(time)
 }
 
 function handleVideoLoaded() {
@@ -765,6 +790,10 @@ function handleTimeUpdate() {
 }
 
 function handleTogglePlay() {
+  if (demoMode) {
+    demoPlayback.toggle()
+    return
+  }
   if (!videoRef.value) return
   if (videoRef.value.paused) {
     videoRef.value.play()
@@ -774,22 +803,32 @@ function handleTogglePlay() {
 }
 
 function handleSeekTo(time: number) {
-  seekPlayback(time)
+  if (demoMode) demoPlayback.seek(time)
+  else seekPlayback(time)
 }
 
 function handleVolumeChange(vol: number) {
+  if (demoMode) {
+    videoVolume.value = vol
+    return
+  }
   if (!videoRef.value) return
   videoRef.value.volume = vol
   videoVolume.value = vol
 }
 
 function handleRateChange(rate: number) {
+  if (demoMode) {
+    videoPlaybackRate.value = rate
+    return
+  }
   if (!videoRef.value) return
   videoRef.value.playbackRate = rate
   videoPlaybackRate.value = rate
 }
 
 function handleFullscreen() {
+  if (demoMode) return
   const container = videoRef.value?.parentElement
   if (!container) return
   if (document.fullscreenElement) {
@@ -1544,17 +1583,53 @@ async function handleRedo() {
 onMounted(() => {
   document.addEventListener("keydown", handleGlobalKeydown)
   document.addEventListener("mousedown", handleClickOutside)
+  syncCompactDemo()
+  window.addEventListener("resize", syncCompactDemo)
 })
 
 onUnmounted(() => {
   document.removeEventListener("keydown", handleGlobalKeydown)
   document.removeEventListener("mousedown", handleClickOutside)
+  window.removeEventListener("resize", syncCompactDemo)
   if (regenPollTimer) clearInterval(regenPollTimer)
 })
 </script>
 
 <template>
-  <div class="flex h-screen flex-col bg-canvas">
+  <DemoResponsiveWorkspace
+    v-if="demoMode && isCompactDemo"
+    :project="props.project"
+    :current-time="currentTime"
+    :duration="duration"
+    :paused="videoPaused"
+    :volume="videoVolume"
+    :playback-rate="videoPlaybackRate"
+    :preview-mode="previewMode"
+    :delete-ranges="deleteRanges"
+    :llm-configured="llmConfig.configured"
+    :llm-is-running="llmIsRunning"
+    :llm-progress="llmProgress"
+    :llm-error-msg="llmErrorMsg"
+    :corrections="pendingCorrections"
+    @update:current-time="handleSeekTo"
+    @update:volume="handleVolumeChange"
+    @update:playback-rate="handleRateChange"
+    @toggle-play="handleTogglePlay"
+    @toggle-preview="togglePreviewMode"
+    @seek="handleSeek"
+    @update-text="handleUpdateText"
+    @confirm-edit="confirmEdit"
+    @reject-edit="rejectEdit"
+    @start-smart-delete="handleStartSmartDelete"
+    @start-subtitle-correction="handleStartSubtitleCorrection"
+    @accept-correction="handleAcceptCorrection"
+    @reject-correction="handleRejectCorrection"
+    @start-highlight="handleStartHighlight"
+    @go-to-export="emit('go-to-export')"
+    @project-closed="handleCloseProject"
+  />
+
+  <div v-else class="flex h-screen flex-col bg-canvas">
     <!-- Top nav -->
     <nav class="flex h-11 items-center justify-between border-b border-white/10 bg-surface-tile-1 px-4">
       <div class="flex items-center gap-3">
@@ -1989,7 +2064,16 @@ onUnmounted(() => {
           <!-- Left: Video player area -->
           <div class="flex h-full min-w-0 flex-col bg-surface-tile-1">
         <div class="flex flex-1 items-center justify-center p-2 overflow-hidden">
-          <div v-if="videoUrl" class="relative flex flex-col w-full h-full items-center justify-center">
+          <div v-if="demoMode" class="relative flex h-full w-full items-center justify-center">
+            <DemoPreviewSurface
+              :segments="mergedSegments"
+              :current-time="currentTime"
+              :duration="duration"
+              :preview-mode="previewMode"
+              :delete-ranges="deleteRanges"
+            />
+          </div>
+          <div v-else-if="videoUrl" class="relative flex flex-col w-full h-full items-center justify-center">
             <video
               ref="videoRef"
               :src="videoUrl"
@@ -2111,7 +2195,8 @@ onUnmounted(() => {
       :edits="edits"
       :duration="duration"
       :current-time="currentTime"
-      :waveform-path="waveformUrl"
+      :waveform-path="demoMode ? undefined : waveformUrl"
+      :demo-mode="demoMode"
       :update-time="updateSegmentTime"
       :global-edit-mode="globalEditMode"
       :selection-mode="selectionMode"

@@ -42,3 +42,7 @@ export const EVENT_WORKFLOW_COMPLETED = "workflow:completed"
 export const EVENT_WORKFLOW_CANCELLED = "workflow:cancelled"
 export const EVENT_WORKFLOW_CONFLICTS_DETECTED = "workflow:conflicts_detected"
 export const EVENT_WORKFLOW_HEARTBEAT = "workflow:heartbeat"
+
+// Browser demo runtime lifecycle
+export const EVENT_DEMO_RESET = "demo:reset"
+export const EVENT_DEMO_PROJECT_UPDATED = "demo:project_updated"

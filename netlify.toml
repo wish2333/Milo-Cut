@@ -1,0 +1,13 @@
+[build]
+command = "cd frontend && bun install --frozen-lockfile && bun run build"
+publish = "frontend_dist"
+
+[build.environment]
+VITE_DEMO_MODE = "true"
+BUN_VERSION = "1.3.10"
+
+[[redirects]]
+from = "/*"
+to = "/index.html"
+status = 200
+

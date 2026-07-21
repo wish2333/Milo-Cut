@@ -18,6 +18,7 @@ import {
   EVENT_WORKFLOW_CANCELLED,
   EVENT_WORKFLOW_CONFLICTS_DETECTED,
   EVENT_WORKFLOW_HEARTBEAT,
+  EVENT_DEMO_RESET,
 } from "@/utils/events"
 
 // ---------------------------------------------------------------------------
@@ -103,6 +104,22 @@ let listenersRegistered = false
 function ensureListeners() {
   if (listenersRegistered) return
   listenersRegistered = true
+
+  onEvent(EVENT_DEMO_RESET, () => {
+    stopHeartbeat()
+    workflows.value = []
+    isActive.value = false
+    instanceId.value = null
+    workflowName.value = ""
+    currentStepIndex.value = 0
+    totalSteps.value = 0
+    stepResults.value = []
+    stepProgress.value = {}
+    cancelMode.value = ""
+    errorMsg.value = null
+    conflicts.value = []
+    showConflictView.value = false
+  })
 
   onEvent(EVENT_WORKFLOW_STARTED, (d: Record<string, unknown>) => {
     isActive.value = true
