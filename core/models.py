@@ -357,3 +357,55 @@ class Project(BaseModel, frozen=True):
             # Fallback to first timeline (shouldn't happen due to validator)
             return self.timelines[0]
         return tl
+
+
+# ================================================================
+# ProjectPatch (v2.3.2 stage 2 -- partial update protocol)
+# ================================================================
+
+
+class ProjectPatch(BaseModel, frozen=True):
+    """Layer-scoped partial update envelope for Project.
+
+    Replaces the legacy ``{"success": True, "data": project.model_dump()}``
+    pattern that shipped the entire 490KB+ Project on every write. Each
+    optional field below represents a *layer* of the project that may have
+    changed; ``None`` means "this layer was not touched, skip it".
+
+    Design rationale lives in
+    ``docs/2.3.0/2.3.2-stage1-evaluation-plan.md`` §4 阶段 2 and the
+    Oracle consultation recorded in ``docs/2.3.0/2.3.2-record.md``.
+
+    Layer taxonomy mirrors the frontend consumer categories surfaced by
+    the v2.3.2 stage-0 audit:
+
+    - ``segments`` / ``edits`` / ``analysis`` -- the three layers inside
+      the active timeline. Setting any of these replaces the active
+      timeline's corresponding field *wholesale*; the rest stay untouched.
+    - ``media`` -- the project-level MediaInfo; rarely changes outside
+      relink/waveform/info updates.
+    - ``active_timeline_id`` -- use when the write switched timelines
+      (also forces ``full_project`` to be populated for safety).
+    - ``full_project`` -- escape hatch for writes that touch multiple
+      timelines or otherwise cannot be expressed as a layer patch
+      (``create_timeline`` / ``switch_timeline`` / ``delete_timeline`` /
+      initial project creation). When present, the layer fields are
+      ignored by :func:`apply_project_patch`.
+
+    ``revision`` is a monotonically increasing counter maintained in
+    memory by :class:`ProjectService`. The frontend rejects patches with
+    ``revision <= last_seen_revision`` to defend against out-of-order
+    bridge responses.
+    """
+
+    revision: int
+    timeline_id: str | None = None
+    segments: list[Segment] | None = None
+    edits: list[EditDecision] | None = None
+    analysis: AnalysisData | None = None
+    media: MediaInfo | None = None
+    active_timeline_id: str | None = None
+    full_project: Project | None = None
+
+    def is_full_project_fallback(self) -> bool:
+        return self.full_project is not None

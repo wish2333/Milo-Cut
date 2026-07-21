@@ -1,6 +1,6 @@
 import { type ComputedRef, computed, type Ref, ref } from "vue"
-import type { EditDecision, Project, Segment } from "@/types/project"
-import { call } from "@/bridge"
+import type { EditDecision, Project, ProjectResponse, Segment } from "@/types/project"
+import { call, type ApiResponse } from "@/bridge"
 import { resolveSegmentState, getEditForSegment } from "@/utils/segmentHelpers"
 import type { SegmentState } from "@/utils/segmentHelpers"
 
@@ -23,7 +23,7 @@ export interface UseSegmentEditReturn {
 
   updateSegmentTime: (segmentId: string, field: "start" | "end", value: number) => void
   updateSegmentText: (segmentId: string, text: string) => Promise<boolean>
-  toggleEditStatus: (segment: Segment, nextStatus?: string) => Promise<void>
+  toggleEditStatus: (segment: Segment, nextStatus?: string) => Promise<boolean>
 
   getEffectiveStatus: (seg: Segment) => "normal" | "masked" | "kept"
   getEditStatus: (seg: Segment) => EditDecision["status"] | null
@@ -62,7 +62,7 @@ function replaceSegment(project: Project, segId: string, patch: Partial<Segment>
 
 export function useSegmentEdit(
   project: Ref<Project>,
-  onProjectUpdate: (project: Project) => void,
+  onProjectUpdate: (project: ProjectResponse) => void,
   onBeforeProjectUpdate?: (project: Project) => void,
 ): UseSegmentEditReturn {
   const selectedSegmentId = ref<string | null>(null)
@@ -196,11 +196,26 @@ export function useSegmentEdit(
   }
 
   // -- Toggle edit status -----------------------------------------------
+  //
+  // v2.3.2 G3 fix: consume the write call's return value (the backend's
+  // `update_edit_decision` / `mark_segments` already return the full updated
+  // Project). Fallback to `get_project()` only when the write call did not
+  // return a usable Project payload, so one toggle never triggers two bridge
+  // round-trips in the happy path. See docs/2.3.0/2.3.2-fix-report.md G3.
+  //
+  // v2.3.2 阶段 1.1 (evaluation-plan §4 stage 1.1 tasks 4-5):
+  // - Returns Promise<boolean>: true = UI updated (happy path or fallback
+  //   refresh); false = total failure (write + refresh both failed).
+  // - Failure paths log to console.{warn,error} for operator observability;
+  //   callers should surface user-visible errors based on the return value.
+  // - Reuses ApiResponse<Project> instead of hand-written response shape.
 
-  async function toggleEditStatus(segment: Segment, nextStatus?: string): Promise<void> {
+  async function toggleEditStatus(segment: Segment, nextStatus?: string): Promise<boolean> {
     if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value)
     const edits = activeEdits(project.value)
     const state = resolveSegmentState(edits, segment)
+
+    let writeRes: ApiResponse<Project> | null = null
 
     if (state.activeEdit) {
       const status = nextStatus ?? (
@@ -208,20 +223,47 @@ export function useSegmentEdit(
         : state.activeEdit.status === "rejected" ? "confirmed"
         : "confirmed"
       )
-      await call<Project>("update_edit_decision", state.activeEdit.id, status)
+      writeRes = await call<Project>("update_edit_decision", state.activeEdit.id, status)
     } else if (state.displayStatus === "rejected") {
       const rejectedEdit = getEditForSegment(edits, segment)
       if (rejectedEdit) {
-        await call<Project>("update_edit_decision", rejectedEdit.id, "confirmed")
+        writeRes = await call<Project>("update_edit_decision", rejectedEdit.id, "confirmed")
+      } else {
+        // Invariant violation: state reports rejected but no edit matches.
+        console.error(
+          "[useSegmentEdit.toggleEditStatus] displayStatus='rejected' but no edit found",
+          { segmentId: segment.id },
+        )
       }
     } else {
-      await call("mark_segments", [segment.id], "delete", "confirmed")
+      writeRes = await call<Project>("mark_segments", [segment.id], "delete", "confirmed")
     }
 
+    if (writeRes && writeRes.success && writeRes.data) {
+      onProjectUpdate(writeRes.data)
+      return true
+    }
+
+    // Defensive fallback: write call returned no usable payload (e.g. older
+    // backend, schema mismatch, or unexpected error). Refresh from source so
+    // the UI reflects authoritative backend state instead of going stale.
+    const writeError = writeRes?.error ?? "no payload"
     const projRes = await call<Project>("get_project")
     if (projRes.success && projRes.data) {
       onProjectUpdate(projRes.data)
+      // Partial success: refresh ok but original write silently failed.
+      console.warn(
+        "[useSegmentEdit.toggleEditStatus] write call fell back to get_project()",
+        { segmentId: segment.id, writeError },
+      )
+      return true
     }
+
+    console.error(
+      "[useSegmentEdit.toggleEditStatus] toggle fully failed (write + refresh)",
+      { segmentId: segment.id, writeError, refreshError: projRes.error ?? "no payload" },
+    )
+    return false
   }
 
   // -- Flush ------------------------------------------------------------

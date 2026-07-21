@@ -23,6 +23,11 @@ function tick() {
   rafId = requestAnimationFrame(tick)
 }
 
+function updateOnce() {
+  if (!props.videoRef) return
+  currentText.value = findCurrentSubtitle(props.videoRef.currentTime)
+}
+
 function startTracking() {
   if (rafId) return
   tick()
@@ -39,6 +44,10 @@ watch(() => props.videoRef, (video, _old, onCleanup) => {
   if (!video) return
   video.addEventListener("play", startTracking)
   video.addEventListener("pause", stopTracking)
+  // v2.3.2 stage 3: seeked/timeupdate keep subtitle text correct when
+  // the video is paused (RAF is off) or when the browser throttles RAF.
+  video.addEventListener("seeked", updateOnce)
+  video.addEventListener("timeupdate", updateOnce)
   video.addEventListener("loadeddata", () => { if (!video.paused) startTracking() })
   if (!video.paused) startTracking()
 
@@ -46,6 +55,8 @@ watch(() => props.videoRef, (video, _old, onCleanup) => {
     stopTracking()
     video.removeEventListener("play", startTracking)
     video.removeEventListener("pause", stopTracking)
+    video.removeEventListener("seeked", updateOnce)
+    video.removeEventListener("timeupdate", updateOnce)
   })
 }, { immediate: true })
 
