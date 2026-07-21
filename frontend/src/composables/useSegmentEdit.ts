@@ -1,5 +1,5 @@
 import { type ComputedRef, computed, type Ref, ref } from "vue"
-import type { EditDecision, Project, Segment } from "@/types/project"
+import type { EditDecision, Project, ProjectResponse, Segment } from "@/types/project"
 import { call, type ApiResponse } from "@/bridge"
 import { resolveSegmentState, getEditForSegment } from "@/utils/segmentHelpers"
 import type { SegmentState } from "@/utils/segmentHelpers"
@@ -62,7 +62,7 @@ function replaceSegment(project: Project, segId: string, patch: Partial<Segment>
 
 export function useSegmentEdit(
   project: Ref<Project>,
-  onProjectUpdate: (project: Project) => void,
+  onProjectUpdate: (project: ProjectResponse) => void,
   onBeforeProjectUpdate?: (project: Project) => void,
 ): UseSegmentEditReturn {
   const selectedSegmentId = ref<string | null>(null)

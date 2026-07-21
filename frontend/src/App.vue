@@ -9,12 +9,20 @@ import ConflictResolutionView from "@/components/workspace/ConflictResolutionVie
 import { waitForPyWebView, call, onEvent } from "./bridge"
 import { useUvAvailability } from "@/composables/useUvAvailability"
 import { EVENT_TASK_COMPLETED } from "@/utils/events"
-import type { Project, MediaInfo } from "@/types/project"
+import type { Project, MediaInfo, ProjectResponse } from "@/types/project"
+import { isProjectPatch } from "@/types/project"
+import { applyProjectPatch, isStalePatch } from "@/utils/projectPatch"
 
 const ready = ref(false)
 const bridgeError = ref("")
 const { checkUvAvailable } = useUvAvailability()
 const project = ref<Project | null>(null)
+// v2.3.2 stage 2: monotonic revision tracker. Backend includes ``revision``
+// in every ProjectPatch envelope; we reject patches whose revision is not
+// strictly greater than this value, defending against out-of-order bridge
+// responses (e.g. user clicks toggle twice rapidly and the older response
+// lands after the newer one).
+const lastSeenRevision = ref(0)
 const showExportPage = ref(false)
 const isDragging = ref(false)
 const showRelinkDialog = ref(false)
@@ -72,8 +80,23 @@ function onRelinkNeeded(lostPath: string, _projectPath: string) {
   showRelinkDialog.value = true
 }
 
-function onProjectUpdated(data: Project) {
-  project.value = data
+function onProjectUpdated(data: ProjectResponse) {
+  if (!project.value) {
+    if (data && !isProjectPatch(data)) {
+      project.value = data
+    }
+    return
+  }
+  if (isProjectPatch(data)) {
+    if (isStalePatch(data, lastSeenRevision.value)) {
+      // Drop stale patch; current state is newer than this response.
+      return
+    }
+    lastSeenRevision.value = data.revision
+    project.value = applyProjectPatch(project.value, data)
+  } else {
+    project.value = data
+  }
 }
 
 function onProjectClosed() {

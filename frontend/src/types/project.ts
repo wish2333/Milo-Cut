@@ -74,6 +74,32 @@ export interface Project {
   active_timeline_id: string
 }
 
+// ================================================================
+// v2.3.2 stage 2: ProjectPatch envelope
+// ================================================================
+
+export interface ProjectPatch {
+  revision: number
+  timeline_id?: string | null
+  segments?: Segment[] | null
+  edits?: EditDecision[] | null
+  analysis?: AnalysisData | null
+  media?: MediaInfo | null
+  active_timeline_id?: string | null
+  full_project?: Project | null
+}
+
+export type ProjectResponse = Project | ProjectPatch
+
+export function isProjectPatch(data: unknown): data is ProjectPatch {
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    "revision" in data &&
+    typeof (data as { revision: unknown }).revision === "number"
+  )
+}
+
 export interface Timeline {
   id: string
   label: string

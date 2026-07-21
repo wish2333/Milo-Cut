@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue"
-import type { Project, Segment, EditDecision, ModelInfo, Timeline as TimelineData } from "@/types/project"
+import type { Project, Segment, EditDecision, ModelInfo, Timeline as TimelineData, ProjectResponse } from "@/types/project"
 import { formatTimeShort } from "@/utils/format"
 import { call, onEvent } from "@/bridge"
 import { useAnalysis } from "@/composables/useAnalysis"
@@ -34,7 +34,7 @@ interface Props {
 }
 
 interface Emits {
-  (e: "project-updated", project: Project): void
+  (e: "project-updated", project: ProjectResponse): void
   (e: "project-closed"): void
   (e: "go-to-export"): void
 }
@@ -166,7 +166,7 @@ const {
 } = useSegmentEdit(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   projectRef as any,
-  (val: Project) => emit("project-updated", val),
+  (val: ProjectResponse) => emit("project-updated", val),
   pushSnapshot,
 )
 
@@ -802,6 +802,7 @@ function handleFullscreen() {
 // -- Timeline operations ----------------------------------------------
 
 async function handleSwitchTimeline(timelineId: string) {
+  await flushPendingUpdates()
   const res = await call<Project>("switch_timeline", timelineId)
   if (res.success && res.data) {
     emit("project-updated", res.data)
@@ -811,6 +812,7 @@ async function handleSwitchTimeline(timelineId: string) {
 }
 
 async function handleCreateTimeline() {
+  await flushPendingUpdates()
   const label = window.prompt("Timeline name:", "新 Timeline")
   if (!label) return
   const fork = window.confirm("Fork from current timeline? (Cancel = blank timeline)")

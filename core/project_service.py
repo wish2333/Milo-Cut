@@ -54,6 +54,10 @@ class ProjectService:
     def __init__(self) -> None:
         self._current: Project | None = None
         self._current_path: Path | None = None
+        # v2.3.2 stage 2: monotonic counter for ProjectPatch envelopes.
+        # Frontend rejects patches with revision <= its last_seen_revision
+        # to defend against out-of-order bridge responses.
+        self._revision: int = 0
 
     @property
     def current(self) -> Project | None:
@@ -87,6 +91,50 @@ class ProjectService:
         ]
         self._current = self._current.model_copy(update={"timelines": new_timelines})
         return self._current
+
+    def _next_revision(self) -> int:
+        """Increment and return the next revision counter.
+
+        Always called AFTER a successful mutation, BEFORE building the
+        response envelope. Per Oracle consultation, revision must be
+        bumped post-mutation so concurrent in-flight requests cannot
+        observe the same revision.
+        """
+        self._revision += 1
+        return self._revision
+
+    def _success_patch(self, **layers) -> dict:
+        """Build a ProjectPatch response envelope for the active timeline.
+
+        ``layers`` are passed straight to :class:`ProjectPatch`; only the
+        layers the caller actually mutated should be populated. The
+        ``revision`` is set via :meth:`_next_revision` and ``timeline_id``
+        defaults to the active timeline.
+        """
+        from core.models import ProjectPatch
+
+        patch = ProjectPatch(
+            revision=self._next_revision(),
+            timeline_id=self._current.active_timeline_id if self._current else None,
+            **layers,
+        )
+        return {"success": True, "data": patch.model_dump(mode="json")}
+
+    def _success_full_fallback(self) -> dict:
+        """Build a full-Project patch envelope for unsafe-to-patch writes.
+
+        Used by methods that touch multiple timelines, switch timelines,
+        or otherwise cannot be expressed as a single-layer patch.
+        """
+        from core.models import ProjectPatch
+
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+        patch = ProjectPatch(
+            revision=self._next_revision(),
+            full_project=self._current.model_dump(mode="json"),
+        )
+        return {"success": True, "data": patch.model_dump(mode="json")}
 
     def create_project(self, name: str, media_path: str, media_info: dict) -> dict:
         """Create a new project with media info."""
@@ -841,7 +889,7 @@ class ProjectService:
             return {"success": False, "error": f"Edit decision not found: {edit_id}"}
 
         self._update_active_timeline(edits=updated_edits)
-        return {"success": True, "data": self._current.model_dump()}
+        return self._success_patch(edits=updated_edits)
 
     def update_edit_decisions_batch(self, edit_ids: list[str], status: str) -> dict:
         """Batch update the status of multiple edit decisions.
@@ -872,7 +920,7 @@ class ProjectService:
 
         self._update_active_timeline(edits=updated_edits)
         logger.info("Batch-updated {} edits to {}", matched, new_status.value)
-        return {"success": True, "data": self._current.model_dump()}
+        return self._success_patch(edits=updated_edits)
 
     def delete_edit_decisions_batch(self, edit_ids: list[str]) -> dict:
         """Permanently remove edit decisions and associated data by id.
@@ -971,6 +1019,11 @@ class ProjectService:
 
         update_kwargs: dict = {"transcript": updated_transcript}
 
+        # Silence-segment time changes also cascade to silence_detection edits
+        # that mirror the segment's start/end. When this happens we emit a
+        # combined segments + edits patch in a single response so the
+        # frontend re-renders both layers atomically.
+        updated_edits = None
         if updated_seg and ("start" in filtered or "end" in filtered) and old_seg.type == SegmentType.SILENCE:
             updated_edits = []
             for edit in self.active_timeline.edits:
@@ -986,29 +1039,38 @@ class ProjectService:
             update_kwargs["edits"] = updated_edits
 
         self._update_active_timeline(**update_kwargs)
-        return {"success": True, "data": self._current.model_dump()}
+        patch_kwargs: dict = {"segments": updated_segments}
+        if updated_edits is not None:
+            patch_kwargs["edits"] = updated_edits
+        return self._success_patch(**patch_kwargs)
 
     def update_segment_text(self, segment_id: str, text: str) -> dict:
         """Update a subtitle segment's text and set dirty_flags."""
-        result = self.update_segment(segment_id, {"text": text})
-        if not result["success"]:
-            return result
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
 
-        # Set dirty_flags on the updated segment
-        segments = self.active_timeline.transcript.segments
+        old_seg = next(
+            (s for s in self.active_timeline.transcript.segments if s.id == segment_id),
+            None,
+        )
+        if old_seg is None:
+            return {"success": False, "error": f"Segment not found: {segment_id}"}
+
         updated_segments = []
-        for seg in segments:
+        for seg in self.active_timeline.transcript.segments:
             if seg.id == segment_id:
                 updated_segments.append(seg.model_copy(update={
+                    "text": text,
                     "dirty_flags": {**seg.dirty_flags, "text_edited": True},
                 }))
             else:
                 updated_segments.append(seg)
 
-        self._update_active_timeline(
-            transcript=self.active_timeline.transcript.model_copy(update={"segments": updated_segments}),
+        updated_transcript = self.active_timeline.transcript.model_copy(
+            update={"segments": updated_segments}
         )
-        return {"success": True, "data": self._current.model_dump()}
+        self._update_active_timeline(transcript=updated_transcript)
+        return self._success_patch(segments=updated_segments)
 
     def add_segment(self, start: float, end: float, text: str = "", seg_type: str = "subtitle") -> dict:
         """Add a new segment to the transcript."""
@@ -1362,7 +1424,7 @@ class ProjectService:
 
         self._update_active_timeline(edits=merged_edits)
         logger.info("Marked {} segments as {} ({})", len(target_segs), action, status)
-        return {"success": True, "data": self._current.model_dump()}
+        return self._success_patch(edits=merged_edits)
 
     def confirm_all_suggestions(self) -> dict:
         """Set all pending edit decisions to confirmed."""
