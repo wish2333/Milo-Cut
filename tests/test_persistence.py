@@ -91,6 +91,18 @@ class TestOpenRecoveryChain:
         assert res["success"] or res["error"] == "MEDIA_NOT_FOUND"
         assert res.get("recovered_from", "").endswith(".bak.1")
 
+    def test_open_repairs_corrupt_main_file_on_disk(self, svc):
+        """macOS smoke round 2: recovery must self-heal project.json on disk."""
+        path = self._save_and_corrupt(svc)
+
+        res = svc.open_project(str(path))
+        assert res.get("recovered_from", "").endswith(".bak.1")
+
+        # main file repaired on disk: a fresh open no longer reports recovery
+        res2 = svc.open_project(str(path))
+        assert res2["success"] or res2["error"] == "MEDIA_NOT_FOUND"
+        assert "recovered_from" not in res2, "main file must be repaired after recovery"
+
 
 class TestNormalSavePathTimingGuard:
     def test_save_project_still_works(self, svc):

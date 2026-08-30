@@ -41,3 +41,10 @@
 2. Cmd+Z / Cmd+Shift+Z / 顶栏撤销重做按钮（含禁用态）
 3. 手工破坏 project.json → 重启 App → 最近列表仍有条目并带损坏徽标 → 点击打开 → toast 恢复提示
 4. 拖拽 project.json 打开损坏项目 → toast 恢复提示
+
+## 补充修复（round 2，2026-08-30）
+
+- **用户观察**: 不重启 App 时最近列表打开不恢复；重启后"信息恢复"但 project.json 文件本身仍是坏的——判断正确，恢复只读了 bak 到内存，磁盘主文件从未被修复写回
+- **修复**: `open_project` 恢复成功后立即 `save_project()` 自愈写回主文件（自愈失败仅告警不阻断打开）；WelcomePage 最近列表打开路径同样补「已从备份恢复」toast
+- **测试**: `test_open_repairs_corrupt_main_file_on_disk`（恢复后再次打开不再报 recovered_from，证明磁盘已修复）
+- 验证: pytest 524 全绿 / vitest 251 / build / ruff 0 问题

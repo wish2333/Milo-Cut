@@ -211,6 +211,16 @@ class ProjectService:
             self._current_path = project_path
             logger.info("Opened project: {}", path)
 
+            # v3.0.0 fix (macOS smoke round 2): self-heal the main file.
+            # Recovery only lived in memory before, so project.json stayed
+            # corrupt on disk until some later save happened. Repair now.
+            if recovered_from:
+                try:
+                    self.save_project()
+                    logger.info("Repaired corrupted project.json from {}", recovered_from)
+                except Exception as e:  # noqa: BLE001 -- self-heal must not block open
+                    logger.warning("Self-heal save after recovery failed: {}", e)
+
             # Migrate old format silence edits
             self._migrate_silence_edits()
 
