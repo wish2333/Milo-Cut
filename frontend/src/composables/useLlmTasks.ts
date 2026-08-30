@@ -76,6 +76,8 @@ const jumpCuts = ref<JumpCut[]>([])
 const isRunning = ref(false)
 const progress = ref(0)
 const errorMsg = ref<string | null>(null)
+// v3.0.0 M3-1: batch-ledger coverage gap from the last LLM task
+const coverageGap = ref<number>(0)
 
 // LLM configuration status (Phase 2 D-04, D-12)
 interface LlmConfigStatus {
@@ -124,18 +126,19 @@ function ensureListeners() {
   )
 
   // P0 smart-delete: completed
-  onEvent<{ results?: SmartDeleteResult[] }>(
+  onEvent<{ results?: SmartDeleteResult[]; ledger?: { uncovered_segment_ids?: string[] } }>(
     EVENT_LLM_SMART_DELETE_COMPLETED,
     (detail) => {
       isRunning.value = false
       if (detail?.results) {
         smartDeleteResults.value = detail.results
       }
+      coverageGap.value = detail?.ledger?.uncovered_segment_ids?.length ?? 0
     },
   )
 
   // P1 subtitle correction: completed -> load pending corrections for review
-  onEvent<{ stored_count?: number } & Partial<SubtitleCorrectionResult>>(
+  onEvent<{ stored_count?: number; ledger?: { uncovered_segment_ids?: string[] } } & Partial<SubtitleCorrectionResult>>(
     EVENT_LLM_SUBTITLE_CORRECTION_COMPLETED,
     async (detail) => {
       isRunning.value = false
@@ -144,6 +147,7 @@ function ensureListeners() {
         // v2.1.0 Phase 2: auto-load stored corrections for the review UI.
         // The caller must pass the active timeline_id via loadCorrections.
       }
+      coverageGap.value = detail?.ledger?.uncovered_segment_ids?.length ?? 0
     },
   )
 
@@ -432,6 +436,8 @@ export function useLlmTasks() {
     hasSmartDeleteResults,
     startSmartDelete,
     resetSmartDelete,
+    // v3.0.0 M3-1: coverage gap (uncovered segment count, 0 = full coverage)
+    coverageGap,
     // P1 subtitle correction
     subtitleCorrectionResult,
     startSubtitleCorrection,

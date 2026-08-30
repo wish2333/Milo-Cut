@@ -1366,6 +1366,17 @@ async function loadPluginDataDir() {
                     />
                   </label>
                   <label class="block">
+                    <span class="text-xs text-gray-600">批字符上限 (v3.0.0, 0=不限)</span>
+                    <input
+                      type="number"
+                      step="100"
+                      min="0"
+                      :value="settings.llm_max_batch_chars ?? 4000"
+                      class="mt-0.5 w-full rounded border border-gray-300 px-2 py-1 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                      @change="(() => { const v = parseInt(($event.target as HTMLInputElement).value); settings = { ...settings!, llm_max_batch_chars: Number.isNaN(v) ? 4000 : v } })()"
+                    />
+                  </label>
+                  <label class="block">
                     <span class="text-xs text-gray-600">字幕修正批次大小</span>
                     <input
                       type="number"

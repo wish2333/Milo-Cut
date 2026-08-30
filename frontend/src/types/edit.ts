@@ -78,4 +78,7 @@ export interface AppSettings {
   llm_highlight_chunk_duration: number
   llm_highlight_overlap_duration: number
   llm_concurrency: number
+  // v3.0.0 M3-2/M3-4: batch char budget + local URL allow flag
+  llm_max_batch_chars: number
+  llm_allow_local_urls: boolean
 }

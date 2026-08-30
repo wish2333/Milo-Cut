@@ -76,7 +76,15 @@ const {
   startSubtitleCorrection,
   startHighlight,
   hydrateHighlightsFromProject,
+  coverageGap,
 } = useLlmTasks()
+
+// v3.0.0 M3-1: surface batch coverage gaps from LLM tasks (never silent)
+watch(coverageGap, (n) => {
+  if (n > 0) {
+    showToast(`本次分析未覆盖 ${n} 段（批次失败，已跳过），建议重试`, "error", 5000)
+  }
+})
 
 // P1 fullscreen diff view state (D-16)
 const showSubtitleFullscreen = ref(false)

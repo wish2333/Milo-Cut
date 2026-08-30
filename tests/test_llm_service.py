@@ -44,7 +44,7 @@ class TestLlmConfig:
     def test_default_values(self) -> None:
         config = LlmConfig()
         assert config.provider == LlmProvider.CUSTOM
-        assert config.temperature == 0.3
+        assert config.temperature == 0.1  # v3.0.0 M3-5: default 0.3 -> 0.1
         assert config.timeout == 120
         assert not config.is_configured()
 

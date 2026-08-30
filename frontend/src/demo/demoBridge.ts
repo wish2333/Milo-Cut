@@ -52,7 +52,7 @@ function getDemoSettings(): AppSettings {
     llm_base_url: "demo://llm",
     llm_api_key: "demo",
     llm_model: "Milo Demo LLM",
-    llm_temperature: 0.2,
+    llm_temperature: 0.1,
     llm_timeout: 30,
     llm_thinking_enabled: true,
     llm_provider_configs: {
@@ -65,6 +65,8 @@ function getDemoSettings(): AppSettings {
     llm_highlight_chunk_duration: 60,
     llm_highlight_overlap_duration: 5,
     llm_concurrency: 1,
+    llm_max_batch_chars: 4000,
+    llm_allow_local_urls: false,
   }
 }
 

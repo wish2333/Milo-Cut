@@ -7,12 +7,15 @@ produce complete analysis output without truncation.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
+import socket
 import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from typing import Any
 
 from openai import APIError, APITimeoutError, OpenAI, RateLimitError
@@ -29,6 +32,118 @@ _MAX_RETRIES = 3
 _RETRY_BASE_DELAY = 1.0  # seconds
 # AR-2: RateLimitError (429) uses a longer dedicated backoff than generic errors.
 _RATE_LIMIT_BASE_DELAY = 5.0  # -> 5s, 10s, 20s
+
+
+# ------------------------------------------------------------------
+# M3-1: batch ledger (v3.0.0) -- no silent batch loss
+# ------------------------------------------------------------------
+
+
+@dataclass
+class BatchLedger:
+    """Per-task accounting of batch processing outcomes.
+
+    ``uncovered_segment_ids`` lists target segment IDs whose batches failed
+    even after the single automatic retry -- the UI must surface these as a
+    coverage gap, never silently drop them.
+    """
+
+    total: int = 0
+    succeeded: int = 0
+    retried_ok: int = 0
+    failed: list[int] = field(default_factory=list)
+    uncovered_segment_ids: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "total": self.total,
+            "succeeded": self.succeeded,
+            "retried_ok": self.retried_ok,
+            "failed": list(self.failed),
+            "uncovered_segment_ids": list(self.uncovered_segment_ids),
+        }
+
+
+# ------------------------------------------------------------------
+# M3-4: SSRF guard (v3.0.0) -- reject loopback/private base URLs
+# ------------------------------------------------------------------
+
+_PRIVATE_NETS = [
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+]
+
+
+def validate_base_url_security(config: LlmConfig) -> str | None:
+    """Return an error message when the base URL resolves to a private net.
+
+    Loopback/private/link-local addresses are rejected to prevent SSRF via a
+    user-configured base URL. Local inference endpoints (e.g. Ollama on
+    localhost:11434) must set ``llm_allow_local_urls: true`` in settings.
+    Returns None when the URL is allowed.
+    """
+    if load_settings().get("llm_allow_local_urls", False):
+        return None
+
+    base_url = config.resolved_base_url()
+    if not base_url:
+        return None
+
+    match = re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://([^/:?#]+)", base_url)
+    if not match:
+        return None  # unparseable; let the SDK surface the error
+    host = match.group(1)
+
+    try:
+        addr_infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return None  # DNS failure: let the API call report the real error
+
+    for info in addr_infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if any(ip in net for net in _PRIVATE_NETS):
+            return (
+                f"LLM base_url '{base_url}' 指向本机/内网地址，已被 SSRF 防护拒绝。"
+                "本地模型（如 Ollama）请在 settings 中设置 llm_allow_local_urls: true 放行。"
+            )
+    return None
+
+
+# ------------------------------------------------------------------
+# M3-3: response sanitization (v3.0.0) -- 5th-layer parse fallback
+# ------------------------------------------------------------------
+
+
+def _sanitize_response(text: str) -> str:
+    """Strip common LLM response noise around the JSON payload.
+
+    Order: remove ``<think>...</think>`` blocks (DeepSeek R1 family), remove
+    markdown code fences, then keep only the span from the first ``{`` or
+    ``[`` to the last ``}`` or ``]``. Purely subtractive -- content is never
+    rewritten.
+    """
+    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    cleaned = re.sub(r"```[a-zA-Z]*\s*", "", cleaned)
+    cleaned = cleaned.replace("```", "")
+
+    first_obj = cleaned.find("{")
+    first_arr = cleaned.find("[")
+    candidates = [c for c in (first_obj, first_arr) if c >= 0]
+    if not candidates:
+        return cleaned.strip()
+    start = min(candidates)
+    end_obj = cleaned.rfind("}")
+    end_arr = cleaned.rfind("]")
+    end = max(end_obj, end_arr)
+    if end <= start:
+        return cleaned.strip()
+    return cleaned[start : end + 1]
 
 
 # ------------------------------------------------------------------
@@ -68,7 +183,7 @@ def get_llm_config() -> LlmConfig:
         base_url=settings.get("llm_base_url", "").strip(),
         api_key=settings.get("llm_api_key", "").strip(),
         model=settings.get("llm_model", "").strip(),
-        temperature=settings.get("llm_temperature", 0.3),
+        temperature=settings.get("llm_temperature", 0.1),
         timeout=settings.get("llm_timeout", 120),
         thinking_enabled=settings.get("llm_thinking_enabled", False),
     )
@@ -120,6 +235,11 @@ def call_llm(
     if not config.is_configured():
         return {"success": False, "error": "LLM not configured"}
 
+    # v3.0.0 M3-4: SSRF guard on user-configured base URLs.
+    ssrf_error = validate_base_url_security(config)
+    if ssrf_error:
+        return {"success": False, "error": ssrf_error}
+
     client = _build_client(config)
     model = config.resolved_model()
 
@@ -132,7 +252,7 @@ def call_llm(
     request_kwargs: dict[str, Any] = {
         "model": model,
         "messages": messages,
-        "temperature": config.temperature,
+        "temperature": config.effective_temperature(),
         # No max_tokens -- let model produce full output
     }
     if json_mode and config.provider in (LlmProvider.OPENAI, LlmProvider.DEEPSEEK):
@@ -231,6 +351,10 @@ def test_connection(config: LlmConfig | None = None) -> dict[str, Any]:
     if not config.is_configured():
         return {"success": False, "error": "LLM not configured"}
 
+    ssrf_error = validate_base_url_security(config)
+    if ssrf_error:
+        return {"success": False, "error": ssrf_error}
+
     client = _build_client(config)
     model = config.resolved_model()
 
@@ -313,6 +437,7 @@ def chunk_transcript_by_count(
     segments: list[dict],
     batch_size: int = 20,
     overlap: int = 4,
+    max_chars: int | None = None,
 ) -> list[tuple[list[dict], set[str]]]:
     """Split transcript by segment count using P1-style batch+target mode.
 
@@ -320,11 +445,17 @@ def chunk_transcript_by_count(
     at boundaries), with ``target_ids`` marking the ``batch_size`` central
     segments the LLM should analyze. Overlap segments provide context only.
 
+    v3.0.0 M3-2: when ``max_chars`` is set, a batch is truncated early once
+    the accumulated text length would exceed the limit (a single target
+    segment is never split in half). The effective limit is whichever of
+    ``batch_size`` / ``max_chars`` is reached first.
+
     Args:
         segments: List of segment dicts (must have 'id' key).
         batch_size: Target analysis segments per batch. min=1.
         overlap: Context overlap on each side. min=0. Clamped to
             ``batch_size - 1`` if >= batch_size (audit #11).
+        max_chars: Optional per-batch character budget (None = unlimited).
 
     Returns:
         [(batch_segments, target_ids), ...] where batch_segments are
@@ -343,22 +474,28 @@ def chunk_transcript_by_count(
 
     total = len(segments)
 
-    # audit #9: single-batch only when total <= batch_size
-    if total <= batch_size:
-        all_ids = {str(s.get("id", "")) for s in segments}
-        return [([dict(s) for s in segments], all_ids)]  # independent copies
-
     batches: list[tuple[list[dict], set[str]]] = []
-    step = batch_size  # targets don't overlap
     start_i = 0
     while start_i < total:
+        # M3-2: honor the character budget by shrinking this batch's target
+        # window (context is then derived from the shrunken window).
         end_i = min(start_i + batch_size, total)
+        if max_chars is not None and max_chars > 0:
+            acc = 0
+            probe = start_i
+            while probe < end_i:
+                seg_len = len(str(segments[probe].get("text", "")))
+                if probe > start_i and acc + seg_len > max_chars:
+                    break
+                acc += seg_len
+                probe += 1
+            end_i = probe if probe > start_i else start_i + 1
         ctx_start = max(0, start_i - overlap)
         ctx_end = min(total, end_i + overlap)
         batch_with_context = [dict(s) for s in segments[ctx_start:ctx_end]]  # independent copies
         target_ids = {str(segments[i].get("id", "")) for i in range(start_i, end_i)}
         batches.append((batch_with_context, target_ids))
-        start_i += step
+        start_i = end_i  # char-budget mode may produce smaller steps
 
     return batches
 
@@ -369,9 +506,19 @@ def chunk_transcript_by_count(
 # ------------------------------------------------------------------
 
 
+def _build_opaque_id_mapping(segments: list[dict]) -> dict[str, str]:
+    """Build real-id -> opaque-id (``t1..tN``) mapping (v3.0.0 M3-5).
+
+    The mapping never leaves the local process; the model only sees opaque
+    IDs and never real segment ids or timestamps.
+    """
+    return {str(s.get("id", s.get("segment_id", "?"))): f"t{i}" for i, s in enumerate(segments, 1)}
+
+
 def _build_structured_user_message(
     segments: list[dict],
     extra_context: dict[str, Any] | None = None,
+    opaque_ids: dict[str, str] | None = None,
 ) -> str:
     """Build structured JSON user message for LLM analysis.
 
@@ -382,18 +529,23 @@ def _build_structured_user_message(
         segments: List of segment dicts with 'id', 'text', 'start', 'end'.
         extra_context: Additional top-level keys to merge into the payload
             (e.g. ``{"topic": "...", "reference_text": "..."}``).
+        opaque_ids: When given (v3.0.0 M3-5), real ids are replaced by the
+            mapping's opaque ids and ``start``/``end`` are omitted entirely --
+            the model receives only ``{id, text}`` (plus optional edit_hint).
 
     Returns:
         JSON string suitable for the LLM user message.
     """
     seg_list: list[dict[str, Any]] = []
     for s in segments:
+        real_id = str(s.get("id", s.get("segment_id", "?")))
         item: dict[str, Any] = {
-            "id": str(s.get("id", s.get("segment_id", "?"))),
+            "id": opaque_ids.get(real_id, real_id) if opaque_ids else real_id,
             "text": str(s.get("text", "")).strip(),
-            "start": s.get("start"),
-            "end": s.get("end"),
         }
+        if not opaque_ids:
+            item["start"] = s.get("start")
+            item["end"] = s.get("end")
         # v2.2.0: forward optional edit_hint (e.g. partial_delete reason)
         # so downstream LLM features can leverage prior edit decisions.
         edit_hint = s.get("edit_hint")
@@ -477,6 +629,16 @@ def _parse_json_response_layers(content: str) -> list[dict] | None:
     if items:
         return items
 
+    # Layer 5 (v3.0.0 M3-3): sanitize think-blocks/fences/noise, retry JSON.
+    # Purely subtractive fallback after the 4 structural layers all failed.
+    sanitized = _sanitize_response(content)
+    if sanitized != content.strip():
+        try:
+            result = json.loads(sanitized)
+            return result if isinstance(result, list) else [result]
+        except (json.JSONDecodeError, ValueError):
+            pass
+
     return None
 
 
@@ -557,8 +719,12 @@ def analyze_smart_delete(
     batch_size = max(5, int(settings.get("llm_smart_batch_size", 20)))
     overlap_size = max(0, int(settings.get("llm_smart_overlap_size", 4)))
     concurrency = max(1, int(settings.get("llm_concurrency", 5)))
-    batches = chunk_transcript_by_count(to_analyze, batch_size=batch_size, overlap=overlap_size)
+    max_chars = int(settings.get("llm_max_batch_chars", 4000) or 0) or None
+    batches = chunk_transcript_by_count(
+        to_analyze, batch_size=batch_size, overlap=overlap_size, max_chars=max_chars
+    )
     total_batches = len(batches)
+    ledger = BatchLedger(total=total_batches)
 
     # Resolve effective system prompt (caller override > layered default)
     effective_system = system_prompt or get_effective_prompt("smart_delete")
@@ -570,20 +736,22 @@ def analyze_smart_delete(
         "total_tokens": 0,
     }
 
-    def _process_chunk(idx: int, batch_segments: list[dict], target_ids: set[str]) -> tuple[int, list[dict] | None, dict, str | None]:
-        """Process a single smart-delete batch.
-
-        Returns:
-            (idx, normalized_results_or_None, token_usage, error_message_or_None)
-        """
+    def _call_batch(idx: int, batch_segments: list[dict], target_ids: set[str]) -> tuple[int, list[dict] | None, dict, str | None]:
+        """Single smart-delete attempt (no retry)."""
         if cancel_event and cancel_event.is_set():
             return (idx, None, {}, "Cancelled")
-        # audit #7: target_segment_ids ordered by appearance in batch, not sorted
+        # M3-5: opaque id mapping -- model only sees t1..tN, no timestamps.
+        id_map = _build_opaque_id_mapping(batch_segments)
+        reverse_map = {v: k for k, v in id_map.items()}
         target_ids_ordered = [
-            str(s.get("id", "")) for s in batch_segments if str(s.get("id", "")) in target_ids
+            id_map[str(s.get("id", ""))]
+            for s in batch_segments
+            if str(s.get("id", "")) in target_ids
         ]
         extra_ctx: dict[str, Any] = {"target_segment_ids": target_ids_ordered}
-        prompt = _build_structured_user_message(batch_segments, extra_context=extra_ctx)
+        prompt = _build_structured_user_message(
+            batch_segments, extra_context=extra_ctx, opaque_ids=id_map
+        )
         result = call_llm(
             prompt,
             system=effective_system,
@@ -602,9 +770,27 @@ def analyze_smart_delete(
             logger.warning(f"Smart-delete batch {idx + 1}: JSON parse returned None")
             return (idx, None, usage, None)
         normalized = _normalize_smart_delete_items(chunk_results)
+        # Translate opaque ids back to real ids; drop unknown ids.
+        for r in normalized:
+            r["segment_id"] = reverse_map.get(r.get("segment_id", ""), r.get("segment_id", ""))
         # Filter: only keep results for target_ids (same as P1, llm_service.py:783)
         normalized = [r for r in normalized if r.get("segment_id") in target_ids]
         return (idx, normalized or None, usage, None)
+
+    def _process_chunk(idx: int, batch_segments: list[dict], target_ids: set[str]) -> tuple[int, list[dict] | None, dict, str | None, bool]:
+        """Process a smart-delete batch with one automatic retry (M3-1).
+
+        Returns:
+            (idx, normalized_results_or_None, usage, error_or_None, retried)
+        """
+        idx_, normalized, usage, error = _call_batch(idx, batch_segments, target_ids)
+        retried = False
+        if normalized is None and error != "Cancelled":
+            # M3-1: one automatic retry with the identical payload.
+            logger.info(f"Smart-delete batch {idx + 1} failed, retrying once...")
+            retried = True
+            idx_, normalized, usage, error = _call_batch(idx, batch_segments, target_ids)
+        return (idx_, normalized, usage, error, retried)
 
     # AR-2: track consecutive 429s; after 3 in a row, finish remaining chunks
     # serially to avoid hammering a rate-limited (free-tier) endpoint.
@@ -626,12 +812,22 @@ def analyze_smart_delete(
                     executor.shutdown(wait=False, cancel_futures=True)
                     return {"success": False, "error": "Cancelled"}
 
-                idx, normalized, usage, error = future.result()
+                idx, normalized, usage, error, retried = future.result()
                 completed += 1
                 pending_indices.discard(idx)
 
                 for key in total_usage:
                     total_usage[key] += usage.get(key, 0)
+
+                # M3-1: ledger bookkeeping
+                if error is None and error != "Cancelled":
+                    if retried:
+                        ledger.retried_ok += 1
+                    else:
+                        ledger.succeeded += 1
+                elif error != "Cancelled":
+                    if idx not in ledger.failed:
+                        ledger.failed.append(idx)
 
                 if error == "Cancelled":
                     executor.shutdown(wait=False, cancel_futures=True)
@@ -673,10 +869,17 @@ def analyze_smart_delete(
                 pct = (completed / total_batches) * 100 if total_batches > 0 else 0
                 target_count = len(batches[idx][1])
                 progress_cb(pct, f"Smart-delete batch {completed}/{total_batches} (serial, target={target_count} segs)...")
-            idx_, normalized, usage, _ = _process_chunk(idx, batches[idx][0], batches[idx][1])
+            idx_, normalized, usage, _, retried = _process_chunk(idx, batches[idx][0], batches[idx][1])
             completed += 1
             for key in total_usage:
                 total_usage[key] += usage.get(key, 0)
+            if retried and normalized is not None:
+                ledger.retried_ok += 1
+            elif normalized is None:
+                if idx not in ledger.failed:
+                    ledger.failed.append(idx)
+            else:
+                ledger.succeeded += 1
             if normalized:
                 results_by_index[idx] = normalized
                 if chunk_callback:
@@ -694,17 +897,34 @@ def analyze_smart_delete(
         seen[r["segment_id"]] = r
     deduped = list(seen.values())
 
+    # M3-1: uncovered = target segments of batches that failed even after retry
+    uncovered: list[str] = []
+    for idx in ledger.failed:
+        if idx < len(batches):
+            uncovered.extend(sorted(batches[idx][1]))
+    ledger.uncovered_segment_ids = sorted(set(uncovered))
+    if ledger.uncovered_segment_ids:
+        logger.warning(
+            f"Smart-delete coverage gap: {len(ledger.uncovered_segment_ids)} segment(s) "
+            f"in failed batches {ledger.failed}"
+        )
+
     if progress_cb:
         progress_cb(100.0, f"Completed: {len(deduped)} smart-delete suggestions")
 
     logger.info(
         f"Smart-delete analysis done: {len(deduped)} results, "
-        f"tokens={total_usage.get('total_tokens', 0)}"
+        f"tokens={total_usage.get('total_tokens', 0)}, "
+        f"ledger={ledger.total}b/{ledger.succeeded}+{ledger.retried_ok}ok/{len(ledger.failed)}fail"
     )
 
     return {
         "success": True,
-        "data": {"results": deduped, "token_usage": total_usage},
+        "data": {
+            "results": deduped,
+            "token_usage": total_usage,
+            "ledger": ledger.to_dict(),
+        },
     }
 
 
@@ -767,29 +987,52 @@ def analyze_subtitle_correction(
         settings.get("llm_correction_context_window", 5)
     )
     concurrency = max(1, int(settings.get("llm_concurrency", 5)))
+    max_chars = int(settings.get("llm_max_batch_chars", 4000) or 0) or None
 
-    total_batches = (len(segments) + batch_size - 1) // batch_size
+    # M3-2: apply character budget by shrinking target windows first.
+    target_windows: list[tuple[int, int]] = []
+    start_i = 0
+    while start_i < len(segments):
+        end_i = min(start_i + batch_size, len(segments))
+        if max_chars:
+            acc = 0
+            probe = start_i
+            while probe < end_i:
+                seg_len = len(str(segments[probe].get("text", "")))
+                if probe > start_i and acc + seg_len > max_chars:
+                    break
+                acc += seg_len
+                probe += 1
+            end_i = probe if probe > start_i else start_i + 1
+        target_windows.append((start_i, end_i))
+        start_i = end_i
+
+    total_batches = len(target_windows)
+    ledger = BatchLedger(total=total_batches)
 
     # Pre-compute each batch's payload (batch_with_context, target_ids, prompt).
-    batch_payloads: list[tuple[set[str], str]] = []
-    for batch_idx in range(total_batches):
-        start_i = batch_idx * batch_size
-        end_i = min(start_i + batch_size, len(segments))
+    batch_payloads: list[tuple[set[str], str, dict[str, str]]] = []
+    for _batch_idx, (start_i, end_i) in enumerate(target_windows):
         ctx_start = max(0, start_i - effective_ctx)
         ctx_end = min(len(segments), end_i + effective_ctx)
         batch_with_context = segments[ctx_start:ctx_end]
         target_ids = {str(segments[i].get("id", "")) for i in range(start_i, end_i)}
-        extra_ctx: dict[str, Any] = {"target_segment_ids": sorted(target_ids)}
+        id_map = _build_opaque_id_mapping(batch_with_context)  # M3-5
+        extra_ctx: dict[str, Any] = {
+            "target_segment_ids": [id_map[i] for i in sorted(target_ids)]
+        }
         if is_mode_b:
             extra_ctx["reference_text"] = reference_text
-        prompt = _build_structured_user_message(batch_with_context, extra_context=extra_ctx)
-        batch_payloads.append((target_ids, prompt))
+        prompt = _build_structured_user_message(
+            batch_with_context, extra_context=extra_ctx, opaque_ids=id_map
+        )
+        batch_payloads.append((target_ids, prompt, id_map))
 
-    def _process_batch(batch_idx: int) -> tuple[int, list[dict], dict, str | None]:
-        """Process one correction batch. Returns (idx, corrections, usage, error)."""
+    def _call_batch(batch_idx: int) -> tuple[int, list[dict], dict, str | None]:
+        """Single correction attempt (no retry)."""
         if cancel_event and cancel_event.is_set():
             return (batch_idx, [], {}, "Cancelled")
-        target_ids, prompt = batch_payloads[batch_idx]
+        target_ids, prompt, id_map = batch_payloads[batch_idx]
         result = call_llm(
             prompt,
             system=system,
@@ -808,9 +1051,7 @@ def analyze_subtitle_correction(
             logger.warning(f"Subtitle correction batch {batch_idx + 1}: parse returned None")
             return (batch_idx, [], usage, None)
 
-        # Normalize: only keep results for target segment IDs that changed.
-        start_i = batch_idx * batch_size
-        end_i = min(start_i + batch_size, len(segments))
+        start_i, end_i = target_windows[batch_idx]
         ctx_start = max(0, start_i - effective_ctx)
         ctx_end = min(len(segments), end_i + effective_ctx)
         orig_text_by_id = {
@@ -822,6 +1063,9 @@ def analyze_subtitle_correction(
             if not isinstance(item, dict):
                 continue
             seg_id = str(item.get("segment_id", ""))
+            # M3-5: translate opaque id back to the real segment id
+            reverse_map = {v: k for k, v in id_map.items()}
+            seg_id = reverse_map.get(seg_id, seg_id)
             if not seg_id or seg_id not in target_ids:
                 continue
             category = str(item.get("category", "none"))
@@ -840,6 +1084,16 @@ def analyze_subtitle_correction(
                 }
             )
         return (batch_idx, corrections, usage, None)
+
+    def _process_batch(batch_idx: int) -> tuple[int, list[dict], dict, str | None, bool]:
+        """Process one correction batch with one automatic retry (M3-1)."""
+        idx_, corrections, usage, error = _call_batch(batch_idx)
+        retried = False
+        if not corrections and error != "Cancelled":
+            logger.info(f"Subtitle correction batch {batch_idx + 1} failed, retrying once...")
+            retried = True
+            idx_, corrections, usage, error = _call_batch(batch_idx)
+        return (idx_, corrections, usage, error, retried)
 
     corrections_by_index: dict[int, list[dict]] = {}
     total_usage: dict[str, int] = {
@@ -866,12 +1120,22 @@ def analyze_subtitle_correction(
                     executor.shutdown(wait=False, cancel_futures=True)
                     return {"success": False, "error": "Cancelled"}
 
-                batch_idx, corrections, usage, error = future.result()
+                batch_idx, corrections, usage, error, retried = future.result()
                 completed += 1
                 pending.discard(batch_idx)
 
                 for key in total_usage:
                     total_usage[key] += usage.get(key, 0)
+
+                # M3-1: ledger bookkeeping
+                if error is None:
+                    if retried:
+                        ledger.retried_ok += 1
+                    else:
+                        ledger.succeeded += 1
+                elif error != "Cancelled":
+                    if batch_idx not in ledger.failed:
+                        ledger.failed.append(batch_idx)
 
                 if error == "Cancelled":
                     executor.shutdown(wait=False, cancel_futures=True)
@@ -907,12 +1171,28 @@ def analyze_subtitle_correction(
             if progress_cb:
                 pct = (completed / total_batches) * 100 if total_batches > 0 else 0
                 progress_cb(pct, f"Subtitle correction batch {completed}/{total_batches} (serial)...")
-            _, corrections, usage, _ = _process_batch(batch_idx)
+            _, corrections, usage, _, retried = _process_batch(batch_idx)
             completed += 1
             for key in total_usage:
                 total_usage[key] += usage.get(key, 0)
+            if retried and corrections:
+                ledger.retried_ok += 1
+            elif not corrections and batch_idx not in ledger.failed:
+                ledger.failed.append(batch_idx)
             if corrections:
                 corrections_by_index[batch_idx] = corrections
+
+    # M3-1: uncovered = target segments of batches that failed even after retry
+    uncovered: list[str] = []
+    for batch_idx in ledger.failed:
+        if batch_idx < len(batch_payloads):
+            uncovered.extend(sorted(batch_payloads[batch_idx][0]))
+    ledger.uncovered_segment_ids = sorted(set(uncovered))
+    if ledger.uncovered_segment_ids:
+        logger.warning(
+            f"Correction coverage gap: {len(ledger.uncovered_segment_ids)} segment(s) "
+            f"in failed batches {ledger.failed}"
+        )
 
     # Merge in original batch order
     all_corrections: list[dict] = []
@@ -930,7 +1210,11 @@ def analyze_subtitle_correction(
 
     return {
         "success": True,
-        "data": {"corrections": all_corrections, "token_usage": total_usage},
+        "data": {
+            "corrections": all_corrections,
+            "token_usage": total_usage,
+            "ledger": ledger.to_dict(),
+        },
     }
 
 
@@ -1222,6 +1506,9 @@ def semantic_search(
     """
     if config is None:
         config = get_llm_config()
+
+    # M3-5: semantic search is a deterministic retrieval task -> temperature 0.
+    config = config.model_copy(update={"temperature_override": 0.0})
 
     if not config.is_configured():
         return {"success": False, "error": "LLM not configured"}

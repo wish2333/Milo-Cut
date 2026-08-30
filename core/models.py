@@ -230,9 +230,15 @@ class LlmConfig(BaseModel, frozen=True):
     base_url: str = ""
     api_key: str = ""
     model: str = ""
-    temperature: float = 0.3
+    temperature: float = 0.1  # v3.0.0 M3-5: 0.3 -> 0.1
+    # v3.0.0 M3-5: per-call override (e.g. semantic search uses 0.0)
+    temperature_override: float | None = None
     timeout: int = 120
     thinking_enabled: bool = False
+
+    def effective_temperature(self) -> float:
+        """Temperature actually sent to the API (override wins when set)."""
+        return self.temperature if self.temperature_override is None else self.temperature_override
 
     def resolved_base_url(self) -> str:
         """Return configured base_url or provider default."""

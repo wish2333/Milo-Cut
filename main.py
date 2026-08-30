@@ -743,6 +743,7 @@ class MiloCutApi(Bridge):
 
         all_results = result["data"]["results"]
         token_usage = result["data"]["token_usage"]
+        ledger = result["data"].get("ledger")  # M3-1 batch ledger
 
         # Convert results to EditDecisions with source="llm_smart"
         from datetime import datetime as _dt
@@ -790,13 +791,17 @@ class MiloCutApi(Bridge):
                 if not store["success"]:
                     raise RuntimeError(store.get("error", "Failed to store smart-delete results"))
 
-        self._emit("llm:smart_delete_completed", {"results": all_results, "edits": edits})
+        self._emit(
+            "llm:smart_delete_completed",
+            {"results": all_results, "edits": edits, "ledger": ledger},
+        )
         self._emit("llm:token_usage", token_usage)
 
         return {
             "results": all_results,
             "edits": edits,
             "token_usage": token_usage,
+            "ledger": ledger,
             "project": self._project.current.model_dump() if self._project.current else None,
         }
 
@@ -866,6 +871,7 @@ class MiloCutApi(Bridge):
 
         corrections = result["data"]["corrections"]
         token_usage = result["data"]["token_usage"]
+        ledger = result["data"].get("ledger")  # M3-1 batch ledger
 
         # v2.1.0 Phase 3: workflow accumulation mode -- skip project write,
         # return raw corrections for the engine to accumulate.
@@ -875,6 +881,7 @@ class MiloCutApi(Bridge):
                 "corrections": corrections,
                 "stored_count": len(corrections),
                 "token_usage": token_usage,
+                "ledger": ledger,
             }
 
         # v2.1.0 Phase 2: store corrections for review instead of auto-applying.
@@ -887,13 +894,17 @@ class MiloCutApi(Bridge):
                 store_result.get("error", "Failed to store subtitle corrections")
             )
 
-        self._emit("llm:subtitle_correction_completed", store_result["data"])
+        store_data = store_result["data"]
+        if isinstance(store_data, dict) and ledger:
+            store_data = {**store_data, "ledger": ledger}
+        self._emit("llm:subtitle_correction_completed", store_data)
         self._emit("llm:token_usage", token_usage)
 
         return {
             "corrections": corrections,
             "stored_count": store_result["data"].get("stored_count", 0),
             "token_usage": token_usage,
+            "ledger": ledger,
             "project": self._project.current.model_dump() if self._project.current else None,
         }
 

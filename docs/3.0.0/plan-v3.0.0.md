@@ -103,14 +103,14 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 
 ### P1-5 M3 LLM 协议（1.5 天，可与 P1-4 并行）
 
-- [ ] M3-1 批账本：`BatchLedger` 数据类 + 失败批重试 1 次 + `uncovered_segment_ids` 上报；AIAssistantPanel/SuggestionPanel 显示覆盖缺口
-- [ ] M3-2 批字符上限 4000（`llm.max_batch_chars` 设置项 + Settings UI 暴露）
-- [ ] M3-3 `_sanitize_response` 消毒（仅作四层解析全失败后的第 5 层兜底）
-- [ ] M3-4 SSRF 校验（ollama preset 自动放行；`llm.allow_local_urls` 默认 false）
-- [ ] M3-5 温度：config.py 默认 0.1、demoBridge 对齐、`temperature_override`（语义搜索 0.0）
-- [ ] M3-5 不透明 ID 映射（`t1..tN`，剥离 start/end 字段）
-- [ ] 测试：`test_llm_ledger / _sanitize / _ssrf / _opaque_ids`
-- [ ] ★ 真实链路：用真实 Key 跑一次智能删除 + 一次纠错，验证账本数字与实际段数一致
+- [x] M3-1 批账本：`BatchLedger` 数据类 + 失败批重试 1 次 + `uncovered_segment_ids` 上报；AIAssistantPanel/SuggestionPanel 显示覆盖缺口 ✅ 后端完整实现；前端经 task completed 事件透传 ledger，WorkspacePage toast 提示"未覆盖 N 段"（SuggestionPanel 内逐段标灰挂起，见 record 决策）
+- [x] M3-2 批字符上限 4000（`llm.max_batch_chars` 设置项 + Settings UI 暴露）✅ `llm_max_batch_chars`（与仓库 settings 扁平键风格一致），SettingsModal LLM tab 已暴露
+- [x] M3-3 `_sanitize_response` 消毒（仅作四层解析全失败后的第 5 层兜底）✅
+- [x] M3-4 SSRF 校验（ollama preset 自动放行；`llm.allow_local_urls` 默认 false）✅ 本仓无 ollama preset，采用 `llm_allow_local_urls` 设置显式放行（默认 false）
+- [x] M3-5 温度：config.py 默认 0.1、demoBridge 对齐、`temperature_override`（语义搜索 0.0）✅
+- [x] M3-5 不透明 ID 映射（`t1..tN`，剥离 start/end 字段）✅ smart_delete 与 subtitle_correction 两条链路均接入
+- [x] 测试：`tests/test_llm_protocol.py` 19 条（ledger 3 / sanitize 4 / SSRF 5 / opaque+temperature 4 / max_chars 3）✅ 另修复 test_llm_service 默认值断言与 test_llm_concurrency 不透明 ID 适配
+- [ ] ★ 真实链路：用真实 Key 跑一次智能删除 + 一次纠错，验证账本数字与实际段数一致（待用户提供 Key）
 
 **验收方式**: pytest 新增 ≥8 条；真实跑一次后 UI 账本显示 `{总批/成功/失败}` 且与日志一致。
 **验收标准**: 人为 mock 一批失败 → 重试 1 次 → 仍未覆盖段在 UI 标灰可见；DeepSeek R1 风格 think 块响应可被正确解析；私网 base_url 被拒且 ollama 场景不受影响。
