@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue"
+import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from "vue"
 import type { Project, Segment, EditDecision, ModelInfo, Timeline as TimelineData, ProjectResponse } from "@/types/project"
 import { formatTimeShort } from "@/utils/format"
 import { call, onEvent, isDemoMode } from "@/bridge"
@@ -13,6 +13,8 @@ import { usePluginManager } from "@/composables/usePluginManager"
 import { useUvAvailability } from "@/composables/useUvAvailability"
 import { useLlmTasks } from "@/composables/useLlmTasks"
 import { useEditedPlayback } from "@/composables/useEditedPlayback"
+import { createPlaybackClock } from "@/composables/usePlaybackClock"
+import { PLAYBACK_CLOCK_KEY } from "@/components/waveform/injectionKeys"
 import {
   EVENT_TASK_COMPLETED,
   EVENT_TASK_CANCELLED,
@@ -204,7 +206,18 @@ const showTranscribeSettings = ref(false)
 const videoUrl = ref("")
 const waveformUrl = ref("")
 const videoRef = ref<HTMLVideoElement | null>(null)
-const currentTime = ref(0)
+// v3.0.0 M6-3: per-frame media time lives in the playback clock (non-reactive)
+// and reaches the playhead overlay imperatively. `currentTime` below is the
+// clock's COARSE reactive mirror (<=10 writes/s while playing, immediate on
+// pause/seek) -- the template consumers (controls text, segment highlight,
+// follow logic) intentionally never see per-frame updates, so playback no
+// longer re-renders the WorkspacePage tree at 60Hz.
+const playbackClock = createPlaybackClock({
+  getVideoTime: () => videoRef.value?.currentTime ?? 0,
+  isPlaying: () => videoRef.value !== null && !videoRef.value.paused,
+})
+provide(PLAYBACK_CLOCK_KEY, playbackClock)
+const currentTime = playbackClock.coarseTime
 const videoPaused = ref(true)
 const videoVolume = ref(0.75)
 const { uvAvailable } = useUvAvailability()
@@ -243,8 +256,25 @@ const {
   previewMode,
   paused: videoPaused,
   rawDeleteRanges: deleteRanges,
-  onTimeUpdate: (time) => { currentTime.value = time },
+  // M6-3: raw samples feed the clock (imperative playhead), not the ref.
+  onTimeUpdate: (time) => { playbackClock.ingest(time) },
 })
+
+// M6-3: original-mode playback has no controller rAF loop (its skip logic is
+// edited-only); the clock runs its own loop there. Edited mode feeds the
+// clock through the controller's publish path above.
+watch([previewMode, videoPaused], ([mode, paused]) => {
+  if (!paused && mode === "original") playbackClock.start()
+  else playbackClock.stop()
+}, { immediate: true })
+
+// M6-3 demo bridge: useDemoPlayback writes the coarse ref directly (no video
+// element exists). Ingest mirrors each write into the raw domain so the
+// imperative playhead stays smooth in demo; identical-value coarse writes are
+// skipped inside ingest, so this watch cannot loop.
+if (demoMode) {
+  watch(currentTime, (t) => { playbackClock.ingest(t) })
+}
 
 const demoPlayback = useDemoPlayback({
   currentTime,

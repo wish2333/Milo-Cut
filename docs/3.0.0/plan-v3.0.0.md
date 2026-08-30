@@ -176,13 +176,13 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 
 ### P2-5 M6 波形渲染管线（1.5 天）
 
-- [ ] WaveformCanvas rAF 合帧 + 分辨率仅按需重设 + matchMedia dpr 监听
-- [ ] hover seek 预览（rAF + 独立 DOM 层，pointer-events:none，点击才 seek）
-- [ ] PlayheadOverlay 命令式化（currentTime 脱离 Vue 响应式）
-- [ ] 测试：连续 10 次 scheduleDraw 仅 1 次 draw；播放期间 Vue 组件 patch 计数为 0
+- [x] WaveformCanvas rAF 合帧 + 分辨率仅按需重设 + matchMedia dpr 监听 ✅ 2026-08-30 `utils/rafScheduler.ts` 合帧（10 次 schedule → 1 次 draw）；ResizeObserver 缓存 CSS 尺寸，draw() 帧内零布局读，canvas.width 仅几何/dpr 变化时重设；matchMedia `(resolution: N dppx)` 变化重臂监听并置位脏；删除 0.02s viewStart 去重（rAF 后冗余）
+- [x] hover seek 预览（rAF + 独立 DOM 层，pointer-events:none，点击才 seek）✅ WaveformEditor 层容器 pointermove 只记录 pending 样本，rAF 刷指示线 + 时间标签（textContent 直写，零响应式状态）；容器 rect 缓存 + RO 失效，move 路径零布局读；事件自 blocks 冒泡，与拖拽无冲突；点击行为保持既有各表面（时间条/块点击 seek）
+- [x] PlayheadOverlay 命令式化（currentTime 脱离 Vue 响应式）✅ 新建 `usePlaybackClock`（原始样本 subscribe + coarseTime ≤10Hz 镜像、暂停/seek 即时、值相同跳过写防 demo 循环）；WorkspacePage currentTime 变为 clock coarse 镜像，7 个模板消费点零改动即从 60Hz 降为 ≤10Hz；编辑模式经控制器 publish 进时钟，原模式时钟自建 rAF 循环（顺带修复旧版原模式播放头 4Hz 抖动）；overlay transform 直写 + 暂停态视图变化重定位
+- [x] 测试：连续 10 次 scheduleDraw 仅 1 次 draw；播放期间 Vue 组件 patch 计数为 0 ✅ rafScheduler 单测 4 条（10 schedule → 1 run，happy-dom 无 canvas ctx 无法在组件级 spy draw，见 record 决策）；PlayheadOverlay 零响应式依赖测试（改旧依赖 playheadPercent 的源 → DOM 不变）+ 时钟跟随/边界 clamp/视图重定位/卸载退订 6 条；WaveformEditor hover 3 条；时钟单测 7 条；vitest 313 全绿
 
 **验收方式**: vitest + 手测（快速滚动/缩放不掉帧；播放中 CPU 占用对比基线下降）。
-**验收标准**: 滚动/缩放主观流畅（对比 beta.1 截录屏）；播放头无抖动。
+**验收标准**: 滚动/缩放主观流畅（对比 beta.1 截录屏）；播放头无抖动。（真机对比归批次冒烟 + perf-beta2）
 
 **—— Phase 2 验收节点（beta.2 门禁）——**
 - [ ] 全量测试绿；`tests/perf` 扩展项（滚动 fps / undo 耗时 / IPC 频率 / 长任务）纳入脚本并产出对比报告 `docs/3.0.0/perf-beta2.md`

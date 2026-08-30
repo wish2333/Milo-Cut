@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, onMounted, onUnmounted, ref, watch } from "vue"
 import type { Segment } from "@/types/project"
+import { createRafScheduler } from "@/utils/rafScheduler"
 import { TIMELINE_METRICS_KEY } from "./injectionKeys"
 import type { TimelineMetrics } from "@/composables/useTimelineMetrics"
 
@@ -83,8 +84,62 @@ function createDemoPeaks(count = 720): PeakData[] {
 }
 
 // -- Canvas rendering ---------------------------------------------------
+//
+// v3.0.0 M6-1: all redraws go through a rAF scheduler (burst of wheel/zoom
+// events coalesces into at most one draw per frame -- the old 0.02s
+// viewStart dedup is superseded and removed). The canvas bitmap resolution
+// is only reset when CSS size / dpr actually change; regular redraws are
+// clearRect + repaint with the transform kept from the last reset.
 
-let lastDrawnViewStart = -Infinity
+const scheduler = createRafScheduler(draw)
+
+// CSS size (not bitmap size) cached from the ResizeObserver so draw() never
+// touches layout (no getBoundingClientRect inside the frame).
+let cssWidth = 0
+let cssHeight = 0
+let drawnWidth = -1
+let drawnHeight = -1
+let drawnDpr = -1
+
+let dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1
+let dprMql: MediaQueryList | null = null
+
+function unwatchDpr() {
+  if (dprMql) {
+    // Safari < 14 only has addListener; WKWebView targets are new enough for
+    // addEventListener but guard anyway.
+    if (typeof dprMql.removeEventListener === "function") {
+      dprMql.removeEventListener("change", onDprChange)
+    } else if (typeof (dprMql as unknown as { removeListener?: (cb: () => void) => void }).removeListener === "function") {
+      ;(dprMql as unknown as { removeListener: (cb: () => void) => void }).removeListener(onDprChange)
+    }
+    dprMql = null
+  }
+}
+
+function onDprChange() {
+  // Re-arm the query for the NEW resolution, then mark the bitmap dirty.
+  unwatchDpr()
+  dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1
+  watchDpr()
+  scheduler.schedule()
+}
+
+function watchDpr() {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return
+  try {
+    dprMql = window.matchMedia(`(resolution: ${dpr}dppx)`)
+    if (typeof dprMql.addEventListener === "function") {
+      dprMql.addEventListener("change", onDprChange)
+    } else if (typeof (dprMql as unknown as { addListener?: (cb: () => void) => void }).addListener === "function") {
+      ;(dprMql as unknown as { addListener: (cb: () => void) => void }).addListener(onDprChange)
+    } else {
+      dprMql = null
+    }
+  } catch {
+    dprMql = null
+  }
+}
 
 function draw() {
   const canvas = canvasRef.value
@@ -93,20 +148,21 @@ function draw() {
   const ctx = canvas.getContext("2d")
   if (!ctx) return
 
-  const currentViewStart = metrics.viewStart.value
-  if (Math.abs(currentViewStart - lastDrawnViewStart) < 0.02 && peaks.value !== null) {
-    return
+  // Reset the bitmap only when geometry actually changed; otherwise keep
+  // the canvas transform from the last reset (setting width/height clears
+  // the bitmap AND the context state, which is what made every redraw
+  // reallocate textures).
+  if (cssWidth !== drawnWidth || cssHeight !== drawnHeight || dpr !== drawnDpr) {
+    canvas.width = Math.max(1, Math.round(cssWidth * dpr))
+    canvas.height = Math.max(1, Math.round(cssHeight * dpr))
+    drawnWidth = cssWidth
+    drawnHeight = cssHeight
+    drawnDpr = dpr
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   }
-  lastDrawnViewStart = currentViewStart
 
-  const dpr = window.devicePixelRatio || 1
-  const rect = canvas.getBoundingClientRect()
-  canvas.width = rect.width * dpr
-  canvas.height = rect.height * dpr
-  ctx.scale(dpr, dpr)
-
-  const w = rect.width
-  const h = rect.height
+  const w = cssWidth
+  const h = cssHeight
   const mid = h / 2
 
   ctx.clearRect(0, 0, w, h)
@@ -210,14 +266,28 @@ let resizeObserver: ResizeObserver | null = null
 onMounted(() => {
   const canvas = canvasRef.value
   if (canvas) {
-    resizeObserver = new ResizeObserver(() => draw())
+    // Cache CSS size from the observer callback; the draw task itself stays
+    // layout-read-free.
+    resizeObserver = new ResizeObserver((entries) => {
+      const entry = entries[entries.length - 1]
+      if (entry) {
+        cssWidth = entry.contentRect.width
+        cssHeight = entry.contentRect.height
+      }
+      scheduler.schedule()
+    })
     resizeObserver.observe(canvas)
-    draw()
+    cssWidth = canvas.clientWidth || cssWidth
+    cssHeight = canvas.clientHeight || cssHeight
+    watchDpr()
+    scheduler.schedule()
   }
 })
 
 onUnmounted(() => {
+  scheduler.cancel()
   resizeObserver?.disconnect()
+  unwatchDpr()
 })
 
 // -- Watchers ------------------------------------------------------------
@@ -232,12 +302,11 @@ watch(() => props.waveformPath, (path) => {
 }, { immediate: true })
 
 watch([metrics.viewDuration, peaks, () => props.segments], () => {
-  lastDrawnViewStart = -Infinity
-  draw()
+  scheduler.schedule()
 })
 
 watch(metrics.viewStart, () => {
-  draw()
+  scheduler.schedule()
 })
 </script>
 

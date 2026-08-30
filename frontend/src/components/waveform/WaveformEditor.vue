@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { toRef, provide, onMounted, onUnmounted } from "vue"
+import { toRef, provide, ref, onMounted, onUnmounted } from "vue"
 import type { Segment, EditDecision } from "@/types/project"
 import { useTimelineMetrics, type TimelineMetrics } from "@/composables/useTimelineMetrics"
+import { createRafScheduler } from "@/utils/rafScheduler"
+import { formatTimeShort } from "@/utils/format"
 import { TIMELINE_METRICS_KEY } from "./injectionKeys"
 import WaveformCanvas from "./WaveformCanvas.vue"
 import TimeMarksLayer from "./TimeMarksLayer.vue"
@@ -49,9 +51,65 @@ function setLayerRef(el: unknown) {
   metrics.containerRef.value = htmlEl
 }
 
+// -- v3.0.0 M6-2: hover seek preview --------------------------------------
+//
+// pointermove only records a pending sample; a rAF task paints a
+// pointer-events:none DOM indicator (vertical line + time label) directly --
+// no Vue reactive state, zero component patches while hovering. The preview
+// NEVER seeks: clicking keeps the existing per-surface behavior (time strip
+// and segment blocks seek, empty area selects).
+const hoverLineRef = ref<HTMLElement | null>(null)
+const hoverLabelRef = ref<HTMLElement | null>(null)
+let pendingHover: { x: number; t: number } | null = null
+let containerRect: DOMRect | null = null
+
+const hoverScheduler = createRafScheduler(applyHover)
+
+function applyHover() {
+  const line = hoverLineRef.value
+  if (!line) return
+  if (!pendingHover) {
+    line.style.opacity = "0"
+    return
+  }
+  const { x, t } = pendingHover
+  pendingHover = null
+  line.style.opacity = "1"
+  line.style.transform = `translate3d(${x}px, 0, 0)`
+  if (hoverLabelRef.value) {
+    hoverLabelRef.value.textContent = formatTimeShort(t)
+  }
+}
+
+function handleHoverMove(e: PointerEvent) {
+  const rect = containerRect
+  if (!rect || rect.width <= 0) return
+  const x = e.clientX - rect.left
+  if (x < 0 || x > rect.width) return
+  pendingHover = {
+    x,
+    t: metrics.viewStart.value + (x / rect.width) * metrics.viewDuration.value,
+  }
+  hoverScheduler.schedule()
+}
+
+function handleHoverLeave() {
+  pendingHover = null
+  hoverScheduler.schedule()
+}
+
+let hoverResizeObserver: ResizeObserver | null = null
+
 onMounted(() => {
   if (layerEl) {
     layerEl.addEventListener("wheel", metrics.handleWheel, { passive: false })
+    containerRect = layerEl.getBoundingClientRect()
+    if (typeof ResizeObserver !== "undefined") {
+      hoverResizeObserver = new ResizeObserver(() => {
+        containerRect = layerEl ? layerEl.getBoundingClientRect() : null
+      })
+      hoverResizeObserver.observe(layerEl)
+    }
   }
 })
 
@@ -59,6 +117,9 @@ onUnmounted(() => {
   if (layerEl) {
     layerEl.removeEventListener("wheel", metrics.handleWheel)
   }
+  hoverScheduler.cancel()
+  hoverResizeObserver?.disconnect()
+  hoverResizeObserver = null
 })
 
 function handleSeek(time: number) {
@@ -120,7 +181,10 @@ function handleSplitSegment(segmentId: string, position: number) {
     <!-- Layer container -->
     <div
       :ref="setLayerRef"
+      data-test="waveform-layer"
       class="relative h-28 overflow-hidden"
+      @pointermove="handleHoverMove"
+      @pointerleave="handleHoverLeave"
     >
       <WaveformCanvas
         :segments="segments"
@@ -149,6 +213,19 @@ function handleSplitSegment(segmentId: string, position: number) {
         @set-time="emit('set-time', $event)"
         @toast="emit('toast', $event)"
       />
+      <!-- v3.0.0 M6-2: hover seek preview (imperative, pointer-events:none) -->
+      <div
+        ref="hoverLineRef"
+        data-test="hover-preview"
+        class="pointer-events-none absolute inset-y-0 left-0 opacity-0"
+        style="z-index: 5"
+      >
+        <div class="h-full w-px bg-ink-muted/60"></div>
+        <div
+          ref="hoverLabelRef"
+          class="absolute left-1 top-6 whitespace-nowrap rounded bg-surface-tile-1 px-1 py-0.5 text-[10px] leading-none text-ink-muted shadow-sm"
+        ></div>
+      </div>
       <PlayheadOverlay style="z-index: 10; pointer-events: none" />
     </div>
 
