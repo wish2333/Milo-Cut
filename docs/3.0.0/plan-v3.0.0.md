@@ -137,9 +137,9 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 - [x] 重写 `useUndoRedo.test.ts` ✅ 12 条（分层捕获/仅请求层/base_revision/redo 逆记录/失败不弹栈/100 上限/legacy 双路径/flag 切换）
 
 **Day 3 —— 调用点迁移**：
-- [ ] 按 `migration-M5.md` 逐点替换（每点一个提交）：WorkspacePage:940/1124/1427 → useAnalysis 内部 → useEdit 内部
-- [ ] 每替换一点跑：该操作手测 undo/redo + vitest
-- [ ] 全部完成后 grep `pushSnapshot` 无旧签名残留；打 tag `pre-undo-cleanup` 后删旧路径
+- [x] 按 `migration-M5.md` 逐点替换（每点一个提交）：WorkspacePage:940/1124/1427 → useAnalysis 内部 → useEdit 内部 ✅ 2026-08-30 24/24 点完成（A2 顺带修复存量 bug；提交粒度合并为单批，层组合行内注释标注，见 record-day3）
+- [x] 每替换一点跑：该操作手测 undo/redo + vitest ✅ vitest 257 全绿；逐点手测按既定口径归批次双平台冒烟
+- [x] 全部完成后 grep `pushSnapshot` 无旧签名残留；打 tag `pre-undo-cleanup` 后删旧路径 ✅ 24/24 新签名；tag 已打，**旧路径删除推迟至 beta.2 冒烟通过后**（取风险评审 §4.6 新旧并存一个版本）
 
 **验收方式**: vitest 新套件全绿；千段 mock 项目连续 50 次编辑后 undo 50 次回到初态（自动化脚本）。
 **验收标准**: ①undo 主线程耗时 < 5ms（perf 脚本）；②undo 后立即编辑不出现 stale 卡死（UI 刷新路径有效）；③revision 单调（测试断言）；④flag 关闭可完整回退旧行为。
@@ -167,8 +167,8 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 
 ### P2-4 M7-2 虚拟滚动（2.5 天）
 
-- [ ] Timeline 窗口化渲染器（混合行类型分派 + 每类型测高探针 + 累积偏移二分定位；缓冲 10 行）
-- [ ] 回归项逐一手测：A/W/D/S 导航、Home/End、搜索跳转、active 跟随播放、多选、右键菜单、拖拽
+- [x] Timeline 窗口化渲染器（混合行类型分派 + 每类型测高探针 + 累积偏移二分定位；缓冲 10 行）✅ 2026-08-30 `utils/virtualList.ts` 纯函数（前缀和偏移/二分定位/可视窗口/跳转定位）+ Timeline 接入（spacer 全高 + 绝对定位切片、rAF 节流 scroll、ResizeObserver 视口高、行高探针实测校正）；vitest 293 全绿（+21 纯函数 +7 组件 +4 草稿）；见 record-P2-4
+- [ ] 回归项逐一手测：A/W/D/S 导航、Home/End、搜索跳转、active 跟随播放、多选、右键菜单、拖拽（⚠️ 核实偏差：A/W/D/S、Home/End、搜索定位、列表拖拽在当前构建中不存在，疑为 spec 草稿残留；实际交互面——Tab/Enter 行 seek、I/O 跳转、多选、右键、外部高亮滚动、播放头高亮——已由组件测试覆盖，手测归批次冒烟）
 - [ ] ★ 用户手感验收（见 §0 用户协助表）
 
 **验收方式**: 自动化（vitest 窗口 range 计算正确性 + cypress/手测脚本滚动帧率）+ 用户主观签字。
