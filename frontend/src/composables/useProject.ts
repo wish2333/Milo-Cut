@@ -1,6 +1,7 @@
 import { ref, computed, watch } from "vue"
 import { call } from "@/bridge"
 import { useBridge } from "./useBridge"
+import { useToast } from "./useToast"
 import { EVENT_PROJECT_SAVED, EVENT_PROJECT_DIRTY, EVENT_TASK_COMPLETED } from "@/utils/events"
 import type { Project, Segment, EditDecision, MediaInfo, Timeline } from "@/types/project"
 
@@ -84,6 +85,11 @@ export function useProject() {
       if (res.success && res.data) {
         project.value = res.data
         triggerWaveformGeneration()
+        // v3.0.0 M2: toast backup recovery (envelope sibling of `data`)
+        const recoveredFrom = (res as unknown as { recovered_from?: string }).recovered_from
+        if (recoveredFrom) {
+          useToast().showToast("项目文件损坏，已从备份恢复", "info", 5000)
+        }
         return true
       }
       if (res.error === "MEDIA_NOT_FOUND" && res.data) {

@@ -26,6 +26,7 @@ from core.models import (
     TranscriptData,
 )
 from core.paths import get_projects_dir
+from core.persistence import atomic_save_with_backup, load_json_with_recovery
 from core.timeline_utils import split_words
 
 
@@ -191,12 +192,20 @@ class ProjectService:
             if not project_path.exists():
                 return {"success": False, "error": f"Project file not found: {path}"}
 
-            data = json.loads(project_path.read_text(encoding="utf-8"))
+            # v3.0.0 M2: corrupted main file falls back to .bak.1 then .bak.2.
+            def _validate(raw: dict) -> Project:
+                return Project.model_validate(self._migrate_to_v2(raw))
 
-            # Migrate v1 -> v2 schema if needed
-            data = self._migrate_to_v2(data)
-
-            project = Project.model_validate(data)
+            payload, recovered_from, tried = load_json_with_recovery(
+                project_path, validate=_validate
+            )
+            if payload is None:
+                return {
+                    "success": False,
+                    "error": "项目文件损坏且无可用备份",
+                    "data": {"tried": tried},
+                }
+            project = payload
 
             self._current = project
             self._current_path = project_path
@@ -219,11 +228,14 @@ class ProjectService:
             if self._current.media and self._current.media.path:
                 media_path = Path(self._current.media.path)
                 if not media_path.exists():
-                    return {
+                    result_nf = {
                         "success": False,
                         "error": "MEDIA_NOT_FOUND",
                         "data": {"path": self._current.media.path},
                     }
+                    if recovered_from:
+                        result_nf["recovered_from"] = recovered_from
+                    return result_nf
 
                 # Fingerprint mismatch warning (file may have been overwritten)
                 warnings = []
@@ -235,9 +247,14 @@ class ProjectService:
                 result = {"success": True, "data": self._current.model_dump()}
                 if warnings:
                     result["warnings"] = warnings
+                if recovered_from:
+                    result["recovered_from"] = recovered_from
                 return result
 
-            return {"success": True, "data": self._current.model_dump()}
+            result = {"success": True, "data": self._current.model_dump()}
+            if recovered_from:
+                result["recovered_from"] = recovered_from
+            return result
 
         except Exception as e:
             logger.exception("Failed to open project: {}", path)
@@ -450,9 +467,10 @@ class ProjectService:
             })
             self._current = updated
 
-            tmp = self._current_path.with_suffix(".tmp")
-            tmp.write_text(updated.model_dump_json(indent=2), encoding="utf-8")
-            os.replace(tmp, self._current_path)
+            # v3.0.0 M2: fsync + backup rotation; failures inside only warn.
+            atomic_save_with_backup(
+                self._current_path, updated.model_dump_json(indent=2)
+            )
 
             logger.info("Saved project to {}", self._current_path)
             return {"success": True}

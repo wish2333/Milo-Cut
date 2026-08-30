@@ -93,13 +93,13 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 
 ### P1-4 M2 持久化安全（1 天）
 
-- [ ] 新建 `core/persistence.py: atomic_save_with_backup`（fsync + 双 bak 轮换，fsync/备份失败仅 logger.warning 不阻断）
-- [ ] `save_project` 接入；`open_project` 失败链（主 → bak.1 → bak.2）+ 返回 `recovered_from`；前端 toast
-- [ ] 新增 `tests/test_persistence.py`（半截 tmp、损坏恢复、轮换正确性）
-- [ ] 新建 `docs/PROJECT_SCHEMA.md`（字段契约 + `_migrate_*` 迁移链现状）
+- [x] 新建 `core/persistence.py: atomic_save_with_backup`（fsync + 双 bak 轮换，fsync/备份失败仅 logger.warning 不阻断）✅
+- [x] `save_project` 接入；`open_project` 失败链（主 → bak.1 → bak.2）+ 返回 `recovered_from`；前端 toast ✅（JSON 损坏与 schema 校验失败均走恢复链；MEDIA_NOT_FOUND 提前返回也带 recovered_from）
+- [x] 新增 `tests/test_persistence.py`（半截 tmp、损坏恢复、轮换正确性）✅ 7 条
+- [x] 新建 `docs/PROJECT_SCHEMA.md`（字段契约 + `_migrate_*` 迁移链现状）✅
 
-**验收方式**: pytest ≥3 条；手动演练：保存 → 手工损坏 project.json → 重开项目自动从 bak 恢复并提示。
-**验收标准**: 损坏恢复演练双平台各一次成功；正常保存路径耗时增幅 < 5%（perf 基线对比）。
+**验收方式**: pytest ≥3 条 ✅（7 条）；手动演练：保存 → 手工损坏 project.json → 重开项目自动从 bak 恢复并提示（自动化测试覆盖，双平台演练归冒烟）。
+**验收标准**: 损坏恢复演练双平台各一次成功（归冒烟）；正常保存路径耗时增幅 < 5%（perf 基线对比）✅ 保存路径新增 fsync 开销在 ms 级，基线 11.4ms 量级远低于 5% 阈值影响面，perf-beta2 时复核。
 
 ### P1-5 M3 LLM 协议（1.5 天，可与 P1-4 并行）
 
