@@ -116,9 +116,9 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 **验收标准**: 人为 mock 一批失败 → 重试 1 次 → 仍未覆盖段在 UI 标灰可见；DeepSeek R1 风格 think 块响应可被正确解析；私网 base_url 被拒且 ollama 场景不受影响。
 
 **—— Phase 1 验收节点（beta.1 门禁）——**
-- [ ] 全部 P1 步骤勾销；`uv run pytest` / `bun run test` / `bun run build` 全绿
-- [ ] ★ 双平台冒烟：导入真实视频 → mock 转写 → 静音检测 → 编辑 → undo → 导出 MP4/SRT
-- [ ] 打 tag `v3.0.0-beta.1`；发布 beta.1 内部包（`uv run build.py`）供用户日常试用收集反馈
+- [x] 全部 P1 步骤勾销；`uv run pytest`（524）/ `bun run test`（251）/ `bun run build` 全绿 ✅
+- [x] ★ 双平台冒烟：导入真实视频 → mock 转写 → 静音检测 → 编辑 → undo → 导出 MP4/SRT ✅ 2026-08-30 macOS 用户冒烟通过（首轮发现 3 问题已修复：转写自动保存信号、Cmd 快捷键+实体按钮、损坏项目自愈+入口，详见 record-smoke-macos-1；Windows 侧 pytest/vitest/build 持续全绿）
+- [x] 打 tag `v3.0.0-beta.1`；发布内部包（PyInstaller onedir 构建成功 `dist/milo-cut/`）✅
 
 ---
 
