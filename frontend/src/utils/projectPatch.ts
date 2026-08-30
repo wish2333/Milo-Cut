@@ -1,4 +1,4 @@
-import type { Project, ProjectPatch, ProjectResponse, Timeline } from "@/types/project"
+import type { Project, ProjectPatch, ProjectResponse, Segment, Timeline, Word } from "@/types/project"
 import { isProjectPatch } from "@/types/project"
 
 export class PatchApplicationError extends Error {
@@ -6,6 +6,85 @@ export class PatchApplicationError extends Error {
     super(message)
     this.name = "PatchApplicationError"
   }
+}
+
+/**
+ * v3.0.0 M7-1: cheap equality check so untouched segments keep their
+ * object identity (v-memo / computed dependency skip). ``words`` is the
+ * only nested array; compare contents (ASR words are small).
+ */
+function wordsEqual(a: Word[] | undefined, b: Word[] | undefined): boolean {
+  if (a === b) return true
+  if (!a || !b || a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (
+      a[i].word !== b[i].word ||
+      a[i].start !== b[i].start ||
+      a[i].end !== b[i].end
+    ) {
+      return false
+    }
+  }
+  return true
+}
+
+function segmentEqual(a: Segment, b: Segment): boolean {
+  return (
+    a.id === b.id &&
+    a.version === b.version &&
+    a.type === b.type &&
+    a.start === b.start &&
+    a.end === b.end &&
+    a.text === b.text &&
+    a.speaker === b.speaker &&
+    wordsEqual(a.words, b.words)
+  )
+}
+
+/**
+ * v3.0.0 M7-1: merge the backend's full segments array into the existing
+ * array, reusing references for unchanged segments and keeping unchanged
+ * rows at their old index. O(n) with a Map; backend guarantees start-
+ * ascending order (sort invariant), new segments are inserted at the
+ * position derived from the merged order.
+ *
+ * Gate assertion (risk review 4.3 M7): the result id sequence must match
+ * the backend array exactly; otherwise fall back to wholesale replace
+ * with a console.warn -- "宁可慢，不可错序".
+ */
+export function mergeSegmentsInPlace(
+  oldSegs: Segment[],
+  newSegs: Segment[],
+): Segment[] {
+  const newById = new Map(newSegs.map(s => [s.id, s]))
+  const out: Segment[] = []
+  for (const old of oldSegs) {
+    const next = newById.get(old.id)
+    if (next === undefined) continue // deleted segment
+    out.push(segmentEqual(old, next) ? old : next)
+  }
+  // Insert segments that did not exist before, then restore start order
+  // with a stable sort (unchanged rows already sit at valid positions).
+  const consumed = new Set(out.map(s => s.id))
+  for (const s of newSegs) {
+    if (!consumed.has(s.id)) out.push(s)
+  }
+  const starts = new Map(newSegs.map(s => [s.id, s.start]))
+  out.sort((a, b) => (starts.get(a.id) ?? 0) - (starts.get(b.id) ?? 0))
+
+  // Gate: merged id sequence must equal the backend array verbatim.
+  const oldIds = newSegs.map(s => s.id)
+  const gotIds = out.map(s => s.id)
+  for (let i = 0; i < oldIds.length; i++) {
+    if (oldIds[i] !== gotIds[i]) {
+      console.warn(
+        "[projectPatch] segment id sequence mismatch after in-place merge; " +
+          "falling back to wholesale replacement",
+      )
+      return [...newSegs]
+    }
+  }
+  return out
 }
 
 export function applyProjectPatch(project: Project, patch: ProjectPatch): Project {
@@ -35,7 +114,13 @@ export function applyProjectPatch(project: Project, patch: ProjectPatch): Projec
     if (patch.segments != null) {
       newTl = {
         ...newTl,
-        transcript: { ...newTl.transcript, segments: [...patch.segments] },
+        transcript: {
+          ...newTl.transcript,
+          // v3.0.0 M7-1: in-place id merge keeps unchanged segment
+          // references stable (v-memo effective); gate assertion falls
+          // back to wholesale replace on id-sequence mismatch.
+          segments: mergeSegmentsInPlace(newTl.transcript.segments, patch.segments),
+        },
       }
     }
     if (patch.edits != null) {

@@ -159,8 +159,8 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 
 ### P2-3 M7-1 patch 细粒度化（1 天）
 
-- [ ] `projectPatch.ts` segments 层按 id 原位替换/插入/删除 + **守门断言**（id 序列与后端一致，不一致 console.warn 回退整体替换）
-- [ ] 测试：单段文本修改后未变段引用稳定（`toBe` 身份断言）；乱序 patch 触发回退路径
+- [x] `projectPatch.ts` segments 层按 id 原位替换/插入/删除 + **守门断言**（id 序列与后端一致，不一致 console.warn 回退整体替换）✅ 2026-08-30 `mergeSegmentsInPlace`：Map 合并 O(n) + 段级相等性守引用（text/start/end/type/speaker/version + words 逐词比较，未变段引用 toBe 稳定）+ start 稳定排序插入新段 + 守门断言回退
+- [x] 测试：单段文本修改后未变段引用稳定（`toBe` 身份断言）；乱序 patch 触发回退路径 ✅ 4 条新增（引用稳定/删除+插入定序/words 身份保持/等 start 乱序回退+console.warn），vitest 261 全绿
 
 **验收方式**: vitest ≥3 条；1167 段项目单字编辑，Vue DevTools 高亮重渲染行数 ≤ 可视区。
 **验收标准**: v-memo 命中（未变行 DOM 不更新，元素属性 diff 验证）。

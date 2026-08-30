@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import type {
   AnalysisData,
   EditDecision,
@@ -129,6 +129,86 @@ describe("applyProjectPatch", () => {
       }
       const result = applyProjectPatch(project, patch)
       expect(result.timelines[0].edits).toEqual(project.timelines[0].edits)
+    })
+  })
+
+  describe("M7-1 in-place segment merge", () => {
+    it("keeps unchanged segment references stable (toBe) after a single-segment text change", () => {
+      const segA = makeSegment({ id: "a", start: 0, end: 1, text: "a" })
+      const segB = makeSegment({ id: "b", start: 2, end: 3, text: "b" })
+      const segC = makeSegment({ id: "c", start: 4, end: 5, text: "c" })
+      const project = makeProject()
+      project.timelines[0].transcript.segments = [segA, segB, segC]
+      const patch: ProjectPatch = {
+        revision: 1,
+        segments: [
+          makeSegment({ id: "a", start: 0, end: 1, text: "a" }),
+          makeSegment({ id: "b", start: 2, end: 3, text: "b-changed" }),
+          makeSegment({ id: "c", start: 4, end: 5, text: "c" }),
+        ],
+      }
+      const result = applyProjectPatch(project, patch)
+      const out = result.timelines[0].transcript.segments
+      expect(out[0]).toBe(segA) // unchanged: identity preserved
+      expect(out[2]).toBe(segC) // unchanged: identity preserved
+      expect(out[1].text).toBe("b-changed")
+      expect(out[1]).not.toBe(segB)
+    })
+
+    it("removes deleted ids and inserts new ids in start order", () => {
+      const segA = makeSegment({ id: "a", start: 0, end: 1 })
+      const segB = makeSegment({ id: "b", start: 2, end: 3 })
+      const project = makeProject()
+      project.timelines[0].transcript.segments = [segA, segB]
+      const patch: ProjectPatch = {
+        revision: 1,
+        segments: [
+          makeSegment({ id: "a", start: 0, end: 1 }),
+          makeSegment({ id: "new", start: 1.5, end: 1.8 }),
+          makeSegment({ id: "b", start: 2, end: 3 }),
+        ],
+      }
+      const result = applyProjectPatch(project, patch)
+      const out = result.timelines[0].transcript.segments
+      expect(out.map(s => s.id)).toEqual(["a", "new", "b"])
+      expect(out[0]).toBe(segA)
+      expect(out[2]).toBe(segB)
+    })
+
+    it("preserves words identity for unchanged segments with words", () => {
+      const words = [{ word: "hello", start: 0, end: 0.5, confidence: 0.9 }]
+      const seg = makeSegment({ id: "a", words })
+      const project = makeProject()
+      project.timelines[0].transcript.segments = [seg]
+      const patch: ProjectPatch = {
+        revision: 1,
+        segments: [makeSegment({ id: "a", words: [{ word: "hello", start: 0, end: 0.5, confidence: 0.9 }] })],
+      }
+      const result = applyProjectPatch(project, patch)
+      expect(result.timelines[0].transcript.segments[0]).toBe(seg)
+    })
+
+    it("falls back to wholesale replace with console.warn on id-sequence mismatch", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+      // Old array has a,b sharing start=1 (in a,b order); the backend
+      // array claims b,a -- the stable start-sort cannot derive that,
+      // so the gate must trip and fall back to wholesale replacement.
+      const segA = makeSegment({ id: "a", start: 1, end: 2, text: "old-a" })
+      const segB = makeSegment({ id: "b", start: 1, end: 2, text: "old-b" })
+      const project = makeProject()
+      project.timelines[0].transcript.segments = [segA, segB]
+      const patch: ProjectPatch = {
+        revision: 1,
+        segments: [
+          makeSegment({ id: "b", start: 1, end: 2 }),
+          makeSegment({ id: "a", start: 1, end: 2 }),
+        ],
+      }
+      const result = applyProjectPatch(project, patch)
+      const out = result.timelines[0].transcript.segments
+      expect(out.map(s => s.id)).toEqual(["b", "a"])
+      expect(warnSpy).toHaveBeenCalled()
+      warnSpy.mockRestore()
     })
   })
 
