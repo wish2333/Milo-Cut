@@ -26,6 +26,7 @@ from core.models import (
     TranscriptData,
 )
 from core.paths import get_projects_dir
+from core.timeline_utils import split_words
 
 
 def compute_media_fingerprint(path: str) -> str:
@@ -1257,9 +1258,15 @@ class ProjectService:
 
         targets.sort(key=lambda s: s.start)
         merged_text = "".join(s.text for s in targets)
+        # v3.0.0 M1-2: keep word-level data across merges (ordered by start,
+        # which holds naturally when each source segment's words are ordered).
+        merged_words = sorted(
+            (w for s in targets for w in s.words), key=lambda w: w.start
+        )
         merged_seg = targets[0].model_copy(update={
             "end": targets[-1].end,
             "text": merged_text,
+            "words": merged_words,
             "dirty_flags": {**targets[0].dirty_flags, "merged": True},
         })
 
@@ -1301,16 +1308,28 @@ class ProjectService:
         ratio = (position - target.start) / total_dur
         split_idx = max(1, min(len(target.text) - 1, int(len(target.text) * ratio)))
 
+        a_text = target.text[:split_idx].strip()
+        b_text = target.text[split_idx:].strip()
+
+        # v3.0.0 M1-2: split words at the text boundary. When the cut point
+        # does not align with a word boundary (tolerance 2 chars), split_words
+        # returns ([], []) -- prefer missing words over misaligned ones.
+        a_words, b_words = split_words(
+            target.words, target.text, split_idx, a_text, b_text
+        )
+
         seg_a = target.model_copy(update={
             "id": f"{segment_id}-a",
             "end": position,
-            "text": target.text[:split_idx].strip(),
+            "text": a_text,
+            "words": a_words,
             "dirty_flags": {**target.dirty_flags, "split": True},
         })
         seg_b = target.model_copy(update={
             "id": f"{segment_id}-b",
             "start": position,
-            "text": target.text[split_idx:].strip(),
+            "text": b_text,
+            "words": b_words,
             "dirty_flags": {**target.dirty_flags, "split": True},
         })
 

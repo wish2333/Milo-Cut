@@ -74,12 +74,12 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 
 ### P1-2 M1-2 split/merge 维护 words（0.5 天）
 
-- [ ] `core/timeline_utils.py` 新增 `split_words()`（对齐失败返回双空列表——宁可缺失不可错位）
-- [ ] `split_segment` / `merge_segments` 接线；ED-rebind 逻辑不动
-- [ ] 新增 `tests/test_segment_words.py`（对齐成功/失败/merge 拼接三场景）
+- [x] `core/timeline_utils.py` 新增 `split_words()`（对齐失败返回双空列表——宁可缺失不可错位）✅ 最近词边界对齐，偏差 >2 字符判不可靠
+- [x] `split_segment` / `merge_segments` 接线；ED-rebind 逻辑不动 ✅（merge 后 words 按 start 排序）
+- [x] 新增 `tests/test_segment_words.py`（对齐成功/失败/merge 拼接三场景）✅ 9 条（含容差内切分/单词段/服务级 split/merge）
 
-**验收方式**: pytest 新增 ≥3 条全绿。
-**验收标准**: split 后 `a.words + b.words` 词序列 == 原段（成功场景）；UI 手测一次波形拆分不报错。
+**验收方式**: pytest 新增 ≥3 条全绿。✅ 9 条
+**验收标准**: split 后 `a.words + b.words` 词序列 == 原段（成功场景）；UI 手测一次波形拆分不报错。（pytest ✅；UI 手测归入批次冒烟）
 
 ### P1-3 M1-3 parse_srt 编码回退 + M1-4 词边界吸附（0.5 天）
 
