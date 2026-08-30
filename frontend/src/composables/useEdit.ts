@@ -43,14 +43,23 @@ export function useEdit(
     return false
   }
 
-  async function splitSegment(segmentId: string, position: number): Promise<boolean> {
-    const res = await call<Project>("split_segment", segmentId, position)
+  async function splitSegment(
+    segmentId: string,
+    position: number,
+    snapToWord = false,
+  ): Promise<{ ok: boolean; snapOffsetMs: number | null }> {
+    // v3.0.0 M1-4: snap_to_word snaps the cut to the nearest word boundary;
+    // backend replies with `snap_offset_ms` for UI toast feedback.
+    const res = await call<Project>("split_segment", segmentId, position, snapToWord)
     if (res.success && res.data) {
       snapshot()
       project.value = res.data
-      return true
+      // snap_offset_ms is a sibling of `data` on the envelope (M1-4)
+      const snapOffsetMs =
+        (res as unknown as { snap_offset_ms?: number }).snap_offset_ms ?? null
+      return { ok: true, snapOffsetMs }
     }
-    return false
+    return { ok: false, snapOffsetMs: null }
   }
 
   async function searchReplace(

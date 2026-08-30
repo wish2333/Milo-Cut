@@ -1285,10 +1285,14 @@ class ProjectService:
         logger.info("Merged {} segments into {}", len(targets), merged_seg.id)
         return {"success": True, "data": self._current.model_dump()}
 
-    def split_segment(self, segment_id: str, position: float) -> dict:
+    def split_segment(
+        self, segment_id: str, position: float, snap_to_word: bool = False
+    ) -> dict:
         """Split a subtitle segment at the given time position.
 
         Creates two segments: {id}-a and {id}-b. Text is split proportionally.
+        v3.0.0 M1-4: with ``snap_to_word`` and word-level data present, the cut
+        time snaps to the nearest word start before splitting.
         """
         if self._current is None:
             return {"success": False, "error": "No project is open"}
@@ -1303,6 +1307,18 @@ class ProjectService:
         if position < target.start or position > target.end:
             return {"success": False, "error": "Split position must be within segment bounds"}
 
+        # v3.0.0 M1-4: snap the cut to the nearest word boundary when requested
+        # and word-level data is available. Report the applied offset so the UI
+        # can toast "snapped +-Nms".
+        snap_offset_ms = 0.0
+        if snap_to_word and target.words:
+            word_starts = [w.start for w in target.words if target.start <= w.start <= target.end]
+            if word_starts:
+                nearest = min(word_starts, key=lambda ws: abs(ws - position))
+                if abs(nearest - position) <= 1.0:  # only snap within 1s, never teleport
+                    snap_offset_ms = round((nearest - position) * 1000)
+                    position = nearest
+
         # Split text proportionally by duration ratio
         total_dur = target.end - target.start
         ratio = (position - target.start) / total_dur
@@ -1314,9 +1330,14 @@ class ProjectService:
         # v3.0.0 M1-2: split words at the text boundary. When the cut point
         # does not align with a word boundary (tolerance 2 chars), split_words
         # returns ([], []) -- prefer missing words over misaligned ones.
-        a_words, b_words = split_words(
-            target.words, target.text, split_idx, a_text, b_text
-        )
+        if snap_to_word and target.words:
+            # Snapped to a word start: assignment by word start is exact.
+            a_words = [w for w in target.words if w.start < position]
+            b_words = [w for w in target.words if w.start >= position]
+        else:
+            a_words, b_words = split_words(
+                target.words, target.text, split_idx, a_text, b_text
+            )
 
         seg_a = target.model_copy(update={
             "id": f"{segment_id}-a",
@@ -1399,8 +1420,11 @@ class ProjectService:
             transcript=self.active_timeline.transcript.model_copy(update={"segments": new_segments}),
             edits=new_edits,
         )
-        logger.info("Split segment {} at {:.3f}s", segment_id, position)
-        return {"success": True, "data": self._current.model_dump()}
+        logger.info("Split segment {} at {:.3f}s (snap_offset={}ms)", segment_id, position, snap_offset_ms)
+        result = {"success": True, "data": self._current.model_dump()}
+        if snap_to_word:
+            result["snap_offset_ms"] = snap_offset_ms
+        return result
 
     def search_replace(
         self,

@@ -1569,8 +1569,12 @@ class MiloCutApi(Bridge):
         return self._mark_dirty(self._project.merge_segments(segment_ids))
 
     @expose
-    def split_segment(self, segment_id: str, position: float) -> dict:
-        return self._mark_dirty(self._project.split_segment(segment_id, position))
+    def split_segment(
+        self, segment_id: str, position: float, snap_to_word: bool = False
+    ) -> dict:
+        return self._mark_dirty(
+            self._project.split_segment(segment_id, position, snap_to_word)
+        )
 
     @expose
     def add_segment(

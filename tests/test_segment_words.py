@@ -160,3 +160,46 @@ class TestMergeSegmentsWords:
         assert [w.word for w in merged.words] == ["今天", "天气", "不错", "啊"]
         starts = [w.start for w in merged.words]
         assert starts == sorted(starts)
+
+
+class TestSnapToWord:
+    """v3.0.0 M1-4: split_segment snap_to_word parameter."""
+
+    def _seed(self, svc):
+        words = _words(
+            ("大家好", 1.0, 1.6),
+            ("今天", 1.8, 2.4),
+            ("讲一下", 2.6, 4.0),
+        )
+        seg = Segment(
+            id="seg_1.000", type=SegmentType.SUBTITLE,
+            start=1.0, end=4.0, text="大家好今天讲一下", words=words,
+        )
+        svc.update_transcript([seg.model_dump()])
+
+    def test_snaps_to_nearest_word_start(self, svc):
+        self._seed(svc)
+        res = svc.split_segment("seg_1.000", 2.0, snap_to_word=True)
+        assert res["success"]
+        assert res["snap_offset_ms"] == -200  # snapped to word start 1.8
+        a, b = svc.active_timeline.transcript.segments
+        assert a.end == 1.8 and b.start == 1.8
+        # exact word-start assignment: word sequence preserved
+        assert [w.word for w in (a.words + b.words)] == ["大家好", "今天", "讲一下"]
+
+    def test_no_words_no_snap(self, svc):
+        seg = Segment(
+            id="seg_1.000", type=SegmentType.SUBTITLE,
+            start=1.0, end=4.0, text="大家好今天讲一下",
+        )
+        svc.update_transcript([seg.model_dump()])
+        res = svc.split_segment("seg_1.000", 2.0, snap_to_word=True)
+        assert res["success"]
+        assert "snap_offset_ms" not in res or res["snap_offset_ms"] == 0
+
+    def test_flag_off_keeps_proportional_split(self, svc):
+        self._seed(svc)
+        res = svc.split_segment("seg_1.000", 2.0)
+        assert res["success"]
+        a, b = svc.active_timeline.transcript.segments
+        assert a.end == 2.0 and b.start == 2.0

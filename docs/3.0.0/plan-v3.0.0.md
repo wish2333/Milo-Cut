@@ -83,13 +83,13 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 
 ### P1-3 M1-3 parse_srt 编码回退 + M1-4 词边界吸附（0.5 天）
 
-- [ ] 提取 `_read_text_with_fallback`（utf-8-sig → gb18030 → latin-1），parse_srt/validate_srt 共用
-- [ ] `split_segment` 增加 `snap_to_word` 可选参数（bisect 词 start 吸附）
-- [ ] ★ P4-4 的 GB18030 SRT（或生成夹具）导入实测
-- [ ] UI 接线：波形右键拆分传 `snap_to_word: true`，toast 提示吸附偏移量
+- [x] 提取 `_read_text_with_fallback`（utf-8-sig → gb18030 → latin-1），parse_srt/validate_srt 共用 ✅
+- [x] `split_segment` 增加 `snap_to_word` 可选参数（bisect 词 start 吸附）✅ 最近词 start 吸附（1s 内），envelope 返回 `snap_offset_ms`
+- [x] ★ P4-4 的 GB18030 SRT（或生成夹具）导入实测 ✅ 脚本生成 GB18030 夹具（计划允许），导入无乱码
+- [x] UI 接线：波形右键拆分传 `snap_to_word: true`，toast 提示吸附偏移量 ✅（useEdit.splitSegment + WorkspacePage toast；真机手感归批次冒烟）
 
-**验收方式**: GB18030 SRT 导入成功无乱码；吸附拆分后切点 == 最近词边界（±1ms）。
-**验收标准**: pytest 编码回退测试 ≥2 条；snap 手测三次均命中词边界。
+**验收方式**: GB18030 SRT 导入成功无乱码；吸附拆分后切点 == 最近词边界（±1ms）。✅ pytest
+**验收标准**: pytest 编码回退测试 ≥2 条 ✅（3 条）；snap 手测三次均命中词边界（归批次冒烟）。
 
 ### P1-4 M2 持久化安全（1 天）
 

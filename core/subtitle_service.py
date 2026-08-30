@@ -12,6 +12,24 @@ from loguru import logger
 
 from core.models import SegmentType
 
+# Encoding fallback chain shared by parse_srt / validate_srt (v3.0.0 M1-3).
+_SRT_ENCODINGS = ("utf-8-sig", "gb18030", "latin-1")
+
+
+def _read_text_with_fallback(path: Path) -> str:
+    """Read a text file trying utf-8-sig -> gb18030 -> latin-1 in order.
+
+    Raises the last error when no encoding succeeds.
+    """
+    last_err: Exception | None = None
+    for enc in _SRT_ENCODINGS:
+        try:
+            return path.read_text(encoding=enc)
+        except (UnicodeDecodeError, OSError) as e:
+            last_err = e
+            continue
+    raise last_err  # type: ignore[misc]
+
 
 def parse_srt(file_path: str) -> dict:
     """Parse an SRT subtitle file into a list of segments.
@@ -25,7 +43,7 @@ def parse_srt(file_path: str) -> dict:
         if path.suffix.lower() not in (".srt",):
             return {"success": False, "error": f"Unsupported format: {path.suffix}"}
 
-        content = path.read_text(encoding="utf-8-sig")
+        content = _read_text_with_fallback(path)
         blocks = re.split(r"\n\s*\n", content.strip())
         segments: list[dict] = []
 
@@ -84,15 +102,10 @@ def validate_srt(file_path: str, video_duration: float = 0.0) -> dict:
     if not path.exists():
         return {"success": False, "error": f"File not found: {file_path}"}
 
-    # Try multiple encodings
-    content: str | None = None
-    for enc in ("utf-8-sig", "gb18030", "latin-1"):
-        try:
-            content = path.read_text(encoding=enc)
-            break
-        except (UnicodeDecodeError, OSError):
-            continue
-    if content is None:
+    # Read with shared encoding fallback chain
+    try:
+        content = _read_text_with_fallback(path)
+    except (UnicodeDecodeError, OSError):
         return {"success": False, "error": "Unable to read file with any supported encoding"}
 
     blocks = re.split(r"\n\s*\n", content.strip())

@@ -1096,15 +1096,21 @@ async function handleMergeSelected() {
 }
 
 // v2.1.1 M4-3: split a segment at its midpoint
+// v3.0.0 M1-4: waveform-originated splits snap to the nearest word boundary
 async function handleSplitSegment(segmentId: string, position?: number) {
   const seg = mergedSegments.value.find(s => s.id === segmentId)
   if (!seg) return
-  // If position is provided (from waveform context menu split), use it;
-  // otherwise use midpoint (from TranscriptRow right-click).
+  // If position is provided (from waveform context menu split), use it and
+  // enable word snapping; otherwise use midpoint (from TranscriptRow right-click).
+  const snapToWord = position !== undefined && (seg.words?.length ?? 0) > 0
   const pos = position !== undefined ? position : (seg.start + seg.end) / 2
-  const ok = await splitSegment(segmentId, pos)
+  const { ok, snapOffsetMs } = await splitSegment(segmentId, pos, snapToWord)
   if (ok) {
-    showToast(position !== undefined ? "已按时间指针分割" : "已从中点分割", "success", 1500)
+    if (snapOffsetMs !== null && snapOffsetMs !== 0) {
+      showToast(`已吸附词边界 ${snapOffsetMs > 0 ? "+" : ""}${snapOffsetMs}ms`, "info", 2000)
+    } else {
+      showToast(position !== undefined ? "已按时间指针分割" : "已从中点分割", "success", 1500)
+    }
   } else {
     showToast("分割失败", "error", 3000)
   }
