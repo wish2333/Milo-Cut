@@ -1,11 +1,18 @@
 <script setup lang="ts">
-import { computed, ref, watch, nextTick } from "vue"
+import { computed, ref, reactive, watch, nextTick, onMounted, onUnmounted } from "vue"
 import type { Segment, EditDecision, AnalysisResult } from "@/types/project"
 import {
   buildSubtitleIndex,
   findSubtitleAtTime,
 } from "@/utils/editedPlayback"
 import { buildSegmentStateMap, type SegmentState } from "@/utils/segmentHelpers"
+import {
+  DEFAULT_ROW_HEIGHTS,
+  buildCumulativeOffsets,
+  computeVisibleWindow,
+  scrollTargetForIndex,
+  type RowTypeHeights,
+} from "@/utils/virtualList"
 import TranscriptRow from "@/components/workspace/TranscriptRow.vue"
 import SilenceRow from "@/components/workspace/SilenceRow.vue"
 import SuggestionPanel from "@/components/workspace/SuggestionPanel.vue"
@@ -101,6 +108,166 @@ const activeTab = ref<RightPanelTab>("suggestion")
 // external highlight (SuggestionPanel click).
 const listContainer = ref<HTMLElement | null>(null)
 
+// ---------------------------------------------------------------------------
+// v3.0.0 M7-2: virtual scrolling (PRD B3 / SPEC M7-2 / risk review 2.6)
+//
+// Only the viewport window (+OVERSCAN rows per side) is mounted. Mixed row
+// types (TranscriptRow 52px vs SilenceRow 36px) go through the per-type
+// height registry + cumulative offsets of utils/virtualList.ts; positioning
+// is binary-search based so variable-height rows cost nothing extra later.
+// ---------------------------------------------------------------------------
+const VIRTUAL_OVERSCAN = 10
+
+const scrollTopValue = ref(0)
+const viewportHeight = ref(0)
+const measuredHeights = ref<Partial<RowTypeHeights>>({})
+
+const rowHeights = computed<RowTypeHeights>(() => ({
+  subtitle: measuredHeights.value.subtitle ?? DEFAULT_ROW_HEIGHTS.subtitle,
+  silence: measuredHeights.value.silence ?? DEFAULT_ROW_HEIGHTS.silence,
+}))
+
+const virtualOffsets = computed(() => buildCumulativeOffsets(
+  props.segments.map((s) => s.type),
+  rowHeights.value,
+))
+const totalHeight = computed(() => virtualOffsets.value.totalHeight)
+
+const visibleWindow = computed(() =>
+  computeVisibleWindow(
+    virtualOffsets.value.offsets,
+    scrollTopValue.value,
+    viewportHeight.value,
+    VIRTUAL_OVERSCAN,
+  ),
+)
+const windowSegments = computed(() =>
+  props.segments.slice(visibleWindow.value.start, visibleWindow.value.end),
+)
+const windowTopOffset = computed(
+  () => virtualOffsets.value.offsets[visibleWindow.value.start] ?? 0,
+)
+
+const segmentIndexById = computed(() => {
+  const m = new Map<string, number>()
+  props.segments.forEach((s, i) => m.set(s.id, i))
+  return m
+})
+
+const segmentById = computed(() => {
+  const m = new Map<string, Segment>()
+  for (const s of props.segments) m.set(s.id, s)
+  return m
+})
+
+// rAF-throttled scroll tracking: at most one scrollTop read per frame.
+let scrollRafId: number | null = null
+function onListScroll() {
+  if (scrollRafId !== null) return
+  scrollRafId = requestAnimationFrame(() => {
+    scrollRafId = null
+    if (listContainer.value) scrollTopValue.value = listContainer.value.scrollTop
+  })
+}
+
+function measureViewport() {
+  const el = listContainer.value
+  if (el) viewportHeight.value = el.clientHeight
+}
+
+let resizeObserver: ResizeObserver | null = null
+let fallbackResizeListener = false
+onMounted(() => {
+  measureViewport()
+  if (typeof ResizeObserver !== "undefined") {
+    resizeObserver = new ResizeObserver(() => measureViewport())
+    if (listContainer.value) resizeObserver.observe(listContainer.value)
+  } else {
+    fallbackResizeListener = true
+    window.addEventListener("resize", measureViewport)
+  }
+  void probeRowHeights()
+})
+
+onUnmounted(() => {
+  if (scrollRafId !== null) cancelAnimationFrame(scrollRafId)
+  resizeObserver?.disconnect()
+  if (fallbackResizeListener) window.removeEventListener("resize", measureViewport)
+})
+
+/**
+ * Height probe per row type: reads real offsetHeight from the rendered
+ * window and updates the registry when CSS differs from the defaults.
+ * happy-dom reports 0, which the `h <= 0` guard ignores (defaults keep).
+ */
+async function probeRowHeights() {
+  await nextTick()
+  const el = listContainer.value
+  if (!el) return
+  let subtitleH = 0
+  let silenceH = 0
+  for (const node of el.querySelectorAll<HTMLElement>("[data-segment-id]")) {
+    const h = node.offsetHeight
+    if (h <= 0) continue
+    const seg = segmentById.value.get(node.getAttribute("data-segment-id") ?? "")
+    if (!seg) continue
+    if (seg.type === "silence") {
+      if (!silenceH) silenceH = h
+    } else if (!subtitleH) {
+      subtitleH = h
+    }
+    if (subtitleH && silenceH) break
+  }
+  if (subtitleH && subtitleH !== rowHeights.value.subtitle) measuredHeights.value.subtitle = subtitleH
+  if (silenceH && silenceH !== rowHeights.value.silence) measuredHeights.value.silence = silenceH
+}
+
+watch(() => props.segments, (segs) => {
+  void probeRowHeights()
+  // Draft hygiene: drop entries for segments that no longer exist.
+  if (drafts.size > 0) {
+    const alive = new Set(segs.map((s) => s.id))
+    for (const id of drafts.keys()) {
+      if (!alive.has(id)) drafts.delete(id)
+    }
+  }
+})
+
+/**
+ * Bring a segment row into view. Out-of-window targets are positioned
+ * instantly (plan P2-4 acceptance: "跳转不可见行先滚动定位无跳变" -- a long
+ * smooth scroll would be both slow and disorienting). The math is exact
+ * because the height probe keeps the offsets registry in sync with the
+ * real rendered row heights; no post-scroll fine-tuning needed.
+ */
+function scrollToSegment(id: string) {
+  const el = listContainer.value
+  const index = segmentIndexById.value.get(id)
+  if (!el || index === undefined) return
+  const target = scrollTargetForIndex(
+    virtualOffsets.value.offsets,
+    index,
+    el.scrollTop,
+    el.clientHeight || viewportHeight.value,
+  )
+  if (target !== null) {
+    // Direct scrollTop assignment == behavior:"auto" instant scroll, and is
+    // the one primitive that behaves identically across WebView2/WKWebView.
+    el.scrollTop = target
+    scrollTopValue.value = target
+  }
+}
+
+// v3.0.0 M7-2: draft cache. Virtual scrolling unmounts rows that leave the
+// window; TranscriptRow mirrors its unsaved edit text here on every keystroke
+// and restores it on remount, so scrolling never loses an in-progress edit
+// (same observable behavior as the pre-virtualization always-mounted rows).
+const drafts = reactive(new Map<string, string>())
+function onDraftChange(id: string, text: string | null) {
+  if (text === null) drafts.delete(id)
+  else drafts.set(id, text)
+}
+
 // v2.1.1 A-3: right-side panel — inline flex child (default open).
 const sidebarOpen = ref(true)
 
@@ -174,13 +341,8 @@ function highlightSegment(segmentId: string) {
   highlightedSegmentId.value = segmentId
   if (highlightTimer) clearTimeout(highlightTimer)
   highlightTimer = setTimeout(() => { highlightedSegmentId.value = null }, 2000)
-  // Scroll into view via DOM query on the segment list container.
-  nextTick(() => {
-    const el = listContainer.value?.querySelector(
-      `[data-segment-id="${segmentId}"]`
-    ) as HTMLElement | null
-    el?.scrollIntoView({ block: "nearest", behavior: "smooth" })
-  })
+  // M7-2: position the (possibly virtualized-out) row first, then fine-tune.
+  scrollToSegment(segmentId)
 }
 
 // Handle SuggestionPanel / AIAssistantPanel / HighlightModeView @seek:
@@ -217,12 +379,8 @@ watch(
   () => props.selectedSegmentId,
   (id) => {
     if (!id) return
-    nextTick(() => {
-      const el = document.querySelector(`[data-segment-id="${id}"]`)
-      if (el) {
-        el.scrollIntoView({ behavior: "smooth", block: "nearest" })
-      }
-    })
+    // M7-2: virtualization may keep the row unmounted; position first.
+    scrollToSegment(id)
   },
 )
 </script>
@@ -302,8 +460,8 @@ watch(
     </div>
 
     <div class="relative flex flex-1 overflow-hidden">
-      <!-- Transcript list -->
-      <div ref="listContainer" class="flex-1 overflow-y-auto">
+      <!-- Transcript list (virtualized, v3.0.0 M7-2) -->
+      <div ref="listContainer" data-test="segment-list" class="flex-1 overflow-y-auto" @scroll.passive="onListScroll">
         <!-- v2.1.1 M4-1: selection mode banner -->
         <div
           v-if="selectionMode"
@@ -319,51 +477,58 @@ watch(
           </div>
         </div>
 
-        <div v-else>
-          <!-- v-memo is intentionally retained for the large transcript list. -->
-          <!-- eslint-disable vue/valid-v-memo -->
-          <template v-for="seg in segments" :key="seg.id">
-            <TranscriptRow
-              v-if="seg.type === 'subtitle'"
-              v-memo="[seg, getSegmentState(seg).displayStatus, selectedSegmentIds?.has(seg.id) ?? false, selectedSegmentId === seg.id, seg.id === playheadSegmentId, seg.id === highlightedSegmentId, globalEditMode, selectionMode]"
-              :segment="seg"
-              :display-status="getSegmentState(seg).displayStatus"
-              :style-class="getSegmentState(seg).styleClass"
-              :is-selected="selectedSegmentId === seg.id"
-              :is-adjacent-highlighted="seg.id === adjacentSubtitleIds.prev || seg.id === adjacentSubtitleIds.next"
-              :is-playhead-inside="seg.id === playheadSegmentId"
-              :is-highlighted="seg.id === highlightedSegmentId"
-              :global-edit-mode="globalEditMode"
-              :selection-mode="selectionMode ?? false"
-              :is-multi-selected="selectedSegmentIds?.has(seg.id) ?? false"
-              :current-time="currentTime ?? 0"
-              @seek="(t) => emit('seek', t)"
-              @update-text="(id, text) => emit('update-text', id, text)"
-              @update-time="(id, field, val) => emit('update-time', id, field, val)"
-              @toggle-status="emit('toggle-status', seg)"
-              @confirm-edit="emit('confirm-segment', seg)"
-              @reject-edit="emit('reject-segment', seg)"
-              @delete="emit('delete-segment', seg)"
-              @segment-click="(id, ev) => emit('segment-click', id, ev)"
-              @split="emit('split-segment', seg.id)"
-              @split-at-pointer="(pos) => emit('split-at-pointer', seg.id, pos)"
-              @toast="(msg) => emit('toast', msg)"
-              @add-to-highlight="(id) => emit('add-to-highlight', id)"
-            />
-            <SilenceRow
-              v-else
-              :segment="seg"
-              :display-status="getSegmentState(seg).displayStatus"
-              :style-class="getSegmentState(seg).styleClass"
-              @seek="(t) => emit('seek', t)"
-              @update-time="(id, field, val) => emit('update-time', id, field, val)"
-              @toggle-status="emit('toggle-status', seg)"
-              @confirm-edit="emit('confirm-segment', seg)"
-              @reject-edit="emit('reject-segment', seg)"
-              @delete="emit('delete-segment', seg)"
-            />
-          </template>
-          <!-- eslint-enable vue/valid-v-memo -->
+        <!-- Windowed renderer: full-height spacer + absolutely positioned
+             slice at its cumulative offset. Mixed row types keep per-type
+             heights via the offsets array (utils/virtualList.ts). -->
+        <div v-else class="relative" :style="{ height: totalHeight + 'px' }">
+          <div class="absolute left-0 right-0" :style="{ top: windowTopOffset + 'px' }">
+            <!-- v-memo is intentionally retained for the large transcript list. -->
+            <!-- eslint-disable vue/valid-v-memo -->
+            <template v-for="seg in windowSegments" :key="seg.id">
+              <TranscriptRow
+                v-if="seg.type === 'subtitle'"
+                v-memo="[seg, getSegmentState(seg).displayStatus, selectedSegmentIds?.has(seg.id) ?? false, selectedSegmentId === seg.id, seg.id === playheadSegmentId, seg.id === highlightedSegmentId, globalEditMode, selectionMode]"
+                :segment="seg"
+                :display-status="getSegmentState(seg).displayStatus"
+                :style-class="getSegmentState(seg).styleClass"
+                :is-selected="selectedSegmentId === seg.id"
+                :is-adjacent-highlighted="seg.id === adjacentSubtitleIds.prev || seg.id === adjacentSubtitleIds.next"
+                :is-playhead-inside="seg.id === playheadSegmentId"
+                :is-highlighted="seg.id === highlightedSegmentId"
+                :global-edit-mode="globalEditMode"
+                :selection-mode="selectionMode ?? false"
+                :is-multi-selected="selectedSegmentIds?.has(seg.id) ?? false"
+                :current-time="currentTime ?? 0"
+                :draft="drafts.get(seg.id) ?? null"
+                @seek="(t) => emit('seek', t)"
+                @update-text="(id, text) => emit('update-text', id, text)"
+                @update-time="(id, field, val) => emit('update-time', id, field, val)"
+                @toggle-status="emit('toggle-status', seg)"
+                @confirm-edit="emit('confirm-segment', seg)"
+                @reject-edit="emit('reject-segment', seg)"
+                @delete="emit('delete-segment', seg)"
+                @segment-click="(id, ev) => emit('segment-click', id, ev)"
+                @split="emit('split-segment', seg.id)"
+                @split-at-pointer="(pos) => emit('split-at-pointer', seg.id, pos)"
+                @toast="(msg) => emit('toast', msg)"
+                @add-to-highlight="(id) => emit('add-to-highlight', id)"
+                @draft-change="onDraftChange"
+              />
+              <SilenceRow
+                v-else
+                :segment="seg"
+                :display-status="getSegmentState(seg).displayStatus"
+                :style-class="getSegmentState(seg).styleClass"
+                @seek="(t) => emit('seek', t)"
+                @update-time="(id, field, val) => emit('update-time', id, field, val)"
+                @toggle-status="emit('toggle-status', seg)"
+                @confirm-edit="emit('confirm-segment', seg)"
+                @reject-edit="emit('reject-segment', seg)"
+                @delete="emit('delete-segment', seg)"
+              />
+            </template>
+            <!-- eslint-enable vue/valid-v-memo -->
+          </div>
         </div>
       </div>
 

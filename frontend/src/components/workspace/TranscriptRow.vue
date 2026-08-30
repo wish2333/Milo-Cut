@@ -20,6 +20,8 @@ const props = defineProps<{
   isPlayheadInside?: boolean
   /** v2.1.1 A-2.1: externally-driven temporary highlight (e.g. SuggestionPanel click) */
   isHighlighted?: boolean
+  /** v3.0.0 M7-2: unsaved edit draft restored on remount after virtual-scroll unmount */
+  draft?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -39,6 +41,8 @@ const emit = defineEmits<{
   toast: [msg: string]
   // Spec-6 §11.5.2: right-click add to highlights
   "add-to-highlight": [segmentId: string]
+  // v3.0.0 M7-2: draft cache sync (null clears the stored draft)
+  "draft-change": [segmentId: string, text: string | null]
 }>()
 
 // Context menu
@@ -105,6 +109,16 @@ const isEditingText = ref(false)
 const editText = ref("")
 const originalText = ref("")
 
+// v3.0.0 M7-2: virtual scrolling unmounts rows that leave the window. The
+// unsaved draft is mirrored to the parent (Timeline) on every keystroke and
+// restored in startEdit(), so scrolling never loses an in-progress edit.
+watch(editText, (val) => {
+  if (isEditingText.value) emit("draft-change", props.segment.id, val)
+})
+function clearDraft() {
+  emit("draft-change", props.segment.id, null)
+}
+
 // Time editing (click on time value)
 const editingTimeField = ref<"start" | "end" | null>(null)
 const editingTimeValue = ref("")
@@ -157,7 +171,7 @@ function handleTimeEditKeydown(e: KeyboardEvent) {
 // Text edit functions
 function startEdit() {
   originalText.value = props.segment.text
-  editText.value = props.segment.text
+  editText.value = props.draft ?? props.segment.text
   isEditingText.value = true
 }
 
@@ -165,11 +179,13 @@ function saveEdit() {
   if (editText.value !== props.segment.text) {
     emit("update-text", props.segment.id, editText.value)
   }
+  clearDraft()
   isEditingText.value = false
 }
 
 function cancelEdit() {
   editText.value = originalText.value
+  clearDraft()
   isEditingText.value = false
 }
 

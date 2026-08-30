@@ -172,4 +172,48 @@ describe("TranscriptRow", () => {
     expect(wrapper.emitted("update-text")).toBeFalsy()
     expect(wrapper.find("input").exists()).toBe(false)
   })
+
+  // v3.0.0 M7-2: draft cache sync (virtual scrolling unmounts rows)
+  it("mirrors typed text as draft-change events", async () => {
+    const wrapper = mount(TranscriptRow, {
+      props: { segment: baseSegment },
+    })
+    await wrapper.find("[title='Edit text']").trigger("click")
+    await wrapper.find("input").setValue("typed draft")
+    const emitted = wrapper.emitted("draft-change")
+    expect(emitted).toBeTruthy()
+    expect(emitted![emitted!.length - 1]).toEqual(["seg-0001", "typed draft"])
+  })
+
+  it("restores the draft prop when entering edit mode", async () => {
+    const wrapper = mount(TranscriptRow, {
+      props: { segment: baseSegment, draft: "restored draft" },
+    })
+    await wrapper.find("[title='Edit text']").trigger("click")
+    expect(wrapper.find("input").element.value).toBe("restored draft")
+  })
+
+  it("clears the draft on save", async () => {
+    const wrapper = mount(TranscriptRow, {
+      props: { segment: baseSegment, draft: "pending draft" },
+    })
+    await wrapper.find("[title='Edit text']").trigger("click")
+    const input = wrapper.find("input")
+    await input.setValue("final text")
+    await input.trigger("blur")
+    // blur-save is deferred 150ms (v2.2.1 drag-out guard)
+    await new Promise((r) => setTimeout(r, 160))
+    const emitted = wrapper.emitted("draft-change")!
+    expect(emitted[emitted.length - 1]).toEqual(["seg-0001", null])
+  })
+
+  it("clears the draft on cancel", async () => {
+    const wrapper = mount(TranscriptRow, {
+      props: { segment: baseSegment, draft: "pending draft" },
+    })
+    await wrapper.find("[title='Edit text']").trigger("click")
+    await wrapper.find("input").trigger("keydown", { key: "Escape" })
+    const emitted = wrapper.emitted("draft-change")!
+    expect(emitted[emitted.length - 1]).toEqual(["seg-0001", null])
+  })
 })
