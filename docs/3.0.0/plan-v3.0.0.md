@@ -42,20 +42,20 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 
 ### P0-1 分支与基线快照
 
-- [ ] 从 `origin/main` 拉 `dev-3.0.0`；记录基线：pytest 数量（当前 478）、vitest 数量（241）、`tests/perf` 基线输出存档 `docs/3.0.0/perf-baseline.md`
-- [ ] 打 tag `v3.0.0-base`（全局回滚锚点）
-- [ ] ★ 通知用户计划启动；确认 macOS 真机可用性
+- [x] 从 `origin/main` 拉 `dev-3.0.0`；记录基线：pytest 数量（当前 478）、vitest 数量（241，实测 251）、`tests/perf` 基线输出存档 `docs/3.0.0/perf-baseline.md` ✅ 2026-08-30
+- [x] 打 tag `v3.0.0-base`（全局回滚锚点）✅
+- [ ] ★ 通知用户计划启动；确认 macOS 真机可用性（已通知，待用户回复）
 
 **验收方式**: `git tag` 存在；perf 基线文件包含波形生成、项目打开两项当前耗时。
 **验收标准**: 基线可复现（连跑两次误差 <10%）。
 
 ### P0-2 迁移清单文档建立
 
-- [ ] 创建 `docs/3.0.0/migration-M5.md`：pushSnapshot 全部调用点清单（WorkspacePage.vue:940/1124/1427 + useAnalysis/useEdit 内部，含标注"待替换层组合"列）
-- [ ] 创建 `docs/3.0.0/migration-M8.md`：WorkspacePage 职责搬迁清单（3 popover + useAsrEngines + 20+ handler 归口）
+- [x] 创建 `docs/3.0.0/migration-M5.md`：pushSnapshot 全部调用点清单（WorkspacePage.vue:940/1124/1427 + useAnalysis/useEdit/useSegmentEdit 内部，含标注"待替换层组合"列）✅ 实测 24 个调用点（3 直接 + useEdit 12 + useAnalysis 6 + useSegmentEdit 3），并发现 :1124 存量 bug（push 的是 after 状态）
+- [x] 创建 `docs/3.0.0/migration-M8.md`：WorkspacePage 职责搬迁清单（3 popover + useAsrEngines + 20+ handler 归口）✅ handler 全量 40+ 个按五组归类
 
-**验收方式**: 全局 grep `pushSnapshot`（排除 .test.ts）命中数 == 清单行数；M8 清单覆盖 WorkspacePage 全部 handler 名（`handle[A-Z]` grep 交叉核对）。
-**验收标准**: 两清单零遗漏；评审通过（自查 diff）。
+**验收方式**: 全局 grep `pushSnapshot`（排除 .test.ts）命中数 == 清单行数；M8 清单覆盖 WorkspacePage 全部 handler 名（`handle[A-Z]` grep 交叉核对）。✅ 已核对
+**验收标准**: 两清单零遗漏；评审通过（自查 diff）。✅
 
 ---
 
