@@ -221,6 +221,39 @@ def run_benchmark(
             "note": "10-id mark_segments batch; reflects bulk operation cost.",
         }
 
+    # --- 4. Layered undo (v3.0.0 M5) ----------------------------------
+    # apply_undo with the FULL segments layer (1167 segments): the undo
+    # roundtrip cost the backend owns -- validate every layer, replace,
+    # bump revision, and serialize the ProjectPatch envelope. The payload
+    # build mirrors what the frontend captured in its before-state snapshot
+    # and is intentionally OUTSIDE the timed window (capture cost is a
+    # frontend main-thread metric, measured separately in vitest).
+    if project.active_timeline.transcript.segments:
+        samples = []
+        for _ in range(runs):
+            svc = _prepare_service(project)
+            base_revision = svc._revision
+            layers_payload = {
+                "segments": [
+                    s.model_dump()
+                    for s in project.active_timeline.transcript.segments
+                ]
+            }
+            t0 = time.perf_counter()
+            svc.apply_undo(layers_payload, base_revision)
+            samples.append(round((time.perf_counter() - t0) * 1000.0, 3))
+        summary["results"]["apply_undo_segments_layer"] = {
+            "samples_ms": samples,
+            "stats": _percentiles(samples),
+            "unit": "ms",
+            "note": (
+                "apply_undo with the full segments layer (validate + replace "
+                "+ revision+1 + ProjectPatch envelope); v3.0.0 undo target "
+                "<5ms is the FRONTEND main-thread cost, measured in vitest "
+                "(undoScale.perf.test.ts); this is the backend share."
+            ),
+        }
+
     return summary
 
 

@@ -185,8 +185,8 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 **验收标准**: 滚动/缩放主观流畅（对比 beta.1 截录屏）；播放头无抖动。（真机对比归批次冒烟 + perf-beta2）
 
 **—— Phase 2 验收节点（beta.2 门禁）——**
-- [ ] 全量测试绿；`tests/perf` 扩展项（滚动 fps / undo 耗时 / IPC 频率 / 长任务）纳入脚本并产出对比报告 `docs/3.0.0/perf-beta2.md`
-- [ ] ★ 双平台冒烟 + 用户确认性能体感
+- [ ] 全量测试绿；`tests/perf` 扩展项（滚动 fps / undo 耗时 / IPC 频率 / 长任务）纳入脚本并产出对比报告 `docs/3.0.0/perf-beta2.md` ✅ 自动化可测项已入脚本并达标（undo 主线程 p50 1.3/2.9ms <5ms、千段 50/50 回放正确、open/save 毫秒级无回归）；滚动 fps / IPC 频率 / 长任务为 DevTools 真机测量项，随下方 ★冒烟执行后回填同一报告
+- [ ] ★ 双平台冒烟 + 用户确认性能体感（冒烟通过后删除 legacy undo 路径，tag `pre-undo-cleanup` 为回滚锚点）
 - [ ] 打 tag `v3.0.0-beta.2`；发布内部包
 
 ---
