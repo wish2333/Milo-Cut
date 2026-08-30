@@ -521,16 +521,20 @@ watch(() => props.project.media?.waveform_path, () => {
 // When waveform generation task completes, the backend updates the project's
 // waveform_path which triggers the watcher above. But as a safety net, also
 // listen for the task completed event and retry the URL resolution.
-onEvent<{ task_id: string; task_type?: string; result?: { project?: Project } }>(
+onEvent<{ task_id: string; task_type?: string; result?: { project?: Project }; result_meta?: { project_stripped?: boolean } }>(
   EVENT_TASK_COMPLETED,
-  (data) => {
+  async (data) => {
     if (data.task_type === "waveform_generation") {
       resolveWaveformUrl()
     }
     if (data.task_type === "proxy_generation") {
       isGeneratingProxy.value = false
+      // v3.0.0 M4: pull the project when the event payload is stripped.
       if (data.result?.project) {
         emit("project-updated", data.result.project)
+      } else if (data.result_meta?.project_stripped) {
+        const res = await call<Project>("get_project")
+        if (res.success && res.data) emit("project-updated", res.data)
       }
       loadVideoUrl()
       showToast("Proxy video ready", "success", 2000)
@@ -543,6 +547,9 @@ onEvent<{ task_id: string; task_type?: string; result?: { project?: Project } }>
     ) {
       if (data.result?.project) {
         emit("project-updated", data.result.project)
+      } else if (data.result_meta?.project_stripped) {
+        const res = await call<Project>("get_project")
+        if (res.success && res.data) emit("project-updated", res.data)
       }
     }
   },

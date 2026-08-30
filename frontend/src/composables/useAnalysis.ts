@@ -32,12 +32,26 @@ export function useAnalysis(
     return null
   })
 
-  on(EVENT_TASK_COMPLETED, (data: { task_id: string; result?: { project?: Project } }) => {
+  // v3.0.0 M4: task:completed no longer carries the full project; detect
+  // project_stripped and pull via get_project. Non-stripped payloads
+  // (demo bridge) keep the old path.
+  on(EVENT_TASK_COMPLETED, async (data: {
+    task_id: string
+    task_type?: string
+    result?: { project?: Project }
+    result_meta?: { project_stripped?: boolean }
+  }) => {
     const task = tasks.value.find(t => t.id === data.task_id)
-    if (task && ANALYSIS_TASKS.includes(task.type) && data.result?.project) {
-      // C1: task results rebuild the transcript (silence/transcription)
+    if (!task || !ANALYSIS_TASKS.includes(task.type)) return
+    if (data.result?.project) {
       if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value, ["segments", "edits"], "分析结果回填")
       project.value = data.result.project
+    } else if (data.result_meta?.project_stripped) {
+      const res = await call<Project>("get_project")
+      if (res.success && res.data) {
+        if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value, ["segments", "edits"], "分析结果回填")
+        project.value = res.data
+      }
     }
   })
 

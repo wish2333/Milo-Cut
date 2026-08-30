@@ -79,8 +79,20 @@ class Bridge:
             raise ValueError(f"Invalid event name: {event!r}")
         self._event_queue.put((event, data))
 
+    # v3.0.0 M4: batch dispatch budget. Events are drained in chunks whose
+    # serialized payload stays under this size (a single oversized event is
+    # sent alone). Order within/between batches is preserved.
+    _MAX_BATCH_BYTES = 512 * 1024
+
     def _flush_events(self) -> None:
-        """Drain the event queue and dispatch via evaluate_js."""
+        """Drain the event queue and dispatch via evaluate_js.
+
+        v3.0.0 M4: one ``evaluate_js`` per batch (instead of per event).
+        The injected JS prefers ``window.__pywebvueDispatchEvents`` (set up
+        by ``pywebvue.app`` bootstrap) and falls back to per-event
+        ``document.dispatchEvent`` when the helper is absent, so an old
+        frontend bundle keeps working with the new backend.
+        """
         if self._window is None:
             while True:
                 try:
@@ -89,40 +101,73 @@ class Bridge:
                     break
             return
 
+        # Drain the whole queue up front (preserves FIFO order), then
+        # dispatch in chunks by the serialized-size budget.
+        drained: list[tuple[str, Any]] = []
         while True:
             try:
-                event, data = self._event_queue.get_nowait()
+                drained.append(self._event_queue.get_nowait())
             except queue.Empty:
                 break
 
-            payload = json.dumps(data, ensure_ascii=False) if data is not None else "null"
-            event_name = json.dumps(f"pywebvue:{event}", ensure_ascii=False)
-            js = (
-                f"document.dispatchEvent("
-                f"new CustomEvent({event_name}, "
-                f"{{detail: {payload}, bubbles: true}}))"
-            )
-            try:
-                self._window.evaluate_js(js)
-            except Exception:
-                logger.debug("evaluate_js failed, marking window as closed")
-                while True:
-                    try:
-                        self._event_queue.get_nowait()
-                    except queue.Empty:
-                        break
-                self._window = None
-                break
+        batch: list[tuple[str, Any]] = []
+        batch_bytes = 0
+        for event, data in drained:
+            size = len(json.dumps(data, ensure_ascii=False).encode("utf-8")) if data is not None else 4
+            if batch and batch_bytes + size > self._MAX_BATCH_BYTES:
+                if not self._dispatch_batch(batch):
+                    return
+                batch = []
+                batch_bytes = 0
+            batch.append((event, data))
+            batch_bytes += size
+
+        if batch:
+            self._dispatch_batch(batch)
+
+    def _dispatch_batch(self, batch: list[tuple[str, Any]]) -> bool:
+        """Send one batch via a single evaluate_js call.
+
+        Returns False if the window was closed (evaluate_js failed).
+        """
+        events_json = json.dumps(
+            [{"name": f"pywebvue:{e}", "detail": d} for e, d in batch],
+            ensure_ascii=False,
+        )
+        js = (
+            "(function(){"
+            "var evts=" + events_json + ";"
+            "if (typeof window.__pywebvueDispatchEvents === 'function')"
+            "{ window.__pywebvueDispatchEvents(evts); }"
+            "else { for (var i = 0; i < evts.length; i++)"
+            "{ document.dispatchEvent(new CustomEvent(evts[i].name,"
+            "{ detail: evts[i].detail, bubbles: true })); } }"
+            "})();"
+        )
+        try:
+            self._window.evaluate_js(js)
+        except Exception:
+            logger.debug("evaluate_js failed, marking window as closed")
+            while True:
+                try:
+                    self._event_queue.get_nowait()
+                except queue.Empty:
+                    break
+            self._window = None
+            return False
+        return True
 
     @expose
     def tick(self) -> dict[str, Any]:
         """Process queued events and execute one pending task.
 
         Called periodically by a JS timer (recursive ``setTimeout``).
+        v3.0.0 M4: returns the remaining queue depth so the JS loop can
+        drop to a slow cadence when idle (adaptive tick).
         """
         self._flush_events()
         self._execute_next_task()
-        return {"success": True}
+        return {"success": True, "data": {"pending": self._event_queue.qsize()}}
 
     def _execute_next_task(self) -> None:
         """Execute at most one pending task from the queue."""

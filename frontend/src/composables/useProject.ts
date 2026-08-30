@@ -33,9 +33,19 @@ export function useProject() {
     isDirty.value = true
   })
 
-  on(EVENT_TASK_COMPLETED, (data: { task_id: string; task_type?: string; result?: { project?: Project } }) => {
-    if (data.task_type === "waveform_generation" && data.result?.project) {
+  // v3.0.0 M4: task:completed strips the project payload; pull on demand.
+  on(EVENT_TASK_COMPLETED, async (data: {
+    task_id: string
+    task_type?: string
+    result?: { project?: Project }
+    result_meta?: { project_stripped?: boolean }
+  }) => {
+    if (data.task_type !== "waveform_generation") return
+    if (data.result?.project) {
       project.value = data.result.project
+    } else if (data.result_meta?.project_stripped) {
+      const res = await call<Project>("get_project")
+      if (res.success && res.data) project.value = res.data
     }
   })
 

@@ -80,11 +80,21 @@ function triggerWaveformGeneration() {
   })
 }
 
-onEvent<{ task_id: string; task_type?: string; result?: { project?: Project } }>(
+onEvent<{
+  task_id: string
+  task_type?: string
+  result?: { project?: Project }
+  result_meta?: { project_stripped?: boolean }
+}>(
   EVENT_TASK_COMPLETED,
-  (data) => {
-    if (data.task_type === "waveform_generation" && data.result?.project) {
+  async (data) => {
+    if (data.task_type !== "waveform_generation") return
+    // v3.0.0 M4: pull the project when the event payload is stripped.
+    if (data.result?.project) {
       project.value = data.result.project
+    } else if (data.result_meta?.project_stripped) {
+      const res = await call<Project>("get_project")
+      if (res.success && res.data) project.value = res.data
     }
   },
 )

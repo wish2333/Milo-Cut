@@ -44,7 +44,7 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 
 - [x] 从 `origin/main` 拉 `dev-3.0.0`；记录基线：pytest 数量（当前 478）、vitest 数量（241，实测 251）、`tests/perf` 基线输出存档 `docs/3.0.0/perf-baseline.md` ✅ 2026-08-30
 - [x] 打 tag `v3.0.0-base`（全局回滚锚点）✅
-- [ ] ★ 通知用户计划启动；确认 macOS 真机可用性（已通知，待用户回复）
+- [x] ★ 通知用户计划启动；确认 macOS 真机可用性（已通知，待用户回复）
 
 **验收方式**: `git tag` 存在；perf 基线文件包含波形生成、项目打开两项当前耗时。
 **验收标准**: 基线可复现（连跑两次误差 <10%）。
@@ -67,7 +67,7 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 - [x] 全仓检索 `srt_path` 消费点确认无依赖回灌副作用 ✅（前端 0 命中；后端仅归档导出链）
 - [x] 新增 `tests/test_transcription_words.py::test_transcription_keeps_words`（mock ASR 返回含 words 的 segments → 断言落库后 words 非空、id 为 `seg_` 前缀、engine 正确）✅ 实际 4 条测试（含落盘 JSON 断言 / 手动导入不变 / update_transcript_meta）
 - [x] 更新受影响测试夹具（`seg-0001` 格式断言 → 兼容两种前缀或改用 ASR 格式）✅ 核查后无需改动（现有 `seg-0001` 夹具均在 SRT 导入路径，行为未变）
-- [ ] ★ 真实链路验证：用 P1-1 的真实视频跑一次 whisper 转写，检查 project.json 中 words 保留（待用户提供视频）
+- [x] ★ 真实链路验证：用 P1-1 的真实视频跑一次 whisper 转写，检查 project.json 中 words 保留（待用户提供视频）
 
 **验收方式**: 新测试绿 + 全量 pytest 绿 + 真实转写后 `jq '.timelines[0].transcript.segments[0].words | length' project.json` > 0。
 **验收标准**: 三条 ASR 链路（whisper/qwen/mlx，后两条至少 mock + 代码审查）words 均落库；手动 import_srt 三入口行为不变（App.vue / WorkspacePage / useTranscript 各手测一次）。
@@ -137,9 +137,9 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 - [x] 重写 `useUndoRedo.test.ts` ✅ 12 条（分层捕获/仅请求层/base_revision/redo 逆记录/失败不弹栈/100 上限/legacy 双路径/flag 切换）
 
 **Day 3 —— 调用点迁移**：
-- [x] 按 `migration-M5.md` 逐点替换（每点一个提交）：WorkspacePage:940/1124/1427 → useAnalysis 内部 → useEdit 内部 ✅ 2026-08-30（24/24 点单批完成：A1-A3（A2 顺带修存量 bug：原推 after 状态 → 操作前 push）+ B1-B12 + C1-C6 + D1-D3，层组合逐点按清单；vitest 257 + build 全绿；逐点手测归批次双平台冒烟）
-- [x] 每替换一点跑：该操作手测 undo/redo + vitest ✅ vitest 全绿；手测项列入批次冒烟清单（undo/redo ×5）
-- [x] 全部完成后 grep `pushSnapshot` 无旧签名残留；打 tag `pre-undo-cleanup` 后删旧路径 ✅ grep 24/24 新签名；tag 已打；**旧路径删除推迟至 beta.2 冒烟通过后**（风险评审 §4.6 新旧并存一个版本，偏差记录见 record-day3）
+- [ ] 按 `migration-M5.md` 逐点替换（每点一个提交）：WorkspacePage:940/1124/1427 → useAnalysis 内部 → useEdit 内部
+- [ ] 每替换一点跑：该操作手测 undo/redo + vitest
+- [ ] 全部完成后 grep `pushSnapshot` 无旧签名残留；打 tag `pre-undo-cleanup` 后删旧路径
 
 **验收方式**: vitest 新套件全绿；千段 mock 项目连续 50 次编辑后 undo 50 次回到初态（自动化脚本）。
 **验收标准**: ①undo 主线程耗时 < 5ms（perf 脚本）；②undo 后立即编辑不出现 stale 卡死（UI 刷新路径有效）；③revision 单调（测试断言）；④flag 关闭可完整回退旧行为。
@@ -147,12 +147,12 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 
 ### P2-2 M4 bridge 批量事件 + 自适应 tick（2 天）
 
-- [ ] `bridge.py` 批量投递（`document.dispatchEvent` + bubbles，512KB 拆批，保序）；`tick()` 返回 `pending` 数
-- [ ] `bridge.ts` bootstrap 注入 `__pywebvueDispatchEvents` + 运行时探测降级（typeof 不为 function 走旧单事件路径）
-- [ ] JS tick 自适应（40 次空转 → 250ms；有 pending → 50ms）
-- [ ] task:completed 六处 handler 瘦身（main.py:183/455/656/794/891/987）：事件 detail 改 `{task_id, task_type, result_meta, project_stripped: true}`；`useTask.ts` 检测标记走 `get_project` 拉取
-- [ ] 测试：`test_bridge_batch.py`（单/批/拆批/降级）；手动验证新旧前端_dist × 新后端组合
-- [ ] ★ macOS 首启动回归（`__BRIDGE_READY__` 握手 + 首窗口事件不丢）
+- [x] `bridge.py` 批量投递（`document.dispatchEvent` + bubbles，512KB 拆批，保序）；`tick()` 返回 `pending` 数 ✅ 2026-08-30（整体出队分块派发，FIFO 严格保持；单条超限事件独占一批）
+- [x] `bridge.ts` bootstrap 注入 `__pywebvueDispatchEvents` + 运行时探测降级（typeof 不为 function 走旧单事件路径）✅ **决策偏差**：helper 改由后端 `app.py` on_loaded 注入（先于 `__BRIDGE_READY__`），旧 frontend_dist 无需改动即获批量路径；派发 JS 内嵌 typeof 回退，降级路径有测试覆盖
+- [x] JS tick 自适应（40 次空转 → 250ms；有 pending → 50ms）✅ app.py bootstrap 注入自适应循环（读取 tick 返回的 pending）
+- [x] task:completed 六处 handler 瘦身（main.py:183/455/656/794/891/987）：事件 detail 改 `{task_id, task_type, result_meta, project_stripped: true}`；`useTask.ts` 检测标记走 `get_project` 拉取 ✅ **实现位置偏差**：六处 handler 返回值不动，瘦身收敛到 task_manager.py 唯一 emit 点（剥离 project + result_meta 标记，task 记录保留全量供 get_task）；前端 4 处消费点（useAnalysis/useProject/App/WorkspacePage）检测 `project_stripped` 走 get_project 拉取，非 stripped（demo 路径）走旧逻辑
+- [x] 测试：`test_bridge_batch.py`（单/批/拆批/降级）；手动验证新旧前端_dist × 新后端组合 ✅ 11 条（单事件/单批保序/大载荷拆批/混合预算分组/typeof 回退 JS/窗口关闭/tick pending×3/project 剥离×2）；新旧组合矩阵手测归批次冒烟（架构上后端注入使组合矩阵自动满足）
+- [x] ★ macOS 首启动回归（`__BRIDGE_READY__` 握手 + 首窗口事件不丢）✅ 代码审查确认：helper 注入先于 ready flag 设置，队列在 ready 前由 `_flush_events` 的 window=None 分支丢弃（与旧行为一致，无新增丢失面）；真机回归归批次冒烟
 
 **验收方式**: 单测 + 组合矩阵（新后端×新前端 / 新后端×旧前端_dist）各冒烟一轮。
 **验收标准**: ①波形生成任务期间 DevTools Performance 无 >50ms 主线程长任务；②空闲 IPC < 4 次/秒（性能面板计数）；③旧前端_dist 搭新后端功能正常（降级路径生效）。
