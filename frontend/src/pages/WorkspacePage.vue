@@ -953,7 +953,7 @@ async function handleImportSrt() {
     return
   }
   statusMessage.value = "Importing SRT..."
-  if (projectRef.value) pushSnapshot(projectRef.value)
+  if (projectRef.value) pushSnapshot(projectRef.value, ["segments"], "导入 SRT") // A1
   const importRes = await call<Project>("import_srt", fileRes.data)
   if (importRes.success && importRes.data) {
     emit("project-updated", importRes.data)
@@ -1141,9 +1141,11 @@ function handleToggleSelectionMode() {
 async function markSelectedForDeletion() {
   const ids = Array.from(selectedSegmentIds.value)
   if (ids.length === 0) return
+  // A2: push BEFORE the call (v3.0.0 M5 fix of the pre-existing bug where
+  // the after-state was pushed, making undo a no-op for batch marking).
+  if (projectRef.value) pushSnapshot(projectRef.value, ["edits"], "批量标记删除")
   const res = await call<Project>("mark_segments", ids, "delete")
   if (res.success && res.data) {
-    pushSnapshot(res.data)
     emit("project-updated", res.data)
     showToast(`已标记 ${ids.length} 段删除`, "info", 2000)
     clearMultiSelection()
@@ -1446,7 +1448,7 @@ function handleSelectRange(start: number, end: number) {
 }
 
 async function handleAddSegment(start: number, end: number) {
-  if (projectRef.value) pushSnapshot(projectRef.value)
+  if (projectRef.value) pushSnapshot(projectRef.value, ["segments"], "新增段落") // A3
   const res = await call<Project>("add_segment", start, end, "", "subtitle")
   if (res.success && res.data) {
     emit("project-updated", res.data)

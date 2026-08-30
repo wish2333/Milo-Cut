@@ -3,6 +3,7 @@ import type { EditDecision, Project, ProjectResponse, Segment } from "@/types/pr
 import { call, type ApiResponse } from "@/bridge"
 import { resolveSegmentState, getEditForSegment } from "@/utils/segmentHelpers"
 import type { SegmentState } from "@/utils/segmentHelpers"
+import type { UndoLayer } from "@/utils/undoRecords"
 
 const DEBOUNCE_MS = 300
 
@@ -63,7 +64,7 @@ function replaceSegment(project: Project, segId: string, patch: Partial<Segment>
 export function useSegmentEdit(
   project: Ref<Project>,
   onProjectUpdate: (project: ProjectResponse) => void,
-  onBeforeProjectUpdate?: (project: Project) => void,
+  onBeforeProjectUpdate?: (project: Project, layers?: UndoLayer[], label?: string) => void,
 ): UseSegmentEditReturn {
   const selectedSegmentId = ref<string | null>(null)
   const selectedRange = ref<{ start: number; end: number } | null>(null)
@@ -158,7 +159,7 @@ export function useSegmentEdit(
     const seg = activeTranscriptSegments(prev).find(s => s.id === segmentId)
     if (!seg) return
 
-    if (onBeforeProjectUpdate) onBeforeProjectUpdate(prev)
+    if (onBeforeProjectUpdate) onBeforeProjectUpdate(prev, ["segments"], "调整时间") // D1
     const optimistic = replaceSegment(prev, segmentId, { [field]: value })
     onProjectUpdate(optimistic)
 
@@ -186,7 +187,7 @@ export function useSegmentEdit(
   // -- Immediate text updates -------------------------------------------
 
   async function updateSegmentText(segmentId: string, text: string): Promise<boolean> {
-    if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value)
+    if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value, ["segments"], "修改文本") // D2
     const res = await call<Project>("update_segment_text", segmentId, text)
     if (res.success && res.data) {
       onProjectUpdate(res.data)
@@ -211,7 +212,7 @@ export function useSegmentEdit(
   // - Reuses ApiResponse<Project> instead of hand-written response shape.
 
   async function toggleEditStatus(segment: Segment, nextStatus?: string): Promise<boolean> {
-    if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value)
+    if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value, ["edits"], "编辑决策") // D3
     const edits = activeEdits(project.value)
     const state = resolveSegmentState(edits, segment)
 

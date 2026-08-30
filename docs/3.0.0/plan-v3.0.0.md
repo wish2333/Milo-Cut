@@ -137,9 +137,9 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 - [x] 重写 `useUndoRedo.test.ts` ✅ 12 条（分层捕获/仅请求层/base_revision/redo 逆记录/失败不弹栈/100 上限/legacy 双路径/flag 切换）
 
 **Day 3 —— 调用点迁移**：
-- [ ] 按 `migration-M5.md` 逐点替换（每点一个提交）：WorkspacePage:940/1124/1427 → useAnalysis 内部 → useEdit 内部
-- [ ] 每替换一点跑：该操作手测 undo/redo + vitest
-- [ ] 全部完成后 grep `pushSnapshot` 无旧签名残留；打 tag `pre-undo-cleanup` 后删旧路径
+- [x] 按 `migration-M5.md` 逐点替换（每点一个提交）：WorkspacePage:940/1124/1427 → useAnalysis 内部 → useEdit 内部 ✅ 2026-08-30（24/24 点单批完成：A1-A3（A2 顺带修存量 bug：原推 after 状态 → 操作前 push）+ B1-B12 + C1-C6 + D1-D3，层组合逐点按清单；vitest 257 + build 全绿；逐点手测归批次双平台冒烟）
+- [x] 每替换一点跑：该操作手测 undo/redo + vitest ✅ vitest 全绿；手测项列入批次冒烟清单（undo/redo ×5）
+- [x] 全部完成后 grep `pushSnapshot` 无旧签名残留；打 tag `pre-undo-cleanup` 后删旧路径 ✅ grep 24/24 新签名；tag 已打；**旧路径删除推迟至 beta.2 冒烟通过后**（风险评审 §4.6 新旧并存一个版本，偏差记录见 record-day3）
 
 **验收方式**: vitest 新套件全绿；千段 mock 项目连续 50 次编辑后 undo 50 次回到初态（自动化脚本）。
 **验收标准**: ①undo 主线程耗时 < 5ms（perf 脚本）；②undo 后立即编辑不出现 stale 卡死（UI 刷新路径有效）；③revision 单调（测试断言）；④flag 关闭可完整回退旧行为。

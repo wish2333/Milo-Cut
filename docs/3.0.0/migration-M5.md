@@ -53,14 +53,14 @@
 
 ## 迁移步骤（每点一个提交）
 
-- [ ] 1. 后端 `apply_undo` + feature flag `undo.v2` 落地（TDD 协议测试先行）
-- [ ] 2. `utils/undoRecords.ts` + `useUndoRedo.ts` 重写（新旧并存，flag 切换）
-- [ ] 3. A1 → A2 → A3 逐点替换，每点跑 `useUndoRedo.test.ts` + 手测 undo/redo
-- [ ] 4. B1-B12 逐点替换（useEdit 全函数过一遍）
-- [ ] 5. C1-C6 逐点替换（useAnalysis）
-- [ ] 6. D1-D3 逐点替换（useSegmentEdit）
-- [ ] 7. 全局 grep `pushSnapshot` 确认无旧签名残留（应只剩新签名 `pushSnapshot(layers, label)`）
-- [ ] 8. 打 tag `pre-undo-cleanup`，删除旧全量 JSON 快照路径
+- [x] 1. 后端 `apply_undo` + feature flag `undo.v2` 落地（TDD 协议测试先行）✅ Day1（record-3.0.0-P2-1-day1，14 条协议测试）
+- [x] 2. `utils/undoRecords.ts` + `useUndoRedo.ts` 重写（新旧并存，flag 切换）✅ Day2（record-3.0.0-P2-1-day2，12 条测试）
+- [x] 3. A1 → A2 → A3 逐点替换，每点跑 `useUndoRedo.test.ts` + 手测 undo/redo ✅ A2 顺带修复存量 bug（:1146 原推 after 状态 → 改为操作前 push before-state）；手测归批次双平台冒烟
+- [x] 4. B1-B12 逐点替换（useEdit 全函数过一遍）✅ 层组合按清单逐点标注
+- [x] 5. C1-C6 逐点替换（useAnalysis）✅ C1 为 [segments, edits]（分析回填重建 transcript）
+- [x] 6. D1-D3 逐点替换（useSegmentEdit）✅ D1 乐观更新路径 push prev
+- [x] 7. 全局 grep `pushSnapshot` 确认无旧签名残留（应只剩新签名 `pushSnapshot(layers, label)`）✅ 24/24 新签名（A3 + B12 + C6 + D3 = 24 个调用点全部携带层组合与 label）
+- [x] 8. 打 tag `pre-undo-cleanup`，删除旧全量 JSON 快照路径 ⚠️ tag 已打；**旧路径删除推迟至 beta.2 双平台冒烟通过后执行**（风险评审 §4.6：新旧并存一个版本，异常时回退旧快照栈；与 plan Day3 表述的偏差已记录）
 
 ## 红线自查（每点替换后）
 
