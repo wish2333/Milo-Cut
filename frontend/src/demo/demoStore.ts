@@ -216,6 +216,30 @@ export const demoStore = {
     mutateTimeline((timeline) => timeline.edits.forEach((edit) => { if (editIds.includes(edit.id)) edit.status = status }))
     return clone(state.project)
   },
+  /** v3.0.0 M5: layered undo (mirrors backend ProjectService.apply_undo). */
+  applyUndo: (layers: Record<string, unknown>, baseRevision: number): Record<string, unknown> | null => {
+    if (baseRevision !== state.revision) return null
+    const project = clone(state.project)
+    const timeline = project.timelines.find((item) => item.id === project.active_timeline_id)
+    if (!timeline) return null
+    const patch: Record<string, unknown> = {}
+    if (Array.isArray(layers.segments)) {
+      timeline.transcript = { ...timeline.transcript, segments: layers.segments as typeof timeline.transcript.segments }
+      timeline.transcript.segments.sort((a, b) => a.start - b.start)
+      patch.segments = layers.segments
+    }
+    if (Array.isArray(layers.edits)) {
+      timeline.edits = layers.edits as typeof timeline.edits
+      patch.edits = layers.edits
+    }
+    if (layers.analysis != null && typeof layers.analysis === "object") {
+      timeline.analysis = layers.analysis as typeof timeline.analysis
+      patch.analysis = layers.analysis
+    }
+    state.project = project
+    state.revision += 1
+    return { revision: state.revision, timeline_id: project.active_timeline_id, ...patch }
+  },
   addSmartDeleteEdits: () => { addSmartDeleteEdits(); return clone(state.project) },
   addHighlightResult: () => { addHighlightResult(); return clone(state.project) },
   acceptCorrection: (id: string) => {

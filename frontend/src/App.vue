@@ -14,6 +14,8 @@ import { EVENT_DEMO_PROJECT_UPDATED, EVENT_TASK_COMPLETED } from "@/utils/events
 import type { Project, MediaInfo, ProjectResponse } from "@/types/project"
 import { isProjectPatch } from "@/types/project"
 import { applyProjectPatch, isStalePatch } from "@/utils/projectPatch"
+// v3.0.0 M5: shared tracker (App.vue is the single writer; useUndoRedo reads).
+import { lastSeenRevision, noteRevision } from "@/utils/revision"
 
 const ready = ref(false)
 const bridgeError = ref("")
@@ -25,7 +27,7 @@ const project = ref<Project | null>(null)
 // strictly greater than this value, defending against out-of-order bridge
 // responses (e.g. user clicks toggle twice rapidly and the older response
 // lands after the newer one).
-const lastSeenRevision = ref(0)
+// v3.0.0 M5: moved to utils/revision.ts as a module-level shared ref.
 const showExportPage = ref(false)
 const isDragging = ref(false)
 const showRelinkDialog = ref(false)
@@ -116,7 +118,7 @@ function onProjectUpdated(data: ProjectResponse) {
       // Drop stale patch; current state is newer than this response.
       return
     }
-    lastSeenRevision.value = data.revision
+    noteRevision(data.revision)
     project.value = applyProjectPatch(project.value, data)
   } else {
     project.value = data

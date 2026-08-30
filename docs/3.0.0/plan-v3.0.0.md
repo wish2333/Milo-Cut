@@ -132,9 +132,9 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 - [x] feature flag `undo.v2`（settings，默认 true；false 走旧全量路径）✅ 扁平键 `undo_v2`（对齐 `llm_max_batch_chars` 命名先例），`apply_undo` @expose 读取，关闭时返回明确错误引导前端回退
 
 **Day 2 —— 前端记录结构**：
-- [ ] `utils/undoRecords.ts`：`{layer, label, records}` 结构 + segments 层段级 diff（id→Segment|null Map + `id_lineage` 处理 split/merge 演化；复杂度失控则降级为"数组浅拷贝引用"并记录决策）
-- [ ] `useUndoRedo.ts` 重写：undo/redo 经 `apply_undo` 通道，不再 JSON.stringify；上限 100 条
-- [ ] 重写 `useUndoRedo.test.ts`
+- [x] `utils/undoRecords.ts`：`{layer, label, records}` 结构 + segments 层段级 diff（id→Segment|null Map + `id_lineage` 处理 split/merge 演化；复杂度失控则降级为"数组浅拷贝引用"并记录决策）✅ **启用降级方案**：segments 层数组浅拷贝引用（undo 经后端整层替换，段级 diff 今日无收益；lineage 待 P2-3 M7-1 落地后重评，决策已记录在 undoRecords.ts 头注与 record）
+- [x] `useUndoRedo.ts` 重写：undo/redo 经 `apply_undo` 通道，不再 JSON.stringify；上限 100 条 ✅ 旧全量路径保留为 flag=false 回退路径（风险评审 §4.6）；`utils/revision.ts` 共享 lastSeenRevision（App.vue 单写者）；demoBridge/demoStore 镜像实现 apply_undo；WorkspacePage handleUndo/Redo 改 patch 通道，失败走 `recoverFromUndoFailure`（清栈 + get_project 刷新，红线"stale 不卡死"）
+- [x] 重写 `useUndoRedo.test.ts` ✅ 12 条（分层捕获/仅请求层/base_revision/redo 逆记录/失败不弹栈/100 上限/legacy 双路径/flag 切换）
 
 **Day 3 —— 调用点迁移**：
 - [ ] 按 `migration-M5.md` 逐点替换（每点一个提交）：WorkspacePage:940/1124/1427 → useAnalysis 内部 → useEdit 内部

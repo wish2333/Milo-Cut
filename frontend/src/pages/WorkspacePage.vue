@@ -128,6 +128,10 @@ const projectRef = computed({
   set: (val) => emit("project-updated", val),
 })
 
+// v3.0.0 M5: layered undo feature flag; flip switches push/undo between the
+// layered apply_undo path and the legacy full-JSON snapshot path.
+const undoV2Enabled = ref(true)
+
 const {
   pushSnapshot,
   undo,
@@ -135,7 +139,7 @@ const {
   canUndo,
   canRedo,
   clearHistory,
-} = useUndoRedo()
+} = useUndoRedo({ isUndoV2: () => undoV2Enabled.value })
 
 const {
   isDetecting,
@@ -604,6 +608,8 @@ async function loadSilenceSettings() {
     silenceMargin.value = Number(res.data.silence_margin ?? 0.0)
     silenceSubtitlePadding.value = Number(res.data.silence_subtitle_padding ?? 0.0)
     trimSubtitlesOnOverlap.value = res.data.trim_subtitles_on_silence_overlap !== false
+    // v3.0.0 M5: layered undo feature flag (default true).
+    undoV2Enabled.value = res.data.undo_v2 !== false
   }
 }
 
@@ -1582,21 +1588,49 @@ function handleClickOutside(e: MouseEvent) {
 async function handleUndo() {
   await flushPendingUpdates()
   if (!projectRef.value) return
-  const restored = undo(projectRef.value)
-  if (restored) {
-    emit("project-updated", restored)
+  const res = await undo(projectRef.value)
+  if (res.ok) {
+    if (res.patch) {
+      // Layered path: apply the backend ProjectPatch through the standard
+      // channel (App.vue updates lastSeenRevision, no full-project emit).
+      emit("project-updated", res.patch)
+    } else if (res.project) {
+      emit("project-updated", res.project)
+    }
     showToast("Undo", "success", 1500)
+  } else if (res.error !== "empty") {
+    await recoverFromUndoFailure()
   }
 }
 
 async function handleRedo() {
   await flushPendingUpdates()
   if (!projectRef.value) return
-  const restored = redo(projectRef.value)
-  if (restored) {
-    emit("project-updated", restored)
+  const res = await redo(projectRef.value)
+  if (res.ok) {
+    if (res.patch) {
+      emit("project-updated", res.patch)
+    } else if (res.project) {
+      emit("project-updated", res.project)
+    }
     showToast("Redo", "success", 1500)
+  } else if (res.error !== "empty") {
+    await recoverFromUndoFailure()
   }
+}
+
+/**
+ * v3.0.0 M5 red line: a failed apply_undo (e.g. stale revision, or
+ * undo_v2 disabled server-side) must never leave the UI stuck. Refresh
+ * the full project from the backend and drop the history stacks.
+ */
+async function recoverFromUndoFailure() {
+  clearHistory()
+  const res = await call<Project>("get_project")
+  if (res.success && res.data) {
+    emit("project-updated", res.data)
+  }
+  showToast("撤销失败，已刷新项目状态", "error", 2500)
 }
 
 onMounted(() => {

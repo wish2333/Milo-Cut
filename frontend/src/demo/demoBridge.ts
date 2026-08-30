@@ -87,6 +87,14 @@ export async function callDemo<T = unknown>(method: string, ...args: unknown[]):
       return ok(demoStore.updateSegment(segmentId, field, value) as T)
     }
     case "update_segment_text": return ok(demoStore.updateSegmentText(args[0] as string, args[1] as string) as T)
+    case "apply_undo": {
+      // v3.0.0 M5: layered undo (demo mirror of backend apply_undo).
+      const [layers, baseRevision] = args as [Record<string, unknown>, number]
+      const patch = demoStore.applyUndo(layers ?? {}, Number(baseRevision))
+      return patch === null
+        ? { success: false, error: "apply_undo: stale revision" } as ApiResponse<T>
+        : ok(patch as T)
+    }
     case "update_edit_decision": return ok(demoStore.setEditStatus(args[0] as string, args[1] as EditDecision["status"]) as T)
     case "update_edit_decisions_batch": return ok(demoStore.setEditStatuses(args[0] as string[], args[1] as EditDecision["status"]) as T)
     case "mark_segments": return ok(demoStore.addSmartDeleteEdits() as T)
