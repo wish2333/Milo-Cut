@@ -110,7 +110,7 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 - [x] M3-5 温度：config.py 默认 0.1、demoBridge 对齐、`temperature_override`（语义搜索 0.0）✅
 - [x] M3-5 不透明 ID 映射（`t1..tN`，剥离 start/end 字段）✅ smart_delete 与 subtitle_correction 两条链路均接入
 - [x] 测试：`tests/test_llm_protocol.py` 19 条（ledger 3 / sanitize 4 / SSRF 5 / opaque+temperature 4 / max_chars 3）✅ 另修复 test_llm_service 默认值断言与 test_llm_concurrency 不透明 ID 适配
-- [ ] ★ 真实链路：用真实 Key 跑一次智能删除 + 一次纠错，验证账本数字与实际段数一致（待用户提供 Key）
+- [x] ★ 真实链路：✅ 2026-08-30 用真实 Qwen Key（qwen3.8-flash）跑通 test_connection + 智能删除（30 段/2 批，账本 2succeeded 与实际批数一致）+ 纠错 Mode A（1 批，首次解析未出 JSON 自动重试 1 次后记 retried_ok=1，无静默丢弃）（待用户提供 Key）
 
 **验收方式**: pytest 新增 ≥8 条；真实跑一次后 UI 账本显示 `{总批/成功/失败}` 且与日志一致。
 **验收标准**: 人为 mock 一批失败 → 重试 1 次 → 仍未覆盖段在 UI 标灰可见；DeepSeek R1 风格 think 块响应可被正确解析；私网 base_url 被拒且 ollama 场景不受影响。

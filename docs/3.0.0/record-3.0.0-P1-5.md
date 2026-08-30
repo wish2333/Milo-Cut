@@ -33,7 +33,15 @@ cd frontend && bun run build         -> 通过
 cd frontend && bun run test          -> 251 passed
 ```
 
+## 真实链路验证（★，2026-08-30 补充完成）
+
+- 环境: Qwen（DashScope compatible-mode）+ `qwen3.8-flash`，用户提供的真实 Key（验证后已从本地 settings 还原，未入库）
+- test_connection: success，响应 3610ms
+- 智能删除: 30 段 → 2 批，账本 `{total:2, succeeded:2, retried_ok:0, failed:[], uncovered:[]}` 与实际批数一致；产出 28 条建议
+- 纠错 Mode A: 12 段 → 1 批，模型两轮均未输出可解析 JSON，自动重试 1 次后记 `retried_ok:1`，结果为空但**无静默丢弃**（账本可见）
+- 观察: qwen3.8-flash 对纠错 Mode A 的 JSON 指令遵循较弱（返回纯文本），现有 4+1 层解析兜底正常工作；如实际使用中纠错产出持续为空，建议后续在 prompt 中强化 JSON-only 约束或对 qwen 走 json_mode（qwen 已在 response_format 白名单外，SPEC 未要求改动）
+- 温度注意: 用户已保存的 settings.json 值优先于新默认 0.1（符合兼容承诺）
+
 ## 未验证边界
 
-- ★ 真实 Key 链路（智能删除 + 纠错各一次，账本数字对账）待用户提供
 - DeepSeek R1 think 块真实响应已由消毒层单测覆盖，真实样本待链路验证
