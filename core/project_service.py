@@ -14,7 +14,6 @@ from pathlib import Path
 from loguru import logger
 
 from core.models import (
-    AnalysisData,
     AnalysisResult,
     EditDecision,
     EditStatus,
@@ -605,6 +604,32 @@ class ProjectService:
             transcript=TranscriptData(segments=all_segments),
             edits=cleaned_edits,
         )
+        return {"success": True, "data": self._current.model_dump()}
+
+    def update_transcript_meta(
+        self,
+        engine: str | None = None,
+        language: str | None = None,
+    ) -> dict:
+        """Update transcript-level metadata without touching segments.
+
+        v3.0.0 M1-1: transcription results are the single source of truth;
+        this records which ASR engine/language produced the current transcript.
+        Only provided fields are updated; segments/edits are left untouched.
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        updates: dict = {}
+        if engine is not None:
+            updates["engine"] = engine
+        if language is not None:
+            updates["language"] = language
+        if not updates:
+            return {"success": True, "data": self._current.model_dump()}
+
+        transcript = self.active_timeline.transcript.model_copy(update=updates)
+        self._update_active_timeline(transcript=transcript)
         return {"success": True, "data": self._current.model_dump()}
 
     def update_media_info(self, media_info: dict) -> dict:

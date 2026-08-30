@@ -597,6 +597,15 @@ class MiloCutApi(Bridge):
         if not update_result["success"]:
             raise RuntimeError(update_result.get("error", "Failed to update transcript"))
 
+        # v3.0.0 M1-1: transcript metadata (engine/language) is persisted here;
+        # the structured update_transcript data is the single source of truth.
+        meta_result = self._project.update_transcript_meta(
+            engine=engine, language=transcript_data["language"]
+        )
+        project_data = (
+            meta_result["data"] if meta_result.get("success") else update_result["data"]
+        )
+
         # Auto-save SRT to project directory
         srt_path = None
         try:
@@ -645,15 +654,12 @@ class MiloCutApi(Bridge):
             logger.warning("Failed to auto-save SRT: {}", e)
             srt_path = None
 
-        # Import the auto-saved SRT back into the project
-        if srt_path:
-            try:
-                self.import_srt(srt_path)
-            except Exception as e:
-                logger.warning("Failed to import auto-saved SRT: {}", e)
+        # v3.0.0 M1-1: the auto-saved SRT is an archive deliverable only.
+        # It is no longer imported back into the project, so ASR-produced
+        # words/speaker data and seg_{start} ids survive intact.
 
         return {
-            "project": update_result["data"],
+            "project": project_data,
             "segment_count": len(result["data"].get("segments", [])),
             "word_count": result["data"].get("word_count", 0),
             "srt_path": srt_path,

@@ -63,11 +63,11 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 
 ### P1-1 M1-1 删除转写 SRT 回灌（0.5 天）
 
-- [ ] 删除 `main.py:648-653` 的 `import_srt(srt_path)` 回灌段（保留 SRT 归档导出与 `srt_path` 返回值）
-- [ ] 全仓检索 `srt_path` 消费点确认无依赖回灌副作用
-- [ ] 新增 `tests/test_transcription_words.py::test_transcription_keeps_words`（mock ASR 返回含 words 的 segments → 断言落库后 words 非空、id 为 `seg_` 前缀、engine 正确）
-- [ ] 更新受影响测试夹具（`seg-0001` 格式断言 → 兼容两种前缀或改用 ASR 格式）
-- [ ] ★ 真实链路验证：用 P1-1 的真实视频跑一次 whisper 转写，检查 project.json 中 words 保留
+- [x] 删除 `main.py:648-653` 的 `import_srt(srt_path)` 回灌段（保留 SRT 归档导出与 `srt_path` 返回值）✅
+- [x] 全仓检索 `srt_path` 消费点确认无依赖回灌副作用 ✅（前端 0 命中；后端仅归档导出链）
+- [x] 新增 `tests/test_transcription_words.py::test_transcription_keeps_words`（mock ASR 返回含 words 的 segments → 断言落库后 words 非空、id 为 `seg_` 前缀、engine 正确）✅ 实际 4 条测试（含落盘 JSON 断言 / 手动导入不变 / update_transcript_meta）
+- [x] 更新受影响测试夹具（`seg-0001` 格式断言 → 兼容两种前缀或改用 ASR 格式）✅ 核查后无需改动（现有 `seg-0001` 夹具均在 SRT 导入路径，行为未变）
+- [ ] ★ 真实链路验证：用 P1-1 的真实视频跑一次 whisper 转写，检查 project.json 中 words 保留（待用户提供视频）
 
 **验收方式**: 新测试绿 + 全量 pytest 绿 + 真实转写后 `jq '.timelines[0].transcript.segments[0].words | length' project.json` > 0。
 **验收标准**: 三条 ASR 链路（whisper/qwen/mlx，后两条至少 mock + 代码审查）words 均落库；手动 import_srt 三入口行为不变（App.vue / WorkspacePage / useTranscript 各手测一次）。
