@@ -168,3 +168,13 @@ class TestUpdateTranscriptMeta:
         after = api._project.current
         assert after.timelines[0].transcript.engine == "qwen3-asr"
         assert after.timelines[0].transcript.segments == segs_before
+
+    def test_transcription_emits_project_dirty(self, api):
+        """macOS smoke fix: transcription completion must trigger auto-save."""
+        api._handle_transcription(_make_task({}), None, lambda *a, **k: None)
+        assert not api._event_queue.empty(), "PROJECT_DIRTY must be emitted"
+        events = []
+        while not api._event_queue.empty():
+            events.append(api._event_queue.get())
+        names = [e[0] for e in events]
+        assert "project:dirty" in names

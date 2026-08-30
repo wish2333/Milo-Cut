@@ -11,6 +11,8 @@ export interface RecentProject {
   path: string
   updated_at: string
   created_at: string
+  // v3.0.0: main project.json corrupt; backup metadata used, open will recover
+  corrupted?: boolean
 }
 
 export interface AppSettings {

@@ -9,6 +9,7 @@ import ConflictResolutionView from "@/components/workspace/ConflictResolutionVie
 import { waitForPyWebView, call, onEvent, isDemoMode } from "./bridge"
 import { resetDemoRuntime } from "@/demo/demoBridge"
 import { useUvAvailability } from "@/composables/useUvAvailability"
+import { useToast } from "@/composables/useToast"
 import { EVENT_DEMO_PROJECT_UPDATED, EVENT_TASK_COMPLETED } from "@/utils/events"
 import type { Project, MediaInfo, ProjectResponse } from "@/types/project"
 import { isProjectPatch } from "@/types/project"
@@ -16,6 +17,7 @@ import { applyProjectPatch, isStalePatch } from "@/utils/projectPatch"
 
 const ready = ref(false)
 const bridgeError = ref("")
+const { showToast } = useToast()
 const { checkUvAvailable } = useUvAvailability()
 const project = ref<Project | null>(null)
 // v2.3.2 stage 2: monotonic revision tracker. Backend includes ``revision``
@@ -185,6 +187,11 @@ async function handleWindowDrop(e: DragEvent) {
     // Open existing project from project.json
     const openRes = await call<Project>("open_project", filePath)
     if (openRes.success && openRes.data) {
+      // v3.0.0 fix (macOS smoke): surface backup recovery on the drop path
+      const recoveredFrom = (openRes as unknown as { recovered_from?: string }).recovered_from
+      if (recoveredFrom) {
+        showToast("项目文件损坏，已从备份恢复", "info", 5000)
+      }
       setDirection(pageOrder(), 1)
       project.value = openRes.data
       triggerWaveformGeneration()
@@ -192,6 +199,11 @@ async function handleWindowDrop(e: DragEvent) {
       const data = openRes.data as unknown as { path: string }
       relinkLostPath.value = data.path
       showRelinkDialog.value = true
+    } else if (openRes.error === "MEDIA_NOT_FOUND") {
+      showToast("媒体文件缺失，无法打开项目", "error", 5000)
+    } else {
+      // v3.0.0 fix (macOS smoke): never fail silently on the drop path
+      showToast(openRes.error || "打开项目失败", "error", 5000)
     }
   } else if (!project.value && isMedia) {
     const probeRes = await call<MediaInfo>("probe_media", filePath)

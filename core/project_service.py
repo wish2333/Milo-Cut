@@ -2385,8 +2385,29 @@ class ProjectService:
                     "path": str(project_file),
                     "updated_at": meta.get("updated_at", ""),
                     "created_at": meta.get("created_at", ""),
+                    "corrupted": False,
                 })
             except (json.JSONDecodeError, OSError):
+                # v3.0.0 fix (macOS smoke): a corrupted main file must still
+                # show up in the recent list -- fall back to backup metadata
+                # so the user can open it (open_project recovers from .bak).
+                meta = None
+                for i in (1, 2):
+                    bak = project_file.with_suffix(f".json.bak.{i}")
+                    try:
+                        data = json.loads(bak.read_text(encoding="utf-8"))
+                        meta = data.get("project", {})
+                        break
+                    except (json.JSONDecodeError, OSError):
+                        continue
+                if meta is not None:
+                    recent.append({
+                        "name": meta.get("name", project_file.parent.name),
+                        "path": str(project_file),
+                        "updated_at": meta.get("updated_at", ""),
+                        "created_at": meta.get("created_at", ""),
+                        "corrupted": True,
+                    })
                 continue
 
         recent.sort(key=lambda p: p["updated_at"], reverse=True)

@@ -97,3 +97,22 @@ class TestNormalSavePathTimingGuard:
         res = svc.save_project()
         assert res["success"]
         assert svc._current_path.exists()
+
+
+class TestRecentProjectsCorruptFallback:
+    def test_corrupt_project_still_listed_with_bak_meta(self, svc, monkeypatch):
+        """macOS smoke fix: corrupted project.json stays in the recent list."""
+        monkeypatch.setattr(
+            "core.project_service.get_projects_dir",
+            lambda: svc._current_path.parent.parent,
+        )
+        svc.save_project()
+        svc.save_project()
+        svc._current_path.write_text('{"corrupt":', encoding="utf-8")
+
+        res = svc.get_recent_projects()
+        assert res["success"]
+        entries = [e for e in res["data"] if e["path"] == str(svc._current_path)]
+        assert len(entries) == 1, "corrupted project must stay visible"
+        assert entries[0]["corrupted"] is True
+        assert entries[0]["name"] == "t"

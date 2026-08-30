@@ -136,7 +136,13 @@ function formatRelativeTime(iso: string): string {
             @click="openRecentProject(rp)"
           >
             <div class="min-w-0 flex-1">
-              <div class="truncate text-sm font-semibold text-ink">{{ rp.name }}</div>
+              <div class="truncate text-sm font-semibold text-ink">
+                {{ rp.name }}
+                <span
+                  v-if="rp.corrupted"
+                  class="ml-1 rounded bg-status-pending/15 px-1 py-0.5 text-[10px] font-normal text-status-pending"
+                >主文件损坏，将从备份恢复</span>
+              </div>
               <div class="text-xs text-ink-muted truncate mt-0.5">{{ rp.path }}</div>
             </div>
             <div class="text-xs text-ink-muted-48 shrink-0">

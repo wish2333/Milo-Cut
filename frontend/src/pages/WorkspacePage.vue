@@ -132,6 +132,8 @@ const {
   pushSnapshot,
   undo,
   redo,
+  canUndo,
+  canRedo,
   clearHistory,
 } = useUndoRedo()
 
@@ -1478,6 +1480,9 @@ function isTextInput(el: EventTarget | null): boolean {
 function handleGlobalKeydown(e: KeyboardEvent) {
   if (isTextInput(e.target)) return
 
+  // v3.0.0 fix (macOS smoke): Cmd is the primary modifier on macOS
+  const mod = e.ctrlKey || e.metaKey
+
   if (e.shiftKey && e.code === "Space") {
     e.preventDefault()
     previewMode.value = previewMode.value === "original" ? "edited" : "original"
@@ -1488,23 +1493,23 @@ function handleGlobalKeydown(e: KeyboardEvent) {
     handleTogglePlay()
     return
   }
-  if (e.ctrlKey && e.key === "s") {
+  if (mod && e.key === "s") {
     e.preventDefault()
     handleSaveProject()
     return
   }
-  if (e.ctrlKey && e.key === "z" && !e.shiftKey) {
+  if (mod && e.key === "z" && !e.shiftKey) {
     e.preventDefault()
     handleUndo()
     return
   }
-  if (e.ctrlKey && (e.key === "y" || (e.key === "z" && e.shiftKey))) {
+  if (mod && (e.key === "y" || (e.key === "z" && e.shiftKey))) {
     e.preventDefault()
     handleRedo()
     return
   }
-  // §8: Ctrl+F toggle search/replace bar
-  if (e.ctrlKey && e.key === "f") {
+  // §8: Ctrl/Cmd+F toggle search/replace bar
+  if (mod && e.key === "f") {
     e.preventDefault()
     handleToggleSearchBar()
     return
@@ -1692,6 +1697,23 @@ onUnmounted(() => {
         <span v-if="isSaving" class="text-xs text-blue-300">保存中…</span>
         <span v-else-if="isDirty" class="text-xs text-gray-400">●</span>
         <span v-else-if="lastSavedAt" class="text-xs text-green-400">已保存</span>
+        <!-- v3.0.0 fix (macOS smoke): explicit undo/redo buttons -->
+        <button
+          class="mc-button mc-button-quiet min-h-8 px-2 py-1 text-xs hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+          :disabled="!canUndo"
+          title="撤销（⌘/Ctrl+Z）"
+          @click="handleUndo"
+        >
+          ↩ 撤销
+        </button>
+        <button
+          class="mc-button mc-button-quiet min-h-8 px-2 py-1 text-xs hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+          :disabled="!canRedo"
+          title="重做（⌘/Ctrl+Shift+Z / Ctrl+Y）"
+          @click="handleRedo"
+        >
+          ↪ 重做
+        </button>
         <button
           class="mc-button mc-button-quiet min-h-8 px-2 py-1 text-xs hover:bg-white/10 hover:text-white"
           title="保存项目（⌘/Ctrl+S）"

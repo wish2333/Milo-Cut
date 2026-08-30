@@ -605,6 +605,10 @@ class MiloCutApi(Bridge):
         project_data = (
             meta_result["data"] if meta_result.get("success") else update_result["data"]
         )
+        # v3.0.0 fix (macOS smoke): transcription must trigger auto-save.
+        # Before M1-1 the SRT round-trip's import_srt/_mark_dirty incidentally
+        # emitted PROJECT_DIRTY; now we emit it explicitly.
+        self._emit(PROJECT_DIRTY)
 
         # Auto-save SRT to project directory
         srt_path = None
