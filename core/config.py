@@ -76,6 +76,9 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     # allowance for local inference endpoints (Ollama etc.)
     "llm_max_batch_chars": 4000,
     "llm_allow_local_urls": False,
+    # v3.0.0 M5: layered undo via backend apply_undo (undo.v2). When False
+    # the frontend falls back to the legacy full-snapshot undo path.
+    "undo_v2": True,
     # Per-provider config cache (v2.1.0): preserves base_url/api_key/model
     # across provider switches so the user never loses what they typed.
     # Structure: {provider_id: {base_url, api_key, model}}

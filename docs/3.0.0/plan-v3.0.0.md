@@ -127,9 +127,9 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 ### P2-1 M5 分层撤销快照（3 天，本 Phase 风险最高，预留缓冲）
 
 **Day 1 —— 协议一致性测试先行（TDD）**：
-- [ ] 后端 `project_service.apply_undo(layers_payload)`：校验快照结构 → 替换层 → revision+1 → 返回 ProjectPatch（复用 `_success_patch`）；拒绝 revision 回退
-- [ ] 先写测试：undo 后 revision 严格递增、stale patch 拦截行为不变、跨层原子应用（split 的 segments+edits 同退）
-- [ ] feature flag `undo.v2`（settings，默认 true；false 走旧全量路径）
+- [x] 后端 `project_service.apply_undo(layers_payload)`：校验快照结构 → 替换层 → revision+1 → 返回 ProjectPatch（复用 `_success_patch`）；拒绝 revision 回退 ✅ 2026-08-30（含 main.py `@expose apply_undo` + `_mark_dirty` 接线；层白名单 segments/edits/analysis，media/active_timeline_id 不做撤销层——前端从不快照这两层，见 record）
+- [x] 先写测试：undo 后 revision 严格递增、stale patch 拦截行为不变、跨层原子应用（split 的 segments+edits 同退）✅ `tests/test_apply_undo.py` 14 条（单调 3 / stale 拒绝 3 / 跨层原子 2 / 校验 6，含全败不落半程变更与 sort invariant 恢复）
+- [x] feature flag `undo.v2`（settings，默认 true；false 走旧全量路径）✅ 扁平键 `undo_v2`（对齐 `llm_max_batch_chars` 命名先例），`apply_undo` @expose 读取，关闭时返回明确错误引导前端回退
 
 **Day 2 —— 前端记录结构**：
 - [ ] `utils/undoRecords.ts`：`{layer, label, records}` 结构 + segments 层段级 diff（id→Segment|null Map + `id_lineage` 处理 split/merge 演化；复杂度失控则降级为"数组浅拷贝引用"并记录决策）

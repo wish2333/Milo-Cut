@@ -1592,6 +1592,19 @@ class MiloCutApi(Bridge):
         )
 
     @expose
+    def apply_undo(self, layers_payload: dict, base_revision: int) -> dict:
+        """Layered undo/redo entry point (v3.0.0 M5).
+
+        Gated by the ``undo_v2`` setting: when disabled the frontend is
+        told to fall back to the legacy full-snapshot path.
+        """
+        if not load_settings().get("undo_v2", True):
+            return {"success": False, "error": "undo_v2 disabled"}
+        return self._mark_dirty(
+            self._project.apply_undo(layers_payload, base_revision)
+        )
+
+    @expose
     def add_segment(
         self, start: float, end: float, text: str = "", seg_type: str = "subtitle"
     ) -> dict:

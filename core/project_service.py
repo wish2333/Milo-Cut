@@ -157,6 +157,107 @@ class ProjectService:
         )
         return {"success": True, "data": patch.model_dump(mode="json")}
 
+    # v3.0.0 M5: layered undo. Undoable layers are the timeline-scoped ones
+    # the frontend actually snapshots before an operation. ``media`` /
+    # ``active_timeline_id`` are not undoable (no caller snapshots them).
+    _UNDO_LAYERS = ("segments", "edits", "analysis")
+
+    def apply_undo(self, layers_payload: dict, base_revision: int) -> dict:
+        """Replace timeline layers from an undo/redo snapshot (M5-2).
+
+        The single backend entry point for the layered undo path. Semantics
+        (risk review 4.3 red lines):
+
+        1. Validate the snapshot structure for *every* requested layer
+           BEFORE mutating anything (all-or-nothing atomic apply).
+        2. Reject stale/future ``base_revision`` (defends against
+           out-of-order frontend state, same contract as the patch
+           protocol's ``is_stale_patch``).
+        3. Replace the layers, bump revision strictly forward, and return
+           the resulting ProjectPatch via :meth:`_success_patch` so the
+           frontend applies it through the existing patch channel.
+
+        Args:
+            layers_payload: mapping layer name -> layer payload
+                (``segments``: list of Segment dicts, ``edits``: list of
+                EditDecision dicts, ``analysis``: AnalysisData dict).
+            base_revision: the frontend's last seen revision; must equal
+                the current revision.
+
+        Returns:
+            ``_success_patch`` envelope on success; ``{"success": False,
+            "error": ...}`` otherwise. Revision is never rewound.
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+        if not isinstance(layers_payload, dict) or not layers_payload:
+            return {"success": False, "error": "apply_undo: empty layers payload"}
+
+        unknown = set(layers_payload) - set(self._UNDO_LAYERS)
+        if unknown:
+            return {
+                "success": False,
+                "error": f"apply_undo: unknown layer(s): {sorted(unknown)}",
+            }
+        if base_revision != self._revision:
+            return {
+                "success": False,
+                "error": (
+                    f"apply_undo: stale revision {base_revision} "
+                    f"(current {self._revision})"
+                ),
+                "data": {"current_revision": self._revision},
+            }
+
+        # Validate all layers first - no mutation on any failure.
+        from core.models import AnalysisData, EditDecision, Segment
+
+        validated: dict = {}
+        try:
+            if "segments" in layers_payload:
+                if not isinstance(layers_payload["segments"], list):
+                    raise ValueError("segments must be a list")
+                validated["segments"] = [
+                    Segment.model_validate(s) for s in layers_payload["segments"]
+                ]
+            if "edits" in layers_payload:
+                if not isinstance(layers_payload["edits"], list):
+                    raise ValueError("edits must be a list")
+                validated["edits"] = [
+                    EditDecision.model_validate(e) for e in layers_payload["edits"]
+                ]
+            if "analysis" in layers_payload:
+                validated["analysis"] = AnalysisData.model_validate(
+                    layers_payload["analysis"]
+                )
+        except Exception as exc:  # pydantic ValidationError or shape error
+            return {"success": False, "error": f"apply_undo: invalid snapshot: {exc}"}
+
+        updates: dict = {}
+        if "segments" in validated:
+            new_transcript = self.active_timeline.transcript.model_copy(
+                update={"segments": validated["segments"]}
+            )
+            updates["transcript"] = new_transcript
+        if "edits" in validated:
+            updates["edits"] = validated["edits"]
+        if "analysis" in validated:
+            updates["analysis"] = validated["analysis"]
+        self._update_active_timeline(**updates)
+
+        if "segments" in validated:
+            # Restore the start-ascending invariant the rest of the code
+            # base relies on (snapshots may be legitimately unordered).
+            self._enforce_segment_sort_invariant()
+
+        def _dump(layer: str):
+            val = validated[layer]
+            if isinstance(val, list):
+                return [item.model_dump(mode="json") for item in val]
+            return val.model_dump(mode="json")
+
+        return self._success_patch(**{layer: _dump(layer) for layer in validated})
+
     def create_project(self, name: str, media_path: str, media_info: dict) -> dict:
         """Create a new project with media info."""
         media_fields = {k: v for k, v in media_info.items() if k in MediaInfo.model_fields and k != "path"}
