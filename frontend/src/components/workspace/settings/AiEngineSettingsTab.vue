@@ -5,6 +5,7 @@ import type { AppSettings } from "@/types/edit"
 import type { PluginInfo, ModelInfo, ModelMirror } from "@/types/project"
 import { usePluginManager } from "@/composables/usePluginManager"
 import { useUvAvailability } from "@/composables/useUvAvailability"
+import { useAsrEngines } from "@/composables/useAsrEngines"
 
 /**
  * AI engine settings tab (v3.0.0 M8-1, extracted from SettingsModal.vue).
@@ -31,6 +32,10 @@ const modelList = ref<ModelInfo[]>([])
 const installingPlugin = ref<string | null>(null)
 const installProgress = ref(0)
 const installMessage = ref("")
+
+// M8-2b: plugin/model changes must reach the shared ASR engine domain so
+// the workspace engine selector and readiness badges follow without restart.
+const { refreshAfterPluginChange } = useAsrEngines()
 
 const { uvAvailable, recheckUvAvailable } = useUvAvailability()
 
@@ -151,6 +156,7 @@ async function handleInstallPlugin(pluginId: string) {
     pluginList.value = await pluginManager.listPlugins()
     modelList.value = await pluginManager.listModels()
     refreshInstalledLists()
+    await refreshAfterPluginChange()
   } else {
     emit("status", pluginManager.error.value || "Installation failed", 3000)
   }
@@ -165,6 +171,7 @@ async function handleUninstallPlugin(pluginId: string) {
     pluginList.value = await pluginManager.listPlugins()
     modelList.value = await pluginManager.listModels()
     refreshInstalledLists()
+    await refreshAfterPluginChange()
   } else {
     emit("status", pluginManager.error.value || "Uninstall failed", 3000)
   }
@@ -176,6 +183,7 @@ async function handleDeleteModel(modelId: string) {
     emit("status", "Model deleted", 3000)
     modelList.value = await pluginManager.listModels()
     refreshInstalledLists()
+    await refreshAfterPluginChange()
   } else {
     emit("status", pluginManager.error.value || "Delete failed", 3000)
   }
@@ -190,6 +198,7 @@ async function handleDownloadModel(modelId: string) {
     emit("status", "Model downloaded", 3000)
     modelList.value = await pluginManager.listModels()
     refreshInstalledLists()
+    await refreshAfterPluginChange()
   } else {
     emit("status", pluginManager.error.value || "Download failed", 3000)
   }

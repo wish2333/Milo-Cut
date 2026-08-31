@@ -2,17 +2,18 @@
 import { computed, onMounted, ref } from "vue"
 import { call } from "@/bridge"
 import type { AppSettings } from "@/types/edit"
-import type { ModelInfo, PluginInfo } from "@/types/project"
-import { usePluginManager } from "@/composables/usePluginManager"
+import { useAsrEngines, deriveEngineChangePatch } from "@/composables/useAsrEngines"
 
 /**
  * Export & ASR defaults settings tab (v3.0.0 M8-1, extracted from
- * SettingsModal.vue).
+ * SettingsModal.vue; ASR section re-wired in M8-2b).
  *
- * Owns: ASR defaults (engine/model/language/device/compute/VAD), export
- * codec/bitrate/preset/CRF/resolution/transitions, and the hardware encoder
- * detection feeding the codec list. Plugin manager state is instance-local.
- * Settings mutations are emitted as patches.
+ * Owns: export codec/bitrate/preset/CRF/resolution/transitions and the
+ * hardware encoder detection feeding the codec list.
+ * The ASR defaults section is a view of the shared `useAsrEngines` domain
+ * (single source together with WorkspacePage): edits update the shared
+ * state immediately (the other UI follows) AND emit an AppSettings patch
+ * so the modal 保存 persists the same values.
  */
 const props = defineProps<{
   settings: AppSettings
@@ -22,9 +23,76 @@ const emit = defineEmits<{
   update: [patch: Partial<AppSettings>]
 }>()
 
-const pluginManager = usePluginManager()
-const pluginList = ref<PluginInfo[]>([])
-const modelList = ref<ModelInfo[]>([])
+// -- Shared ASR engine domain (M8-2b) ------------------------------------
+
+const {
+  asrEngine,
+  asrPluginId,
+  currentSettings,
+  installedEngines,
+  availableModels,
+  isDarwin,
+  isMlx,
+  supportsGpu,
+  ensureLoaded,
+} = useAsrEngines()
+
+// Engine dropdown source (original modal filter: faster-whisper/qwen3-asr engines)
+const installedAsrEngines = computed(() =>
+  installedEngines.value.filter(e => e.engine === "faster-whisper" || e.engine === "qwen3-asr"),
+)
+
+function updateField<K extends keyof AppSettings>(key: K, value: AppSettings[K]) {
+  emit("update", { [key]: value } as Partial<AppSettings>)
+}
+
+// Handle engine plugin change: derive engine type, reset device/compute defaults.
+// Updates the shared domain state (workspace follows) + emits the settings patch.
+function handleEnginePluginChange(pluginId: string) {
+  const eng = installedEngines.value.find(e => e.pluginId === pluginId)
+  if (!eng) return  // fallback option (engine name only, nothing installed)
+  asrPluginId.value = pluginId
+  emit("update", (deriveEngineChangePatch(pluginId, eng.engine) ?? {}) as Partial<AppSettings>)
+}
+
+function changeModelSize(value: string) {
+  currentSettings.value.model_size = value
+  emit("update", { asr_model_size: value })
+}
+
+function changeLanguage(value: string) {
+  currentSettings.value.language = value
+  emit("update", { asr_language: value })
+}
+
+function changeDevice(value: "cpu" | "cuda" | "auto" | "mps") {
+  currentSettings.value.device = value
+  emit("update", { asr_device: value })
+}
+
+function changeComputeType(value: string) {
+  currentSettings.value.compute_type = value
+  emit("update", asrEngine.value === "faster-whisper"
+    ? { whisper_compute_type: value as AppSettings["whisper_compute_type"] }
+    : { qwen_compute_type: value as AppSettings["qwen_compute_type"] })
+}
+
+function changeVadFilter(checked: boolean) {
+  currentSettings.value.vad_filter = checked
+  emit("update", { asr_vad_filter: checked })
+}
+
+function changeVadThreshold(value: number) {
+  currentSettings.value.vad_threshold = value
+  emit("update", { whisper_vad_threshold: value })
+}
+
+function changeVadMinSilenceMs(value: number) {
+  currentSettings.value.vad_min_silence_ms = value
+  emit("update", { whisper_vad_min_silence_ms: value })
+}
+
+// -- Export section: hardware encoder detection ---------------------------
 
 interface EncoderMeta {
   label: string
@@ -65,49 +133,15 @@ const availableVideoCodecs = computed(() => {
   return list
 })
 
-// ASR models filtered by current engine, excluding ForcedAligner, deduplicated
-const asrModels = computed(() => {
-  const engine = props.settings.asr_engine
-  const seen = new Set<string>()
-  return modelList.value.filter(m => {
-    if (m.engine !== engine || m.model_id.includes("ForcedAligner") || seen.has(m.model_id)) return false
-    seen.add(m.model_id)
-    return true
-  })
-})
-
-// Installed ASR engine plugins (CPU + GPU variants), deduplicated by plugin_id
-const installedAsrPlugins = computed(() => {
-  const seen = new Set<string>()
-  return pluginList.value.filter(p => {
-    if (p.status !== "installed") return false
-    if ((p.engine !== "faster-whisper" && p.engine !== "qwen3-asr") || seen.has(p.plugin_id)) return false
-    seen.add(p.plugin_id)
-    return true
-  })
-})
-
-// Whether the currently selected ASR plugin supports GPU — macOS has no NVIDIA CUDA
-const isDarwin = navigator.platform.toLowerCase().includes('mac')
-const isMlxPlugin = computed(() => (props.settings.asr_plugin_id ?? '').includes('-mlx'))
-const asrSupportsGpu = computed(() => {
-  if (isDarwin || isMlxPlugin.value) return false
-  const pid = props.settings.asr_plugin_id ?? ''
-  return pid.length > 0 && !pid.includes('-cpu')
-})
-
-function updateField<K extends keyof AppSettings>(key: K, value: AppSettings[K]) {
-  emit("update", { [key]: value } as Partial<AppSettings>)
-}
-
 onMounted(async () => {
-  const [pluginsRes, encodersRes, metaRes] = await Promise.all([
-    pluginManager.listPlugins(),
+  // Shared ASR domain load (single-flight; engines before settings hydration)
+  // runs alongside the export-specific encoder detection.
+  const encodersLoaded = Promise.all([
     call<{ encoders: string[] }>("detect_gpu_encoders"),
     call<Record<string, EncoderMeta>>("get_encoder_metadata"),
   ])
-  pluginList.value = pluginsRes
-  modelList.value = await pluginManager.listModels()
+  await ensureLoaded()
+  const [encodersRes, metaRes] = await encodersLoaded
   if (encodersRes.success && encodersRes.data) {
     gpuEncoders.value = encodersRes.data.encoders
   }
@@ -115,26 +149,6 @@ onMounted(async () => {
     encoderMeta.value = metaRes.data
   }
 })
-
-// Handle engine plugin change: derive engine type, reset device/compute defaults
-function handleEnginePluginChange(pluginId: string) {
-  const plugin = installedAsrPlugins.value.find(p => p.plugin_id === pluginId)
-  if (!plugin) return
-  const gpu = !isDarwin && !pluginId.includes('-cpu')
-  const engine = plugin.engine
-  const defaults: Partial<AppSettings> = {
-    asr_plugin_id: pluginId,
-    asr_engine: engine,
-    asr_device: gpu ? 'cuda' : (isDarwin && engine === 'faster-whisper') ? 'auto' : (isDarwin && engine === 'qwen3-asr') ? 'mps' : 'cpu',
-    asr_language: engine === 'qwen3-asr' ? 'auto' : 'zh',
-  }
-  if (engine === 'qwen3-asr') {
-    defaults.qwen_compute_type = gpu ? 'bfloat16' : 'float32'
-  } else {
-    defaults.whisper_compute_type = gpu ? 'int8_float16' : 'int8'
-  }
-  emit("update", defaults)
-}
 </script>
 
 <template>
@@ -146,25 +160,25 @@ function handleEnginePluginChange(pluginId: string) {
         <div class="flex items-center justify-between">
           <label class="text-sm text-gray-600">Default engine</label>
           <select
-            :value="props.settings.asr_plugin_id || props.settings.asr_engine"
+            :value="asrPluginId || asrEngine"
             class="px-2 py-1 text-sm border border-gray-300 rounded"
             @change="handleEnginePluginChange(($event.target as HTMLSelectElement).value)"
           >
-            <option v-for="p in installedAsrPlugins" :key="p.plugin_id" :value="p.plugin_id">
-              {{ p.display_name }}
+            <option v-for="p in installedAsrEngines" :key="p.pluginId" :value="p.pluginId">
+              {{ p.displayName }}
             </option>
-            <option v-if="installedAsrPlugins.length === 0" value="faster-whisper">Faster Whisper</option>
-            <option v-if="installedAsrPlugins.length === 0" value="qwen3-asr">Qwen3 ASR</option>
+            <option v-if="installedAsrEngines.length === 0" value="faster-whisper">Faster Whisper</option>
+            <option v-if="installedAsrEngines.length === 0" value="qwen3-asr">Qwen3 ASR</option>
           </select>
         </div>
         <div class="flex items-center justify-between">
           <label class="text-sm text-gray-600">Model</label>
           <select
-            :value="props.settings.asr_model_size"
+            :value="currentSettings.model_size"
             class="px-2 py-1 text-sm border border-gray-300 rounded"
-            @change="updateField('asr_model_size', ($event.target as HTMLSelectElement).value)"
+            @change="changeModelSize(($event.target as HTMLSelectElement).value)"
           >
-            <option v-for="m in asrModels" :key="m.model_id" :value="m.model_id">
+            <option v-for="m in availableModels" :key="m.model_id" :value="m.model_id">
               {{ m.display_name }}
             </option>
           </select>
@@ -172,9 +186,9 @@ function handleEnginePluginChange(pluginId: string) {
         <div class="flex items-center justify-between">
           <label class="text-sm text-gray-600">Language</label>
           <select
-            :value="props.settings.asr_language"
+            :value="currentSettings.language"
             class="px-2 py-1 text-sm border border-gray-300 rounded"
-            @change="updateField('asr_language', ($event.target as HTMLSelectElement).value)"
+            @change="changeLanguage(($event.target as HTMLSelectElement).value)"
           >
             <option value="zh">Chinese</option>
             <option value="en">English</option>
@@ -183,31 +197,31 @@ function handleEnginePluginChange(pluginId: string) {
             <option value="auto">Auto-detect</option>
           </select>
         </div>
-        <div v-if="!isMlxPlugin" class="flex items-center justify-between">
+        <div v-if="!isMlx" class="flex items-center justify-between">
           <label class="text-sm text-gray-600">Device</label>
           <select
-            :value="props.settings.asr_device"
+            :value="currentSettings.device"
             class="px-2 py-1 text-sm border border-gray-300 rounded"
-            @change="updateField('asr_device', ($event.target as HTMLSelectElement).value as 'cpu' | 'cuda' | 'auto' | 'mps')"
+            @change="changeDevice(($event.target as HTMLSelectElement).value as 'cpu' | 'cuda' | 'auto' | 'mps')"
           >
             <option v-if="!isDarwin" value="cpu">CPU</option>
-            <option v-if="asrSupportsGpu" value="cuda">CUDA (GPU)</option>
-            <option v-if="props.settings.asr_engine === 'faster-whisper'" value="auto">Auto</option>
-            <option v-if="isDarwin && props.settings.asr_engine === 'qwen3-asr'" value="mps">MPS</option>
+            <option v-if="supportsGpu" value="cuda">CUDA (GPU)</option>
+            <option v-if="asrEngine === 'faster-whisper'" value="auto">Auto</option>
+            <option v-if="isDarwin && asrEngine === 'qwen3-asr'" value="mps">MPS</option>
           </select>
-          <span v-if="isDarwin && props.settings.asr_engine === 'faster-whisper'" class="text-xs text-gray-400 ml-2">MPS (Metal Performance Shaders)</span>
-          <span v-else-if="isDarwin && props.settings.asr_engine === 'qwen3-asr'" class="text-xs text-gray-400 ml-2">Metal Performance Shaders (Apple GPU)</span>
-          <span v-else-if="!asrSupportsGpu" class="text-xs text-gray-400 ml-2">GPU not available for this plugin</span>
+          <span v-if="isDarwin && asrEngine === 'faster-whisper'" class="text-xs text-gray-400 ml-2">MPS (Metal Performance Shaders)</span>
+          <span v-else-if="isDarwin && asrEngine === 'qwen3-asr'" class="text-xs text-gray-400 ml-2">Metal Performance Shaders (Apple GPU)</span>
+          <span v-else-if="!supportsGpu" class="text-xs text-gray-400 ml-2">GPU not available for this plugin</span>
         </div>
         <div v-else class="text-xs text-gray-400">Apple Silicon (Metal)</div>
-        <div v-if="!isMlxPlugin" class="flex items-center justify-between">
+        <div v-if="!isMlx" class="flex items-center justify-between">
           <label class="text-sm text-gray-600">Compute type</label>
           <select
-            :value="props.settings.asr_engine === 'faster-whisper' ? props.settings.whisper_compute_type : props.settings.qwen_compute_type"
+            :value="currentSettings.compute_type"
             class="px-2 py-1 text-sm border border-gray-300 rounded"
-            @change="updateField(props.settings.asr_engine === 'faster-whisper' ? 'whisper_compute_type' : 'qwen_compute_type', ($event.target as HTMLSelectElement).value as 'int8' | 'int8_float16' | 'float16' | 'float32' | 'bfloat16')"
+            @change="changeComputeType(($event.target as HTMLSelectElement).value)"
           >
-            <template v-if="props.settings.asr_engine === 'faster-whisper'">
+            <template v-if="asrEngine === 'faster-whisper'">
               <option value="int8">INT8 (fastest)</option>
               <option v-if="!isDarwin" value="int8_float16">INT8 FP16 (balanced)</option>
               <option v-if="!isDarwin" value="float16">FP16</option>
@@ -220,46 +234,46 @@ function handleEnginePluginChange(pluginId: string) {
             </template>
           </select>
         </div>
-        <div v-if="props.settings.asr_engine === 'faster-whisper'" class="flex items-center justify-between">
+        <div v-if="asrEngine === 'faster-whisper'" class="flex items-center justify-between">
           <label class="text-sm text-gray-600">VAD filter</label>
           <div class="flex items-center gap-2">
             <input
               type="checkbox"
-              :checked="props.settings.asr_vad_filter"
+              :checked="currentSettings.vad_filter"
               class="w-4 h-4 mt-0.5 accent-blue-600"
-              @change="updateField('asr_vad_filter', ($event.target as HTMLInputElement).checked)"
+              @change="changeVadFilter(($event.target as HTMLInputElement).checked)"
             />
             <span class="text-xs text-gray-500">Reduce hallucinations in noisy audio</span>
           </div>
         </div>
         <!-- VAD sliders (visible when vad_filter is on and engine is faster-whisper) -->
-        <template v-if="props.settings.asr_engine === 'faster-whisper' && props.settings.asr_vad_filter">
+        <template v-if="asrEngine === 'faster-whisper' && currentSettings.vad_filter">
           <label class="block mb-2">
             <span class="text-xs text-gray-500">
-              VAD Threshold: {{ (props.settings.whisper_vad_threshold ?? 0.5).toFixed(2) }}
+              VAD Threshold: {{ currentSettings.vad_threshold.toFixed(2) }}
             </span>
             <input
               type="range"
-              :value="props.settings.whisper_vad_threshold ?? 0.5"
+              :value="currentSettings.vad_threshold"
               min="0"
               max="1"
               step="0.05"
               class="w-full mt-1"
-              @input="updateField('whisper_vad_threshold', parseFloat(($event.target as HTMLInputElement).value))"
+              @input="changeVadThreshold(parseFloat(($event.target as HTMLInputElement).value))"
             />
           </label>
           <label class="block mb-3">
             <span class="text-xs text-gray-500">
-              Min Silence (ms): {{ props.settings.whisper_vad_min_silence_ms ?? 500 }}
+              Min Silence (ms): {{ currentSettings.vad_min_silence_ms }}
             </span>
             <input
               type="range"
-              :value="props.settings.whisper_vad_min_silence_ms ?? 500"
+              :value="currentSettings.vad_min_silence_ms"
               min="100"
               max="2000"
               step="50"
               class="w-full mt-1"
-              @input="updateField('whisper_vad_min_silence_ms', parseInt(($event.target as HTMLInputElement).value))"
+              @input="changeVadMinSilenceMs(parseInt(($event.target as HTMLInputElement).value))"
             />
           </label>
         </template>

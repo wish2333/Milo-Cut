@@ -177,7 +177,14 @@ class TestFrontendSource:
             )
 
     def test_workspace_handle_transcribe_saves_first(self):
-        """handleTranscribe must call saveAsrSettings() before runTranscription()."""
+        """handleTranscribe must persist ASR settings before runTranscription().
+
+        v3.0.0 M8-2b: the persistence logic moved into
+        useAsrEngines.saveAsrSettings; WorkspacePage keeps the
+        handleSaveAsrSettings wrapper (closes the popover on success).
+        Match case-insensitively so either spelling satisfies the
+        save-before-transcribe invariant.
+        """
         src = _read_source("frontend/src/pages/WorkspacePage.vue")
         # Find the handleTranscribe function body
         match = re.search(
@@ -186,13 +193,13 @@ class TestFrontendSource:
             re.DOTALL,
         )
         assert match is not None, "handleTranscribe function not found"
-        body = match.group(1)
+        body = match.group(1).lower()
         # Both calls must exist
-        assert "saveAsrSettings" in body, "handleTranscribe does not call saveAsrSettings"
-        assert "runTranscription" in body, "handleTranscribe does not call runTranscription"
+        assert "saveasrsettings" in body, "handleTranscribe does not call saveAsrSettings"
+        assert "runtranscription" in body, "handleTranscribe does not call runTranscription"
         # saveAsrSettings must come before runTranscription
-        save_pos = body.index("saveAsrSettings")
-        transcribe_pos = body.index("runTranscription")
+        save_pos = body.index("saveasrsettings")
+        transcribe_pos = body.index("runtranscription")
         assert save_pos < transcribe_pos, (
             f"saveAsrSettings (pos {save_pos}) must come before "
             f"runTranscription (pos {transcribe_pos})"

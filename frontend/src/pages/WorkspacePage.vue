@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from "vue"
-import type { Project, Segment, EditDecision, ModelInfo, Timeline as TimelineData, ProjectResponse } from "@/types/project"
+import type { Project, Segment, EditDecision, Timeline as TimelineData, ProjectResponse } from "@/types/project"
 import { formatTimeShort } from "@/utils/format"
 import { call, onEvent, isDemoMode } from "@/bridge"
 import { useAnalysis } from "@/composables/useAnalysis"
@@ -9,7 +9,7 @@ import { useEdit } from "@/composables/useEdit"
 import { useSegmentEdit } from "@/composables/useSegmentEdit"
 import { useToast } from "@/composables/useToast"
 import { useUndoRedo } from "@/composables/useUndoRedo"
-import { usePluginManager } from "@/composables/usePluginManager"
+import { useAsrEngines } from "@/composables/useAsrEngines"
 import { useUvAvailability } from "@/composables/useUvAvailability"
 import { useLlmTasks } from "@/composables/useLlmTasks"
 import { useEditedPlayback } from "@/composables/useEditedPlayback"
@@ -30,6 +30,9 @@ import SearchReplaceBar from "@/components/workspace/SearchReplaceBar.vue"
 import VideoControls from "@/components/workspace/VideoControls.vue"
 import SubtitleOverlay from "@/components/workspace/SubtitleOverlay.vue"
 import SettingsModal from "@/components/workspace/SettingsModal.vue"
+import TranscribeSettingsPopover from "@/components/workspace/popovers/TranscribeSettingsPopover.vue"
+import SilenceSettingsPopover from "@/components/workspace/popovers/SilenceSettingsPopover.vue"
+import SubtitleTrimSettingsPopover from "@/components/workspace/popovers/SubtitleTrimSettingsPopover.vue"
 import DemoPreviewSurface from "@/components/demo/DemoPreviewSurface.vue"
 import DemoResponsiveWorkspace from "@/components/demo/DemoResponsiveWorkspace.vue"
 import { useDemoPlayback } from "@/composables/useDemoPlayback"
@@ -188,7 +191,6 @@ const {
 )
 
 const { showToast } = useToast()
-const { listPlugins, checkEngineReady, listModels } = usePluginManager()
 
 const statusMessage = ref("")
 const errorMessage = ref("")
@@ -280,101 +282,24 @@ function togglePreviewMode() {
   previewMode.value = previewMode.value === "edited" ? "original" : "edited"
 }
 
-// ASR Transcription settings - per-engine storage so switching preserves settings
-const asrSettingsPerEngine = ref<Record<string, {
-  model_size: string
-  language: string
-  device: "cpu" | "cuda" | "auto" | "mps"
-  compute_type: string
-  vad_filter: boolean
-  vad_threshold: number
-  vad_min_silence_ms: number
-}>>({
-  "faster-whisper": {
-    model_size: "large-v3-turbo",
-    language: "zh",
-    device: "cuda" as "cpu" | "cuda" | "auto" | "mps",
-    compute_type: "int8_float16",
-    vad_filter: true,
-    vad_threshold: 0.5,
-    vad_min_silence_ms: 500,
-  },
-  "qwen3-asr": {
-    model_size: "Qwen/Qwen3-ASR-0.6B",
-    language: "auto",
-    device: "cuda" as "cpu" | "cuda" | "auto" | "mps",
-    compute_type: "bfloat16",
-    vad_filter: false,
-    vad_threshold: 0.5,
-    vad_min_silence_ms: 500,
-  },
-})
-
-// Compute type options per engine (MLX: none; macOS CPU: no int8_float16/float16/bfloat16)
-const computeTypeOptions = computed(() => {
-  if (isMlx.value) return []
-  if (asrEngine.value === 'faster-whisper') {
-    const gpuOptions = [
-      { value: 'int8', label: 'INT8 (fastest)' },
-      { value: 'int8_float16', label: 'INT8 FP16 (balanced)' },
-      { value: 'float16', label: 'FP16' },
-      { value: 'float32', label: 'FP32 (highest quality)' },
-    ]
-    const cpuOptions = [
-      { value: 'int8', label: 'INT8 (fastest)' },
-      { value: 'float32', label: 'FP32 (highest quality)' },
-    ]
-    return (supportsGpu.value || asrSettingsPerEngine.value[asrEngine.value]?.device === 'auto') ? gpuOptions : cpuOptions
-  }
-  if (isDarwin) {
-    return [
-      { value: 'float16', label: 'FP16' },
-      { value: 'float32', label: 'FP32' },
-    ]
-  }
-  return [
-    { value: 'bfloat16', label: 'BF16 (recommended)' },
-    { value: 'float16', label: 'FP16' },
-    { value: 'float32', label: 'FP32' },
-  ]
-})
-
-// Current engine's pluginId for device filtering - use asrPluginId directly
-// since it tracks the exact selected variant (CPU vs GPU)
-const currentEnginePluginId = computed(() => {
-  return asrPluginId.value
-})
-
-// Whether current engine supports GPU (CUDA) — macOS has no NVIDIA CUDA
-const isDarwin = navigator.platform.toLowerCase().includes('mac')
-const isMlx = computed(() => asrPluginId.value.includes('-mlx'))
-const supportsGpu = computed(() => {
-  if (isDarwin) return false
-  const pid = currentEnginePluginId.value
-  // CPU-only plugins have "-cpu" suffix in pluginId
-  return pid.length > 0 && !pid.includes('-cpu')
-})
-
-const asrEngine = ref<"faster-whisper" | "qwen3-asr">("faster-whisper")
-const asrPluginId = ref("")  // Tracks which specific plugin variant is selected (CPU vs GPU)
-
-// Installed ASR engines (filtered from plugin list)
-interface InstalledEngine {
-  engine: string
-  displayName: string
-  pluginId: string
-  ready: boolean
-}
-const installedEngines = ref<InstalledEngine[]>([])
-const hasInstalledEngines = computed(() => installedEngines.value.length > 0)
-
-// Available ASR models (loaded from plugin manager)
-const modelList = ref<ModelInfo[]>([])
-const availableModels = computed(() => {
-  return modelList.value
-    .filter(m => m.engine === asrEngine.value && !m.model_id.includes("ForcedAligner"))
-    .filter((m, i, arr) => arr.findIndex(x => x.model_id === m.model_id) === i)
-})
+// v3.0.0 M8-2b: ASR engine domain unified in useAsrEngines (single source
+// shared with the settings tabs -- plugin discovery, per-engine settings,
+// GPU/compute derivation, persistence). State is a module-level singleton.
+const {
+  asrEngine,
+  asrPluginId,
+  asrSettingsPerEngine,
+  installedEngines,
+  hasInstalledEngines,
+  availableModels,
+  isDarwin,
+  isMlx,
+  supportsGpu,
+  computeTypeOptions,
+  ensureLoaded: ensureAsrEnginesLoaded,
+  saveAsrSettings,
+  checkEngineReady,
+} = useAsrEngines()
 
 const silenceThreshold = ref(-30)
 const silenceMinDuration = ref(0.5)
@@ -527,10 +452,9 @@ onMounted(async () => {
 
   runIdle(async () => {
     await loadSilenceSettings()
-    await loadInstalledEngines()  // Must run BEFORE loadAsrSettings
-    await loadAsrSettings()
-    modelList.value = await listModels()
-    validateModelSize()
+    // M8-2b: engine discovery -> settings hydration contract lives inside
+    // ensureLoaded (single-flight, shared with the settings tabs).
+    await ensureAsrEnginesLoaded()
     // Phase 2: load LLM config status for AI assistant panel
     await loadLlmConfig()
   })
@@ -640,164 +564,14 @@ async function loadSilenceSettings() {
   }
 }
 
-async function loadAsrSettings() {
-  const res = await call<Record<string, unknown>>("get_settings")
-  if (res.success && res.data) {
-    const engine = (res.data.asr_engine as "faster-whisper" | "qwen3-asr") || "faster-whisper"
-    asrEngine.value = engine
-
-    // Restore pluginId from saved settings, or auto-select first matching engine
-    const savedPluginId = res.data.asr_plugin_id as string
-    if (savedPluginId && installedEngines.value.find(e => e.pluginId === savedPluginId)) {
-      asrPluginId.value = savedPluginId
-    } else {
-      // Auto-select first installed engine for this engine type
-      const firstEng = installedEngines.value.find(e => e.engine === engine)
-      if (firstEng) asrPluginId.value = firstEng.pluginId
-    }
-
-    // Shared settings
-    const vadFilter = res.data.asr_vad_filter !== false
-
-    // Determine per-engine device based on plugin capabilities
-    const whisperPluginId = installedEngines.value.find(e => e.engine === "faster-whisper")?.pluginId ?? ""
-    const qwenPluginId = installedEngines.value.find(e => e.engine === "qwen3-asr")?.pluginId ?? ""
-    const whisperSupportsGpu = !isDarwin && whisperPluginId.length > 0 && !whisperPluginId.includes("-cpu")
-    const qwenSupportsGpu = !isDarwin && qwenPluginId.length > 0 && !qwenPluginId.includes("-cpu")
-
-    // Load faster-whisper settings (engine-prefixed keys from config.py)
-    const whisperModelSize = (res.data.asr_model_size as string) || "large-v3-turbo"
-    const whisperDevice = (res.data.asr_device as "cpu" | "cuda" | "auto" | "mps") || (whisperSupportsGpu ? "cuda" : isDarwin ? "auto" : "cpu")
-    asrSettingsPerEngine.value["faster-whisper"] = {
-      model_size: whisperModelSize,
-      language: (res.data.asr_language as string) || "zh",
-      device: whisperDevice,
-      compute_type: (res.data.whisper_compute_type as string) || (whisperSupportsGpu ? "int8_float16" : "int8"),
-      vad_filter: vadFilter,
-      vad_threshold: Number(res.data.whisper_vad_threshold ?? 0.5),
-      vad_min_silence_ms: Number(res.data.whisper_vad_min_silence_ms ?? 500),
-    }
-
-    // Load qwen3-asr settings
-    const qwenModelSize = (res.data.asr_model_size as string) || "Qwen/Qwen3-ASR-0.6B"
-    const qwenDevice = qwenSupportsGpu ? "cuda" : isDarwin ? "mps" : "cpu"
-    asrSettingsPerEngine.value["qwen3-asr"] = {
-      model_size: qwenModelSize,
-      language: (res.data.qwen_language as string) || "auto",
-      device: qwenDevice,
-      compute_type: (res.data.qwen_compute_type as string) || (qwenSupportsGpu ? "bfloat16" : "float16"),
-      vad_filter: false,
-      vad_threshold: 0.5,
-      vad_min_silence_ms: 500,
-    }
+// M8-2b: persistence logic moved into useAsrEngines.saveAsrSettings; the
+// page wrapper keeps the original UI side effect of closing the popover.
+async function handleSaveAsrSettings(): Promise<boolean> {
+  const ok = await saveAsrSettings()
+  if (ok) {
+    showTranscribeSettings.value = false
   }
-}
-
-async function loadInstalledEngines() {
-  const plugins = await listPlugins()
-  const engines: InstalledEngine[] = []
-
-  for (const p of plugins) {
-    if (p.status === "installed") {
-      const status = await checkEngineReady(p.engine)
-      engines.push({
-        engine: p.engine,
-        displayName: p.display_name,
-        pluginId: p.plugin_id,
-        ready: status.ready,
-      })
-    }
-  }
-
-  installedEngines.value = engines
-
-  // If current selected engine is not installed, switch to first available
-  if (engines.length > 0 && !engines.find(e => e.engine === asrEngine.value)) {
-    asrEngine.value = engines[0].engine as "faster-whisper" | "qwen3-asr"
-  }
-}
-
-function validateModelSize() {
-  const models = availableModels.value
-  const current = asrSettingsPerEngine.value[asrEngine.value]
-  if (current && models.length > 0 && !models.find(m => m.model_id === current.model_size)) {
-    asrSettingsPerEngine.value[asrEngine.value].model_size = models[0].model_id
-  }
-}
-
-// Derive engine from selected pluginId, and update device/compute when plugin changes
-watch(asrPluginId, (newPluginId) => {
-  if (!newPluginId) return
-  const eng = installedEngines.value.find(e => e.pluginId === newPluginId)
-  if (eng) {
-    const prevEngine = asrEngine.value
-    asrEngine.value = eng.engine as "faster-whisper" | "qwen3-asr"
-    // If engine type didn't change (e.g. CPU->GPU within same engine),
-    // watch(asrEngine) won't fire, so we must update device/compute here
-    if (prevEngine === eng.engine) {
-      const gpu = !isDarwin && !newPluginId.includes('-cpu')
-      const settings = asrSettingsPerEngine.value[eng.engine]
-      if (settings) {
-        settings.device = gpu ? 'cuda' : 'cpu'
-        if (eng.engine === 'qwen3-asr') {
-          settings.compute_type = gpu ? 'bfloat16' : 'float16'
-        }
-        // faster-whisper keeps int8_float16 for both CPU and GPU
-      }
-    }
-  }
-})
-
-// Engine defaults by type
-function getEngineDefaults(engine: "faster-whisper" | "qwen3-asr") {
-  const gpu = !isDarwin && asrPluginId.value.length > 0 && !asrPluginId.value.includes('-cpu')
-  if (engine === 'qwen3-asr') {
-    return { model_size: "Qwen/Qwen3-ASR-0.6B", language: "auto", device: gpu ? "cuda" as const : isDarwin ? "mps" as const : "cpu" as const, compute_type: gpu ? "bfloat16" as const : isDarwin ? "float16" as const : "float16" as const, vad_filter: false, vad_threshold: 0.5, vad_min_silence_ms: 500 }
-  }
-  return { model_size: "large-v3-turbo", language: "zh", device: gpu ? "cuda" as const : isDarwin ? "auto" as const : "cpu" as const, compute_type: gpu ? "int8_float16" as const : "int8" as const, vad_filter: true, vad_threshold: 0.5, vad_min_silence_ms: 500 }
-}
-
-// When engine changes, only create defaults if not yet populated.
-// Device/compute are always updated based on selected plugin's GPU capability.
-// User preferences (model_size, language, vad_*) are preserved from loadAsrSettings().
-watch(asrEngine, (newEngine) => {
-  const defaults = getEngineDefaults(newEngine)
-  const existing = asrSettingsPerEngine.value[newEngine]
-  if (!existing) {
-    asrSettingsPerEngine.value[newEngine] = { ...defaults }
-  } else {
-    // Only update device/compute based on plugin capability (these are plugin-dependent, not user preference)
-    existing.device = defaults.device
-    existing.compute_type = defaults.compute_type
-  }
-  validateModelSize()
-})
-
-async function saveAsrSettings(): Promise<boolean> {
-  const current = asrSettingsPerEngine.value[asrEngine.value]
-  const payload: Record<string, unknown> = {
-    asr_engine: asrEngine.value,
-    asr_plugin_id: asrPluginId.value,
-    asr_model_size: current.model_size,
-    asr_language: current.language,
-    asr_device: current.device,
-    asr_vad_filter: current.vad_filter,
-  }
-
-  // Engine-prefixed keys for settings persistence
-  if (asrEngine.value === "qwen3-asr") {
-    payload.qwen_compute_type = current.compute_type
-    payload.qwen_language = current.language
-  } else {
-    payload.whisper_compute_type = current.compute_type
-    payload.whisper_vad_threshold = current.vad_threshold
-    payload.whisper_vad_min_silence_ms = current.vad_min_silence_ms
-  }
-
-  const res = await call("update_settings", payload)
-  if (!res.success) return false
-  showTranscribeSettings.value = false
-  return true
+  return ok
 }
 
 async function saveSilenceSettings() {
@@ -1034,7 +808,7 @@ async function handleTranscribe() {
   }
 
   // Persist current ASR settings to backend before transcription
-  const settingsSaved = await saveAsrSettings()
+  const settingsSaved = await handleSaveAsrSettings()
   if (!settingsSaved) {
     showToast("Failed to save transcription settings", "error", 3000)
     return
@@ -1823,130 +1597,26 @@ onUnmounted(() => {
         >
           <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
         </button>
-        <div
+        <TranscribeSettingsPopover
           v-if="showTranscribeSettings && uvAvailable !== false"
-          class="absolute top-full left-0 mt-1 w-72 rounded-md border border-gray-200 bg-white shadow-lg z-20 p-3"
-        >
-          <div class="mb-2 text-xs font-semibold text-ink">转写设置</div>
-
-          <!-- No engines installed warning -->
-          <div v-if="!hasInstalledEngines" class="text-xs text-amber-600 mb-2 p-2 bg-amber-50 rounded">
-            No ASR engine installed. Please install an engine in Settings > AI Engine.
-          </div>
-
-          <template v-else>
-            <!-- Engine selector -->
-            <label class="block mb-2">
-              <span class="text-xs text-gray-500">Engine</span>
-              <select
-                v-model="asrPluginId"
-                class="w-full mt-1 rounded border-gray-300 text-xs"
-              >
-                <option v-for="eng in installedEngines" :key="eng.pluginId" :value="eng.pluginId">
-                  {{ eng.displayName }} {{ eng.ready ? '' : '(model not downloaded)' }}
-                </option>
-              </select>
-            </label>
-
-            <!-- Model selector -->
-            <label class="block mb-2">
-              <span class="text-xs text-gray-500">Model</span>
-              <select
-                v-model="asrSettingsPerEngine[asrEngine].model_size"
-                class="w-full mt-1 rounded border-gray-300 text-xs"
-              >
-                <option v-for="m in availableModels" :key="m.model_id" :value="m.model_id">
-                  {{ m.display_name }} {{ m.status === 'downloaded' ? '' : '(not downloaded)' }}
-                </option>
-              </select>
-            </label>
-
-            <!-- Language -->
-            <label class="block mb-2">
-              <span class="text-xs text-gray-500">Language</span>
-              <select v-model="asrSettingsPerEngine[asrEngine].language" class="w-full mt-1 rounded border-gray-300 text-xs">
-                <option value="auto">Auto-detect</option>
-                <option value="zh">Chinese</option>
-                <option value="en">English</option>
-                <option value="ja">Japanese</option>
-                <option value="ko">Korean</option>
-              </select>
-            </label>
-
-            <!-- Device (hidden for MLX -- always uses Apple Silicon) -->
-            <label v-if="!isMlx" class="block mb-2">
-              <span class="text-xs text-gray-500">Device</span>
-              <select v-model="asrSettingsPerEngine[asrEngine].device" class="w-full mt-1 rounded border-gray-300 text-xs">
-                <option v-if="!isDarwin" value="cpu">CPU</option>
-                <option v-if="supportsGpu" value="cuda">CUDA (GPU)</option>
-                <option v-if="asrEngine === 'faster-whisper'" value="auto">Auto</option>
-                <option v-if="isDarwin && asrEngine === 'qwen3-asr'" value="mps">MPS</option>
-              </select>
-              <span v-if="isDarwin && asrEngine === 'faster-whisper'" class="text-xs text-gray-400 mt-0.5 block">MPS (Metal Performance Shaders)</span>
-              <span v-else-if="isDarwin && asrEngine === 'qwen3-asr'" class="text-xs text-gray-400 mt-0.5 block">Metal Performance Shaders (Apple GPU)</span>
-              <span v-else-if="!supportsGpu" class="text-xs text-gray-400 mt-0.5 block">GPU not available for this engine plugin</span>
-            </label>
-            <div v-else class="text-xs text-gray-400 mb-2">Apple Silicon (Metal)</div>
-
-            <!-- Compute type (hidden for MLX) -->
-            <label v-if="!isMlx && computeTypeOptions.length > 0" class="block mb-2">
-              <span class="text-xs text-gray-500">Compute Type</span>
-              <select v-model="asrSettingsPerEngine[asrEngine].compute_type" class="w-full mt-1 rounded border-gray-300 text-xs">
-                <option v-for="opt in computeTypeOptions" :key="opt.value" :value="opt.value">
-                  {{ opt.label }}
-                </option>
-              </select>
-            </label>
-
-            <!-- VAD filter -->
-            <label class="flex items-center gap-2 mb-2 cursor-pointer">
-              <input
-                type="checkbox"
-                v-model="asrSettingsPerEngine[asrEngine].vad_filter"
-                class="w-4 h-4 accent-blue-600"
-              />
-              <span class="text-xs text-gray-500">VAD filter (reduce hallucinations)</span>
-            </label>
-
-            <!-- VAD sliders (visible when vad_filter is on) -->
-            <template v-if="asrSettingsPerEngine[asrEngine].vad_filter">
-              <label class="block mb-2">
-                <span class="text-xs text-gray-500">
-                  VAD Threshold: {{ asrSettingsPerEngine[asrEngine].vad_threshold.toFixed(2) }}
-                </span>
-                <input
-                  type="range"
-                  v-model.number="asrSettingsPerEngine[asrEngine].vad_threshold"
-                  min="0.0"
-                  max="1.0"
-                  step="0.05"
-                  class="w-full mt-1"
-                />
-              </label>
-              <label class="block mb-3">
-                <span class="text-xs text-gray-500">
-                  Min Silence (ms): {{ asrSettingsPerEngine[asrEngine].vad_min_silence_ms }}
-                </span>
-                <input
-                  type="range"
-                  v-model.number="asrSettingsPerEngine[asrEngine].vad_min_silence_ms"
-                  min="100"
-                  max="2000"
-                  step="50"
-                  class="w-full mt-1"
-                />
-              </label>
-            </template>
-
-            <!-- Save button -->
-            <button
-              class="mc-button mc-button-secondary w-full px-2 text-xs"
-              @click="saveAsrSettings"
-            >
-             保存为默认设置
-            </button>
-          </template>
-        </div>
+          v-model:asr-plugin-id="asrPluginId"
+          v-model:model-size="asrSettingsPerEngine[asrEngine].model_size"
+          v-model:language="asrSettingsPerEngine[asrEngine].language"
+          v-model:device="asrSettingsPerEngine[asrEngine].device"
+          v-model:compute-type="asrSettingsPerEngine[asrEngine].compute_type"
+          v-model:vad-filter="asrSettingsPerEngine[asrEngine].vad_filter"
+          v-model:vad-threshold="asrSettingsPerEngine[asrEngine].vad_threshold"
+          v-model:vad-min-silence-ms="asrSettingsPerEngine[asrEngine].vad_min_silence_ms"
+          :has-installed-engines="hasInstalledEngines"
+          :installed-engines="installedEngines"
+          :available-models="availableModels"
+          :asr-engine="asrEngine"
+          :is-mlx="isMlx"
+          :is-darwin="isDarwin"
+          :supports-gpu="supportsGpu"
+          :compute-type-options="computeTypeOptions"
+          @save="handleSaveAsrSettings"
+        />
       </div>
       <button
         class="mc-button mc-button-danger"
@@ -1974,84 +1644,15 @@ onUnmounted(() => {
         >
           <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
         </button>
-        <div
+        <SilenceSettingsPopover
           v-if="showSilenceSettings"
-          class="absolute top-full left-0 mt-1 w-64 rounded-md border border-gray-200 bg-white shadow-lg z-20 p-3"
-        >
-          <div class="mb-2 text-xs font-semibold text-ink">静音检测设置</div>
-          <label class="block mb-2">
-            <span class="text-xs text-gray-500">Threshold (dB): {{ silenceThreshold }}</span>
-            <input
-              type="range"
-              v-model.number="silenceThreshold"
-              min="-60"
-              max="-10"
-              step="1"
-              class="w-full mt-1"
-            />
-          </label>
-          <label class="block mb-3">
-            <span class="text-xs text-gray-500">Min Duration (s): {{ silenceMinDuration.toFixed(2) }}</span>
-            <input
-              type="range"
-              v-model.number="silenceMinDuration"
-              min="0.05"
-              max="2.0"
-              step="0.05"
-              class="w-full mt-1"
-            />
-            <p v-if="silenceMinDuration < 0.2" class="text-xs text-amber-600 mt-1">
-              Very short durations (&lt;0.2s) may generate many clips and affect performance.
-            </p>
-          </label>
-          <label class="block mb-2">
-            <span class="text-xs text-gray-500">
-              Margin (s): {{ silenceMargin.toFixed(2) }}
-            </span>
-            <input
-              type="range"
-              v-model.number="silenceMargin"
-              min="0"
-              max="0.5"
-              step="0.01"
-              class="w-full mt-1"
-            />
-            <p v-if="silenceMargin > 0 && silenceMargin * 2 >= silenceMinDuration"
-               class="text-xs text-amber-600 mt-1">
-              High margin may consume small silence intervals entirely.
-            </p>
-          </label>
-          <label class="block mb-2">
-            <span class="text-xs text-gray-500">
-              Subtitle Padding (s): {{ silenceSubtitlePadding.toFixed(2) }}
-            </span>
-            <input
-              type="range"
-              v-model.number="silenceSubtitlePadding"
-              min="0"
-              max="1.0"
-              step="0.05"
-              class="w-full mt-1"
-            />
-            <p v-if="silenceSubtitlePadding > 0" class="text-xs text-gray-400 mt-0.5">
-              Silence ranges will be trimmed to stay this far from subtitles.
-            </p>
-          </label>
-          <label class="flex items-center gap-2 mb-3 cursor-pointer">
-            <input
-              type="checkbox"
-              v-model="trimSubtitlesOnOverlap"
-              class="rounded border-gray-300"
-            />
-            <span class="text-xs text-gray-500">Trim overlapping subtitles</span>
-          </label>
-          <button
-            class="mc-button mc-button-primary w-full px-2 text-xs"
-            @click="saveSilenceSettings"
-          >
-           保存设置
-          </button>
-        </div>
+          v-model:threshold="silenceThreshold"
+          v-model:min-duration="silenceMinDuration"
+          v-model:margin="silenceMargin"
+          v-model:subtitle-padding="silenceSubtitlePadding"
+          v-model:trim-subtitles="trimSubtitlesOnOverlap"
+          @save="saveSilenceSettings"
+        />
       </div>
 
       <!-- Delete all silence markers -->
@@ -2085,23 +1686,10 @@ onUnmounted(() => {
         >
           <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
         </button>
-        <div
+        <SubtitleTrimSettingsPopover
           v-if="showSubtitleTrimSettings"
-          class="absolute top-full left-0 mt-1 w-56 rounded-md border border-gray-200 bg-white shadow-lg z-20 p-3"
-        >
-          <div class="mb-2 text-xs font-semibold text-ink">字幕间隙设置</div>
-          <label class="block mb-3">
-            <span class="text-xs text-gray-500">Padding (s): {{ subtitleTrimPadding.toFixed(2) }}</span>
-            <input
-              type="range"
-              v-model.number="subtitleTrimPadding"
-              min="0"
-              max="2.0"
-              step="0.05"
-              class="w-full mt-1"
-            />
-          </label>
-        </div>
+          v-model:padding="subtitleTrimPadding"
+        />
       </div>
 
       <!-- Clear subtitle trim markers -->

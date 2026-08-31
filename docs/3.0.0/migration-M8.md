@@ -13,9 +13,9 @@
 
 关联状态/事件关闭点: :756/:768（操作后自动关闭）、:1558-1559（`handleClickOutside` outside-click 关闭，迁移后需保留对该 popover 根元素的 closest 判定语义）。
 
-- [ ] P1 TranscribeSettingsPopover（纯模板+局部状态搬移，diff 仅删+增）
-- [ ] P2 SilenceSettingsPopover
-- [ ] P3 SubtitleTrimSettingsPopover
+- [x] P1 TranscribeSettingsPopover（纯模板+局部状态搬移；共享状态经 props + defineModel 逐字段下行，规避 vue/no-mutating-props）✅ 2026-08-31
+- [x] P2 SilenceSettingsPopover（同上）✅
+- [x] P3 SubtitleTrimSettingsPopover（单字段）✅
 
 ## 二、ASR 引擎域抽取（步骤 b，`useAsrEngines.ts`）
 
@@ -35,9 +35,9 @@
 **双实现消除**: SettingsModal AiEngine tab 内有同域逻辑副本，抽取后两处同接 `useAsrEngines`。
 验收用例: 修改 `useAsrEngines` 一处（如默认 model_size），WorkspacePage 与 SettingsModal 两 UI 同步生效。
 
-- [ ] 抽取 `useAsrEngines.ts`（保持启动顺序契约: engines 加载先于 settings 回填）
-- [ ] WorkspacePage 接入
-- [ ] SettingsModal AiEngine tab 接入 + 双 UI 生效验证用例
+- [x] 抽取 `useAsrEngines.ts`（保持启动顺序契约: engines 加载先于 settings 回填 → 封装为单飞 `ensureLoaded()`）✅ 2026-08-31 模块级单例状态 + watcher 一次注册；bridge 直连（list_plugins/check_plugin_status/list_models）免除组件外 usePluginManager 实例耦合
+- [x] WorkspacePage 接入（ASR 域 ~190 行删除，popover/save/转写链路全部走 composable；saveAsrSettings 的 UI 副作用"关弹窗"留页内 wrapper `handleSaveAsrSettings`）✅
+- [x] SettingsModal 侧接入 + 双 UI 生效验证用例 ✅ **落实位置偏差**: M8-1 拆分后 ASR 设置段实际在 `ExportSettingsTab.vue`（原 SettingsModal 导出 tab 内的 ASR Settings 区），故该 tab 绑定共享状态并同步 emit AppSettings patch（modal 保存路径不变）；`AiEngineSettingsTab`（插件/模型管理）经 `refreshAfterPluginChange()` 在安装/卸载/下载/删除后刷新共享域。双 UI 生效用例: `useAsrEngines.test.ts` 4 条（单例引用同一性/插件切换派生/engine 前缀持久化键/patch 派生）
 
 ## 三、handler 归口 `useWorkspaceActions.ts`（步骤 c，provide/inject）
 
