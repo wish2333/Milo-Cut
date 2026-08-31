@@ -269,11 +269,11 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 
 ### P4-4 M3-6 工作流失败回滚（1 天，依赖 P2-1 已就绪）
 
-- [ ] workflow 步骤前 `export_layer_snapshot`；失败时可选回滚（UI 确认弹窗）；快照随跨会话持久化扩展
-- [ ] 测试：两步工作流第二步失败 → 回滚后第一步效果保留/整体回滚两模式正确
+- [x] workflow 步骤前 `export_layer_snapshot`；失败时可选回滚（UI 确认弹窗）；快照随跨会话持久化扩展 ✅ 2026-08-31 每步边界捕获 segments/edits 层快照并随快照文件落盘（`layer_snapshots` 字段）；回滚经 **M5 `apply_undo` 通道**（偏差：SPEC 预想的 export_layer_snapshot 未落地为独立 API，直接复用 apply_undo 单一入口，红线全共享，record 决策 1）；失败弹窗新增「回滚本步/全部回滚」两确认按钮 + 新事件 `workflow:rolled_back`（双端同步）驱动前端拉取刷新
+- [x] 测试：两步工作流第二步失败 → 回滚后第一步效果保留/整体回滚两模式正确 ✅ `TestFailureRollback` 5 条（真实 ProjectService + mock task 层模拟 handler 直写契约）
 
-**验收方式**: pytest + 手动 mock 第二步失败演练。
-**验收标准**: 回滚后 revision 递增（复用 M5 断言）；跨会话恢复后快照仍可用。
+**验收方式**: pytest ✅ + 手动 mock 第二步失败演练（handler 级 mock 已自动化等价，真机弹窗链路归批次冒烟）。
+**验收标准**: 回滚后 revision 递增（复用 M5 断言）✅ `rev_before < rev_at_failure < rev_after` 显式断言；跨会话恢复后快照仍可用 ✅（新 engine 实例磁盘加载后回滚成功测试锁定）。
 
 **—— Phase 4 验收节点（正式版门禁）——**
 - [ ] PRD §6 总验收逐项核对：
