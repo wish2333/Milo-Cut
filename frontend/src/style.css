@@ -48,6 +48,31 @@
   --radius-control: 6px;
   --radius-panel: 12px;
   --control-height: 36px;
+
+  /* v3.0.0 M9-1: z-index 层级契约（docs/DESIGN.md）。
+   * 五档全局层级；局部堆叠上下文（如波形区内部层）不受此约束。 */
+  --z-base: 100;
+  --z-raised: 200;
+  --z-dropdown: 300;
+  --z-modal: 400;
+  --z-toast: 500;
+}
+
+/* M9-1: token utilities -- 业务组件禁用裸魔法数层级（styleLint 测试锁定） */
+@utility z-base {
+  z-index: var(--z-base);
+}
+@utility z-raised {
+  z-index: var(--z-raised);
+}
+@utility z-dropdown {
+  z-index: var(--z-dropdown);
+}
+@utility z-modal {
+  z-index: var(--z-modal);
+}
+@utility z-toast {
+  z-index: var(--z-toast);
 }
 
 html,

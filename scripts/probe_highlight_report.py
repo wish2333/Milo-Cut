@@ -1,4 +1,5 @@
 """Save full highlight probe results to a markdown report file."""
+# ruff: noqa: E402  -- script bootstrap: sys.path before imports
 
 from __future__ import annotations
 
@@ -41,7 +42,7 @@ def main() -> None:
 
     w("# 精华提取 (highlight) 上下文连贯性探针报告")
     w(f"\n> 模型: glm-5-turbo | 生成时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    w(f"> chunk: 30 分钟 (单次调用) | 超时: max(config, 300)s")
+    w("> chunk: 30 分钟 (单次调用) | 超时: max(config, 300)s")
     w("")
 
     if not res.get("success"):
@@ -54,8 +55,8 @@ def main() -> None:
 
     w("## 概要")
     w("")
-    w(f"| 指标 | 值 |")
-    w(f"|------|------|")
+    w("| 指标 | 值 |")
+    w("|------|------|")
     w(f"| 总片段数 | {len(segments)} |")
     w(f"| 选中片段数 | {len(results)} |")
     w(f"| 耗时 | {dt:.1f}s |")
@@ -83,7 +84,7 @@ def main() -> None:
     if gaps:
         w(f"- 跳转详情: {[(sid, f'{g:.0f}s') for sid, g in gaps]}")
     else:
-        w(f"- 无大跳转，片段连续性好")
+        w("- 无大跳转，片段连续性好")
     w("")
 
     # Full results table

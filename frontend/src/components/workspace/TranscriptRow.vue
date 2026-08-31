@@ -407,7 +407,7 @@ const statusClass = computed(() => {
     <Teleport to="body">
       <div
         v-if="contextMenu"
-        class="fixed z-[9999] bg-white rounded-md shadow-lg border border-gray-200 py-1 min-w-[140px]"
+        class="fixed z-dropdown bg-white rounded-md shadow-lg border border-gray-200 py-1 min-w-[140px]"
         :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
         @click="closeContextMenu"
       >

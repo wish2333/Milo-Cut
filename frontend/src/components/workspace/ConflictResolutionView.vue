@@ -68,7 +68,7 @@ async function finishAndApply() {
   <Teleport to="body">
     <div
       v-if="wf.showConflictView.value"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      class="fixed inset-0 z-modal flex items-center justify-center bg-black/50"
     >
       <div class="flex h-[80vh] w-[700px] max-w-[90vw] flex-col rounded-xl bg-white shadow-2xl">
         <!-- Header -->

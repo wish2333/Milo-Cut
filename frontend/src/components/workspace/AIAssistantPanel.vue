@@ -405,7 +405,7 @@ function handleSearchSeek(time: number) {
         <Teleport to="body">
           <div
             v-if="wf.showFailureDialog.value && wf.failureInfo.value"
-            class="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+            class="fixed inset-0 z-modal flex items-center justify-center bg-black/40"
           >
             <div class="w-[360px] rounded-xl bg-white p-5 shadow-xl">
               <h3 class="mb-1 text-sm font-semibold text-gray-800">步骤执行失败</h3>

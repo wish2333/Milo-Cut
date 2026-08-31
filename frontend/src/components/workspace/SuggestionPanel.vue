@@ -289,7 +289,7 @@ onBeforeUnmount(() => {
     <Teleport to="body">
       <div
         v-if="contextMenu"
-        class="fixed z-50 min-w-[160px] py-1 bg-white border border-gray-200 rounded shadow-xl text-sm"
+        class="fixed z-dropdown min-w-[160px] py-1 bg-white border border-gray-200 rounded shadow-xl text-sm"
         :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
         @click.stop
       >

@@ -263,7 +263,7 @@ function handleRelinkCancel() {
   >
     <div
       v-if="demoMode"
-      class="demo-mode-badge fixed right-4 top-3 z-[100] flex items-center gap-2 rounded-[var(--radius-control)] bg-surface-tile-1 px-3 py-1.5 text-xs text-white shadow-lg max-[1199px]:top-14"
+      class="demo-mode-badge fixed right-4 top-3 z-base flex items-center gap-2 rounded-[var(--radius-control)] bg-surface-tile-1 px-3 py-1.5 text-xs text-white shadow-lg max-[1199px]:top-14"
     >
       <span class="text-white/70">浏览器演示模式</span>
       <button class="mc-button mc-button-secondary min-h-7 border-white/20 bg-transparent px-2 py-0.5 text-white hover:bg-white/10" @click="resetDemo">
@@ -273,7 +273,7 @@ function handleRelinkCancel() {
     <!-- Full-window drag overlay -->
     <div
       v-if="isDragging"
-      class="fixed inset-0 z-[9999] flex items-center justify-center bg-blue-500/10 backdrop-blur-sm pointer-events-none"
+      class="fixed inset-0 z-modal flex items-center justify-center bg-blue-500/10 backdrop-blur-sm pointer-events-none"
     >
       <div class="rounded-2xl border-2 border-dashed border-blue-400 bg-white/90 px-16 py-12 text-center shadow-2xl">
         <p class="text-xl font-semibold text-blue-600">

@@ -1173,7 +1173,7 @@ onUnmounted(() => {
             <!-- Proxy generation overlay -->
             <div
               v-if="isGeneratingProxy"
-              class="absolute inset-0 z-10 flex flex-col items-center justify-center rounded-[var(--radius-control)] bg-black/60"
+              class="absolute inset-0 z-raised flex flex-col items-center justify-center rounded-[var(--radius-control)] bg-black/60"
             >
               <svg class="animate-spin h-8 w-8 text-white mb-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
@@ -1295,7 +1295,7 @@ onUnmounted(() => {
     <Teleport to="body">
       <div
         v-if="showConfirmDeleteSilence"
-        class="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40"
+        class="fixed inset-0 z-modal flex items-center justify-center bg-black/40"
         @click.self="showConfirmDeleteSilence = false"
       >
         <div class="rounded-lg bg-white p-5 shadow-xl max-w-sm w-full mx-4">
@@ -1333,7 +1333,7 @@ onUnmounted(() => {
       <Transition name="fade">
         <div
           v-if="showSubtitleFullscreen"
-          class="fixed inset-0 z-[9998] bg-white flex flex-col"
+          class="fixed inset-0 z-modal bg-white flex flex-col"
         >
           <div class="flex items-center justify-between border-b border-gray-200 px-6 py-4">
             <h2 class="text-base font-semibold text-gray-800">字幕修正审阅</h2>
@@ -1392,6 +1392,9 @@ onUnmounted(() => {
                     <span>置信度 {{ corr.confidence.toFixed(2) }}</span>
                   </div>
                   <!-- Inline diff -->
+                  <!-- M9-3: content is built by renderDiff() which escapes all text via
+         escapeHtml() before wrapping in fixed, code-controlled spans. -->
+                  <!-- eslint-disable-next-line vue/no-v-html -->
                   <div class="leading-relaxed" v-html="renderDiff(corr)"></div>
                   <!-- Actions -->
                   <div class="mt-2 flex gap-2">
@@ -1422,6 +1425,9 @@ onUnmounted(() => {
                     <span class="rounded bg-blue-50 px-1.5 py-0.5 text-blue-700">{{ categoryLabel(corr.category) }}</span>
                     <span>置信度 {{ corr.confidence.toFixed(2) }}</span>
                   </div>
+                  <!-- M9-3: content is built by renderDiff() which escapes all text via
+         escapeHtml() before wrapping in fixed, code-controlled spans. -->
+                  <!-- eslint-disable-next-line vue/no-v-html -->
                   <div class="leading-relaxed" v-html="renderDiff(corr)"></div>
                   <div class="mt-2 flex gap-2">
                     <button

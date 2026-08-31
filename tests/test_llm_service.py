@@ -2,7 +2,12 @@
 
 import pytest
 
-from core.llm_service import chunk_transcript, chunk_transcript_by_count, estimate_tokens, get_llm_config
+from core.llm_service import (
+    chunk_transcript,
+    chunk_transcript_by_count,
+    estimate_tokens,
+    get_llm_config,
+)
 from core.models import LlmConfig, LlmProvider
 
 # ------------------------------------------------------------------
@@ -160,7 +165,7 @@ class TestChunkTranscriptByCount:
         batches = chunk_transcript_by_count(segs, batch_size=20, overlap=4)
         assert len(batches) == 5
         # Each batch's target_ids should have 20 items
-        for batch_segs, target_ids in batches:
+        for _batch_segs, target_ids in batches:
             assert len(target_ids) == 20
 
     def test_overlap_context(self):
@@ -255,7 +260,7 @@ class TestAnalyzeSmartDeleteBatchTarget:
 
     def test_uses_chunk_transcript_by_count(self, monkeypatch):
         """analyze_smart_delete should call chunk_transcript_by_count, not chunk_transcript."""
-        from unittest.mock import MagicMock, call
+        from unittest.mock import MagicMock
         segments = [{"id": f"s{i}", "text": f"seg {i}", "start": float(i), "end": float(i+1)} for i in range(25)]
         mock_llm = MagicMock(return_value={"success": True, "data": {"content": "[]", "usage": {"total_tokens": 10}}})
         monkeypatch.setattr("core.llm_service.call_llm", mock_llm)

@@ -10,9 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from core.models import Segment, SegmentType
+from core.models import SegmentType
 from core.project_service import ProjectService
-from tests.mocks import make_segment
 
 
 def _create_service(tmp_path, monkeypatch) -> ProjectService:

@@ -2,6 +2,7 @@
 import { computed, inject, onMounted, onUnmounted, ref, watch } from "vue"
 import type { Segment } from "@/types/project"
 import { createRafScheduler } from "@/utils/rafScheduler"
+import { WAVEFORM_COLORS } from "@/utils/waveformTheme"
 import { TIMELINE_METRICS_KEY } from "./injectionKeys"
 import type { TimelineMetrics } from "@/composables/useTimelineMetrics"
 
@@ -219,9 +220,9 @@ function drawWaveform(ctx: CanvasRenderingContext2D, w: number, _h: number, mid:
   }
 
   ctx.closePath()
-  ctx.fillStyle = "#94a3b8" // slate-400
+  ctx.fillStyle = WAVEFORM_COLORS.peak
   ctx.fill()
-  ctx.strokeStyle = "#64748b" // slate-500
+  ctx.strokeStyle = WAVEFORM_COLORS.peakStroke
   ctx.lineWidth = 0.5
   ctx.stroke()
 }
@@ -230,7 +231,7 @@ function drawFallback(ctx: CanvasRenderingContext2D, w: number, mid: number) {
   ctx.beginPath()
   ctx.moveTo(0, mid)
   ctx.lineTo(w, mid)
-  ctx.strokeStyle = "#94a3b8"
+  ctx.strokeStyle = WAVEFORM_COLORS.peak
   ctx.lineWidth = 1
   ctx.stroke()
 }

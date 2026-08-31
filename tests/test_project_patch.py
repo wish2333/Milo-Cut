@@ -9,16 +9,14 @@ revision-based staleness check.
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from core.models import (
     AnalysisData,
-    EditDecision,
     EditStatus,
     MediaInfo,
     Project,
     ProjectPatch,
-    Segment,
-    SegmentType,
     Timeline,
     TranscriptData,
 )
@@ -56,7 +54,7 @@ class TestSchemaContract:
 
     def test_patch_is_frozen(self) -> None:
         patch = ProjectPatch(revision=1)
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             patch.revision = 2  # type: ignore[misc]
 
 

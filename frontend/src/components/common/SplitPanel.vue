@@ -129,7 +129,7 @@ defineExpose({ ratio: clampedRatio })
       @pointerdown="startDrag"
     >
       <!-- Wider invisible hit area centered on the 1px line -->
-      <div class="absolute inset-y-0 -left-1.5 -right-1.5 z-10"></div>
+      <div class="absolute inset-y-0 -left-1.5 -right-1.5 z-raised"></div>
       <!-- Visible grab handle, appears on hover/drag -->
       <div
         class="absolute top-1/2 left-1/2 h-8 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full transition-colors"

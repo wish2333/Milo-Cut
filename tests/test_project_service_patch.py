@@ -14,10 +14,9 @@ from __future__ import annotations
 
 import pytest
 
-from core.models import EditStatus, SegmentType
+from core.models import SegmentType
 from core.project_patch import apply_project_patch, is_stale_patch
 from core.project_service import ProjectService
-from tests.mocks import make_segment
 
 
 def _bootstrap_service(tmp_path, monkeypatch) -> ProjectService:

@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import argparse
 import random
-from datetime import datetime
 from pathlib import Path
 
 from core.models import (
@@ -128,7 +127,6 @@ def _build_segments(
     cursor = 0.5  # start a bit after 0 to leave room for typical intros
 
     silence_count = int(count * SILENCE_RATIO)
-    subtitle_count = count - silence_count
 
     # Pre-decide which indices are silence (deterministic via rng).
     silence_indices = set(rng.sample(range(count), silence_count))

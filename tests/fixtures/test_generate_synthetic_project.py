@@ -13,7 +13,6 @@ from core.models import Project, SegmentType
 from tests.fixtures.generate_synthetic_project import (
     DEFAULT_EDIT_COUNT,
     DEFAULT_SEGMENT_COUNT,
-    DEFAULT_SEED,
     EDIT_SOURCE_WEIGHTS,
     SILENCE_RATIO,
     generate_synthetic_project,

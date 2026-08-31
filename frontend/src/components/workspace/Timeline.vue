@@ -465,7 +465,7 @@ watch(
         <!-- v2.1.1 M4-1: selection mode banner -->
         <div
           v-if="selectionMode"
-          class="sticky top-0 z-10 flex items-center gap-2 border-b border-hairline bg-primary-soft px-4 py-2 text-xs text-primary"
+          class="sticky top-0 z-raised flex items-center gap-2 border-b border-hairline bg-primary-soft px-4 py-2 text-xs text-primary"
         >
           <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
           <span>选择模式 — 点击多选 Ctrl 切换 Shift 范围选 Enter 合并 Delete 删除</span>
@@ -544,7 +544,7 @@ watch(
             class="relative w-px shrink-0 cursor-ew-resize bg-hairline transition-colors hover:bg-primary"
             @mousedown="onSidebarResizeStart"
           >
-            <div class="absolute -left-1.5 -right-1.5 top-0 bottom-0 z-10"></div>
+            <div class="absolute -left-1.5 -right-1.5 top-0 bottom-0 z-raised"></div>
           </div>
 
           <!-- Inline sidebar -->

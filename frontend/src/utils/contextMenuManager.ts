@@ -1,5 +1,9 @@
 type CloseFn = () => void
 
+// v3.0.0 M9-1: single-instance mutex -- module-level state is shared by every
+// consumer, so opening a new menu closes the previous one. The former
+// `closeallcontextmenus` window broadcast is gone: consumers register their
+// close fn here instead of listening for global events.
 let activeClose: CloseFn | null = null
 let cleanupDocument: (() => void) | null = null
 
@@ -26,14 +30,7 @@ function handleScroll() {
   closeActive()
 }
 
-function handleExternalClose() {
-  closeActive()
-}
-
 export function openContextMenu(closeFn: CloseFn) {
-  // v2.1.1 A-01: broadcast close to other independent menus (e.g. Waveform)
-  window.dispatchEvent(new CustomEvent("closeallcontextmenus"))
-
   closeActive()
   activeClose = closeFn
 
@@ -41,13 +38,10 @@ export function openContextMenu(closeFn: CloseFn) {
     document.addEventListener("click", handleDocClick, { once: true })
     document.addEventListener("contextmenu", handleDocContextMenu, { once: true })
     document.addEventListener("scroll", handleScroll, { capture: true, once: true })
-    // v2.1.1 A-01: listen for close broadcasts from other components
-    window.addEventListener("closeallcontextmenus", handleExternalClose, { once: true })
     cleanupDocument = () => {
       document.removeEventListener("click", handleDocClick)
       document.removeEventListener("contextmenu", handleDocContextMenu)
       document.removeEventListener("scroll", handleScroll, { capture: true })
-      window.removeEventListener("closeallcontextmenus", handleExternalClose)
     }
   }, 0)
 }

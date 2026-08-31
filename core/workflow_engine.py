@@ -35,7 +35,6 @@ from core import config as _config
 from core.events import (
     WORKFLOW_CANCELLED,
     WORKFLOW_COMPLETED,
-    WORKFLOW_CONFLICTS_DETECTED,
     WORKFLOW_HEARTBEAT,
     WORKFLOW_STARTED,
     WORKFLOW_STEP_COMPLETED,
@@ -733,41 +732,6 @@ class WorkflowEngine:
                 })
 
             time.sleep(0.1)
-
-    def _extract_edits_from_result(
-        self, result: dict, step_type: str, step_index: int,
-    ) -> list[dict]:
-        """Extract EditDecision dicts from a step's task result.
-
-        v2.2.0 deprecated: non-sandbox mode no longer accumulates edits.
-        _run_steps no longer calls this method. Instance method (no module-level
-        import risk); retained for potential future use, safe to delete.
-
-        Different step types return results in different shapes:
-        - smart_delete / highlight: ``{"edits": [edit dicts], ...}`` -- use directly
-        - subtitle_correction: ``{"corrections": [...]}`` -- no segment-level edits (text fix)
-        """
-        edits: list[dict] = []
-
-        if step_type in ("llm_smart_delete", "llm_highlight"):
-            # Handlers already build edit dicts in workflow mode
-            raw_edits = result.get("edits", [])
-            seen_ids: set[str] = set()
-            for e in raw_edits:
-                edit = dict(e)
-                # Defensive: if id collides within same batch, append _dup{N}
-                if edit.get("id") in seen_ids:
-                    n = 2
-                    while f"{edit['id']}_dup{n}" in seen_ids:
-                        n += 1
-                    edit["id"] = f"{edit['id']}_dup{n}"
-                seen_ids.add(edit["id"])
-                edit["step_type"] = step_type
-                edit["step_index"] = step_index
-                edits.append(edit)
-
-        # subtitle_correction produces no segment-level EditDecisions
-        return edits
 
     # ------------------------------------------------------------------
     # Failure handling (D-11)

@@ -18,7 +18,7 @@ const trimSubtitles = defineModel<boolean>("trimSubtitles", { required: true })
 
 <template>
   <div
-    class="absolute top-full left-0 mt-1 w-64 rounded-md border border-gray-200 bg-white shadow-lg z-20 p-3"
+    class="absolute top-full left-0 mt-1 w-64 rounded-md border border-gray-200 bg-white shadow-lg z-dropdown p-3"
   >
     <div class="mb-2 text-xs font-semibold text-ink">静音检测设置</div>
     <label class="block mb-2">

@@ -82,7 +82,7 @@ function handleTabBusy(value: boolean) {
     <Transition name="overlay-fade">
   <div
     v-if="visible"
-    class="fixed inset-0 z-[9998] bg-white"
+    class="fixed inset-0 z-modal bg-white"
   >
     <div class="flex h-full flex-col">
       <div class="flex items-center justify-between px-8 py-4 border-b border-gray-100">

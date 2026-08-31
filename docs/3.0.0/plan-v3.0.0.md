@@ -209,18 +209,18 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 - [x] 每步按 `migration-M8.md` 勾销；步骤 c 后全局 keydown 回归（文本框内 Delete/方向键不被拦截）⚠️ 键盘处理器未移动（风险面零扩大），vitest 318 全绿；真机手测归批次双平台冒烟
 
 **验收方式**: 每 PR 全量测试绿 + undo 迁移点 diff 核对记录。✅ A1/A2/A3 随组搬移行内注释保留；flushPendingUpdates 前置保留
-**验收标准**: WorkspacePage.vue < 40KB **⚠️ 未达标：实际 61.3KB**（96.5KB → 61.3KB；差距位于计划明示保留页内的 undo/键盘/UI 域与模板，升级用户决策，见 record-P3-2 偏差节）；ASR 引擎逻辑单源 ✅；Esc/方向键/Delete/多选键盘操作手测清单全过（归批次冒烟）
+**验收标准**: WorkspacePage.vue < 40KB **⚠️ 未达标（61.3KB）→ 用户裁决 2026-08-31 降级目标为 ~60KB，M8-2 关闭**（差距位于计划明示保留页内的 undo/键盘/UI 域与模板，详见 record-P3-2 偏差节）；ASR 引擎逻辑单源 ✅；Esc/方向键/Delete/多选键盘操作手测清单全过（归批次冒烟）
 
 ### P3-3 M9 层级契约 + 风格 lint（2 天）
 
-- [ ] z-index 五档 token + 全仓替换（SegmentBlocksLayer z-[9999] 等）+ popover Teleport（定位快照防锚点漂移）+ contextMenuManager 单实例互斥（删全局广播）
-- [ ] `docs/DESIGN.md`（层级契约 4 条 + 可读性约束）
-- [ ] 风格 lint（CI grep 清单：原始灰阶类/裸 z-index/模板硬编码 hex）；波形 canvas 常量改引 token
-- [ ] **上翻方向双测**：每个向上弹出的 popover 验证"贴 sticky 工具栏打开"场景
-- [ ] M9-3 存量清理：ruff 40 问题清零（含 M4 遗留的 bridge 死代码）、workflow_engine 死代码删除、v-html 两处处理
+- [x] z-index 五档 token + 全仓替换（SegmentBlocksLayer z-[9999] 等 26 处）+ contextMenuManager 单实例互斥（删 closeallcontextmenus 全局广播，波形块菜单一并迁入管理器）✅ 2026-08-31 五档 @utility 已验证进 dist CSS；**偏差**：三个设置弹层不迁 Teleport（工具栏锚定 absolute 无锚点漂移面，Teleport 反需定位快照新增复杂度），见 record-P3-3
+- [x] `docs/DESIGN.md`（层级契约 4 条 + 局部堆叠上下文豁免判定 + 可读性约束 + 例外清单）✅
+- [x] 风格 lint：`styleLint.test.ts` 随 vitest 门禁运行（禁裸 z-index/禁模板 hex/token 完整性 3 条）；波形 canvas 常量改引 `utils/waveformTheme.ts` ✅ 灰阶类迁移挂 v3.1（DESIGN.md 约束新代码）
+- [x] **上翻方向双测**规则：当前全部 popover 向下弹（top-full），规则写入 DESIGN.md 约束未来新增；真机层级截图对比归批次冒烟 ✅（文档化）
+- [x] M9-3 存量清理：**ruff 38 → 0**（PRD 总验收达成）、bridge.py 任务队列死代码 ~90 行移除（零调用方核验）、workflow_engine `_extract_edits_from_result` 删除（估算偏差如实记录：另两处经核验可达不删）、v-html 两处加 eslint-disable + 转义安全注释 ✅
 
-**验收方式**: lint 清单 CI 通过；双平台逐个 popover 截图对比（层级正确无遮挡）。
-**验收标准**: ①全仓 grep `z-\[` 零命中（除 token 定义）；②`uv run ruff check .` 0 问题（达成 PRD 总验收）；③右键菜单多开互斥行为正确。
+**验收方式**: lint 清单随 vitest 门禁通过 ✅；双平台逐个 popover 截图对比（层级正确无遮挡）→ 归批次冒烟。
+**验收标准**: ①全仓 grep `z-\[` 零命中（除 token 定义）✅；②`uv run ruff check .` 0 问题 ✅；③右键菜单多开互斥行为正确 ✅（管理器互斥 + 测试绿，真机手测归冒烟）。
 
 ### P3-4 M10 project_service 分域（1.5 天）
 

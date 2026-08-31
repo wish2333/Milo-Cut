@@ -3,6 +3,7 @@ import { computed, inject, ref, onMounted, onUnmounted } from "vue"
 import type { Segment, EditDecision } from "@/types/project"
 import { buildSegmentStateMap } from "@/utils/segmentHelpers"
 import type { SegmentState } from "@/utils/segmentHelpers"
+import { openContextMenu } from "@/utils/contextMenuManager"
 import { TIMELINE_METRICS_KEY } from "./injectionKeys"
 import type { TimelineMetrics } from "@/composables/useTimelineMetrics"
 
@@ -191,31 +192,12 @@ function handleBlockMouseDown(
 function handleBlockContextMenu(block: Block, e: MouseEvent) {
   e.preventDefault()
   e.stopPropagation()
-  // v2.1.1 A-01: broadcast close to Timeline menu before opening own
-  window.dispatchEvent(new CustomEvent("closeallcontextmenus"))
   selectedBlockId.value = block.seg.id
   contextMenu.value = { x: e.clientX, y: e.clientY, segmentId: block.seg.id }
-  // Use local document listener (not shared contextMenuManager) to avoid
-  // cross-component state leaks that prevent re-opening after outside-click.
-  const close = () => { contextMenu.value = null }
-  const onDocClick = (ce: MouseEvent) => {
-    // Only close if the click is outside the menu itself
-    const target = ce.target as HTMLElement
-    if (!target.closest(".fixed.z-\\[9999\\]")) {
-      close()
-      cleanup()
-    }
-  }
-  const onDocContext = () => { close(); cleanup() }
-  const cleanup = () => {
-    document.removeEventListener("click", onDocClick)
-    document.removeEventListener("contextmenu", onDocContext)
-  }
-  // Delay adding listeners so the current right-click event finishes propagation
-  setTimeout(() => {
-    document.addEventListener("click", onDocClick)
-    document.addEventListener("contextmenu", onDocContext)
-  }, 0)
+  // v3.0.0 M9-1: single-instance mutex via the shared manager -- opening
+  // here closes any other open menu (e.g. the Timeline row menu); the
+  // former `closeallcontextmenus` broadcast is retired.
+  openContextMenu(() => { contextMenu.value = null })
 }
 
 function handleBlockClick(block: Block) {
@@ -310,21 +292,12 @@ function handleDocKeyCapture(e: KeyboardEvent) {
   }
 }
 
-// v2.1.1 A-01: listen for Timeline menu close broadcasts
-const handleGlobalClose = () => {
-  if (contextMenu.value) {
-    contextMenu.value = null
-  }
-}
-
 onMounted(() => {
   document.addEventListener("keydown", handleDocKeyCapture, { capture: true })
-  window.addEventListener("closeallcontextmenus", handleGlobalClose)
 })
 
 onUnmounted(() => {
   document.removeEventListener("keydown", handleDocKeyCapture, { capture: true })
-  window.removeEventListener("closeallcontextmenus", handleGlobalClose)
 })
 
 </script>
@@ -395,7 +368,7 @@ onUnmounted(() => {
     <Teleport to="body">
       <div
         v-if="contextMenu"
-        class="fixed z-[9999] bg-white rounded-md shadow-lg border border-gray-200 py-1 min-w-[140px]"
+        class="fixed z-dropdown bg-white rounded-md shadow-lg border border-gray-200 py-1 min-w-[140px]"
         :style="{ left: contextMenu.x + 'px', top: Math.min(contextMenu.y, menuMaxY) + 'px' }"
         @click="closeContextMenu"
       >

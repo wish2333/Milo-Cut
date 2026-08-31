@@ -1,6 +1,5 @@
 """Tests for core.llm_prompts module (Phase 3)."""
 
-import pytest
 
 from core.llm_prompts import (
     DEFAULT_PROMPTS,
@@ -114,7 +113,6 @@ class TestGetEffectivePrompt:
 
     def test_returns_default_when_no_overrides(self, monkeypatch):
         # Patch load_settings to return empty llm_prompts
-        import core.llm_prompts as lp
 
         monkeypatch.setattr(
             "core.config.load_settings", lambda: {"llm_prompts": {}}

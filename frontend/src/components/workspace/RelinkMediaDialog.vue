@@ -35,7 +35,7 @@ function handleConfirm() {
 <template>
   <div
     v-if="visible"
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+    class="fixed inset-0 z-modal flex items-center justify-center bg-black/40"
     @click.self="emit('cancel')"
   >
     <div class="bg-white rounded-2xl shadow-2xl w-[480px] max-w-[90vw] overflow-hidden">

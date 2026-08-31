@@ -112,8 +112,6 @@ class _BridgeHandler(BaseHTTPRequestHandler):
         _json_response(self, 404, error="Not found")
 
     def do_POST(self):
-        clean = self.path.split("?", 1)[0]
-
         _json_response(self, 404, error="Not found")
 
     # --- Route handlers ---

@@ -31,16 +31,16 @@ import json
 import statistics
 import sys
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
 
 from core.models import Project
 from core.project_service import ProjectService
 from tests.fixtures.generate_synthetic_project import (
     DEFAULT_EDIT_COUNT,
-    DEFAULT_SEGMENT_COUNT,
     DEFAULT_SEED,
+    DEFAULT_SEGMENT_COUNT,
     generate_synthetic_project,
 )
 

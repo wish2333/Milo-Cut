@@ -735,7 +735,6 @@ class TestProjectService:
         svc.create_project("test", self._create_media_file(tmp_dir), {"duration": 60.0})
         # First run: creates silence edit at 5.0-6.0
         svc.add_silence_results([{"start": 5.0, "end": 6.0}])
-        initial_edit_count = len(svc.current.active_timeline.edits)
         # Second run: overlapping range 5.2-5.8
         result = svc.add_silence_results([{"start": 5.2, "end": 5.8}])
         assert result["success"] is True
