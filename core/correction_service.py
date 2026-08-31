@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from core.project_service import ProjectService
 
 from core.models import AnalysisResult, Segment
+from core.timeline_utils import reattach_words
 
 logger = logging.getLogger(__name__)
 
@@ -191,8 +192,13 @@ class CorrectionService:
         if conf["low_confidence"]:
             new_flags["llm_low_confidence"] = True
 
+        # v3.0.0 P4-1: re-align word-level timestamps against the corrected
+        # text (keep unchanged regions, clear words when unreliable).
+        new_words = reattach_words(
+            seg.words, corrected_text, seg_start=seg.start, seg_end=seg.end
+        )
         corrected_seg = seg.model_copy(
-            update={"text": corrected_text, "dirty_flags": new_flags}
+            update={"text": corrected_text, "dirty_flags": new_flags, "words": new_words}
         )
 
         # Timestamp assertion (defensive -- LLM should never alter timestamps).
@@ -404,8 +410,17 @@ class CorrectionService:
                 if conf["low_confidence"]:
                     new_flags["llm_low_confidence"] = True
 
+                # v3.0.0 P4-1: word reattachment (same semantics as the
+                # single-accept path).
+                new_words = reattach_words(
+                    seg.words, corrected_text, seg_start=seg.start, seg_end=seg.end
+                )
                 corrected = seg.model_copy(
-                    update={"text": corrected_text, "dirty_flags": new_flags}
+                    update={
+                        "text": corrected_text,
+                        "dirty_flags": new_flags,
+                        "words": new_words,
+                    }
                 )
 
                 # Timestamp assertion
