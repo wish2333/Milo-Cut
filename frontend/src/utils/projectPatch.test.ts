@@ -16,6 +16,8 @@ import {
   applyProjectResponse,
   describePatchLayers,
   isStalePatch,
+  mergeBindingsInPlace,
+  mergeTracksInPlace,
 } from "@/utils/projectPatch"
 import { isProjectPatch } from "@/types/project"
 
@@ -520,5 +522,109 @@ describe("describePatchLayers", () => {
   })
   it("returns empty array for revision-only patch", () => {
     expect(describePatchLayers({ revision: 1 })).toEqual([])
+  })
+})
+
+// ------------------------------------------------------------------
+// v3.0.1 M3 (P1-4): tracks/bindings in-place merge
+// ------------------------------------------------------------------
+
+describe("mergeTracksInPlace", () => {
+  const makeTrack = (
+    id: string,
+    segOverrides: Partial<Segment>[] = [{ start: 1, end: 2 }],
+  ): SubtitleTrack => ({
+    id,
+    role: "extension",
+    name: id,
+    language: "en",
+    segments: segOverrides.map((o, i) =>
+      makeSegment({ id: `track_${id}_seg_${i}`, ...o }),
+    ),
+  })
+
+  it("reuses the track reference when nothing changed", () => {
+    const oldTracks = [makeTrack("trk_1"), makeTrack("trk_2")]
+    const newTracks = [makeTrack("trk_1"), makeTrack("trk_2")]
+    const out = mergeTracksInPlace(oldTracks, newTracks)
+    expect(out[0]).toBe(oldTracks[0])
+    expect(out[1]).toBe(oldTracks[1])
+  })
+
+  it("reuses unchanged segment references inside a changed track", () => {
+    const oldTracks = [
+      makeTrack("trk_1", [
+        { start: 1, end: 2 },
+        { start: 3, end: 4 },
+      ]),
+    ]
+    const changed = [
+      makeTrack("trk_1", [
+        { start: 1.5, end: 2 }, // changed
+        { start: 3, end: 4 }, // untouched
+      ]),
+    ]
+    const out = mergeTracksInPlace(oldTracks, changed)
+    expect(out[0]).not.toBe(oldTracks[0]) // track object replaced
+    expect(out[0].segments[0]).not.toBe(oldTracks[0].segments[0])
+    expect(out[0].segments[1]).toBe(oldTracks[0].segments[1]) // stable ref
+  })
+
+  it("drops deleted tracks and appends new ones in backend order", () => {
+    const oldTracks = [makeTrack("trk_1"), makeTrack("trk_2")]
+    const newTracks = [makeTrack("trk_2"), makeTrack("trk_3")]
+    const out = mergeTracksInPlace(oldTracks, newTracks)
+    expect(out.map(t => t.id)).toEqual(["trk_2", "trk_3"])
+    expect(out[0]).toBe(oldTracks[1])
+  })
+
+  it("falls back to wholesale replacement on id-sequence mismatch", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const oldTracks = [makeTrack("trk_1"), makeTrack("trk_2")]
+    // Backend order swapped -> merged order cannot match without reorder.
+    const newTracks = [makeTrack("trk_2"), makeTrack("trk_1")]
+    const out = mergeTracksInPlace(oldTracks, newTracks)
+    expect(out).toEqual(newTracks)
+    expect(out[0]).toBe(newTracks[0])
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
+  })
+})
+
+describe("mergeBindingsInPlace", () => {
+  const makeBinding = (id: string, offset = 0): TrackBinding => ({
+    id,
+    track_id: "trk_1",
+    main_segment_id: "seg-1",
+    extension_segment_id: `track_trk_1_seg_${id}`,
+    start_offset: offset,
+    end_offset: offset,
+  })
+
+  it("reuses unchanged bindings, replaces changed ones by id", () => {
+    const oldBindings = [makeBinding("b1"), makeBinding("b2", 0.5)]
+    const newBindings = [makeBinding("b1"), makeBinding("b2", 0.7)]
+    const out = mergeBindingsInPlace(oldBindings, newBindings)
+    expect(out[0]).toBe(oldBindings[0])
+    expect(out[1]).not.toBe(oldBindings[1])
+    expect(out[1].start_offset).toBe(0.7)
+  })
+
+  it("drops dissolved bindings and appends new ones", () => {
+    const oldBindings = [makeBinding("b1"), makeBinding("b2")]
+    const newBindings = [makeBinding("b2"), makeBinding("b3")]
+    const out = mergeBindingsInPlace(oldBindings, newBindings)
+    expect(out.map(b => b.id)).toEqual(["b2", "b3"])
+    expect(out[0]).toBe(oldBindings[1])
+  })
+
+  it("falls back to wholesale replacement on id-sequence mismatch", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const oldBindings = [makeBinding("b1"), makeBinding("b2")]
+    const newBindings = [makeBinding("b2"), makeBinding("b1")]
+    const out = mergeBindingsInPlace(oldBindings, newBindings)
+    expect(out).toEqual(newBindings)
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
   })
 })

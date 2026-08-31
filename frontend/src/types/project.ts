@@ -110,6 +110,9 @@ export interface ProjectPatch {
   media?: MediaInfo | null
   active_timeline_id?: string | null
   full_project?: Project | null
+  // v3.0.1 M2-1: side-channel payload (linkage counters etc.). Old
+  // frontends ignore it; absence means "no meta".
+  meta?: Record<string, unknown> | null
 }
 
 export type ProjectResponse = Project | ProjectPatch

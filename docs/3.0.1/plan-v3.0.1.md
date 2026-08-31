@@ -93,14 +93,14 @@ P3 批次: 导出 -> overlay -> 文档
 
 ### P1-4 patch merge 函数先行入库（SPEC M3 前半，无消费者）
 
-- [ ] `projectPatch.ts` 新增 `mergeTracksInPlace` / `mergeBindingsInPlace`（含 id 序列 gate assertion）；`ProjectPatch.ts` 类型补 `meta?: Record<string, unknown> | null`
-- [ ] `projectPatch.test.ts` 扩展：引用恒等 `toBe` 断言 + gate 回退用例
-- [ ] 新建 `projectPatch.perf.test.ts`：1000 主段 + 4x200 副段规模 apply 耗时断言（p50 < 5ms）+ 单遍扫描结构断言
+- [x] `projectPatch.ts` 新增 `mergeTracksInPlace` / `mergeBindingsInPlace`（含 id 序列 gate assertion）；`ProjectPatch.ts` 类型补 `meta?: Record<string, unknown> | null` ✅ 2026-09-01
+- [x] `projectPatch.test.ts` 扩展：引用恒等 `toBe` 断言 + gate 回退用例 ✅ 2026-09-01（10 用例）
+- [x] 新建 `projectPatch.perf.test.ts`：1000 主段 + 4x200 副段规模 apply 耗时断言（p50 < 5ms）+ 单遍扫描结构断言 ✅ 2026-09-01（实测 p50 = 0.196ms）
 
 **验收方式**: `bun run test`。
 **验收标准**: perf 断言通过（此测试自 Phase 3 起为合入门禁）；`applyProjectPatch` 本步不接线（tracks/bindings 仍整体替换，Phase 3 激活）。
 
-**Phase 1 退出检查**: 四步全合入；`uv run pytest` 与 `bun run test` 全量绿；本批不发布（无 UI），合入 `dev-3.0.1` 即可。
+**Phase 1 退出检查**: 四步全合入；`uv run pytest` 与 `bun run test` 全量绿；本批不发布（无 UI），合入 `dev-3.0.1` 即可。✅ 2026-09-01（pytest 663 / vitest 407 / build 通过 / ruff 全仓 0 问题）
 
 ---
 
