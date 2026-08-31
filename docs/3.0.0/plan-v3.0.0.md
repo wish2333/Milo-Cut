@@ -195,8 +195,8 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 
 ### P3-1 M8-1 SettingsModal 拆分（1.5 天）
 
-- [ ] 按 5 tab 一比一拆组件（LlmSettingsTab 内再拆 PromptEditor/PresetManager）；tab 间 props/emits 传递
-- [ ] 每拆一个 tab：跑 SettingsModal.test.ts + 手测该 tab 全部控件（含保存/取消/回填）
+- [x] 按 5 tab 一比一拆组件（LlmSettingsTab 内再拆 PromptEditor/PresetManager）；tab 间 props/emits 传递 ✅ 2026-08-31 `settings/` 目录 5 tab + 2 纯展示子组件；契约 props(settings/saving) + emits(update patch/status/busy)；Modal 94.5KB → 6.4KB（目标 <15KB），最大 tab LlmSettingsTab 22.8KB（目标 <25KB）
+- [x] 每拆一个 tab：跑 SettingsModal.test.ts + 手测该 tab 全部控件（含保存/取消/回填）✅ vitest 314 全绿（原 6 条 + 新增 3 条懒挂载测试，非活跃 tab 零实例化由测试锁定）；各 tab 手测归批次双平台冒烟（既定口径）
 
 **验收方式**: vitest 原有断言全绿（行为不变）；文件体积统计。
 **验收标准**: SettingsModal.vue < 15KB；5 个 tab 组件均 < 25KB；非活跃 tab 状态零实例化（Vue DevTools 组件树验证）。
