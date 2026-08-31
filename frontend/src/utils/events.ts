@@ -40,6 +40,8 @@ export const EVENT_WORKFLOW_STEP_COMPLETED = "workflow:step_completed"
 export const EVENT_WORKFLOW_STEP_FAILED = "workflow:step_failed"
 export const EVENT_WORKFLOW_COMPLETED = "workflow:completed"
 export const EVENT_WORKFLOW_CANCELLED = "workflow:cancelled"
+// v3.0.0 M3-6: failure rollback finished (layers restored via apply_undo)
+export const EVENT_WORKFLOW_ROLLED_BACK = "workflow:rolled_back"
 export const EVENT_WORKFLOW_CONFLICTS_DETECTED = "workflow:conflicts_detected"
 export const EVENT_WORKFLOW_HEARTBEAT = "workflow:heartbeat"
 

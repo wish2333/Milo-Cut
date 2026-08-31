@@ -21,6 +21,7 @@ import {
   EVENT_TASK_CANCELLED,
   EVENT_PROJECT_DIRTY,
   EVENT_PROJECT_SAVED,
+  EVENT_WORKFLOW_ROLLED_BACK,
 } from "@/utils/events"
 import ProgressBar from "@/components/common/ProgressBar.vue"
 import SplitPanel from "@/components/common/SplitPanel.vue"
@@ -338,6 +339,21 @@ watch(statusMessage, (msg) => {
 const isDirty = ref(false)
 const isSaving = ref(false)
 const lastSavedAt = ref<number | null>(null)
+
+// v3.0.0 M3-6: workflow failure rollback restored layers on the backend --
+// pull the updated project and surface the outcome.
+onEvent<{ workflow_instance_id: string; rolled_back_to_step: number; total_steps: number }>(
+  EVENT_WORKFLOW_ROLLED_BACK,
+  async (data) => {
+    const res = await call<Project>("get_project")
+    if (res.success && res.data) emit("project-updated", res.data)
+    if (data.rolled_back_to_step >= 0) {
+      showToast(`已回滚到步骤 ${data.rolled_back_to_step + 1} 前，工作流已结束`, "info", 4000)
+    } else {
+      showToast("回滚失败：快照缺少层级数据，请手动检查项目状态", "error", 5000)
+    }
+  },
+)
 
 onEvent<void>(EVENT_PROJECT_DIRTY, () => {
   isDirty.value = true

@@ -429,6 +429,19 @@ function handleSearchSeek(time: number) {
                   @click="wf.handleStepFailure('abort')"
                 >中止</button>
               </div>
+              <!-- v3.0.0 M3-6: optional failure rollback (undo layers) -->
+              <div class="mt-2 flex gap-2">
+                <button
+                  class="flex-1 rounded-md border border-amber-400 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-50"
+                  title="撤销本步骤已写入的变更（保留之前步骤的效果），然后结束工作流"
+                  @click="wf.handleStepFailure('rollback_step')"
+                >回滚本步</button>
+                <button
+                  class="flex-1 rounded-md border border-amber-400 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-50"
+                  title="撤销工作流开始以来的全部变更，然后结束工作流"
+                  @click="wf.handleStepFailure('rollback_all')"
+                >全部回滚</button>
+              </div>
             </div>
           </div>
         </Teleport>
