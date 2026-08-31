@@ -282,6 +282,25 @@ class MiloCutApi(Bridge):
             raise ValueError("No media in project")
         project = self._project.current
         timeline = project.active_timeline
+
+        # v3.0.0 M11-2: track_id payload exports a subtitle track instead of
+        # the main transcript (original timestamps, no deletion mapping).
+        track_id = task.payload.get("track_id")
+        if track_id:
+            from core.export_service import export_track_srt
+
+            track = next(
+                (t for t in timeline.transcript.tracks if t.id == track_id), None
+            )
+            if track is None:
+                return {"success": False, "error": f"Track {track_id} not found"}
+            output_path = task.payload.get("output_path", "")
+            if not output_path:
+                base = os.path.splitext(project.media.path)[0]
+                suffix = f"_{track.name}" if track.name else f"_{track_id}"
+                output_path = f"{base}{suffix}.srt"
+            return export_track_srt(track.model_dump(mode="json"), output_path)
+
         segments_data, edits_data = self._get_export_segments_and_edits(task, timeline)
         output_path = task.payload.get("output_path", "")
         if not output_path:
@@ -1212,6 +1231,15 @@ class MiloCutApi(Bridge):
         # SRT import mutates transcript -- signal auto-save
         self._mark_dirty(update_result)
         return update_result
+
+    @expose
+    def import_srt_as_track(
+        self, file_path: str, language: str = "", role: str = "extension"
+    ) -> dict:
+        """Import an SRT file as a read-only extension track (v3.0.0 M11-2)."""
+        result = self._project.import_srt_as_track(file_path, language, role)
+        # Track import mutates the transcript -- signal auto-save
+        return self._mark_dirty(result)
 
     # ================================================================
     # endregion Subtitle

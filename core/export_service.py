@@ -381,6 +381,48 @@ def export_srt(
         return {"success": False, "error": str(e)}
 
 
+def export_track_srt(
+    track: dict,
+    output_path: str,
+) -> dict:
+    """Export an extension track's segments to SRT with original timestamps.
+
+    v3.0.0 M11-2 export boundary: subtitle tracks never participate in video
+    export or the confirmed-deletion timeline mapping (tracks are read-only
+    and bindings are not consumed this version), so the track SRT is a plain
+    dump of its segments at their original times.
+
+    Args:
+        track: SubtitleTrack dict (``segments`` list of segment dicts).
+        output_path: Destination ``.srt`` path.
+
+    Returns:
+        ``{"success": True, "data": {"path", "segment_count"}}`` envelope.
+    """
+    try:
+        output_path = _validate_output_path(output_path)
+        segs = sorted(
+            (
+                s
+                for s in track.get("segments", [])
+                if s.get("type", "subtitle") == "subtitle"
+            ),
+            key=lambda s: s["start"],
+        )
+        with open(output_path, "w", encoding="utf-8") as f:
+            for idx, seg in enumerate(segs, 1):
+                f.write(f"{idx}\n")
+                f.write(
+                    f"{_format_srt_time(seg['start'])} --> {_format_srt_time(seg['end'])}\n"
+                )
+                f.write(f"{seg.get('text', '')}\n\n")
+        logger.info("Exported track SRT with {} segments to {}", len(segs), output_path)
+        return {"success": True, "data": {"path": output_path, "segment_count": len(segs)}}
+    except Exception as e:
+        logger.exception("export_track_srt failed")
+        return {"success": False, "error": str(e)}
+
+
 def export_vtt(
     segments: list[dict],
     edits: list[dict],

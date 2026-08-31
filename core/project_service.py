@@ -24,8 +24,9 @@ from core.models import (
     ProjectMeta,
     Segment,
     SegmentType,
+    SubtitleTrack,
     Timeline,
-    TranscriptData,
+    TrackBinding,
 )
 from core.paths import get_projects_dir
 from core.persistence import atomic_save_with_backup, load_json_with_recovery
@@ -117,6 +118,10 @@ class ProjectService:
         path so reads stay cheap. Methods that may disturb ordering
         (``update_transcript`` / ``update_segment`` with start changes /
         ``import_srt``) call this after mutation.
+
+        v3.0.0 M11-2: MAIN TRACK ONLY by contract. Extension tracks
+        (``transcript.tracks``) maintain their own ordering; the main-track
+        invariant must never rewrite them.
         """
         if self._current is None:
             return
@@ -531,7 +536,12 @@ class ProjectService:
         ]
 
         self._update_active_timeline(
-            transcript=TranscriptData(segments=all_segments),
+            # v3.0.0 M11-2 construction guard: model_copy preserves
+            # engine/language/tracks/bindings (a fresh TranscriptData would
+            # silently drop them).
+            transcript=self.active_timeline.transcript.model_copy(
+                update={"segments": all_segments}
+            ),
             edits=cleaned_edits,
         )
         return {"success": True, "data": self._current.model_dump()}
@@ -561,6 +571,99 @@ class ProjectService:
         transcript = self.active_timeline.transcript.model_copy(update=updates)
         self._update_active_timeline(transcript=transcript)
         return {"success": True, "data": self._current.model_dump()}
+
+    def import_srt_as_track(
+        self,
+        file_path: str,
+        language: str = "",
+        role: str = "extension",
+    ) -> dict:
+        """Import an SRT file as a read-only extension track (v3.0.0 M11-2).
+
+        Segment ids are re-namespaced into ``track_{track_id}_seg_{start:.3f}``
+        so merge / edit-decision systems can never match them against
+        main-track segments. Track segments are auto-bound to main-track
+        subtitle segments within a 300 ms start-time tolerance (greedy,
+        time-ordered, one-to-one); bindings are written but not consumed
+        this version.
+
+        Returns:
+            ``tracks`` / ``bindings`` layer patch envelope (ProjectPatch).
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        from core.subtitle_service import parse_srt
+
+        parsed = parse_srt(file_path)
+        if not parsed.get("success"):
+            return {"success": False, "error": parsed.get("error", "SRT parse failed")}
+        raw_segments = parsed["data"]
+        if not raw_segments:
+            return {"success": False, "error": "SRT file contains no subtitles"}
+
+        from uuid import uuid4
+
+        track_id = f"trk_{uuid4().hex[:8]}"
+        track_segments = sorted(
+            (
+                Segment.model_validate({**s, "id": f"track_{track_id}_seg_{s['start']:.3f}"})
+                for s in raw_segments
+            ),
+            key=lambda s: s.start,
+        )
+        track = SubtitleTrack(
+            id=track_id,
+            role=role,
+            name=Path(file_path).stem,
+            language=language,
+            segments=track_segments,
+        )
+
+        # 300 ms tolerance auto-binding against main-track subtitle segments.
+        main_subs = [
+            s for s in self.active_timeline.transcript.segments
+            if s.type == SegmentType.SUBTITLE
+        ]
+        consumed: set[str] = set()
+        bindings: list[TrackBinding] = []
+        for ext in track_segments:
+            main = next(
+                (
+                    m for m in main_subs
+                    if m.id not in consumed and abs(ext.start - m.start) <= 0.3
+                ),
+                None,
+            )
+            if main is None:
+                continue
+            consumed.add(main.id)
+            bindings.append(
+                TrackBinding(
+                    id=f"bind_{uuid4().hex[:8]}",
+                    track_id=track_id,
+                    main_segment_id=main.id,
+                    extension_segment_id=ext.id,
+                    start_offset=round(ext.start - main.start, 3),
+                    end_offset=round(ext.end - main.end, 3),
+                )
+            )
+
+        transcript = self.active_timeline.transcript.model_copy(
+            update={
+                "tracks": [*self.active_timeline.transcript.tracks, track],
+                "bindings": [*self.active_timeline.transcript.bindings, *bindings],
+            }
+        )
+        self._update_active_timeline(transcript=transcript)
+        logger.info(
+            "Imported SRT as track {} ({} segments, {} bindings, language={})",
+            track_id, len(track_segments), len(bindings), language or "-",
+        )
+        return self._success_patch(
+            tracks=transcript.tracks,
+            bindings=transcript.bindings,
+        )
 
     def update_media_info(self, media_info: dict) -> dict:
         """Update media info in the current project."""
@@ -838,7 +941,10 @@ class ProjectService:
         # subtitle_correction, highlight). On next project open, _migrate_highlights
         # then removed the now-orphaned edits, destroying AI suggestions.
         self._update_active_timeline(
-            transcript=TranscriptData(segments=all_segments),
+            # v3.0.0 M11-2 construction guard (see update_transcript).
+            transcript=self.active_timeline.transcript.model_copy(
+                update={"segments": all_segments}
+            ),
             edits=all_edits,
         )
         logger.info("Added {} silence segments to project", len(new_segments))
@@ -1084,7 +1190,10 @@ class ProjectService:
         all_segments.sort(key=lambda s: s.start)
 
         self._update_active_timeline(
-            transcript=TranscriptData(segments=all_segments),
+            # v3.0.0 M11-2 construction guard (see update_transcript).
+            transcript=self.active_timeline.transcript.model_copy(
+                update={"segments": all_segments}
+            ),
         )
         logger.info("Added segment {} ({:.3f}s - {:.3f}s)", seg_id, start, end)
         return {"success": True, "data": self._current.model_dump()}

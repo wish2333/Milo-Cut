@@ -139,10 +139,45 @@ class ProjectMeta(BaseModel, frozen=True):
     updated_at: str = Field(default_factory=lambda: datetime.now().isoformat())
 
 
+class SubtitleTrack(BaseModel, frozen=True):
+    """Read-only extension subtitle track (v3.0.0 M11-2).
+
+    Segment ids inside a track live in their own namespace
+    (``track_{track_id}_seg_{start:.3f}``) so merge / edit-decision
+    systems can never match them against main-track segments.
+    """
+
+    id: str
+    role: Literal["extension", "translation", "caption"] = "extension"
+    name: str = ""
+    language: str = ""
+    segments: list[Segment] = Field(default_factory=list)
+
+
+class TrackBinding(BaseModel, frozen=True):
+    """Binding between a main-track segment and an extension-track segment.
+
+    Offsets are ``extension - main`` in seconds. v3.0.0 writes bindings
+    only (300 ms tolerance at import); linkage editing is v3.1.
+    """
+
+    id: str
+    track_id: str
+    main_segment_id: str
+    extension_segment_id: str
+    start_offset: float = 0.0
+    end_offset: float = 0.0
+
+
 class TranscriptData(BaseModel, frozen=True):
     engine: str = "srt"
     language: str = "zh-CN"
     segments: list[Segment] = Field(default_factory=list)
+    # v3.0.0 M11-2: subtitle tracks (multi-track structure, MVP). The main
+    # track stays ``segments``; ``tracks`` only ever holds read-only
+    # extension tracks this version (bindings written but not consumed).
+    tracks: list[SubtitleTrack] = Field(default_factory=list)
+    bindings: list[TrackBinding] = Field(default_factory=list)
 
 
 class AnalysisResult(BaseModel, frozen=True):
@@ -388,6 +423,9 @@ class ProjectPatch(BaseModel, frozen=True):
     - ``segments`` / ``edits`` / ``analysis`` -- the three layers inside
       the active timeline. Setting any of these replaces the active
       timeline's corresponding field *wholesale*; the rest stay untouched.
+    - ``tracks`` / ``bindings`` (v3.0.0 M11-2) -- subtitle-track layers
+      inside the active timeline's transcript, same wholesale-replace
+      semantics (grouped with the timeline layers).
     - ``media`` -- the project-level MediaInfo; rarely changes outside
       relink/waveform/info updates.
     - ``active_timeline_id`` -- use when the write switched timelines
@@ -409,6 +447,10 @@ class ProjectPatch(BaseModel, frozen=True):
     segments: list[Segment] | None = None
     edits: list[EditDecision] | None = None
     analysis: AnalysisData | None = None
+    # v3.0.0 M11-2: subtitle-track layers (timeline-scoped, wholesale
+    # replace like segments/edits/analysis).
+    tracks: list[SubtitleTrack] | None = None
+    bindings: list[TrackBinding] | None = None
     media: MediaInfo | None = None
     active_timeline_id: str | None = None
     full_project: Project | None = None
