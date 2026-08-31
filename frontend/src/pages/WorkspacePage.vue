@@ -130,18 +130,10 @@ const projectRef = computed({
   set: (val) => emit("project-updated", val),
 })
 
-// v3.0.0 M5: layered undo feature flag; flip switches push/undo between the
-// layered apply_undo path and the legacy full-JSON snapshot path.
-const undoV2Enabled = ref(true)
-
-const {
-  pushSnapshot,
-  undo,
-  redo,
-  canUndo,
-  canRedo,
-  clearHistory,
-} = useUndoRedo({ isUndoV2: () => undoV2Enabled.value })
+// v3.0.0 M5: layered undo via the backend apply_undo channel. The legacy
+// full-JSON snapshot path was removed after the beta.2 smoke (rollback
+// anchor: tag pre-undo-cleanup).
+const { pushSnapshot, undo, redo, canUndo, canRedo, clearHistory } = useUndoRedo()
 
 const {
   isDetecting,
@@ -645,8 +637,6 @@ async function loadSilenceSettings() {
     silenceMargin.value = Number(res.data.silence_margin ?? 0.0)
     silenceSubtitlePadding.value = Number(res.data.silence_subtitle_padding ?? 0.0)
     trimSubtitlesOnOverlap.value = res.data.trim_subtitles_on_silence_overlap !== false
-    // v3.0.0 M5: layered undo feature flag (default true).
-    undoV2Enabled.value = res.data.undo_v2 !== false
   }
 }
 
@@ -1630,11 +1620,9 @@ async function handleUndo() {
   const res = await undo(projectRef.value)
   if (res.ok) {
     if (res.patch) {
-      // Layered path: apply the backend ProjectPatch through the standard
-      // channel (App.vue updates lastSeenRevision, no full-project emit).
+      // Apply the backend ProjectPatch through the standard channel
+      // (App.vue updates lastSeenRevision, no full-project emit).
       emit("project-updated", res.patch)
-    } else if (res.project) {
-      emit("project-updated", res.project)
     }
     showToast("Undo", "success", 1500)
   } else if (res.error !== "empty") {
@@ -1649,8 +1637,6 @@ async function handleRedo() {
   if (res.ok) {
     if (res.patch) {
       emit("project-updated", res.patch)
-    } else if (res.project) {
-      emit("project-updated", res.project)
     }
     showToast("Redo", "success", 1500)
   } else if (res.error !== "empty") {
@@ -1659,9 +1645,9 @@ async function handleRedo() {
 }
 
 /**
- * v3.0.0 M5 red line: a failed apply_undo (e.g. stale revision, or
- * undo_v2 disabled server-side) must never leave the UI stuck. Refresh
- * the full project from the backend and drop the history stacks.
+ * v3.0.0 M5 red line: a failed apply_undo (e.g. stale revision) must never
+ * leave the UI stuck. Refresh the full project from the backend and drop
+ * the history stacks.
  */
 async function recoverFromUndoFailure() {
   clearHistory()

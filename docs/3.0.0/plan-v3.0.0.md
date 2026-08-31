@@ -185,9 +185,9 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 **验收标准**: 滚动/缩放主观流畅（对比 beta.1 截录屏）；播放头无抖动。（真机对比归批次冒烟 + perf-beta2）
 
 **—— Phase 2 验收节点（beta.2 门禁）——**
-- [ ] 全量测试绿；`tests/perf` 扩展项（滚动 fps / undo 耗时 / IPC 频率 / 长任务）纳入脚本并产出对比报告 `docs/3.0.0/perf-beta2.md` ✅ 自动化可测项已入脚本并达标（undo 主线程 p50 1.3/2.9ms <5ms、千段 50/50 回放正确、open/save 毫秒级无回归）；滚动 fps / IPC 频率 / 长任务为 DevTools 真机测量项，随下方 ★冒烟执行后回填同一报告
-- [ ] ★ 双平台冒烟 + 用户确认性能体感（冒烟通过后删除 legacy undo 路径，tag `pre-undo-cleanup` 为回滚锚点）
-- [ ] 打 tag `v3.0.0-beta.2`；发布内部包
+- [x] 全量测试绿；`tests/perf` 扩展项（滚动 fps / undo 耗时 / IPC 频率 / 长任务）纳入脚本并产出对比报告 `docs/3.0.0/perf-beta2.md` ✅ 2026-08-31 自动化可测项入脚本并达标（undo 主线程 p50 1.3–2.9ms <5ms、千段 50/50 回放正确、apply_undo 后端 p50 3.96ms、open/save 毫秒级无回归）；fps / IPC / 长任务实测随冒烟回填同一报告
+- [x] ★ 双平台冒烟 + 用户确认性能体感 ✅ 2026-08-31 **macOS（WKWebView）全绿**（滚动 60fps、波形期长任务 0、空闲 IPC ≈4/s、undo/Cmd 链路/跳转/hover 手感正常）；**Windows（WebView2）待后续补测**（用户裁决先行放行 beta.2，补测后回填 perf-beta2.md）；legacy undo 路径已删除（回滚锚点 tag `pre-undo-cleanup`）
+- [x] 打 tag `v3.0.0-beta.2`；发布内部包 ✅ onedir 构建发布
 
 ---
 

@@ -72,7 +72,7 @@ beforeEach(() => {
   applyUndoResult = { success: true, data: patchWithRevision(1) }
 })
 
-describe("useUndoRedo -- M5 layered path (undo_v2 on)", () => {
+describe("useUndoRedo -- M5 layered path", () => {
   it("pushSnapshot captures layered before-state without stringify", async () => {
     const { pushSnapshot, undo } = useUndoRedo()
     const p1 = makeProject("v1")
@@ -146,32 +146,6 @@ describe("useUndoRedo -- M5 layered path (undo_v2 on)", () => {
   })
 })
 
-describe("useUndoRedo -- legacy path (undo_v2 off)", () => {
-  it("pushSnapshot/undo/redo behave like the pre-M3 full snapshot", async () => {
-    const { pushSnapshot, undo, redo } = useUndoRedo({ isUndoV2: () => false })
-    const v1 = makeProject("v1")
-    const v2 = makeProject("v2")
-
-    pushSnapshot(v1)
-    const res = await undo(v2)
-    expect(res.ok).toBe(true)
-    expect(res.project).toEqual(v1)
-    expect(applyUndoCalls.length).toBe(0) // never touches the backend
-
-    const res2 = await redo(v2)
-    expect(res2.ok).toBe(true)
-    expect(res2.project).toEqual(v2)
-  })
-
-  it("legacy undo caps history at 50", () => {
-    const { pushSnapshot, legacyUndoStack } = useUndoRedo({ isUndoV2: () => false })
-    for (let i = 0; i < 60; i++) {
-      pushSnapshot(makeProject(`v${i}`))
-    }
-    expect(legacyUndoStack.value.length).toBe(50)
-  })
-})
-
 describe("useUndoRedo -- shared state", () => {
   it("clearHistory empties both stacks", () => {
     const { pushSnapshot, clearHistory, undoStack, redoStack } = useUndoRedo()
@@ -192,18 +166,5 @@ describe("useUndoRedo -- shared state", () => {
     await undo(makeProject("b"))
     expect(canUndo.value).toBe(false)
     expect(canRedo.value).toBe(true)
-  })
-
-  it("flag-off undo with an empty legacy stack is a no-op", async () => {
-    const flag = { on: true }
-    const { pushSnapshot, undo, clearHistory } = useUndoRedo({ isUndoV2: () => flag.on })
-    pushSnapshot(makeProject("a"), ["segments"], "x") // captured layered
-    clearHistory()
-    flag.on = false
-    // undo now reads the legacy stack (empty) - no backend call
-    const res = await undo(makeProject("b"))
-    expect(res.ok).toBe(false)
-    expect(res.error).toBe("empty")
-    expect(applyUndoCalls.length).toBe(0)
   })
 })
