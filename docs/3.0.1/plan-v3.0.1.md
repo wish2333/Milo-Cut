@@ -76,8 +76,8 @@ P3 批次: 导出 -> overlay -> 文档
 
 ### P1-2 后端镜像 `core/track_constraints.py`（可并行）
 
-- [ ] Python 镜像实现：`reconcile_extension_track` / `sync_bound_extension_for_main` / `rebuild_binding_offsets` / `clamp_extension_range` / `overlaps_neighbors`（语义与 M1 逐条对齐）
-- [ ] 新建 `tests/test_track_constraints.py`：**复用 P1-1 同一组边界用例表**双侧锚定（含常量数值一致断言）
+- [x] Python 镜像实现：`reconcile_extension_track` / `sync_bound_extension_for_main` / `rebuild_binding_offsets` / `clamp_extension_range` / `overlaps_neighbors`（语义与 M1 逐条对齐）✅ 2026-09-01
+- [x] 新建 `tests/test_track_constraints.py`：**复用 P1-1 同一组边界用例表**双侧锚定（含常量数值一致断言）✅ 2026-09-01（53 用例；发现并消解 Python banker's rounding 与 JS Math.round 的 tie 差异，见 record-3.0.1-P1-2）
 
 **验收方式**: `uv run pytest tests/test_track_constraints.py`。
 **验收标准**: 与前端用例表一一对应，双侧全绿；`ruff check` 0 问题。
