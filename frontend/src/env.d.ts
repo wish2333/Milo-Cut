@@ -1,5 +1,11 @@
 /** pywebview injects `window.pywebview` at runtime. */
 
+/** Vite `?raw` imports (vite/client types are not referenced in this project). */
+declare module "*?raw" {
+  const content: string
+  export default content
+}
+
 interface ImportMetaEnv {
   readonly VITE_DEMO_MODE?: string
 }
