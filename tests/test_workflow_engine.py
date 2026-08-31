@@ -493,3 +493,151 @@ class TestResumableSnapshots:
         }), encoding="utf-8")
 
         assert engine.find_resumable_snapshots() == []
+
+
+# ------------------------------------------------------------------
+# v3.0.0 M3-6: failure rollback (two-step workflow, step 2 fails)
+# ------------------------------------------------------------------
+
+
+@pytest.fixture
+def real_svc(tmp_path, monkeypatch):
+    """Real ProjectService (patched paths) for rollback semantics checks."""
+    monkeypatch.setattr("core.paths.get_projects_dir", lambda: tmp_path / "projects")
+    monkeypatch.setattr("core.paths.get_data_dir", lambda: tmp_path)
+
+    from core.project_service import ProjectService
+
+    service = ProjectService()
+    service.create_project("w", "/fake/media.mp4", {"duration": 10.0})
+    # Seed subtitle segments (make_project keeps the create_project path/dir).
+    service._current = _make_project_with_segments()
+    return service
+
+
+def _real_engine(real_svc):
+    from core.workflow_engine import WorkflowEngine
+
+    return WorkflowEngine(MagicMock(), real_svc, MagicMock())
+
+
+def _two_step_def():
+    return {
+        "id": "wf-rollback",
+        "name": "回滚测试",
+        "steps": [
+            {"type": "llm_smart_delete", "preset_id": None},
+            {"type": "llm_subtitle_correction", "preset_id": None},
+        ],
+    }
+
+
+def _wire_two_step_flow(engine, real_svc, observed):
+    """Mock the task layer: step 1 mutates the project then completes,
+    step 2 fails -- mimicking the v2.2.0 non-sandbox handler contract."""
+    task_mgr = engine._task_manager
+    task_mgr.create_task.side_effect = [
+        {"success": True, "data": {"id": "t1", "status": "queued"}},
+        {"success": True, "data": {"id": "t2", "status": "queued"}},
+    ]
+
+    def fake_get_task(task_id):
+        if task_id == "t1":
+            if not observed.get("step1_applied"):
+                observed["step1_applied"] = True
+                res = real_svc.update_segment_text("seg-1", "步骤一效果")
+                assert res["success"]
+            return {"success": True, "data": {"status": "completed", "result": {}}}
+        if task_id == "t2":
+            observed["rev_at_failure"] = real_svc._revision
+            return {"success": True, "data": {"status": "failed", "error": "步骤二失败"}}
+        return {"success": False, "error": "unknown task"}
+
+    task_mgr.get_task.side_effect = fake_get_task
+
+
+class TestFailureRollback:
+    def test_rollback_step_keeps_step1_effect(self, real_svc, isolated_settings):
+        """两步流第二步失败 → 回滚本步：第一步效果保留，revision 递增。"""
+        engine = _real_engine(real_svc)
+        observed: dict = {}
+        _wire_two_step_flow(engine, real_svc, observed)
+        snapshot = engine._create_snapshot(_two_step_def(), "default")
+        rev_before = real_svc._revision
+
+        # Pre-seed the failure answer so _wait_for_failure_action returns fast.
+        engine._failure_action = "rollback_step"
+        engine._failure_event.set()
+
+        engine._run_steps(snapshot)
+
+        # Step-1 effect survives (rollback target = before step 2).
+        seg1 = next(
+            s for s in real_svc.active_timeline.transcript.segments
+            if s.id == "seg-1"
+        )
+        assert seg1.text == "步骤一效果"
+        # Revision strictly increased across the rollback (M5 assertion).
+        assert real_svc._revision > observed["rev_at_failure"] > rev_before
+        # Terminal state + event.
+        assert snapshot["status"] == "rolled_back"
+        assert snapshot["rolled_back_to_step"] == 1
+        assert snapshot["step_results"][1]["status"] == "failed"
+        emitted = [c.args[0] for c in engine._emit.call_args_list]
+        assert "workflow:rolled_back" in emitted
+
+    def test_rollback_all_reverts_step1_effect(self, real_svc, isolated_settings):
+        """整体回滚：第一步效果一并撤销。"""
+        engine = _real_engine(real_svc)
+        observed: dict = {}
+        _wire_two_step_flow(engine, real_svc, observed)
+        snapshot = engine._create_snapshot(_two_step_def(), "default")
+
+        engine._failure_action = "rollback_all"
+        engine._failure_event.set()
+
+        engine._run_steps(snapshot)
+
+        seg1 = next(
+            s for s in real_svc.active_timeline.transcript.segments
+            if s.id == "seg-1"
+        )
+        assert seg1.text == "hello world"  # original factory text
+        assert snapshot["rolled_back_to_step"] == 0
+
+    def test_cross_session_snapshot_still_rollbackable(self, real_svc, isolated_settings):
+        """跨会话：新 engine 实例从磁盘加载快照后仍可回滚。"""
+        engine = _real_engine(real_svc)
+        snapshot = engine._create_snapshot(_two_step_def(), "default")
+
+        # Session A: step-boundary snapshot persisted, then step 1 runs.
+        snapshot["layer_snapshots"]["1"] = engine._capture_layer_snapshot("default")
+        engine._save_snapshot(snapshot)
+        assert real_svc.update_segment_text("seg-1", "步骤一效果")["success"]
+
+        # Session B: fresh engine instance, load from disk, roll back.
+        engine_b = _real_engine(real_svc)
+        loaded = engine_b._load_snapshot(snapshot["workflow_instance_id"])
+        assert loaded is not None
+        assert "1" in loaded["layer_snapshots"]
+        res = engine_b._rollback_to_step(loaded, 0)
+        assert res["success"]
+        seg1 = next(
+            s for s in real_svc.active_timeline.transcript.segments
+            if s.id == "seg-1"
+        )
+        assert seg1.text == "hello world"
+
+    def test_rollback_missing_layer_snapshot_fails_gracefully(self, real_svc, isolated_settings):
+        engine = _real_engine(real_svc)
+        snapshot = engine._create_snapshot(_two_step_def(), "default")
+        snapshot["layer_snapshots"] = {}  # legacy snapshot without captures
+        res = engine._rollback_to_step(snapshot, 1)
+        assert not res["success"]
+        assert "缺少" in res["error"]
+
+    def test_handle_step_failure_accepts_rollback_actions(self, real_svc, isolated_settings):
+        engine = _real_engine(real_svc)
+        assert engine.handle_step_failure("rollback_step")["success"]
+        assert engine.handle_step_failure("rollback_all")["success"]
+        assert not engine.handle_step_failure("rollback_typo")["success"]

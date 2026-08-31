@@ -36,6 +36,7 @@ from core.events import (
     WORKFLOW_CANCELLED,
     WORKFLOW_COMPLETED,
     WORKFLOW_HEARTBEAT,
+    WORKFLOW_ROLLED_BACK,
     WORKFLOW_STARTED,
     WORKFLOW_STEP_COMPLETED,
     WORKFLOW_STEP_FAILED,
@@ -274,6 +275,16 @@ class WorkflowEngine:
             "steps_def": workflow_def["steps"],
             "segments_hash": segments_hash,
             "segments_snapshot": segments_snapshot,
+            # v3.0.0 M3-6: per-step-boundary layer snapshots for failure
+            # rollback. Step 0 shares the pre-workflow state (same list
+            # objects as segments_snapshot + fresh edits dump). Persisted
+            # with the snapshot for cross-session rollback.
+            "layer_snapshots": {
+                "0": {
+                    "segments": segments_snapshot,
+                    "edits": [e.model_dump() for e in timeline.edits],
+                }
+            },
             "accumulated_edits": [],
             "step_results": [
                 {"index": i, "type": s["type"], "status": "pending", "edits_count": 0}
@@ -282,6 +293,19 @@ class WorkflowEngine:
         }
         self._save_snapshot(snapshot)
         return snapshot
+
+    def _capture_layer_snapshot(self, timeline_id: str) -> dict:
+        """Capture the undoable layers (segments/edits) of a timeline (M3-6).
+
+        Same layer taxonomy as the M5 undo path; payloads are plain dicts so
+        they survive the cross-session snapshot JSON round-trip untouched.
+        """
+        project = self._project_service.current
+        timeline = project.get_timeline(timeline_id)
+        return {
+            "segments": [s.model_dump() for s in timeline.transcript.segments],
+            "edits": [e.model_dump() for e in timeline.edits],
+        }
 
     def _save_snapshot(self, snapshot: dict) -> None:
         """Persist snapshot to disk (cross-session recovery, D-28)."""
@@ -548,6 +572,16 @@ class WorkflowEngine:
                 step_type = step_def["type"]
                 step_name = STEP_DISPLAY_NAMES.get(step_type, step_type)
 
+                # v3.0.0 M3-6: capture the pre-step layer snapshot once per
+                # step (retry reuses the same snapshot), persisted for
+                # cross-session rollback.
+                layer_snaps = snapshot.setdefault("layer_snapshots", {})
+                if str(step_index) not in layer_snaps:
+                    layer_snaps[str(step_index)] = self._capture_layer_snapshot(
+                        snapshot["timeline_id"]
+                    )
+                    self._save_snapshot(snapshot)
+
                 # Emit step started (D-70: distinguish queued vs running)
                 self._emit(WORKFLOW_STEP_STARTED, {
                     "workflow_instance_id": instance_id,
@@ -566,6 +600,7 @@ class WorkflowEngine:
                 if not result.get("success"):
                     # Step failed -- emit and wait for failure handling (D-11)
                     error = result.get("error", "步骤执行失败")
+                    snapshot["step_results"][step_index]["status"] = "failed"
                     self._emit(WORKFLOW_STEP_FAILED, {
                         "workflow_instance_id": instance_id,
                         "step_index": step_index,
@@ -586,6 +621,23 @@ class WorkflowEngine:
                                 instance_id, step_index,
                             )
                             break
+                    elif action in ("rollback_step", "rollback_all"):
+                        # v3.0.0 M3-6: restore the pre-step (or pre-workflow)
+                        # layers via the M5 apply_undo channel, then terminate.
+                        target = step_index if action == "rollback_step" else 0
+                        rb = self._rollback_to_step(snapshot, target)
+                        with self._lock:
+                            snapshot["status"] = "rolled_back"
+                            snapshot["rolled_back_to_step"] = (
+                                target if rb.get("success") else -1
+                            )
+                            self._active = snapshot
+                        self._save_snapshot(snapshot)
+                        logger.info(
+                            "Workflow {} rolled back to step {} (success={})",
+                            instance_id, target, rb.get("success"),
+                        )
+                        break
                     elif action == "skip":
                         # Mark as skipped, continue
                         snapshot["step_results"][step_index]["status"] = "skipped"
@@ -632,6 +684,17 @@ class WorkflowEngine:
                     "completed_steps": snapshot["current_step_index"],
                     "total_steps": total,
                 })
+            elif snapshot.get("status") == "rolled_back":
+                # v3.0.0 M3-6: failure rollback terminal state.
+                self._save_snapshot(snapshot)
+                self._emit(WORKFLOW_ROLLED_BACK, {
+                    "workflow_instance_id": instance_id,
+                    "rolled_back_to_step": snapshot.get("rolled_back_to_step", -1),
+                    "total_steps": total,
+                })
+                self._delete_snapshot(instance_id)
+                with self._lock:
+                    self._active = None
             else:
                 snapshot["status"] = "completed"
                 self._emit(WORKFLOW_COMPLETED, {
@@ -738,20 +801,53 @@ class WorkflowEngine:
     # ------------------------------------------------------------------
 
     def _wait_for_failure_action(self) -> str:
-        """Block until the frontend responds with retry/skip/abort."""
+        """Block until the frontend responds with retry/skip/abort/rollback."""
         self._failure_event.wait()
         action = self._failure_action
         self._failure_event.clear()
         self._failure_action = ""
         return action
 
+    def _rollback_to_step(self, snapshot: dict, step_index: int) -> dict:
+        """Restore the pre-``step_index`` layers via the M5 apply_undo channel.
+
+        The layer snapshot payload is applied through
+        ``ProjectService.apply_undo`` so the rollback shares the undo
+        protocol's guarantees: all-or-nothing validation, sort invariant
+        restoration, and a strictly increasing revision.
+        """
+        layers = (snapshot.get("layer_snapshots") or {}).get(str(step_index))
+        if not layers:
+            return {
+                "success": False,
+                "error": f"快照缺少步骤 {step_index} 前的层级快照",
+            }
+        svc = self._project_service
+        if svc.current is None:
+            return {"success": False, "error": "No project open"}
+
+        # apply_undo operates on the active timeline; make the workflow's
+        # timeline active first (same pattern as batch correction accept).
+        if svc.current.active_timeline_id != snapshot["timeline_id"]:
+            svc._current = svc.current.model_copy(
+                update={"active_timeline_id": snapshot["timeline_id"]}
+            )
+
+        payload: dict[str, Any] = {}
+        if "segments" in layers:
+            payload["segments"] = layers["segments"]
+        if "edits" in layers:
+            payload["edits"] = layers["edits"]
+        return svc.apply_undo(payload, svc._revision)
+
     def handle_step_failure(self, action: str) -> dict:
         """Respond to a step failure (called by frontend after user choice).
 
         Args:
-            action: "retry" | "skip" | "abort"
+            action: "retry" | "skip" | "abort" | "rollback_step" |
+                    "rollback_all" (v3.0.0 M3-6)
         """
-        if action not in ("retry", "skip", "abort"):
+        if action not in ("retry", "skip", "abort", "rollback_step", "rollback_all"):
             return {"success": False, "error": f"无效的操作: {action}"}
         with self._lock:
             self._failure_action = action
