@@ -231,7 +231,7 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 **验收标准**: project_service.py < 50KB **⚠️ 未达标：实际 81.7KB**（106.4KB → 81.7KB，-23%；纠错域实际 454 行远小于计划行号基线的 ~900 行估算，既定范围已全部搬出，剩余为编辑/ED/静音域——随批次检查点由用户裁决）；行为零变化 ✅（契约测试锁定）。
 
 **—— Phase 3 验收节点（rc 门禁）——**
-- [ ] 全量测试绿 + 性能对比无回退（perf-beta2 基线）
+- [x] 全量测试绿 + 性能对比无回退（perf-beta2 基线）✅ 2026-08-31 pytest 550 / vitest 321 / build / ruff 0 / eslint 0-0；backend_benchmark（1167 段 seed=42 runs=30）：apply_undo p50 3.765ms（beta.2 3.961，无回退）、model_dump 0.894ms（基线 0.888 持平）、dump_json 1.214ms（1.211 持平）、update_edit_decision 0.533ms（更优）、update_segment 0.644ms（更优）
 - [ ] ★ 双平台完整冒烟（Phase 1+2+3 全路径）
 - [ ] 打 tag `v3.0.0-rc`；★ 邀请用户做 3-5 天真实使用（daily driver），收集 issue
 
