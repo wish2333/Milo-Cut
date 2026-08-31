@@ -32,6 +32,25 @@ Milo-Cut is a local-first, AI-powered desktop video preprocessing tool for oral 
 - **Timeline formats** -- OTIO, EDL, FCPXML, Premiere XML. Audio-only projects (fps=0) now produce valid timeline files (v2.3.1 P0 fix).
 - **Highlight export** -- Export only the highlight ranges to MP4 / audio / SRT / VTT (v2.2.0).
 
+### Data Fidelity & Reliability (v3.0.0)
+
+- **Word-level timestamps preserved end-to-end** -- transcription no longer round-trips through SRT; split/merge maintain word data, and LLM corrections re-align word timings (local edits keep original timestamps, unreliable alignments are cleared rather than misplaced).
+- **Crash-safe project files** -- atomic saves with fsync + rotating `.bak.1/.bak.2` backups; corrupted projects auto-recover with a toast and self-heal on disk.
+- **LLM reliability protocol** -- batch ledger with retry and coverage-gap surfacing (never silently drops a batch), response sanitization, SSRF guard on base URLs, opaque segment ids, per-path temperature control.
+- **Waveform peak cache** -- `<media>.peaks.json` sidecar with a `{size, mtime_ms}` signature; reopening the same media is ready in ~1 ms instead of re-running ffmpeg.
+
+### Performance & Scale (v3.0.0)
+
+- **Layered undo** -- per-layer snapshots via the backend `apply_undo` channel; undo on a 1167-segment project costs ~1.2 ms on the main thread with a strictly increasing revision.
+- **Virtualized transcript list + in-place patch merging** -- 1200-segment projects scroll at 60 fps; unchanged rows keep object identity so Vue skips re-rendering them.
+- **Batched bridge events + adaptive tick** -- one `evaluate_js` per batch (512 KB budget), idle tick drops to 250 ms; waveform generation no longer blocks the UI thread.
+- **Waveform rendering pipeline** -- rAF-coalesced draws, DPR-aware canvas resizing, imperative playhead (zero Vue patches during playback), hover seek preview.
+
+### Multi-Track Subtitles (v3.0.0 MVP)
+
+- **Extension tracks** -- import an SRT as a read-only second track with automatic 300 ms-tolerance binding to the main track; collapsible track lane in the timeline; per-track SRT export at original timestamps.
+- **Workflow failure rollback** -- per-step layer snapshots persisted cross-session; when a workflow step fails you can roll back just that step (keeping earlier steps) or the whole workflow.
+
 ### Platform & Local-First
 
 - **Local-first** -- All processing happens on your machine. No data leaves your device. LLM calls go directly from the desktop app to your configured provider.
