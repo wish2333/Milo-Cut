@@ -250,14 +250,14 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 
 ### P4-2 M11-2 多轨数据结构 + MVP（3 天）
 
-- [ ] models 增 SubtitleTrack/TrackBinding + TranscriptData 扩展；**构造保护**（3 处 `TranscriptData(...)` → `model_copy`，契约测试锁定）
-- [ ] ProjectPatch 双层（py + ts 两侧 + describePatchLayers）；id 命名空间隔离
-- [ ] `import_srt_as_track` + 300ms 容差自动绑定 + `update_transcript_meta`
-- [ ] UI MVP：导入对话框"作为副轨导入" + Timeline 折叠只读 lane + 导出主/副 SRT
-- [ ] 导出边界写入 PROJECT_SCHEMA.md（视频导出不涉副轨；副轨 SRT 单独导出）
+- [x] models 增 SubtitleTrack/TrackBinding + TranscriptData 扩展；**构造保护**（3 处 `TranscriptData(...)` → `model_copy`，契约测试锁定）✅ 2026-08-31 构造保护 4 条契约测试（含 update_transcript_meta）；`_enforce_segment_sort_invariant` docstring 锁定只管主轨
+- [x] ProjectPatch 双层（py + ts 两侧 + describePatchLayers）；id 命名空间隔离 ✅ `tracks`/`bindings` 插 timeline 内层组（analysis 与 media 之间）；副轨段 id `track_{track_id}_seg_{start:.3f}`，测试断言永不与主轨 id 形态相交
+- [x] `import_srt_as_track` + 300ms 容差自动绑定 + `update_transcript_meta` ✅ `update_transcript_meta` P1-1 已交付；绑定贪心一对一、offset = 副轨−主轨；tool `@expose` + `_mark_dirty`（偏差：不可 undo——白名单外，见 record 决策 3）
+- [x] UI MVP：导入对话框"作为副轨导入" + Timeline 折叠只读 lane + 导出主/副 SRT ✅ 落实偏差：导入为工具栏并列按钮「导入副轨」（现导入交互无对话框）；TrackLane 折叠只读 lane（点击 seek）；ExportPage 每轨独立导出按钮（`export_subtitle` + `track_id` payload，原始时间戳直出）
+- [x] 导出边界写入 PROJECT_SCHEMA.md ✅ 副轨不参与视频导出/裁剪映射；副轨 SRT 单独导出
 
-**验收方式**: `test_tracks_contract.py`（构造保护/patch 往返/invariant 不波及副轨/旧工程兼容）全绿；双语项目手测导入→显示→双 SRT 导出。
-**验收标准**: 主轨全部现有测试零改动通过（零破坏证明）；旧工程（无 tracks 字段）打开正常。
+**验收方式**: `test_tracks_contract.py`（构造保护/patch 往返/invariant 不波及副轨/旧工程兼容）全绿 ✅ 14 条；双语项目手测导入→显示→双 SRT 导出（→ 归批次冒烟）。
+**验收标准**: 主轨全部现有测试零改动通过（零破坏证明）✅ pytest 578 / vitest 340 全绿，存量测试零改动；旧工程（无 tracks 字段）打开正常 ✅（model_validate 缺省兼容 + save/open 落盘往返双测锁定）。
 
 ### P4-3 M11-3 波形缓存（1 天）
 

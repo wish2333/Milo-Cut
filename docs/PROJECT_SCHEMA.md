@@ -32,7 +32,10 @@
 
 - `engine: str = "srt"`（v3.0.0 M1-1 起由转写写入 whisper/qwen3-asr 等）
 - `language: str = "zh-CN"`
-- `segments: list[Segment]`，**主轨按 start 升序**（sort invariant，`_enforce_segment_sort_invariant` 保证）
+- `segments: list[Segment]`，**主轨按 start 升序**（sort invariant，`_enforce_segment_sort_invariant` 保证；v3.0.0 M11-2 起契约锁定**只管主轨**，副轨各 track 自维护有序）
+- `tracks: list[SubtitleTrack]`（v3.0.0 M11-2）：只读副轨。`{id: trk_<hex8>, role: extension|translation|caption, name, language, segments}`；副轨段 id 命名空间隔离为 `track_{track_id}_seg_{start:.3f}`，防止 merge/决策系统与主轨误匹配
+- `bindings: list[TrackBinding]`（v3.0.0 M11-2）：主轨段 ↔ 副轨段绑定（`{id: bind_<hex8>, track_id, main_segment_id, extension_segment_id, start_offset, end_offset}`，offset = 副轨 − 主轨，秒）。**本版只写不消费**（导入时 300ms 起点容差贪心匹配生成，一对一）；联动编辑/解绑交互推迟到 v3.1
+- ProjectPatch 对应 `tracks` / `bindings` 两层（timeline 内层组，整体替换语义），见 `core/project_patch.py` / `frontend/src/utils/projectPatch.ts`
 
 ## Segment
 
@@ -61,4 +64,5 @@
 ## 导出边界
 
 - 视频导出（segment-concat 管线）只消费主轨 segments/edits；SRT/VTT 导出由 export_srt 生成；OTIO/EDL/FCPXML/Premiere XML 由 export_timeline 生成（audio-only fps=0 安全）。
+- **副轨（tracks）不参与视频导出与时间轴裁剪映射**（v3.0.0 M11-2）：确认删除/keep-range 只作用于主轨；副轨 SRT 通过 `export_subtitle` 任务携带 `track_id` 单独导出（`export_track_srt`，按原始时间戳直出，不做删除映射），导出对话框按轨道逐个出按钮。
 - v3.0.0 转写自动导出的 SRT（`data/transcripts/`）仅为归档交付物，**不再回读**（M1-1）。
