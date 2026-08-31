@@ -189,7 +189,7 @@ class TestP1SubtitleCorrectionE2E:
         assert result["success"] is True
 
         corrections = result["data"]["corrections"]
-        apply_result = svc.apply_subtitle_corrections(corrections)
+        apply_result = svc.correction.apply_subtitle_corrections(corrections)
         assert apply_result["success"] is True
 
         # Critical: timestamps must be identical to original
@@ -226,7 +226,7 @@ class TestP1SubtitleCorrectionE2E:
         result = analyze_subtitle_correction(seg_dicts, config=_configured_llm())
         corrections = result["data"]["corrections"]
 
-        apply_result = svc.apply_subtitle_corrections(corrections)
+        apply_result = svc.correction.apply_subtitle_corrections(corrections)
         assert apply_result["success"] is True
         assert apply_result["data"]["partial"] is True
         assert apply_result["data"]["uncovered_count"] == 3
@@ -458,7 +458,7 @@ class TestMultiTimelineIsolation:
              "changes": ["修正"], "category": "typo", "confidence": 0.9}
             for i, s in enumerate(svc.active_timeline.transcript.segments)
         ]
-        result = svc.apply_subtitle_corrections(corrections)
+        result = svc.correction.apply_subtitle_corrections(corrections)
         assert result["success"] is True
 
         # Fork transcript is modified

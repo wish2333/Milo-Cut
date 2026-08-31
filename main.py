@@ -890,7 +890,7 @@ class MiloCutApi(Bridge):
 
         # v2.1.0 Phase 2: store corrections for review instead of auto-applying.
         store_result = self._mark_dirty(
-            self._project.store_subtitle_corrections(corrections, timeline_id)
+            self._project.correction.store_subtitle_corrections(corrections, timeline_id)
         )
 
         if not store_result["success"]:
@@ -2356,7 +2356,7 @@ class MiloCutApi(Bridge):
             {"success": True, "data": [correction, ...]}
         """
         tid = self._resolve_timeline_id(timeline_id)
-        return self._project.get_subtitle_corrections(tid)
+        return self._project.correction.get_subtitle_corrections(tid)
 
     @expose
     def compute_diff(self, original: str, corrected: str) -> dict:
@@ -2376,7 +2376,7 @@ class MiloCutApi(Bridge):
         Returns:
             {"success": True, "data": {"segment_id": str}}
         """
-        return self._mark_dirty(self._project.accept_subtitle_correction(result_id))
+        return self._mark_dirty(self._project.correction.accept_subtitle_correction(result_id))
 
     @expose
     def reject_correction(self, result_id: str) -> dict:
@@ -2385,7 +2385,7 @@ class MiloCutApi(Bridge):
         Returns:
             {"success": True, "data": {"segment_id": str}}
         """
-        return self._mark_dirty(self._project.reject_subtitle_correction(result_id))
+        return self._mark_dirty(self._project.correction.reject_subtitle_correction(result_id))
 
     @expose
     def accept_high_confidence_corrections(
@@ -2401,7 +2401,7 @@ class MiloCutApi(Bridge):
             {"success": True, "data": {"accepted_count", "remaining_count"}}
         """
         tid = self._resolve_timeline_id(timeline_id)
-        return self._mark_dirty(self._project.accept_high_confidence_corrections(tid, threshold))
+        return self._mark_dirty(self._project.correction.accept_high_confidence_corrections(tid, threshold))
 
     @expose
     def clear_subtitle_corrections(self, timeline_id: str = "") -> dict:
@@ -2411,7 +2411,7 @@ class MiloCutApi(Bridge):
             {"success": True, "data": {"cleared_count": int}}
         """
         tid = self._resolve_timeline_id(timeline_id)
-        return self._mark_dirty(self._project.clear_subtitle_corrections(tid))
+        return self._mark_dirty(self._project.correction.clear_subtitle_corrections(tid))
 
     @expose
     def start_smart_delete(self, timeline_id: str = "") -> dict:

@@ -224,11 +224,11 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 
 ### P3-4 M10 project_service 分域（1.5 天）
 
-- [ ] 拆 `correction_service.py`（单向依赖 correction → project；main.py 组装）+ `migrations.py`
-- [ ] bridge 方法名与信封不变（@expose 委托）；478 条 pytest 锚定全绿 + 迁移链夹具契约测试
+- [x] 拆 `correction_service.py`（单向依赖 correction → project，__init__ 接线）+ `migrations.py`（migrate_v1_to_v2 + run_post_load_migrations 门面按原序执行）✅ 2026-08-31 纯搬移 bodies 逐字；组装点偏差（__init__ 而非 main.py）与域内互调还原见 record-P3-4
+- [x] bridge 方法名与信封不变（@expose 委托 `self._project.correction.X`）；pytest 锚定全绿 + 迁移链夹具契约测试 ✅ 550 passed
 
-**验收方式**: pytest 全绿 + `git diff --stat` 确认纯搬移（行数守恒 ±5%）。
-**验收标准**: project_service.py < 50KB；行为零变化（契约测试锁定）。
+**验收方式**: pytest 全绿 ✅ + `git diff --stat` 行数守恒 ✅（2538 → 2601 行，+2.5% 在 ±5% 内）。
+**验收标准**: project_service.py < 50KB **⚠️ 未达标：实际 81.7KB**（106.4KB → 81.7KB，-23%；纠错域实际 454 行远小于计划行号基线的 ~900 行估算，既定范围已全部搬出，剩余为编辑/ED/静音域——随批次检查点由用户裁决）；行为零变化 ✅（契约测试锁定）。
 
 **—— Phase 3 验收节点（rc 门禁）——**
 - [ ] 全量测试绿 + 性能对比无回退（perf-beta2 基线）

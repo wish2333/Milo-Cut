@@ -1,5 +1,6 @@
 """Tests for v1 -> v2 schema migration (audit L-02/Phase 4a-7)."""
 
+from core import migrations
 from core.models import Project
 from core.project_service import ProjectService
 
@@ -29,8 +30,7 @@ class TestV1Migration:
             "edits": [{"id": "e1", "start": 0, "end": 5, "action": "delete"}],
             "analysis": {"last_run": None, "results": []},
         }
-        svc = ProjectService()
-        migrated = svc._migrate_to_v2(v1_data.copy())
+        migrated = migrations.migrate_v1_to_v2(v1_data.copy())
 
         assert migrated["schema_version"] == 2
         assert len(migrated["timelines"]) == 1
@@ -60,8 +60,7 @@ class TestV1Migration:
             "analysis": {"results": []},
             "topic_drift": {"topic_description": "should be dropped"},
         }
-        svc = ProjectService()
-        migrated = svc._migrate_to_v2(v1_data.copy())
+        migrated = migrations.migrate_v1_to_v2(v1_data.copy())
 
         assert "topic_drift" not in migrated
         # topic_drift data not in timeline either
@@ -76,8 +75,7 @@ class TestV1Migration:
             "timelines": [{"id": "default", "label": "原始", "transcript": {"segments": []}}],
             "active_timeline_id": "default",
         }
-        svc = ProjectService()
-        result = svc._migrate_to_v2(v2_data.copy())
+        result = migrations.migrate_v1_to_v2(v2_data.copy())
         assert result["schema_version"] == 2
         # Should return as-is (no re-wrapping)
 

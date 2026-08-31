@@ -1,5 +1,6 @@
 """Tests for core.project_service."""
 
+from core import migrations
 from core.models import EditStatus, SegmentType
 from core.project_service import ProjectService
 
@@ -622,7 +623,7 @@ class TestProjectService:
         )
 
         # Run migration
-        svc._migrate_highlights()
+        migrations.migrate_highlights(svc)
 
         # Verify action is now "keep"
         tl = svc.active_timeline
@@ -797,7 +798,7 @@ class TestProjectService:
         )
 
         # Run migration
-        svc._migrate_overlapping_silence_edits()
+        migrations.migrate_overlapping_silence_edits(svc)
 
         # Verify: the silence edit should now be rejected (respecting user decision)
         sil_edits = [e for e in svc.active_timeline.edits if e.source == "silence_detection"]
@@ -1018,7 +1019,7 @@ class TestProjectService:
         )
 
         # Run migration
-        svc._migrate_highlights()
+        migrations.migrate_highlights(svc)
 
         # Verify orphan is removed
         tl = svc.active_timeline
