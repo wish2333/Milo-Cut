@@ -241,12 +241,12 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 
 ### P4-1 M11-1 words 消费（2 天）
 
-- [ ] 纠错回贴（词级 SequenceMatcher，变化 <50% 保留时间戳重对齐，否则清空段 words——宁可缺失不可错位）
-- [ ] 波形 hover 词高亮（二分定位当前词，纯展示）
-- [ ] 测试：回贴三场景（局部改/大改/无 words）+ hover 定位准确性
+- [x] 纠错回贴（词级 SequenceMatcher，变化 <50% 保留时间戳重对齐，否则清空段 words——宁可缺失不可错位）✅ 2026-08-31 `core/timeline_utils.reattach_words` 纯函数 + `accept_subtitle_correction`/`apply_subtitle_corrections` 双链路接线（偏差：plan 只点名 apply，PRD D1.2 写 accept，两入口同语义）；equal 区间旧词原时间戳保留，未覆盖区按字长比例插值合成（confidence=0），相似度 <0.5 或无锚词清空；成功时 tokens 拼接 == 新文本（全覆盖不部分错位）
+- [x] 波形 hover 词高亮（二分定位当前词，纯展示）✅ `utils/wordHighlight.ts` 二分定位 + SegmentBlocksLayer hover 门控渲染（高亮跟随播放时间 clamp 到 hover 段，≤10Hz 粗粒度时钟；"指针位置高亮"可单行切换时间源，见 record 决策 2）；逐词 span 仅 hover 块渲染，纯展示零数据写入
+- [x] 测试：回贴三场景（局部改/大改/无 words）+ hover 定位准确性 ✅ 后端 14 条（`test_word_reattach.py`：纯函数 10 + 服务接线 4）+ 前端 10 条（wordHighlight 6 + 组件 hover 4）；pytest 564 / vitest 331 全绿
 
-**验收方式**: pytest + vitest；真实纠错一次后 project.json 中未变词时间戳保留。
-**验收标准**: 回贴后 words 与新文本词数一致或整体为空（不允许部分错位）；hover 高亮与播放音节同步（手测）。
+**验收方式**: pytest + vitest ✅；真实纠错一次后 project.json 中未变词时间戳保留（→ 归批次冒烟，自动化等价已由落库模型断言承载）。
+**验收标准**: 回贴后 words 与新文本词数一致或整体为空（不允许部分错位）✅（全覆盖性质测试锁定）；hover 高亮与播放音节同步（手测）→ 批次双平台冒烟。
 
 ### P4-2 M11-2 多轨数据结构 + MVP（3 天）
 
