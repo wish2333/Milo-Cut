@@ -3,6 +3,7 @@ import { computed, inject, onMounted, onUnmounted, ref, watch } from "vue"
 import type { Segment } from "@/types/project"
 import { createRafScheduler } from "@/utils/rafScheduler"
 import { WAVEFORM_COLORS } from "@/utils/waveformTheme"
+import { parseWaveformPeaks } from "@/utils/waveformPeaks"
 import { TIMELINE_METRICS_KEY } from "./injectionKeys"
 import type { TimelineMetrics } from "@/composables/useTimelineMetrics"
 
@@ -63,8 +64,11 @@ async function loadWaveform(path: string) {
     const res = await fetch(path)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
-    if (Array.isArray(data) && data.length > 0 && "min" in data[0]) {
-      peaks.value = data
+    // v3.0.0 M11-3: accepts the legacy bare array and the sidecar envelope
+    // ({version, media_signature, peaks}).
+    const parsed = parseWaveformPeaks(data)
+    if (parsed) {
+      peaks.value = parsed
     } else {
       loadError.value = true
     }
