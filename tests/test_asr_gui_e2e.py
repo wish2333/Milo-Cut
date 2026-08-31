@@ -180,12 +180,14 @@ class TestFrontendSource:
         """handleTranscribe must persist ASR settings before runTranscription().
 
         v3.0.0 M8-2b: the persistence logic moved into
-        useAsrEngines.saveAsrSettings; WorkspacePage keeps the
+        useAsrEngines.saveAsrSettings; the page keeps the
         handleSaveAsrSettings wrapper (closes the popover on success).
-        Match case-insensitively so either spelling satisfies the
-        save-before-transcribe invariant.
+        v3.0.0 M8-2c: handleTranscribe itself moved into
+        useWorkspaceActions.ts (five-group action hub), so the invariant is
+        asserted there. Match case-insensitively so either spelling
+        satisfies the save-before-transcribe invariant.
         """
-        src = _read_source("frontend/src/pages/WorkspacePage.vue")
+        src = _read_source("frontend/src/composables/useWorkspaceActions.ts")
         # Find the handleTranscribe function body
         match = re.search(
             r"async function handleTranscribe\(\)\s*\{(.*?)(?=\n(?:async )?function |\nconst \w+ = |\Z)",

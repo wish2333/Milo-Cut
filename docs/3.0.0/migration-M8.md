@@ -94,12 +94,12 @@
 | handleUndo / handleRedo | :1563/:1573 | M5 后走 apply_undo 通道 |
 | handleClickOutside | :1555 | popover 关闭时序 |
 
-- [ ] 归口播放/视频组
-- [ ] 归口时间线组
-- [ ] 归口编辑组
-- [ ] 归口 LLM/纠错组
-- [ ] 归口项目/设置组
-- [ ] 全局 keydown 回归（文本框内 Delete/方向键不被拦截；Esc/多选/Delete 手测清单全过）
+- [x] 归口播放/视频组（11 handler → useWorkspaceActions）✅ 2026-08-31
+- [x] 归口时间线组（7，含 flushPendingUpdates 前置保留）✅
+- [x] 归口编辑组（15，含 markSelectedForDeletion；undo pushSnapshot 三迁移点 A1/A2/A3 随组搬移、行内注释保留）✅
+- [x] 归口 LLM/纠错组（13 + diff 展示簇 aggregateDiffTokens/renderDiff/diffCache/watch(pendingCorrections)/ensureDiff/categoryLabel）✅
+- [x] 归口项目/设置组（5）✅
+- [ ] 全局 keydown 回归（文本框内 Delete/方向键不被拦截；Esc/多选/Delete 手测清单全过）⚠️ handleGlobalKeydown/handleUndo/handleRedo/handleClickOutside/handleToggleSearchBar 按清单保留页内（未动，风险面零扩大）；真机手测归批次双平台冒烟
 
 ## 红线（每步勾销时核对）
 

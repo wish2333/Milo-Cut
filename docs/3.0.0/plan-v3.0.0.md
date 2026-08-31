@@ -203,13 +203,13 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 
 ### P3-2 M8-2 WorkspacePage 瘦身（3 天，三步各自一个 PR）
 
-- [ ] 步骤 a：3 个内联 popover 抽组件（纯搬移，搬移前后 diff 仅"删+增"）
-- [ ] 步骤 b：`useAsrEngines.ts` 抽取，SettingsModal AiEngine tab 同步接入（消除双实现——改一处必须两处生效的验证用例）
-- [ ] 步骤 c：`useWorkspaceActions.ts` 归口 20+ handler（provide/inject）
-- [ ] 每步按 `migration-M8.md` 勾销；步骤 c 后跑全局 keydown 回归（文本框内 Delete/方向键不被拦截）
+- [x] 步骤 a：3 个内联 popover 抽组件（纯搬移）✅ 2026-08-31 `popovers/` 三组件，defineModel 逐字段下行（vue/no-mutating-props 合规），弹层开关/outside-click/保存后关闭语义原地保留
+- [x] 步骤 b：`useAsrEngines.ts` 抽取，SettingsModal 侧同步接入（消除双实现——改一处必须两处生效的验证用例）✅ 模块级单例 + 单飞 `ensureLoaded()` 封装启动顺序契约；ExportSettingsTab ASR 段绑共享域（落实位置偏差：M8-1 后 ASR 设置段在导出 tab），AiEngineSettingsTab 经 refreshAfterPluginChange 接入；`useAsrEngines.test.ts` 4 条锁单源
+- [x] 步骤 c：`useWorkspaceActions.ts` 归口 handler（provide/inject）✅ 五组 51 个动作原样搬移 + deps 注入，模板 35 处绑定零改动；undo/键盘按 migration-M8 保留页内；WORKSPACE_ACTIONS_KEY 已 provide
+- [x] 每步按 `migration-M8.md` 勾销；步骤 c 后全局 keydown 回归（文本框内 Delete/方向键不被拦截）⚠️ 键盘处理器未移动（风险面零扩大），vitest 318 全绿；真机手测归批次双平台冒烟
 
-**验收方式**: 每 PR 全量测试绿 + undo 迁移点 diff 核对记录。
-**验收标准**: WorkspacePage.vue < 40KB；ASR 引擎逻辑单源（修改 useAsrEngines 一处，两 UI 同生效）；Esc/方向键/Delete/多选键盘操作手测清单全过。
+**验收方式**: 每 PR 全量测试绿 + undo 迁移点 diff 核对记录。✅ A1/A2/A3 随组搬移行内注释保留；flushPendingUpdates 前置保留
+**验收标准**: WorkspacePage.vue < 40KB **⚠️ 未达标：实际 61.3KB**（96.5KB → 61.3KB；差距位于计划明示保留页内的 undo/键盘/UI 域与模板，升级用户决策，见 record-P3-2 偏差节）；ASR 引擎逻辑单源 ✅；Esc/方向键/Delete/多选键盘操作手测清单全过（归批次冒烟）
 
 ### P3-3 M9 层级契约 + 风格 lint（2 天）
 

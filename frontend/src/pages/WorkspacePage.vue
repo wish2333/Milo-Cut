@@ -10,6 +10,7 @@ import { useSegmentEdit } from "@/composables/useSegmentEdit"
 import { useToast } from "@/composables/useToast"
 import { useUndoRedo } from "@/composables/useUndoRedo"
 import { useAsrEngines } from "@/composables/useAsrEngines"
+import { createWorkspaceActions, provideWorkspaceActions } from "@/composables/useWorkspaceActions"
 import { useUvAvailability } from "@/composables/useUvAvailability"
 import { useLlmTasks } from "@/composables/useLlmTasks"
 import { useEditedPlayback } from "@/composables/useEditedPlayback"
@@ -389,40 +390,7 @@ async function loadVideoUrl() {
   }
 }
 
-let regenPollTimer: ReturnType<typeof setInterval> | null = null
-
-async function handleRegenerateWaveform() {
-  if (demoMode) {
-    showToast("演示波形由浏览器即时生成", "info", 2500)
-    return
-  }
-  statusMessage.value = "Regenerating waveform..."
-  const res = await call<{ task_id: string }>("regenerate_waveform")
-  if (!res.success) {
-    showToast(res.error ?? "Failed to regenerate waveform", "error", 3000)
-    statusMessage.value = ""
-    return
-  }
-  // Poll get_waveform_url until regeneration completes
-  if (regenPollTimer) clearInterval(regenPollTimer)
-  const start = Date.now()
-  regenPollTimer = setInterval(async () => {
-    const urlRes = await call<{ url: string }>("get_waveform_url")
-    if (urlRes.success && urlRes.data) {
-      clearInterval(regenPollTimer!)
-      regenPollTimer = null
-      // Cache-bust: append timestamp so WaveformCanvas re-fetches
-      waveformUrl.value = urlRes.data.url + "?t=" + Date.now()
-      statusMessage.value = ""
-      showToast("Waveform regenerated", "success", 2000)
-    } else if (Date.now() - start > 120000) {
-      clearInterval(regenPollTimer!)
-      regenPollTimer = null
-      statusMessage.value = ""
-      showToast("Waveform regeneration timed out", "error", 3000)
-    }
-  }, 500)
-}
+const regenPoll = { current: null as ReturnType<typeof setInterval> | null }  // M8-2c: polled from useWorkspaceActions
 
 async function resolveWaveformUrl() {
   if (demoMode) return
@@ -516,23 +484,6 @@ onEvent<{ task_id: string; task_type?: string }>(
     }
   },
 )
-async function handleRequestProxy() {
-  if (isGeneratingProxy.value) return
-  isGeneratingProxy.value = true
-  try {
-    const res = await call<{ task_id: string }>("request_proxy")
-    if (!res.success) {
-      showToast(res.error ?? "Failed to start proxy generation", "error", 3000)
-      isGeneratingProxy.value = false
-      return
-    }
-    if (res.data) {
-      call("start_task", res.data.task_id)
-    }
-  } catch {
-    isGeneratingProxy.value = false
-  }
-}
 
 // When proxy_path or media path changes, reload video URL
 watch(() => props.project.media?.proxy_path, () => {
@@ -585,107 +536,7 @@ async function saveSilenceSettings() {
   showSilenceSettings.value = false
 }
 
-function handleSeek(time: number) {
-  if (demoMode) demoPlayback.seek(time, true)
-  else seekPlayback(time, true)
-}
-
-// v2.1.1 A-03: move playhead without playing (arrow keys, selection mode)
-function handleSetTime(time: number) {
-  if (demoMode) demoPlayback.seek(time)
-  else seekPlayback(time)
-}
-
-function handleVideoLoaded() {
-  if (videoRef.value) {
-    videoRef.value.volume = 0.25
-  }
-}
-
-function handleTimeUpdate() {
-  handlePlaybackTimeUpdate()
-}
-
-function handleTogglePlay() {
-  if (demoMode) {
-    demoPlayback.toggle()
-    return
-  }
-  if (!videoRef.value) return
-  if (videoRef.value.paused) {
-    videoRef.value.play()
-  } else {
-    videoRef.value.pause()
-  }
-}
-
-function handleSeekTo(time: number) {
-  if (demoMode) demoPlayback.seek(time)
-  else seekPlayback(time)
-}
-
-function handleVolumeChange(vol: number) {
-  if (demoMode) {
-    videoVolume.value = vol
-    return
-  }
-  if (!videoRef.value) return
-  videoRef.value.volume = vol
-  videoVolume.value = vol
-}
-
-function handleRateChange(rate: number) {
-  if (demoMode) {
-    videoPlaybackRate.value = rate
-    return
-  }
-  if (!videoRef.value) return
-  videoRef.value.playbackRate = rate
-  videoPlaybackRate.value = rate
-}
-
-function handleFullscreen() {
-  if (demoMode) return
-  const container = videoRef.value?.parentElement
-  if (!container) return
-  if (document.fullscreenElement) {
-    document.exitFullscreen()
-  } else {
-    container.requestFullscreen()
-  }
-}
-
 // -- Timeline operations ----------------------------------------------
-
-async function handleSwitchTimeline(timelineId: string) {
-  await flushPendingUpdates()
-  const res = await call<Project>("switch_timeline", timelineId)
-  if (res.success && res.data) {
-    emit("project-updated", res.data)
-  } else {
-    showToast(res.error ?? "Failed to switch timeline", "error")
-  }
-}
-
-async function handleCreateTimeline() {
-  await flushPendingUpdates()
-  const label = window.prompt("Timeline name:", "新 Timeline")
-  if (!label) return
-  const fork = window.confirm("Fork from current timeline? (Cancel = blank timeline)")
-  const res = await call<Project>(
-    "create_timeline",
-    label,
-    "manual",
-    fork ? props.project.active_timeline_id : null,
-  )
-  if (res.success && res.data) {
-    emit("project-updated", res.data)
-    isDirty.value = true  // trigger auto-save
-    showToast(`Created timeline: ${label}`, "success")
-  } else {
-    showToast(res.error ?? "Failed to create timeline", "error")
-  }
-}
 
 // v2.1.1 A-4: in-app modal replacement for window.confirm.
 // window.confirm is a blocking native dialog that steals focus from the
@@ -719,241 +570,7 @@ function resolveConfirm(value: boolean) {
   }
 }
 
-async function handleDeleteTimeline(timelineId: string) {
-  const ok = await confirmAction({
-    title: "删除 Timeline",
-    message: "确认删除此 Timeline？该操作无法撤销。",
-    confirmText: "删除",
-    danger: true,
-  })
-  if (!ok) return
-  const res = await call<Project>("delete_timeline", timelineId)
-  if (res.success && res.data) {
-    emit("project-updated", res.data)
-    isDirty.value = true  // trigger auto-save
-    showToast("Timeline deleted", "success")
-  } else {
-    showToast(res.error ?? "Failed to delete timeline", "error")
-  }
-}
-
-async function handleToggleEditStatus(segment: Segment, nextStatus?: string) {
-  const ok = await toggleEditStatus(segment, nextStatus)
-  if (!ok) {
-    // v2.3.2 阶段 1.1: toggleEditStatus now reports total failure (write + refresh).
-    showToast("Failed to update segment status", "error", 3000)
-  }
-}
-
-async function handleImportSrt() {
-  errorMessage.value = ""
-  statusMessage.value = "Selecting file..."
-  const fileRes = await call<string>("select_file")
-  if (!fileRes.success || !fileRes.data) {
-    statusMessage.value = ""
-    return
-  }
-  statusMessage.value = "Importing SRT..."
-  if (projectRef.value) pushSnapshot(projectRef.value, ["segments"], "导入 SRT") // A1
-  const importRes = await call<Project>("import_srt", fileRes.data)
-  if (importRes.success && importRes.data) {
-    emit("project-updated", importRes.data)
-    statusMessage.value = ""
-  } else {
-    errorMessage.value = importRes.error ?? "Failed to import SRT"
-    statusMessage.value = ""
-  }
-}
-
-async function handleDetectSilence() {
-  errorMessage.value = ""
-  await runSilenceDetection()
-}
-
-async function handleClearSubtitles() {
-  if (!window.confirm("Are you sure you want to delete all subtitles? This cannot be undone.")) return
-  errorMessage.value = ""
-  const res = await call<Project>("clear_subtitles")
-  if (res.success && res.data) {
-    emit("project-updated", res.data)
-  } else {
-    errorMessage.value = res.error ?? "Failed to clear subtitles"
-  }
-}
-
-async function handleTranscribe() {
-  errorMessage.value = ""
-
-  // Check if any ASR engine is installed
-  if (!hasInstalledEngines.value) {
-    showToast("No ASR engine installed. Please install an engine in Settings > AI Engine.", "error", 5000)
-    return
-  }
-
-  // Get selected engine — use asrPluginId to find the exact variant (CPU vs GPU)
-  const engine = asrEngine.value
-  const engineInfo = installedEngines.value.find(e => e.pluginId === asrPluginId.value)
-    ?? installedEngines.value.find(e => e.engine === engine)
-
-  if (!engineInfo) {
-    showToast("Selected ASR engine not found", "error", 3000)
-    return
-  }
-
-  // Check if engine is ready (plugin installed + model downloaded)
-  const status = await checkEngineReady(engine)
-  if (!status.ready) {
-    showToast(`ASR engine "${engineInfo.displayName}" is not ready. Please download the model in Settings > AI Engine.`, "error", 5000)
-    return
-  }
-
-  // Persist current ASR settings to backend before transcription
-  const settingsSaved = await handleSaveAsrSettings()
-  if (!settingsSaved) {
-    showToast("Failed to save transcription settings", "error", 3000)
-    return
-  }
-
-  try {
-    // Pass ASR settings as payload to transcription task
-    const settings = asrSettingsPerEngine.value[asrEngine.value]
-    const started = await runTranscription({
-      engine: asrEngine.value,
-      plugin_id: asrPluginId.value,
-      model_size: settings.model_size,
-      asr_model_size: settings.model_size,
-      language: settings.language,
-      device: settings.device,
-      compute_type: settings.compute_type,
-      vad_filter: settings.vad_filter,
-      vad_threshold: settings.vad_threshold,
-      vad_min_silence_ms: settings.vad_min_silence_ms,
-    })
-    if (!started) {
-      showToast("Failed to start transcription task", "error", 3000)
-    }
-  } catch (err) {
-    showToast(`Transcription failed: ${err instanceof Error ? err.message : String(err)}`, "error", 5000)
-  }
-}
-
-async function handleConfirmAllSuggestions() {
-  errorMessage.value = ""
-  await confirmAllSuggestions()
-}
-
-async function handleRejectAllSuggestions() {
-  errorMessage.value = ""
-  await rejectAllSuggestions()
-}
-
 // ===== Phase 2: LLM task handlers =====
-
-async function handleStartSmartDelete() {
-  if (!llmConfig.value.configured) {
-    showToast("请先配置 LLM", "error", 3000)
-    return
-  }
-  await startSmartDelete()
-  showToast("智能分析已启动", "info", 2000)
-}
-
-async function handleStartSubtitleCorrection(referenceText: string) {
-  if (!llmConfig.value.configured) {
-    showToast("请先配置 LLM", "error", 3000)
-    return
-  }
-  await startSubtitleCorrection(referenceText)
-  showToast("字幕修正已启动", "info", 2000)
-}
-
-async function handleStartHighlight(targetMinutes: number) {
-  if (!llmConfig.value.configured) {
-    showToast("请先配置 LLM", "error", 3000)
-    return
-  }
-  // v2.1.1: Warn if re-running (Bug D -- old data will be replaced)
-  if (highlightResults.value.length > 0) {
-    if (!window.confirm(
-      "重新提取精华将清除当前所有精华片段数据。\n\n确认继续？",
-    )) {
-      return
-    }
-  }
-  await startHighlight(targetMinutes)
-  showToast("精华提取已启动", "info", 2000)
-}
-
-async function handleCancelSingle() {
-  await call("cancel_llm_tasks")
-  // v2.1.1 M1-2c: don't claim success yet -- the in-flight HTTP request may
-  // still be running. The TASK_CANCELLED event confirms the actual stop.
-  showToast("取消中...", "info", 2000)
-}
-
-// v2.1.1 M4-1: segment click in selection mode (toggle / ctrl / shift range)
-function handleSegmentClickInSelection(segId: string, event: MouseEvent) {
-  const orderedIds = mergedSegments.value
-    .filter(s => s.type === "subtitle")
-    .map(s => s.id)
-  handleSegmentClick(segId, event, orderedIds)
-}
-
-// v2.1.1 M4-1: merge currently-selected segments
-async function handleMergeSelected() {
-  const ids = Array.from(selectedSegmentIds.value)
-  if (ids.length < 2) return
-  const ok = await mergeSegments(ids)
-  if (ok) {
-    clearMultiSelection()
-    showToast(`已合并 ${ids.length} 段`, "success", 2000)
-  } else {
-    showToast("合并失败 (需选中连续的字幕段)", "error", 3000)
-  }
-}
-
-// v2.1.1 M4-3: split a segment at its midpoint
-// v3.0.0 M1-4: waveform-originated splits snap to the nearest word boundary
-async function handleSplitSegment(segmentId: string, position?: number) {
-  const seg = mergedSegments.value.find(s => s.id === segmentId)
-  if (!seg) return
-  // If position is provided (from waveform context menu split), use it and
-  // enable word snapping; otherwise use midpoint (from TranscriptRow right-click).
-  const snapToWord = position !== undefined && (seg.words?.length ?? 0) > 0
-  const pos = position !== undefined ? position : (seg.start + seg.end) / 2
-  const { ok, snapOffsetMs } = await splitSegment(segmentId, pos, snapToWord)
-  if (ok) {
-    if (snapOffsetMs !== null && snapOffsetMs !== 0) {
-      showToast(`已吸附词边界 ${snapOffsetMs > 0 ? "+" : ""}${snapOffsetMs}ms`, "info", 2000)
-    } else {
-      showToast(position !== undefined ? "已按时间指针分割" : "已从中点分割", "success", 1500)
-    }
-  } else {
-    showToast("分割失败", "error", 3000)
-  }
-}
-
-// v2.1.1 M4-1: toggle selection mode (clear selection on exit)
-function handleToggleSelectionMode() {
-  toggleSelectionMode()
-}
-
-// v2.1.1 M4-1: batch mark selected segments for deletion (toggle-status)
-async function markSelectedForDeletion() {
-  const ids = Array.from(selectedSegmentIds.value)
-  if (ids.length === 0) return
-  // A2: push BEFORE the call (v3.0.0 M5 fix of the pre-existing bug where
-  // the after-state was pushed, making undo a no-op for batch marking).
-  if (projectRef.value) pushSnapshot(projectRef.value, ["edits"], "批量标记删除")
-  const res = await call<Project>("mark_segments", ids, "delete")
-  if (res.success && res.data) {
-    emit("project-updated", res.data)
-    showToast(`已标记 ${ids.length} 段删除`, "info", 2000)
-    clearMultiSelection()
-  } else {
-    showToast(res.error ?? "批量标记失败", "error", 3000)
-  }
-}
 
 // v2.1.1 M4-4: toggle search bar visibility (toolbar button)
 function handleToggleSearchBar() {
@@ -992,172 +609,6 @@ function cancelRenameTimeline() {
   renameValue.value = ""
 }
 
-async function handleOpenSubtitleFullscreen() {
-  showSubtitleFullscreen.value = true
-  // v2.1.0 Phase 2: load pending corrections from backend on open
-  const tlId = props.project.active_timeline_id
-  if (tlId) {
-    await loadCorrections(tlId)
-  }
-}
-
-// v2.1.0 Phase 2: diff token aggregation (D-69) + accept/reject handlers
-interface DiffToken { text: string; type: "equal" | "delete" | "insert" }
-interface AggregatedToken {
-  type: "equal" | "delete" | "insert" | "replace"
-  text?: string
-  deleteText?: string
-  insertText?: string
-}
-
-function aggregateDiffTokens(tokens: DiffToken[]): AggregatedToken[] {
-  // D-69: merge adjacent delete+insert (gap <2 equal chars) into replace blocks
-  const result: AggregatedToken[] = []
-  for (let i = 0; i < tokens.length; i++) {
-    const tok = tokens[i]
-    const prev = result[result.length - 1]
-    if ((prev?.type === "delete" && tok.type === "insert") ||
-        (prev?.type === "insert" && tok.type === "delete")) {
-      result[result.length - 1] = {
-        type: "replace",
-        deleteText: prev.type === "delete" ? prev.text : tok.text,
-        insertText: prev.type === "insert" ? prev.text : tok.text,
-      }
-    } else {
-      result.push({ type: tok.type, text: tok.text })
-    }
-  }
-  return result
-}
-
-// Cache computed diffs per correction id to avoid recompute
-const diffCache = ref<Record<string, AggregatedToken[]>>({})
-
-function renderDiff(corr: { id: string; original_text: string; corrected_text: string }): string {
-  const cached = diffCache.value[corr.id]
-  if (!cached) {
-    // Fallback: simple original -> corrected display while diff computes
-    return `<span class="text-gray-400 line-through">${escapeHtml(corr.original_text)}</span>` +
-      ` <span class="text-gray-400">→</span> ` +
-      `<span class="text-green-700">${escapeHtml(corr.corrected_text)}</span>`
-  }
-  return cached.map(tok => {
-    if (tok.type === "equal") return `<span>${escapeHtml(tok.text ?? "")}</span>`
-    if (tok.type === "delete") return `<span class="line-through bg-red-100 text-red-700">${escapeHtml(tok.text ?? "")}</span>`
-    if (tok.type === "insert") return `<span class="bg-green-100 text-green-700">${escapeHtml(tok.text ?? "")}</span>`
-    // replace (aggregated D-69)
-    return `<span class="line-through bg-red-100 text-red-700">${escapeHtml(tok.deleteText ?? "")}</span>` +
-      `<span class="bg-green-100 text-green-700">${escapeHtml(tok.insertText ?? "")}</span>`
-  }).join("")
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-}
-
-// Preload diffs whenever the pending corrections list changes
-watch(pendingCorrections, async (list) => {
-  for (const corr of list) {
-    if (!diffCache.value[corr.id]) {
-      await ensureDiff(corr)
-    }
-  }
-}, { immediate: true })
-
-async function ensureDiff(corr: { id: string; original_text: string; corrected_text: string }) {
-  if (diffCache.value[corr.id]) return
-  const diff = await computeDiff(corr.original_text, corr.corrected_text)
-  if (diff?.tokens) {
-    diffCache.value[corr.id] = aggregateDiffTokens(diff.tokens as DiffToken[])
-  }
-}
-
-function categoryLabel(category: string): string {
-  const labels: Record<string, string> = {
-    homophone: "同音错字",
-    proper_noun: "专有名词",
-    punctuation: "标点断句",
-    reference_aligned: "参考稿对齐",
-    none: "无变更",
-  }
-  return labels[category] ?? category
-}
-
-async function handleAcceptCorrection(resultId: string) {
-  const ok = await acceptCorrection(resultId)
-  if (ok) {
-    delete diffCache.value[resultId]
-    // Refresh project so transcript reflects the applied correction
-    const res = await call<Project>("switch_timeline", props.project.active_timeline_id)
-    if (res.success && res.data) emit("project-updated", res.data)
-  }
-}
-
-async function handleRejectCorrection(resultId: string) {
-  const ok = await rejectCorrection(resultId)
-  if (ok) {
-    delete diffCache.value[resultId]
-  }
-}
-
-async function handleAcceptHighConfidence() {
-  const tlId = props.project.active_timeline_id
-  if (!tlId) return
-  const res = await acceptHighConfidenceCorrections(tlId, 0.8)
-  if (res) {
-    diffCache.value = {}
-    const projRes = await call<Project>("switch_timeline", tlId)
-    if (projRes.success && projRes.data) emit("project-updated", projRes.data)
-    showToast(`已接受 ${res.accepted} 条高置信度修正`, "success", 2000)
-  }
-}
-
-async function handleClearCorrections() {
-  if (!window.confirm("确认清除所有待审阅的修正？")) return
-  const tlId = props.project.active_timeline_id
-  if (!tlId) return
-  const ok = await clearCorrections(tlId)
-  if (ok) {
-    diffCache.value = {}
-    showToast("已清除全部修正", "info", 2000)
-  }
-}
-
-function handleGoToSettings() {
-  showSettingsModal.value = true
-}
-
-// §11.5.2: Remove highlight via context menu (right-click on highlight card).
-// Issue 5: hydrate highlight state in real time from returned project.
-async function handleRemoveHighlight(segmentId: string) {
-  if (!window.confirm("确认移除此精华片段？")) return
-  const res = await call<{ removed_count?: number; project?: Project }>("remove_highlight_segment", segmentId)
-  if (res.success) {
-    if (res.data?.project) {
-      emit("project-updated", res.data.project)
-      await hydrateHighlightsFromProject(res.data.project)
-    }
-    showToast("精华片段已移除", "success", 2000)
-  } else {
-    showToast("移除失败: " + (res.error ?? "未知错误"), "error", 3000)
-  }
-}
-
-// §11.5.2: Add segment to highlights via right-click "加入精华".
-// Issue 5: hydrate highlight state in real time from returned project.
-async function handleAddToHighlight(segmentId: string) {
-  const res = await call<{ result?: unknown; project?: Project }>("add_highlight_segment", segmentId)
-  if (res.success) {
-    if (res.data?.project) {
-      emit("project-updated", res.data.project)
-      await hydrateHighlightsFromProject(res.data.project)
-    }
-    showToast("已加入精华", "success", 2000)
-  } else {
-    showToast("加入失败: " + (res.error ?? "未知错误"), "error", 3000)
-  }
-}
-
 // ESC key closes P1 fullscreen diff view (D-16 UX补齐)
 function handleKeydown(e: KeyboardEvent) {
   if (e.key === "Escape" && showSubtitleFullscreen.value) {
@@ -1172,111 +623,6 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener("keydown", handleKeydown)
 })
-
-async function handleSettingsClosed() {
-  showSettingsModal.value = false
-  // Refresh LLM config status after settings change
-  await loadLlmConfig()
-}
-
-async function handleSaveProject() {
-  if (isSaving.value) return
-  isSaving.value = true
-  try {
-    const res = await call("save_project")
-    if (res.success) {
-      isDirty.value = false
-      lastSavedAt.value = Date.now()
-      showToast("Project saved", "success", 2000)
-    } else {
-      showToast("Save failed", "error", 3000)
-    }
-  } finally {
-    isSaving.value = false
-  }
-}
-
-async function handleSubtitleTrim() {
-  errorMessage.value = ""
-  statusMessage.value = "Generating subtitle-based trim ranges..."
-  const result = await generateSubtitleKeepRanges(subtitleTrimPadding.value)
-  statusMessage.value = ""
-  if (result) {
-    showToast(`Generated ${result.new_edits} delete ranges from ${result.keep_ranges} subtitle groups`, "success", 5000)
-  } else {
-    showToast("Failed to generate subtitle trim ranges", "error", 5000)
-  }
-}
-
-async function handleDeleteSubtitleTrimEdits() {
-  const ok = await deleteSubtitleTrimEdits()
-  if (ok) {
-    showToast("All subtitle trim markers cleared", "success", 3000)
-  } else {
-    showToast("Failed to clear subtitle trim markers", "error", 3000)
-  }
-}
-
-async function handleConfirmDeleteSilence() {
-  showConfirmDeleteSilence.value = false
-  const ok = await deleteSilenceSegments()
-  if (ok) {
-    showToast("All silence markers deleted", "success", 3000)
-  } else {
-    showToast("Failed to delete silence markers", "error", 3000)
-  }
-}
-
-async function handleUpdateText(segmentId: string, text: string) {
-  await updateSegmentText(segmentId, text)
-}
-
-async function handleUpdateTime(segmentId: string, field: "start" | "end", value: number) {
-  await updateSegmentTime(segmentId, field, value)
-}
-
-
-
-async function handleSearchReplace(query: string, replacement: string, scope: string) {
-  const result = await searchReplace(query, replacement, scope)
-  if (result) {
-    statusMessage.value = `Replaced ${result.count} occurrences`
-  }
-}
-
-function handleSelectRange(start: number, end: number) {
-  selectEditRange(start, end)
-}
-
-async function handleAddSegment(start: number, end: number) {
-  if (projectRef.value) pushSnapshot(projectRef.value, ["segments"], "新增段落") // A3
-  const res = await call<Project>("add_segment", start, end, "", "subtitle")
-  if (res.success && res.data) {
-    emit("project-updated", res.data)
-  } else {
-    errorMessage.value = res.error ?? "Failed to add segment"
-  }
-}
-
-async function handleDeleteSegment(segmentId: string) {
-  errorMessage.value = ""
-  const err = await deleteSegment(segmentId)
-  if (err) {
-    errorMessage.value = err
-  }
-}
-
-function handleSeekSegment(seg: Segment) {
-  editSelectedSegmentId.value = seg.id
-  seekPlayback(seg.start)
-}
-
-
-async function handleCloseProject() {
-  await call("close_project")
-  videoUrl.value = ""
-  emit("project-closed")
-}
 
 function isTextInput(el: EventTarget | null): boolean {
   if (!(el instanceof HTMLElement)) return false
@@ -1432,6 +778,57 @@ async function recoverFromUndoFailure() {
   showToast("撤销失败，已刷新项目状态", "error", 2500)
 }
 
+// v3.0.0 M8-2c: handler bodies grouped in useWorkspaceActions (five domains:
+// playback / timeline / edit / llm / project) and provided to the component
+// tree via WORKSPACE_ACTIONS_KEY. Undo/redo, global keydown, outside-click
+// and search/popover UI state intentionally stay in the page.
+const workspaceActions = createWorkspaceActions({
+  emit, showToast,
+  getProject: () => props.project,
+  errorMessage, statusMessage,
+  videoRef, videoUrl, waveformUrl, videoVolume, videoPlaybackRate,
+  isGeneratingProxy, demoMode, regenPoll,
+  subtitleTrimPadding, showConfirmDeleteSilence, showSettingsModal, showSubtitleFullscreen,
+  isDirty, isSaving, lastSavedAt, mergedSegments,
+  seekPlayback, demoPlayback, handlePlaybackTimeUpdate,
+  runTranscription, runSilenceDetection, toggleEditStatus,
+  updateSegmentText, updateSegmentTime, searchReplace, mergeSegments, splitSegment,
+  deleteSegment, selectEditRange, generateSubtitleKeepRanges, deleteSubtitleTrimEdits,
+  deleteSilenceSegments, confirmAllSuggestions, rejectAllSuggestions,
+  selectedSegmentIds, editSelectedSegmentId,
+  toggleSelectionMode, clearMultiSelection, handleSegmentClick,
+  pushSnapshot, projectRef, flushPendingUpdates,
+  llmConfig, loadLlmConfig,
+  startSmartDelete, startSubtitleCorrection, startHighlight,
+  highlightResults, hydrateHighlightsFromProject,
+  pendingCorrections, loadCorrections, computeDiff,
+  acceptCorrection, rejectCorrection, acceptHighConfidenceCorrections, clearCorrections,
+  asr: { asrEngine, asrPluginId, asrSettingsPerEngine, installedEngines, checkEngineReady },
+  handleSaveAsrSettings,
+  confirmAction,
+})
+provideWorkspaceActions(workspaceActions)
+const {
+  handleRegenerateWaveform, handleRequestProxy, handleSeek, handleSetTime,
+  handleVideoLoaded, handleTimeUpdate, handleTogglePlay, handleSeekTo,
+  handleVolumeChange, handleRateChange, handleFullscreen,
+  handleSwitchTimeline, handleCreateTimeline, handleDeleteTimeline,
+  handleImportSrt, handleDetectSilence, handleClearSubtitles, handleTranscribe,
+  handleToggleEditStatus, handleSegmentClickInSelection, handleToggleSelectionMode,
+  handleMergeSelected, handleSplitSegment, handleUpdateText, handleUpdateTime,
+  handleSelectRange, handleAddSegment, handleDeleteSegment, handleSeekSegment,
+  handleSubtitleTrim, handleDeleteSubtitleTrimEdits, handleConfirmDeleteSilence,
+  markSelectedForDeletion,
+  handleConfirmAllSuggestions, handleRejectAllSuggestions,
+  handleStartSmartDelete, handleStartSubtitleCorrection, handleStartHighlight,
+  handleCancelSingle, handleOpenSubtitleFullscreen,
+  handleAcceptCorrection, handleRejectCorrection, handleAcceptHighConfidence,
+  handleClearCorrections, handleRemoveHighlight, handleAddToHighlight,
+  renderDiff, categoryLabel,
+  handleCloseProject, handleSaveProject, handleSettingsClosed,
+  handleGoToSettings, handleSearchReplace,
+} = workspaceActions
+
 onMounted(() => {
   document.addEventListener("keydown", handleGlobalKeydown)
   document.addEventListener("mousedown", handleClickOutside)
@@ -1443,7 +840,7 @@ onUnmounted(() => {
   document.removeEventListener("keydown", handleGlobalKeydown)
   document.removeEventListener("mousedown", handleClickOutside)
   window.removeEventListener("resize", syncCompactDemo)
-  if (regenPollTimer) clearInterval(regenPollTimer)
+  if (regenPoll.current) clearInterval(regenPoll.current)
 })
 </script>
 
