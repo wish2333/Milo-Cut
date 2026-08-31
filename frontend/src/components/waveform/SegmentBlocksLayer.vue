@@ -5,6 +5,8 @@ import { buildSegmentStateMap } from "@/utils/segmentHelpers"
 import type { SegmentState } from "@/utils/segmentHelpers"
 import { openContextMenu } from "@/utils/contextMenuManager"
 import { findWordIndexAtTime } from "@/utils/wordHighlight"
+// v3.0.1 M1: constants live in the constraint kernel (single source of truth)
+import { MIN_SEGMENT_DURATION, snapToStep } from "@/utils/trackConstraints"
 import { TIMELINE_METRICS_KEY } from "./injectionKeys"
 import type { TimelineMetrics } from "@/composables/useTimelineMetrics"
 
@@ -32,7 +34,6 @@ const emit = defineEmits<{
 
 const metrics = inject<TimelineMetrics>(TIMELINE_METRICS_KEY)!
 
-const MIN_SEGMENT_DURATION = 0.1
 const hoverEdge = ref<"left" | "right" | "body" | null>(null)
 const EDGE_HANDLE_HIT_PX = 16
 const selectedBlockId = ref<string | null>(null)
@@ -121,8 +122,9 @@ function handleEmptyClick(e: MouseEvent) {
 }
 
 function snapToFrame(time: number): number {
-  // Snap to nearest 0.01s boundary
-  return Math.round(time * 100) / 100
+  // v3.0.1 M1: delegate to the constraint kernel (bit-identical to the
+  // legacy Math.round(time * 100) / 100, pinned by trackConstraints.test.ts)
+  return snapToStep(time)
 }
 
 function clampTime(
