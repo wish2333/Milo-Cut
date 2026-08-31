@@ -98,8 +98,10 @@ class TestUpdateSegmentSortInvariant:
             {"id": "b", "type": "subtitle", "start": 20.0, "end": 25.0, "text": "b"},
             {"id": "c", "type": "subtitle", "start": 30.0, "end": 35.0, "text": "c"},
         ])
-        # Move c to before a -- this should re-sort
-        svc.update_segment("c", {"start": 5.0})
+        # Move c wholly before a -- this should re-sort. (v3.0.1 M2-1: the
+        # original start-only move to 5.0 now overlaps a and is rejected,
+        # so the move is expressed as an overlap-free whole-segment move.)
+        svc.update_segment("c", {"start": 2.0, "end": 4.0})
         _assert_sorted(svc)
         ids = [s.id for s in svc.current.active_timeline.transcript.segments]
         assert ids[0] == "c"

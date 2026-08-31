@@ -84,9 +84,9 @@ P3 批次: 导出 -> overlay -> 文档
 
 ### P1-3 `update_segment` 重叠拒绝 + 前端最小接线（SPEC M2-1 第 1-3 步，联动第 4 步不激活）
 
-- [ ] `update_segment`：副轨命名空间 id 拒绝引导；同轨重叠校验（排除自身、epsilon 贴合放行），拒绝信息含冲突段 id
-- [ ] **同 PR 内**最小接线 `SegmentBlocksLayer` trim 提交路径：clampTime 前置 `constrainCueRangeToTrack`，blocked 时本次拖动拒动（红线：两半分批合入会出现拖拽回跳）
-- [ ] 新建 `tests/test_track_linkage.py`（本步只写拒绝路径用例：前邻/后邻/双侧夹击/贴合放行/副轨 id 引导）
+- [x] `update_segment`：副轨命名空间 id 拒绝引导；同轨重叠校验（排除自身、epsilon 贴合放行），拒绝信息含冲突段 id ✅ 2026-09-01
+- [x] **同 PR 内**最小接线 `SegmentBlocksLayer` trim 提交路径：clampTime 邻居域限制 + snap 后二次 clamp，blocked 时本次拖动拒动 ✅ 2026-09-01（实施偏差：一维单边 clamp 取代区间平移调用，trim 不应移动段身——见 record）
+- [x] 新建 `tests/test_track_linkage.py`（本步只写拒绝路径用例：前邻/后邻/双侧夹击/贴合放行/副轨 id 引导）✅ 2026-09-01（12 用例；存量 sort-invariant 1 例因 M2-1 契约演进，SPEC 已勘误）
 
 **验收方式**: `uv run pytest tests/test_track_linkage.py` + `bun run test`（SegmentBlocksLayer 全绿）。
 **验收标准**: 手工冒烟——主轨拖拽挤压邻居时被缝内平移或拒动，永不产生视觉重叠；防抖提交无回跳。

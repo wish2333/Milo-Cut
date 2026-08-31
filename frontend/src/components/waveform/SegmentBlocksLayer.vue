@@ -6,7 +6,11 @@ import type { SegmentState } from "@/utils/segmentHelpers"
 import { openContextMenu } from "@/utils/contextMenuManager"
 import { findWordIndexAtTime } from "@/utils/wordHighlight"
 // v3.0.1 M1: constants live in the constraint kernel (single source of truth)
-import { MIN_SEGMENT_DURATION, snapToStep } from "@/utils/trackConstraints"
+import {
+  MIN_SEGMENT_DURATION,
+  getTrackNeighborBounds,
+  snapToStep,
+} from "@/utils/trackConstraints"
 import { TIMELINE_METRICS_KEY } from "./injectionKeys"
 import type { TimelineMetrics } from "@/composables/useTimelineMetrics"
 
@@ -132,10 +136,21 @@ function clampTime(
   edge: "left" | "right",
   seg: Segment,
 ): number {
+  // v3.0.1 M2-1: trim is bounded by the same-track neighbor gap
+  // (constrain-first), not just the min duration. Trim is a one-edge
+  // clamp: no slide-in-place semantics (that is for whole-segment moves).
+  // Blocked (empty legal range) keeps the edge where it was.
+  const bounds = getTrackNeighborBounds(props.segments, seg.id)
   if (edge === "left") {
-    return Math.min(raw, seg.end - MIN_SEGMENT_DURATION)
+    const hi = seg.end - MIN_SEGMENT_DURATION
+    const lo = bounds.prevEnd ?? Number.NEGATIVE_INFINITY
+    if (lo > hi) return seg.start
+    return Math.min(Math.max(raw, lo), hi)
   }
-  return Math.max(raw, seg.start + MIN_SEGMENT_DURATION)
+  const lo = seg.start + MIN_SEGMENT_DURATION
+  const hi = bounds.nextStart ?? Number.POSITIVE_INFINITY
+  if (hi < lo) return seg.end
+  return Math.min(Math.max(raw, lo), hi)
 }
 
 function detectEdge(e: MouseEvent): "left" | "right" | "body" {
@@ -209,8 +224,10 @@ function handleBlockMouseDown(
 
   const onUp = (e: MouseEvent) => {
     const raw = metrics.getTimeFromX(e.clientX) + offset
+    // snap after clamp, then re-clamp: a 0.01 snap step can push the edge
+    // back over the neighbor bound (half-step overshoot).
     const snapped = snapToFrame(clampTime(raw, edge, block.seg))
-    props.updateTime!(block.seg.id, edge === "left" ? "start" : "end", snapped)
+    props.updateTime!(block.seg.id, edge === "left" ? "start" : "end", clampTime(snapped, edge, block.seg))
     document.removeEventListener("mousemove", onMove)
     document.removeEventListener("mouseup", onUp)
     document.body.style.cursor = ""
