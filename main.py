@@ -56,7 +56,15 @@ from core.config import load_settings
 from core.events import EDIT_SUMMARY_UPDATED, ENCODER_FALLBACK, PROJECT_DIRTY, PROJECT_SAVED
 from core.export_service import export_audio, export_srt, export_video, export_vtt
 from core.ffmpeg_presets import ENCODER_METADATA, get_fallback_codec
-from core.ffmpeg_service import _find_ffmpeg, detect_silence, generate_waveform, probe_media
+from core.ffmpeg_service import (
+    _find_ffmpeg,
+    detect_silence,
+    generate_waveform,
+    load_waveform_cache,
+    probe_media,
+    read_peaks_file,
+    write_waveform_cache,
+)
 from core.logging import get_logger, setup_frontend_sink, setup_logging
 from core.media_server import MediaServer
 from core.models import SegmentType, TaskStatus, TaskType
@@ -454,21 +462,39 @@ class MiloCutApi(Bridge):
         def progress_cb(percent: float, message: str = "") -> None:
             self._task_manager._update_progress(task.id, percent, message)
 
+        def _finalize_and_save(final_waveform_path: str) -> None:
+            progress_cb(90.0, "Updating project...")
+            # Update media info with waveform path
+            self._project.update_media_waveform(final_waveform_path)
+            # Make waveform available via HTTP
+            self._media_server.set_waveform(final_waveform_path)
+            # Persist waveform_path to disk so it survives restart
+            try:
+                self._project.save_project()
+            except Exception:
+                logger.exception("Failed to auto-save project after waveform generation")
+
+        # v3.0.0 M11-3: sidecar cache probe -- a {size, mtime_ms} signature
+        # hit serves the peaks instantly and skips the ffmpeg extraction.
+        cached = load_waveform_cache(media_path)
+        if cached:
+            progress_cb(100.0, "Waveform cache hit")
+            _finalize_and_save(cached)
+            return {
+                "cached": True,
+                "project": self._project.current.model_dump() if self._project.current else None,
+            }
+
         progress_cb(10.0, "Extracting audio peaks...")
         result = generate_waveform(media_path, duration, waveform_path)
         if not result["success"]:
             raise RuntimeError(result["error"])
 
-        progress_cb(90.0, "Updating project...")
-        # Update media info with waveform path
-        self._project.update_media_waveform(waveform_path)
-        # Make waveform available via HTTP
-        self._media_server.set_waveform(waveform_path)
-        # Persist waveform_path to disk so it survives restart
-        try:
-            self._project.save_project()
-        except Exception:
-            logger.exception("Failed to auto-save project after waveform generation")
+        # Write the sidecar cache next to the media (best effort: a read-only
+        # media dir keeps the legacy project-dir waveform as the source).
+        peaks = read_peaks_file(waveform_path)
+        final_waveform_path = write_waveform_cache(media_path, peaks) if peaks else None
+        _finalize_and_save(final_waveform_path or waveform_path)
 
         progress_cb(100.0, "Waveform generated")
         return {"project": self._project.current.model_dump() if self._project.current else None}
