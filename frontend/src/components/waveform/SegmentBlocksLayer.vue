@@ -4,6 +4,7 @@ import type { Segment, EditDecision } from "@/types/project"
 import { buildSegmentStateMap } from "@/utils/segmentHelpers"
 import type { SegmentState } from "@/utils/segmentHelpers"
 import { openContextMenu } from "@/utils/contextMenuManager"
+import { findWordIndexAtTime } from "@/utils/wordHighlight"
 import { TIMELINE_METRICS_KEY } from "./injectionKeys"
 import type { TimelineMetrics } from "@/composables/useTimelineMetrics"
 
@@ -144,12 +145,41 @@ function detectEdge(e: MouseEvent): "left" | "right" | "body" {
   return "body"
 }
 
-function handleBlockMouseMove(e: MouseEvent) {
+function handleBlockMouseMove(block: Block, e: MouseEvent) {
+  hoveredSegId.value = block.seg.id
   hoverEdge.value = detectEdge(e)
 }
 
-function handleBlockMouseLeave() {
+function handleBlockMouseLeave(block: Block) {
+  if (hoveredSegId.value === block.seg.id) hoveredSegId.value = null
   hoverEdge.value = null
+}
+
+// v3.0.0 P4-1: word highlight while hovering a block with words. The
+// highlighted word tracks the playback time (coarse clock mirror, <=10Hz)
+// clamped to the hovered segment -- karaoke-style preview seeding (PRD D1.3).
+// Pure display: no data writes, no seeks.
+const hoveredSegId = ref<string | null>(null)
+
+const wordHighlight = computed<{ segId: string; index: number } | null>(() => {
+  const id = hoveredSegId.value
+  if (!id) return null
+  const seg = props.segments.find(s => s.id === id)
+  if (!seg || seg.type !== "subtitle" || !seg.words || seg.words.length === 0) {
+    return null
+  }
+  const t = Math.min(Math.max(props.currentTime ?? 0, seg.start), seg.end)
+  const index = findWordIndexAtTime(seg.words, t)
+  if (index < 0) return null
+  return { segId: seg.id, index }
+})
+
+function isWordHighlighted(block: Block, wordIndex: number): boolean {
+  return (
+    wordHighlight.value !== null &&
+    wordHighlight.value.segId === block.seg.id &&
+    wordHighlight.value.index === wordIndex
+  )
 }
 
 function handleBlockMouseDown(
@@ -326,8 +356,8 @@ onUnmounted(() => {
         width: block.widthPercent + '%',
       }"
       :title="block.seg.text || `[${block.seg.type}]`"
-      @mousemove="handleBlockMouseMove"
-      @mouseleave="handleBlockMouseLeave"
+      @mousemove="handleBlockMouseMove(block, $event)"
+      @mouseleave="handleBlockMouseLeave(block)"
       @mousedown="handleBlockMouseDown(block, $event)"
       @contextmenu="handleBlockContextMenu(block, $event)"
       @click="handleBlockClick(block)"
@@ -344,7 +374,17 @@ onUnmounted(() => {
       />
       <!-- Content -->
       <div class="flex h-full items-center overflow-hidden px-2">
-        <span class="truncate text-[10px] leading-tight text-gray-700">
+        <span
+          v-if="block.seg.type === 'subtitle' && block.seg.words?.length && wordHighlight?.segId === block.seg.id"
+          class="truncate text-[10px] leading-tight text-gray-700"
+        >
+          <span
+            v-for="(w, wi) in block.seg.words"
+            :key="wi"
+            :class="isWordHighlighted(block, wi) ? 'rounded-sm bg-blue-500/40' : ''"
+          >{{ w.word }}</span>
+        </span>
+        <span v-else class="truncate text-[10px] leading-tight text-gray-700">
           {{ block.seg.text || (block.seg.type === 'silence' ? '...' : '') }}
         </span>
       </div>
