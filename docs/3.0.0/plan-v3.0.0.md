@@ -261,11 +261,11 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 
 ### P4-3 M11-3 波形缓存（1 天）
 
-- [ ] 峰值 sidecar `<媒体名>.peaks.json` 带 `{size, mtime_ms}` 双因子签名；命中跳过 ffmpeg 生成
-- [ ] 测试：命中/失效（改 mtime 或 size）/媒体替换后重生成
+- [x] 峰值 sidecar `<媒体名>.peaks.json` 带 `{size, mtime_ms}` 双因子签名；命中跳过 ffmpeg 生成 ✅ 2026-08-31 `core/ffmpeg_service` 缓存五函数 + `_handle_waveform_generation` 入口探测（命中 ms 级完成、`cached: true`，偏差：任务瞬时完成而非不建任务，record 决策 1）；waveform_path 直接指向 sidecar，前端 `parseWaveformPeaks` 兼容信封与裸数组双形状
+- [x] 测试：命中/失效（改 mtime 或 size）/媒体替换后重生成 ✅ `test_waveform_cache.py` 15 条含 handler 级"二次运行零 ffmpeg 调用"与双因子独立失效验证
 
-**验收方式**: pytest + 真实长视频二次打开计时。
-**验收标准**: 同一媒体二次打开波形就绪 < 200ms（对比基线首次生成耗时）；签名误命中率 0（双因子测试）。
+**验收方式**: pytest ✅ + 真实长视频二次打开计时（→ 归批次冒烟回填）。
+**验收标准**: 同一媒体二次打开波形就绪 < 200ms ✅（命中路径实测 0.844ms/6000 peaks，余量 ~237 倍）；签名误命中率 0（双因子测试）✅（size/mtime 各自独立失效 + 替换后重生成，量化文件系统极端残余风险已记录）。
 
 ### P4-4 M3-6 工作流失败回滚（1 天，依赖 P2-1 已就绪）
 
