@@ -15,6 +15,7 @@
 | macOS 冒烟（WKWebView） | **全绿**：滚动 60fps（1200 段）、波形期长任务 0、空闲 IPC ≈4/s（250ms 降档生效）、undo/Cmd 链路/千段跳转/hover 预览/播放头手感正常 |
 | Windows 冒烟（WebView2） | **待后续补测**（用户裁决 2026-08-31 先行放行 beta.2；补测后回填 perf-beta2.md） |
 | 自动化性能 | undo 主线程 p50 1.3–2.9ms（目标 <5ms）；apply_undo 后端 p50 3.96ms；千段 50 编辑/50 undo 回放回到初态；open 4.8ms / save 3.4ms（P1-4 复核通过）——详见 `perf-beta2.md` |
+| 内部包 | PyInstaller .app 构建 + 签名成功：`dist/Milo Cut.app-macos-arm64-v3.0.0-beta.2.zip`（arm64，57MB）；Windows 包待补测时在该机执行 `uv run build.py` 产出 |
 
 ## 本批收尾改动（legacy undo 路径删除）
 
