@@ -232,8 +232,8 @@ uv run ruff check .                              # 本步触及文件 0 问题�
 
 **—— Phase 3 验收节点（rc 门禁）——**
 - [x] 全量测试绿 + 性能对比无回退（perf-beta2 基线）✅ 2026-08-31 pytest 550 / vitest 321 / build / ruff 0 / eslint 0-0；backend_benchmark（1167 段 seed=42 runs=30）：apply_undo p50 3.765ms（beta.2 3.961，无回退）、model_dump 0.894ms（基线 0.888 持平）、dump_json 1.214ms（1.211 持平）、update_edit_decision 0.533ms（更优）、update_segment 0.644ms（更优）
-- [ ] ★ 双平台完整冒烟（Phase 1+2+3 全路径）
-- [ ] 打 tag `v3.0.0-rc`；★ 邀请用户做 3-5 天真实使用（daily driver），收集 issue
+- [x] ★ 双平台完整冒烟（Phase 1+2+3 全路径）✅ 2026-08-31 **macOS（WKWebView）全绿零问题**（record-3.0.0-smoke-macos-rc：M8 拆分面/ASR 单源双向同步/键盘回归/菜单互斥/层级 + 标准清单全过）；Windows（WebView2）待补测（延续 beta.2 用户裁决模式，不阻塞 rc）
+- [x] 打 tag `v3.0.0-rc`；★ 邀请用户做 3-5 天真实使用（daily driver），收集 issue ✅ tag 已打（Windows 补测与试用并行）
 
 ---
 
