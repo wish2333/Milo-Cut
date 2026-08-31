@@ -453,7 +453,7 @@ P3   M6-1 -> M6-2 -> M6-3
 ## 验收总纲（门禁）
 
 - **vitest**：M1 逐函数 / M3 引用恒等 + perf 断言 / M4 全组件 / M5 原子性——全绿。
-- **pytest**：M2 全部拒绝与联动路径 / M6 导出映射——全绿；存量 `test_segment_sort_invariant.py` 13 例零改动全绿（主轨契约未被破坏的锚）。
+- **pytest**：M2 全部拒绝与联动路径 / M6 导出映射——全绿；存量 `test_segment_sort_invariant.py` 13 例全绿（**P1-3 勘误**：其中 `test_moving_start_earlier_triggers_resort` 因 M2-1 重叠拒绝契约而演进——原"start 拖入邻居区间靠静默重排"的移动改为不重叠整段移动，测试意图不变。该测试原本锚定的恰是本版要消灭的静默重叠行为）。
 - **性能**：M3 断言（apply p50 < 5ms、单遍扫描）；undo < 5ms 基线不回退；3.0.0 perf-baseline 各项不回退。
 - **真机**：Windows WebView2 + macOS WKWebView——堆叠区 wheel/触控板（deltaMode 归一）、Alt 手势、trim 命中、播放头贯穿、成对删除与 undo。
 - **工程**：`uv run ruff check .` 与 `bun run lint` 零问题；`core/events.py` / `events.ts` diff 为空（红线 M0-3.3 的机器可验形态）。

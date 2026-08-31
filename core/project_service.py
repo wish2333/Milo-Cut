@@ -31,6 +31,7 @@ from core.models import (
 from core.paths import get_projects_dir
 from core.persistence import atomic_save_with_backup, load_json_with_recovery
 from core.timeline_utils import split_words
+from core.track_constraints import OVERLAP_EPSILON
 
 
 def compute_media_fingerprint(path: str) -> str:
@@ -1076,6 +1077,17 @@ class ProjectService:
         if self._current is None:
             return {"success": False, "error": "No project is open"}
 
+        # v3.0.1 M2-1: extension-track segments live in the track_ id
+        # namespace and go through their own channel (update_track_segment).
+        if segment_id.startswith("track_"):
+            return {
+                "success": False,
+                "error": (
+                    "update_segment: use update_track_segment for "
+                    "extension-track segments (track_ namespace)"
+                ),
+            }
+
         allowed_fields = {"start", "end", "text"}
         filtered = {k: v for k, v in updates.items() if k in allowed_fields}
         if not filtered:
@@ -1087,6 +1099,28 @@ class ProjectService:
         )
         if old_seg is None:
             return {"success": False, "error": f"Segment not found: {segment_id}"}
+
+        # v3.0.1 M2-1: explicit same-track overlap rejection on time changes
+        # (previously implicit -- the sort invariant silently re-ordered
+        # visually-overlapping segments). Touching edges (<= 1e-6) allowed.
+        if "start" in filtered or "end" in filtered:
+            cand_start = float(filtered.get("start", old_seg.start))
+            cand_end = float(filtered.get("end", old_seg.end))
+            for other in self.active_timeline.transcript.segments:
+                if other.id == segment_id:
+                    continue
+                if (
+                    cand_start < other.end - OVERLAP_EPSILON
+                    and cand_end > other.start + OVERLAP_EPSILON
+                ):
+                    return {
+                        "success": False,
+                        "error": (
+                            f"update_segment: segment {segment_id} "
+                            f"[{cand_start:.3f}, {cand_end:.3f}] overlaps "
+                            f"{other.id} [{other.start:.3f}, {other.end:.3f}]"
+                        ),
+                    }
 
         updated_segments = []
         updated_seg = None

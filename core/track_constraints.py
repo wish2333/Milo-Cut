@@ -27,6 +27,8 @@ MIN_SEGMENT_DURATION = 0.1
 SNAP_STEP = 0.01
 
 _EPSILON = 1e-6
+"""Public alias for the overlap "touching edges" tolerance (M2 write channels)."""
+OVERLAP_EPSILON = _EPSILON
 
 
 def _round3(t: float) -> float:
