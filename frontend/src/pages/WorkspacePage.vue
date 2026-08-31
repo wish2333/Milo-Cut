@@ -234,6 +234,8 @@ const activeTimeline = computed<TimelineData | null>(() =>
 )
 const segments = computed<Segment[]>(() => activeTimeline.value?.transcript?.segments ?? [])
 const edits = computed<EditDecision[]>(() => activeTimeline.value?.edits ?? [])
+// v3.0.0 M11-2: read-only extension tracks for the Timeline bottom lane
+const activeTracks = computed(() => activeTimeline.value?.transcript?.tracks ?? [])
 
 const deleteRanges = computed(() => {
   return edits.value
@@ -813,7 +815,7 @@ const {
   handleVideoLoaded, handleTimeUpdate, handleTogglePlay, handleSeekTo,
   handleVolumeChange, handleRateChange, handleFullscreen,
   handleSwitchTimeline, handleCreateTimeline, handleDeleteTimeline,
-  handleImportSrt, handleDetectSilence, handleClearSubtitles, handleTranscribe,
+  handleImportSrt, handleImportSrtAsTrack, handleDetectSilence, handleClearSubtitles, handleTranscribe,
   handleToggleEditStatus, handleSegmentClickInSelection, handleToggleSelectionMode,
   handleMergeSelected, handleSplitSegment, handleUpdateText, handleUpdateTime,
   handleSelectRange, handleAddSegment, handleDeleteSegment, handleSeekSegment,
@@ -963,6 +965,15 @@ onUnmounted(() => {
       >
         <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
         导入 SRT
+      </button>
+      <!-- v3.0.0 M11-2: import an SRT as a read-only extension track -->
+      <button
+        class="mc-button mc-button-secondary"
+        :disabled="isDetecting || isExporting"
+        title="作为只读副轨导入 SRT（与主轨自动对齐绑定）"
+        @click="handleImportSrtAsTrack"
+      >
+        导入副轨
       </button>
       <button
         class="mc-button"
@@ -1215,6 +1226,7 @@ onUnmounted(() => {
             :analysis-results="analysisResults"
             :subtitle-count="subtitleCount"
             :silence-count="silenceCount"
+            :tracks="activeTracks"
             :selected-segment-id="editSelectedSegmentId"
             :global-edit-mode="globalEditMode"
             :selection-mode="selectionMode"

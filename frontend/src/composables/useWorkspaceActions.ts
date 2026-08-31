@@ -131,6 +131,7 @@ export interface WorkspaceActions {
   handleCreateTimeline: () => Promise<void>
   handleDeleteTimeline: (timelineId: string) => Promise<void>
   handleImportSrt: () => Promise<void>
+  handleImportSrtAsTrack: () => Promise<void>
   handleDetectSilence: () => Promise<void>
   handleClearSubtitles: () => Promise<void>
   handleTranscribe: () => Promise<void>
@@ -388,6 +389,38 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
       statusMessage.value = ""
     } else {
       errorMessage.value = importRes.error ?? "Failed to import SRT"
+      statusMessage.value = ""
+    }
+  }
+
+  async function handleImportSrtAsTrack() {
+    // v3.0.0 M11-2: import an SRT as a read-only extension track. Not
+    // undoable this version (undo layers are segments/edits/analysis only).
+    errorMessage.value = ""
+    statusMessage.value = "Selecting file..."
+    const fileRes = await call<string>("select_file")
+    if (!fileRes.success || !fileRes.data) {
+      statusMessage.value = ""
+      return
+    }
+    statusMessage.value = "Importing track SRT..."
+    const importRes = await call<ProjectResponse>(
+      "import_srt_as_track",
+      fileRes.data,
+      "",
+      "extension",
+    )
+    if (importRes.success && importRes.data) {
+      emit("project-updated", importRes.data)
+      const data = importRes.data as {
+        tracks?: Array<{ segments?: unknown[] }>
+        bindings?: unknown[]
+      }
+      const segCount = data.tracks?.[0]?.segments?.length ?? 0
+      showToast(`已导入副轨：${segCount} 条字幕，${data.bindings?.length ?? 0} 条绑定`, "success", 3000)
+      statusMessage.value = ""
+    } else {
+      errorMessage.value = importRes.error ?? "Failed to import track SRT"
       statusMessage.value = ""
     }
   }
@@ -869,7 +902,7 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
     handleVolumeChange, handleRateChange, handleFullscreen,
     // timeline
     handleSwitchTimeline, handleCreateTimeline, handleDeleteTimeline,
-    handleImportSrt, handleDetectSilence, handleClearSubtitles, handleTranscribe,
+    handleImportSrt, handleImportSrtAsTrack, handleDetectSilence, handleClearSubtitles, handleTranscribe,
     // edit
     handleToggleEditStatus, handleSegmentClickInSelection, handleToggleSelectionMode,
     handleMergeSelected, handleSplitSegment, handleUpdateText, handleUpdateTime,

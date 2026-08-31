@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from "vue"
-import type { Project, Segment, Timeline } from "@/types/project"
+import type { Project, Segment, SubtitleTrack, Timeline } from "@/types/project"
 import type { EditSummary } from "@/types/edit"
 import EncodingSettings from "@/components/export/EncodingSettings.vue"
 import PreviewPlayer from "@/components/export/PreviewPlayer.vue"
@@ -210,6 +210,27 @@ async function handleExportSrt() {
   if (!task) {
     statusMessage.value = ""
     showToast("字幕导出失败", "error")
+  }
+}
+
+// v3.0.0 M11-2: export an extension track's SRT at its original timestamps.
+const subtitleTracks = computed(
+  () => props.project.timelines.find(t => t.id === props.project.active_timeline_id)?.transcript?.tracks ?? [],
+)
+
+async function handleExportTrackSrt(track: SubtitleTrack) {
+  errorMessage.value = ""
+  statusMessage.value = "正在导出副轨 SRT..."
+  const task = await createExportTask("export_subtitle", { track_id: track.id })
+  if (task) {
+    pendingExportTasks.set(task, {
+      type: "export_subtitle",
+      label: `副轨导出 (${track.name || track.id})`,
+    })
+    statusMessage.value = ""
+  } else {
+    statusMessage.value = ""
+    showToast("副轨导出失败", "error")
   }
 }
 
@@ -445,6 +466,18 @@ function formatTimeShort(seconds: number): string {
           >
             <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
             导出 SRT
+          </button>
+
+          <!-- v3.0.0 M11-2: per-track SRT export (original timestamps) -->
+          <button
+            v-for="track in subtitleTracks"
+            :key="track.id"
+            class="mc-button mc-button-secondary w-full px-4 text-sm font-semibold"
+            :disabled="isExporting"
+            :title="`导出副轨 ${track.name || track.id} 的 SRT（原始时间戳）`"
+            @click="handleExportTrackSrt(track)"
+          >
+            导出副轨 SRT{{ track.name ? `（${track.name}）` : '' }}
           </button>
 
           <button

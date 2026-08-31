@@ -59,6 +59,26 @@ export interface TranscriptData {
   engine: string
   language: string
   segments: Segment[]
+  // v3.0.0 M11-2: read-only extension tracks (bindings written, not consumed)
+  tracks?: SubtitleTrack[]
+  bindings?: TrackBinding[]
+}
+
+export interface SubtitleTrack {
+  id: string
+  role: "extension" | "translation" | "caption"
+  name: string
+  language: string
+  segments: Segment[]
+}
+
+export interface TrackBinding {
+  id: string
+  track_id: string
+  main_segment_id: string
+  extension_segment_id: string
+  start_offset: number
+  end_offset: number
 }
 
 export interface AnalysisData {
@@ -84,6 +104,9 @@ export interface ProjectPatch {
   segments?: Segment[] | null
   edits?: EditDecision[] | null
   analysis?: AnalysisData | null
+  // v3.0.0 M11-2: subtitle-track layers (timeline-scoped, wholesale replace)
+  tracks?: SubtitleTrack[] | null
+  bindings?: TrackBinding[] | null
   media?: MediaInfo | null
   active_timeline_id?: string | null
   full_project?: Project | null

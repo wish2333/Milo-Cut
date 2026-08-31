@@ -6,7 +6,9 @@ import type {
   Project,
   ProjectPatch,
   Segment,
+  SubtitleTrack,
   Timeline,
+  TrackBinding,
 } from "@/types/project"
 import {
   PatchApplicationError,
@@ -275,6 +277,74 @@ describe("applyProjectPatch", () => {
       const patch: ProjectPatch = { revision: 1, analysis: newAnalysis }
       const result = applyProjectPatch(project, patch)
       expect(result.timelines[0].analysis).toBe(newAnalysis)
+    })
+  })
+
+  // v3.0.0 M11-2: subtitle-track layers
+  describe("M11-2 track layers", () => {
+    const makeTrack = (id = "trk_1"): SubtitleTrack => ({
+      id,
+      role: "extension",
+      name: "en",
+      language: "en",
+      segments: [
+        {
+          id: `track_${id}_seg_1.000`,
+          version: 1,
+          type: "subtitle",
+          start: 1,
+          end: 2,
+          text: "hello",
+          speaker: "",
+        },
+      ],
+    })
+    const makeBinding = (trackId = "trk_1"): TrackBinding => ({
+      id: "bind-1",
+      track_id: trackId,
+      main_segment_id: "seg-1",
+      extension_segment_id: `track_${trackId}_seg_1.000`,
+      start_offset: 0.05,
+      end_offset: 0,
+    })
+
+    it("replaces active timeline tracks wholesale", () => {
+      const project = makeProject()
+      const track = makeTrack()
+      const patch: ProjectPatch = { revision: 1, tracks: [track] }
+      const result = applyProjectPatch(project, patch)
+      expect(result.timelines[0].transcript.tracks).toEqual([track])
+      // segments layer untouched by a tracks-only patch
+      expect(result.timelines[0].transcript.segments).toBe(
+        project.timelines[0].transcript.segments,
+      )
+    })
+
+    it("replaces active timeline bindings wholesale", () => {
+      const project = makeProject()
+      const binding = makeBinding()
+      const patch: ProjectPatch = { revision: 1, bindings: [binding] }
+      const result = applyProjectPatch(project, patch)
+      expect(result.timelines[0].transcript.bindings).toEqual([binding])
+    })
+
+    it("throws when a tracks patch targets a missing timeline", () => {
+      const project = makeProject()
+      const patch: ProjectPatch = {
+        revision: 1,
+        timeline_id: "missing",
+        tracks: [makeTrack()],
+      }
+      expect(() => applyProjectPatch(project, patch)).toThrow(PatchApplicationError)
+    })
+
+    it("describePatchLayers reports tracks and bindings", () => {
+      const patch: ProjectPatch = {
+        revision: 1,
+        tracks: [makeTrack()],
+        bindings: [makeBinding()],
+      }
+      expect(describePatchLayers(patch)).toEqual(["tracks", "bindings"])
     })
   })
 

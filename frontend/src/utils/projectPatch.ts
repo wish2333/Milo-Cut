@@ -95,7 +95,12 @@ export function applyProjectPatch(project: Project, patch: ProjectPatch): Projec
   const targetTimelineId = patch.timeline_id ?? project.active_timeline_id
 
   const hasLayerUpdates =
-    patch.segments != null || patch.edits != null || patch.analysis != null
+    patch.segments != null ||
+    patch.edits != null ||
+    patch.analysis != null ||
+    // v3.0.0 M11-2: track layers are timeline-scoped like the above.
+    patch.tracks != null ||
+    patch.bindings != null
 
   if (hasLayerUpdates) {
     const targetExists = project.timelines.some((tl) => tl.id === targetTimelineId)
@@ -128,6 +133,20 @@ export function applyProjectPatch(project: Project, patch: ProjectPatch): Projec
     }
     if (patch.analysis != null) {
       newTl = { ...newTl, analysis: patch.analysis }
+    }
+    // v3.0.0 M11-2: subtitle-track layers (wholesale replace, grouped with
+    // the timeline layers; independent so a bindings-only patch applies).
+    if (patch.tracks != null) {
+      newTl = {
+        ...newTl,
+        transcript: { ...newTl.transcript, tracks: patch.tracks },
+      }
+    }
+    if (patch.bindings != null) {
+      newTl = {
+        ...newTl,
+        transcript: { ...newTl.transcript, bindings: patch.bindings },
+      }
     }
     return newTl
   })
@@ -166,6 +185,8 @@ export type LayerChange =
   | "segments"
   | "edits"
   | "analysis"
+  | "tracks"
+  | "bindings"
   | "media"
   | "active_timeline"
   | "full_project"
@@ -178,6 +199,8 @@ export function describePatchLayers(patch: ProjectPatch): LayerChange[] {
   if (patch.segments != null) layers.push("segments")
   if (patch.edits != null) layers.push("edits")
   if (patch.analysis != null) layers.push("analysis")
+  if (patch.tracks != null) layers.push("tracks")
+  if (patch.bindings != null) layers.push("bindings")
   if (patch.media != null) layers.push("media")
   if (patch.active_timeline_id != null) layers.push("active_timeline")
   return layers
