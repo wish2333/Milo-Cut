@@ -120,10 +120,9 @@ export function extensionRangeOverlapsNeighbors(
 export interface ReconcileCounters { squeezed: number; removed: number; unbound: number }
 
 export interface ReconcileResult {
-  segments: Array<Pick<Segment, "id" | "start" | "end">>  // 存活副段的新几何
-  removedIds: string[]        // 被删除的副段 id
-  unboundBindingIds: string[] // 被解绑的 binding id
-  counters: ReconcileCounters // squeezed: 保留但被压缩; removed: 不足最小时长删除; unbound: 解绑
+  segments: Array<Pick<Segment, "id" | "start" | "end">>  // 存活副段的新几何（round3）
+  removedIds: string[]        // 被删除的副段 id；解绑由调用方按 1:1 从此推导（P1-1 勘误）
+  counters: ReconcileCounters // squeezed: 保留但被压缩; removed: 不足最小时长删除; unbound: 解绑(==removed)
 }
 
 export function reconcileExtensionTrack(
@@ -140,6 +139,8 @@ export function reconcileExtensionTrack(
 3. 保留侧 < minDuration：删除该副段（removed++），其 binding 一并解绑（unbound++）。
 4. 与 covered 完全被覆盖（两侧皆空）：删除（removed++ / unbound++）。
 5. **绝不修改 covered**（红线 M0-3.1 在纯函数层的体现：函数签名上主轨区间是只读输入）。
+
+> **勘误（P1-1 实施时回写）**：a) `ReconcileResult` 去掉 `unboundBindingIds`——函数不持有 bindings，解绑由调用方按 1:1 模型从 `removedIds` 推导；b) `constrainCueRangeToTrack` 平移分支 dur 取**原始宽度**（不按缝 cap），"贴前驱 -> 贴后继 -> cap 到缝"三级回退，其中贴后继分支数学上仅防御路径可达（贴前驱溢出 ⟺ dur > 缝宽），保留与 MAW 结构对齐。
 
 ```ts
 export function syncBoundExtensionForMain(

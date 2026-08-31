@@ -67,9 +67,9 @@ P3 批次: 导出 -> overlay -> 文档
 
 ### P1-1 前端约束函数族 `trackConstraints.ts`（SPEC M1 全部）
 
-- [ ] 新建 `frontend/src/utils/trackConstraints.ts`：`MIN_SEGMENT_DURATION`/`SNAP_STEP` 常量 + M1-1 邻居与主轨约束（`getTrackNeighborBounds`/`constrainCueRangeToTrack`）+ M1-2 副轨约束（`clampExtensionRange`/`extensionRangeOverlapsNeighbors`）+ M1-3 联动四件（`reconcileExtensionTrack`/`syncBoundExtensionForMain`/`rebuildBindingOffsets`）+ M1-4 `constrainBoundExtensionPanelEdit`
-- [ ] `SegmentBlocksLayer.vue` 改 import 共享常量，删除本地 `MIN_SEGMENT_DURATION` 与 `snapToFrame` 硬编码（行为零变化）
-- [ ] 新建 `trackConstraints.test.ts`：逐函数边界用例表（空轨/首尾段/缝隙恰等于 min/缝隙不足/多选豁免/reconcile 四规则+counters/offset round3/NaN 抛错）+ 模块纯性测试（import 列表无 vue/bridge）
+- [x] 新建 `frontend/src/utils/trackConstraints.ts`：`MIN_SEGMENT_DURATION`/`SNAP_STEP` 常量 + M1-1 邻居与主轨约束（`getTrackNeighborBounds`/`constrainCueRangeToTrack`）+ M1-2 副轨约束（`clampExtensionRange`/`extensionRangeOverlapsNeighbors`）+ M1-3 联动四件（`reconcileExtensionTrack`/`syncBoundExtensionForMain`/`rebuildBindingOffsets`）+ M1-4 `constrainBoundExtensionPanelEdit` ✅ 2026-08-31
+- [x] `SegmentBlocksLayer.vue` 改 import 共享常量，删除本地 `MIN_SEGMENT_DURATION` 与 `snapToFrame` 硬编码（行为零变化）✅ 2026-08-31
+- [x] 新建 `trackConstraints.test.ts`：逐函数边界用例表（空轨/首尾段/缝隙恰等于 min/缝隙不足/多选豁免/reconcile 四规则+counters/offset round3/NaN 抛错）+ 模块纯性测试（import 列表无 vue/bridge）✅ 2026-08-31（54 用例；SPEC 勘误两条，见 record-3.0.1-P1-1）
 
 **验收方式**: `bun run test`（新用例全绿）；grep 确认 SegmentBlocksLayer 无本地常量残留。
 **验收标准**: 用例表全项覆盖；SegmentBlocksLayer 现有测试零改动全绿。
