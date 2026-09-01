@@ -17,6 +17,8 @@ import SegmentBlock from "@/components/waveform/SegmentBlock.vue"
 const props = defineProps<{
   track: SubtitleTrack
   lane: LaneLayoutItem
+  /** v3.0.1 M5-2: when provided, extension blocks become trim-editable. */
+  updateTime?: (segmentId: string, field: "start" | "end", value: number) => void
 }>()
 
 const emit = defineEmits<{

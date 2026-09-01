@@ -28,6 +28,8 @@ const props = defineProps<{
   /** v3.0.0 M11-2: extension tracks for the stacked lanes (v3.0.1 M4-4). */
   tracks?: SubtitleTrack[]
   updateTime?: (segmentId: string, field: "start" | "end", value: number) => void
+  /** v3.0.1 M5-2: extension-track trim (useTrackEdit in WorkspacePage). */
+  updateTrackTime?: (trackId: string, segmentId: string, field: "start" | "end", value: number) => void
   /** v2.1.1 A-03: full-text edit mode — blocks structural ops */
   globalEditMode?: boolean
   /** v2.1.1 A-03: multi-select mode — move pointer without playing */
@@ -292,6 +294,11 @@ function handleSplitSegment(segmentId: string, position: number) {
           v-if="!lane.hidden && trackById.get(lane.trackId)"
           :track="trackById.get(lane.trackId)!"
           :lane="{ ...lane, top: laneLayout.mainTrackHeight + lane.top }"
+          :update-time="
+            updateTrackTime
+              ? (sid, f, v) => updateTrackTime!(lane.trackId, sid, f, v)
+              : undefined
+          "
           @seek="(t) => handleSeek(t)"
           @toggle-collapse="laneCtl.toggleCollapse"
         />

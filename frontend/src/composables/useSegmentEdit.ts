@@ -65,6 +65,12 @@ export function useSegmentEdit(
   project: Ref<Project>,
   onProjectUpdate: (project: ProjectResponse) => void,
   onBeforeProjectUpdate?: (project: Project, layers?: UndoLayer[], label?: string) => void,
+  // v3.0.1 R7.5: reconcile counters surfacing (squeezed/removed/unbound).
+  onLinkageCounters?: (counters: {
+    squeezed: number
+    removed: number
+    unbound: number
+  }) => void,
 ): UseSegmentEditReturn {
   const selectedSegmentId = ref<string | null>(null)
   const selectedRange = ref<{ start: number; end: number } | null>(null)
@@ -170,6 +176,16 @@ export function useSegmentEdit(
     const callback = async () => {
       const res = await call<Project>("update_segment", segmentId, { [field]: value })
       if (res.success && res.data) {
+        // v3.0.1 R7.5: destructive reconcile (squeezed/removed/unbound
+        // extension segments) is NEVER silent -- the patch meta carries
+        // the counters when the edited segment had bound extensions.
+        const maybePatch = res.data as unknown as {
+          meta?: { linkage?: { squeezed: number; removed: number; unbound: number } }
+        }
+        const linkage = maybePatch.meta?.linkage
+        if (linkage && (linkage.squeezed || linkage.removed || linkage.unbound)) {
+          onLinkageCounters?.(linkage)
+        }
         onProjectUpdate(res.data)
       } else {
         onProjectUpdate(prev)
