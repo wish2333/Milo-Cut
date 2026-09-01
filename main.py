@@ -1630,6 +1630,13 @@ class MiloCutApi(Bridge):
         return self._mark_dirty(self._project.update_segment(segment_id, updates))
 
     @expose
+    def update_track_segment(self, track_id: str, segment_id: str, updates: dict) -> dict:
+        """v3.0.1 M2-2: edit an extension-track segment (offsets rebuild)."""
+        return self._mark_dirty(
+            self._project.update_track_segment(track_id, segment_id, updates)
+        )
+
+    @expose
     def update_segment_text(self, segment_id: str, text: str) -> dict:
         return self._mark_dirty(self._project.update_segment_text(segment_id, text))
 

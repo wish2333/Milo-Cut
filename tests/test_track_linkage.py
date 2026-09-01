@@ -287,3 +287,107 @@ class TestLinkageFollow:
         assert patch["tracks"] is None
         assert patch["bindings"] is None
         assert patch.get("meta") is None
+
+
+# ------------------------------------------------------------------
+# v3.0.1 M2-2: update_track_segment (P3-4)
+# ------------------------------------------------------------------
+
+
+class TestUpdateTrackSegment:
+    def test_track_not_found(self, svc):
+        _seed_linkage(svc)
+        res = svc.update_track_segment("trk_missing", "track_trk1_seg_a", {"text": "x"})
+        assert res["success"] is False
+        assert "trk_missing" in res["error"]
+
+    def test_segment_not_in_track(self, svc):
+        _seed_linkage(svc)
+        res = svc.update_track_segment("trk1", "track_trk1_seg_zz", {"text": "x"})
+        assert res["success"] is False
+        assert "Segment not found" in res["error"]
+
+    def test_empty_updates_rejected(self, svc):
+        _seed_linkage(svc)
+        res = svc.update_track_segment("trk1", "track_trk1_seg_a", {})
+        assert res["success"] is False
+
+    def test_id_field_is_stripped(self, svc):
+        _seed_linkage(svc)
+        res = svc.update_track_segment(
+            "trk1", "track_trk1_seg_a",
+            {"text": "renamed", "id": "track_trk1_seg_evil"},
+        )
+        assert res["success"], res
+        assert _track_segs(svc)["track_trk1_seg_a"].id == "track_trk1_seg_a"
+        assert _track_segs(svc)["track_trk1_seg_a"].text == "renamed"
+
+    def test_clamps_to_media_duration(self, svc):
+        _seed_linkage(svc)
+        # media duration is 100 in the fixture; b has no right neighbor,
+        # so dragging its end beyond duration clamps to 100.0.
+        res = svc.update_track_segment(
+            "trk1", "track_trk1_seg_b", {"end": 120.0}
+        )
+        assert res["success"], res
+        b = _track_segs(svc)["track_trk1_seg_b"]
+        assert b.end == 100.0 and b.start == 10.2
+
+    def test_clamp_into_neighbor_is_overlap_rejected(self, svc):
+        _seed_linkage(svc)
+        # a dragged far right clamps to duration 100 -- which now crosses
+        # b; the overlap check (post-clamp) rejects with the conflict id.
+        res = svc.update_track_segment("trk1", "track_trk1_seg_a", {"end": 120.0})
+        assert res["success"] is False
+        assert "track_trk1_seg_b" in res["error"]
+
+    def test_overlap_rejected_with_conflict_id(self, svc):
+        _seed_linkage(svc)
+        # b occupies [10.2, 14.8]; drag a's end into it.
+        res = svc.update_track_segment("trk1", "track_trk1_seg_a", {"end": 11.0})
+        assert res["success"] is False
+        assert "track_trk1_seg_b" in res["error"]
+
+    def test_touching_neighbor_allowed(self, svc):
+        _seed_linkage(svc)
+        # a end exactly at b start -> legal.
+        res = svc.update_track_segment("trk1", "track_trk1_seg_a", {"end": 10.2})
+        assert res["success"] is True
+
+    def test_min_duration_enforced(self, svc):
+        _seed_linkage(svc)
+        res = svc.update_track_segment("trk1", "track_trk1_seg_a", {"end": 0.25})
+        assert res["success"] is False
+        assert "below minimum" in res["error"]
+
+    def test_offsets_rebuilt_and_main_untouched(self, svc):
+        _seed_linkage(svc)
+        main_before = {
+            s.id: (s.start, s.end, s.text)
+            for s in svc.active_timeline.transcript.segments
+        }
+        res = svc.update_track_segment(
+            "trk1", "track_trk1_seg_a", {"start": 0.5, "end": 5.0}
+        )
+        assert res["success"], res
+        patch = res["data"]
+        a = _track_segs(svc)["track_trk1_seg_a"]
+        assert (a.start, a.end) == (0.5, 5.0)
+        # offsets rebuilt wholesale from final geometry: ext - main
+        bnd = _bindings(svc)["bind_a"]
+        assert (bnd.start_offset, bnd.end_offset) == (0.5, 0.0)
+        assert patch["meta"]["linkage"] == {"rebuilt": 1}
+        # red line: main track untouched
+        main_after = {
+            s.id: (s.start, s.end, s.text)
+            for s in svc.active_timeline.transcript.segments
+        }
+        assert main_before == main_after
+
+    def test_patch_carries_tracks_and_bindings_layers(self, svc):
+        _seed_linkage(svc)
+        res = svc.update_track_segment("trk1", "track_trk1_seg_a", {"text": "x"})
+        assert res["success"], res
+        patch = res["data"]
+        assert patch["tracks"] is not None and patch["bindings"] is not None
+        assert patch["segments"] is None  # main layer never rides along

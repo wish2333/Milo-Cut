@@ -1347,6 +1347,143 @@ class ProjectService:
             patch_kwargs["meta"] = {"linkage": linkage_counters}
         return self._success_patch(**patch_kwargs)
 
+    def update_track_segment(
+        self, track_id: str, segment_id: str, updates: dict
+    ) -> dict:
+        """Update an extension-track segment (v3.0.1 M2-2).
+
+        Validation chain (fixed order): track exists -> segment exists in
+        the track -> ``id`` is never writable -> clamp to [0, duration]
+        (min duration + round3) -> same-track overlap rejection. After a
+        time change, the offsets of every binding on this segment are
+        rebuilt wholesale (derivative rule); the main track is NEVER
+        touched (red line M0-3).
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        from core.track_constraints import (
+            MIN_SEGMENT_DURATION,
+            clamp_extension_range,
+            rebuild_binding_offsets,
+        )
+
+        tl = self.active_timeline
+        track = next((t for t in tl.transcript.tracks if t.id == track_id), None)
+        if track is None:
+            return {"success": False, "error": f"Track not found: {track_id}"}
+
+        allowed_fields = {"start", "end", "text"}
+        filtered = {k: v for k, v in updates.items() if k in allowed_fields}
+        if not filtered:
+            return {"success": False, "error": "No valid fields to update"}
+
+        ext = next((s for s in track.segments if s.id == segment_id), None)
+        if ext is None:
+            return {
+                "success": False,
+                "error": f"Segment not found in track {track_id}: {segment_id}",
+            }
+
+        updates_geom = "start" in filtered or "end" in filtered
+        new_start = ext.start
+        new_end = ext.end
+        if updates_geom:
+            new_start = float(filtered.get("start", ext.start))
+            new_end = float(filtered.get("end", ext.end))
+            # Minimum duration is an explicit rejection (NOT silently
+            # widened): the frontend never submits below-min drags, so this
+            # guards direct API calls with the same semantics the user sees.
+            if new_end - new_start < MIN_SEGMENT_DURATION - 1e-6:
+                return {
+                    "success": False,
+                    "error": (
+                        f"update_track_segment: segment {segment_id} width "
+                        f"{new_end - new_start:.3f} below minimum "
+                        f"{MIN_SEGMENT_DURATION}"
+                    ),
+                }
+            # Upper bound: media duration; without media, allow growing up
+            # to the requested extent (nothing to clamp against).
+            upper = (
+                self._current.media.duration
+                if self._current.media and self._current.media.duration > 0
+                else max(new_start, new_end, ext.end, MIN_SEGMENT_DURATION)
+            )
+            new_start, new_end = clamp_extension_range(new_start, new_end, upper)
+            for other in track.segments:
+                if other.id == segment_id:
+                    continue
+                if (
+                    new_start < other.end - OVERLAP_EPSILON
+                    and new_end > other.start + OVERLAP_EPSILON
+                ):
+                    return {
+                        "success": False,
+                        "error": (
+                            f"update_track_segment: segment {segment_id} "
+                            f"[{new_start:.3f}, {new_end:.3f}] overlaps "
+                            f"{other.id} [{other.start:.3f}, {other.end:.3f}]"
+                        ),
+                    }
+
+        geom_updates: dict = {}
+        if updates_geom:
+            geom_updates = {"start": new_start, "end": new_end}
+        # geom_updates wins over raw filtered values (clamped geometry).
+        new_ext = ext.model_copy(update={**filtered, **geom_updates})
+        if new_ext.end - new_ext.start < MIN_SEGMENT_DURATION - 1e-6:
+            return {
+                "success": False,
+                "error": (
+                    f"update_track_segment: segment {segment_id} width "
+                    f"{new_ext.end - new_ext.start:.3f} below minimum"
+                ),
+            }
+
+        new_segments = []
+        for s in track.segments:
+            if s.id == segment_id:
+                new_segments.append(new_ext)
+            else:
+                new_segments.append(s)
+        new_segments.sort(key=lambda s: s.start)
+
+        new_tracks = [
+            t.model_copy(update={"segments": new_segments})
+            if t.id == track_id
+            else t
+            for t in tl.transcript.tracks
+        ]
+
+        # Offsets rebuild (derivative): every binding on this segment.
+        rebuilt = 0
+        new_bindings = list(tl.transcript.bindings)
+        main_by_id = {s.id: s for s in tl.transcript.segments}
+        for i, b in enumerate(new_bindings):
+            if b.extension_segment_id != segment_id:
+                continue
+            main = main_by_id.get(b.main_segment_id)
+            if main is None:
+                continue
+            offsets = rebuild_binding_offsets(
+                (main.start, main.end), (new_ext.start, new_ext.end)
+            )
+            new_bindings[i] = b.model_copy(update=offsets)
+            rebuilt += 1
+
+        new_transcript = tl.transcript.model_copy(
+            update={"tracks": new_tracks, "bindings": new_bindings}
+        )
+        self._update_active_timeline(transcript=new_transcript)
+
+        meta = {"linkage": {"rebuilt": rebuilt}} if rebuilt else None
+        return self._success_patch(
+            tracks=new_tracks,
+            bindings=new_bindings,
+            meta=meta,
+        )
+
     def update_segment_text(self, segment_id: str, text: str) -> dict:
         """Update a subtitle segment's text and set dirty_flags."""
         if self._current is None:
