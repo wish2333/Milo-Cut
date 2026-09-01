@@ -6,19 +6,21 @@
  * ``apply_undo`` channel (SPEC M5-2); redo replays the inverse record
  * captured at undo time.
  *
- * Decision (2026-08-30, plan P2-1 风险缓冲条款): the segments layer keeps
- * an array *shallow reference copy* instead of the spec's per-segment
- * diff (Map<id, Segment|null> + id_lineage). Rationale: undo goes through
- * the backend which replaces the whole layer anyway, so per-segment
- * diffing buys nothing on the restore path today; lineage only matters
- * once M7-1 lands in-place id-based patching. Recorded per plan Day 2
- * 降级条款; revisit after M7-1 (P2-3).
+ * v3.0.1 M5-1: tracks/bindings join the undoable layers -- linkage
+ * operations snapshot all three transcript layers in ONE record
+ * (segments + tracks + bindings) for atomic undo (PRD R8.1).
  */
 import type { Project } from "@/types/project"
 
-export type UndoLayer = "segments" | "edits" | "analysis"
+export type UndoLayer = "segments" | "edits" | "analysis" | "tracks" | "bindings"
 
-export const UNDO_LAYERS: readonly UndoLayer[] = ["segments", "edits", "analysis"]
+export const UNDO_LAYERS: readonly UndoLayer[] = [
+  "segments",
+  "edits",
+  "analysis",
+  "tracks",
+  "bindings",
+]
 
 export interface UndoRecord {
   id: string
@@ -55,6 +57,12 @@ export function captureLayers(
   }
   if (layers.includes("analysis")) {
     out.analysis = tl.analysis ? { ...tl.analysis } : null
+  }
+  if (layers.includes("tracks")) {
+    out.tracks = [...(tl.transcript.tracks ?? [])]
+  }
+  if (layers.includes("bindings")) {
+    out.bindings = [...(tl.transcript.bindings ?? [])]
   }
   return out
 }

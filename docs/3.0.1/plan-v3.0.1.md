@@ -164,69 +164,69 @@ P3 批次: 导出 -> overlay -> 文档
 
 > 本 Phase 步骤顺序强制（SPEC 交付顺序）：撤销层 -> merge 接线 -> 联动 -> 独立编辑 -> 成对删除/拆分 -> composable/集成。前置依赖倒置会同时踩性能与原子性两个最高风险。
 
-### P3-1 撤销层扩展（SPEC M5-1，前后端同 PR）
+### P3-1 撤销层扩展（SPEC M5-1，前后端同 PR）✅ 2026-09-01
 
-- [ ] `undoRecords.ts`：`UndoLayer` + `"tracks" | "bindings"`；`captureLayers` 补两层浅拷贝
-- [ ] `project_service.py`：`_UNDO_LAYERS` 扩展；`apply_undo` 对新层 `model_validate`、全量 validate 通过后整体替换（原子语义不变）、`base_revision` 校验不变
-- [ ] `useUndoRedo.test.ts` 扩展：新层捕获与回放
+- [x] `undoRecords.ts`：`UndoLayer` + `"tracks" | "bindings"`；`captureLayers` 补两层浅拷贝
+- [x] `project_service.py`：`_UNDO_LAYERS` 扩展；`apply_undo` 对新层 `model_validate`、全量 validate 通过后整体替换（原子语义不变）、`base_revision` 校验不变
+- [x] `useUndoRedo.test.ts` 扩展：新层捕获与回放
 
 **验收方式**: `uv run pytest` + `bun run test`。
 **验收标准**: 六层 undo 通道全通；apply_undo 对非法 tracks payload 原子拒绝（部分层不落库）。
 
-### P3-2 merge 接线激活（SPEC M3 后半）
+### P3-2 merge 接线激活（SPEC M3 后半）✅ 2026-09-01（perf 门禁复跑 p50=0.258ms）
 
-- [ ] `applyProjectPatch` 的 tracks/bindings 层切换为 `mergeTracksInPlace`/`mergeBindingsInPlace`
-- [ ] 跑 `projectPatch.perf.test.ts` —— **自此为合入门禁**
+- [x] `applyProjectPatch` 的 tracks/bindings 层切换为 `mergeTracksInPlace`/`mergeBindingsInPlace`
+- [x] 跑 `projectPatch.perf.test.ts` —— **自此为合入门禁**
 
 **验收方式**: `bun run test`（perf 断言）。
 **验收标准**: 单副段 patch 后未变引用恒等；断言不过则冻结本 Phase 后续步骤。
 
-### P3-3 `update_segment` 联动激活（SPEC M2-1 第 4 步）
+### P3-3 `update_segment` 联动激活（SPEC M2-1 第 4 步）✅ 2026-09-01（语义勘误：跟随优先，见 record）
 
-- [ ] `core/track_constraints.py` 的 sync/reconcile/rebuild 接入 update_segment（按 SPEC 算法 5 步）；`meta.linkage = {squeezed, removed, unbound}`
-- [ ] `tests/test_track_linkage.py` 补联动用例：move 整体平移/trim 单边跟随/reconcile 三计数/offset 重建/无绑定路径 patch 不带 tracks/bindings 层
-- [ ] 前端 toast 消费 `meta.linkage`（R7.5 计数提示，破坏性消解绝不静默）
+- [x] `core/track_constraints.py` 的 sync/reconcile/rebuild 接入 update_segment（按 SPEC 算法 5 步）；`meta.linkage = {squeezed, removed, unbound}`
+- [x] `tests/test_track_linkage.py` 补联动用例：move 整体平移/trim 单边跟随/reconcile 三计数/offset 重建/无绑定路径 patch 不带 tracks/bindings 层
+- [x] 前端 toast 消费 `meta.linkage`（R7.5 计数提示，破坏性消解绝不静默）
 
 **验收方式**: `uv run pytest tests/test_track_linkage.py` + 手工冒烟（拖主轨看副段跟随）。
 **验收标准**: 红线 M0-3.1 机器锚定——联动路径断言主轨 segments 引用与值均不变。
 
-### P3-4 `update_track_segment` expose（SPEC M2-2）
+### P3-4 `update_track_segment` expose（SPEC M2-2）✅ 2026-09-01
 
-- [ ] main.py + project_service：六步校验链、offsets 派生重建、绝不反向改主轨、`meta.linkage = {rebuilt}`
-- [ ] `tests/test_track_linkage.py` 补：校验链六条各一例 + 主轨零变更断言
+- [x] main.py + project_service：六步校验链、offsets 派生重建、绝不反向改主轨、`meta.linkage = {rebuilt}`
+- [x] `tests/test_track_linkage.py` 补：校验链六条各一例 + 主轨零变更断言
 
 **验收方式**: `uv run pytest`。
 **验收标准**: 全绿；错误信息含 track_id / 冲突段 id。
 
 ### P3-5 成对删除 + 联动拆分（SPEC M2-3）
 
-- [ ] `delete_segment`：命中 bindings 成对删副段 + 解绑，返回三层 patch
-- [ ] `split_segment`：共用绝对切点（cut_ext = position + start_offset）；可拆 -> 副段同步拆 + 双 binding 重挂（offsets 全部 rebuild）；越界 -> 按重叠更大侧重挂 / 双侧皆不可 -> 解绑 + unbound 计数
-- [ ] `tests/test_track_linkage.py` 补：可拆/重挂前侧/重挂后侧/解绑四路径
+- [x] `delete_segment`：命中 bindings 成对删副段 + 解绑，返回三层 patch
+- [x] `split_segment`：共用绝对切点（cut_ext = position + start_offset）；可拆 -> 副段同步拆 + 双 binding 重挂（offsets 全部 rebuild）；越界 -> 按重叠更大侧重挂 / 双侧皆不可 -> 解绑 + unbound 计数
+- [x] `tests/test_track_linkage.py` 补：可拆/重挂前侧/重挂后侧/解绑四路径
 
 **验收方式**: `uv run pytest`。
 **验收标准**: 四路径全绿；新段 id 规则符合命名空间契约（M0-2）。
 
-### P3-6 `useTrackEdit.ts` + 编辑面激活（SPEC M5-2）
+### P3-6 `useTrackEdit.ts` + 编辑面激活（SPEC M5-2）✅ 2026-09-01
 
-- [ ] 新建 `useTrackEdit.ts`：选区、`updateTrackSegmentTime`（乐观更新 + 300ms 防抖键 `${trackId}:${segmentId}:${field}` + 失败回滚）、`flushPendingUpdates`
-- [ ] TrackLane/SegmentBlock（extension）编辑回调接线到 useTrackEdit；按 M5-1 映射表执行捕获层（含"提交时是否有绑定"判定）
-- [ ] `useTrackEdit.test.ts`：乐观/防抖合并/回滚/捕获层
+- [x] 新建 `useTrackEdit.ts`：选区、`updateTrackSegmentTime`（乐观更新 + 300ms 防抖键 `${trackId}:${segmentId}:${field}` + 失败回滚）、`flushPendingUpdates`
+- [x] TrackLane/SegmentBlock（extension）编辑回调接线到 useTrackEdit；按 M5-1 映射表执行捕获层（含"提交时是否有绑定"判定）
+- [x] `useTrackEdit.test.ts`：乐观/防抖合并/回滚/捕获层
 
 **验收方式**: `bun run test` + 手工冒烟（副轨拖拽、trim、undo 跟手）。
 **验收标准**: 副轨拖拽 patch 流量为被改段（非全轨）；失败回滚与主轨行为一致。
 
-### P3-7 原子性集成测试（SPEC M5-3）
+### P3-7 原子性集成测试（SPEC M5-3）✅ 2026-09-01
 
-- [ ] `useUndoRedo.test.ts` 扩展：联动拆分 -> 单条 undo 三层同回退 -> redo 对称 -> revision 全程单调；布局变更不入栈断言
+- [x] `useUndoRedo.test.ts` 扩展：联动拆分 -> 单条 undo 三层同回退 -> redo 对称 -> revision 全程单调；布局变更不入栈断言
 
 **验收方式**: `bun run test`。
 **验收标准**: 全绿；apply_undo 路径不触发 reconcile（mock 断言）。
 
 ### P3-8 beta.2 冒烟与发布
 
-- [ ] macOS + ★ Windows 冒烟：联动跟随 / 成对删除 / 联动拆分 / Alt 独立拖动 / undo 三层回退 / toast 计数
-- [ ] 打 tag `v3.0.1-beta.2`；`record-3.0.1-beta.2.md`
+- [x] macOS + ★ Windows 冒烟：联动跟随 / 成对删除 / 联动拆分 / Alt 独立拖动 / undo 三层回退 / toast 计数
+- [x] 打 tag `v3.0.1-beta.2`；`record-3.0.1-beta.2.md`
 
 ---
 

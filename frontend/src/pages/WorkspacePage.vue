@@ -7,6 +7,7 @@ import { useAnalysis } from "@/composables/useAnalysis"
 import { useExport } from "@/composables/useExport"
 import { useEdit } from "@/composables/useEdit"
 import { useSegmentEdit } from "@/composables/useSegmentEdit"
+import { useTrackEdit } from "@/composables/useTrackEdit"
 import { useToast } from "@/composables/useToast"
 import { useUndoRedo } from "@/composables/useUndoRedo"
 import { useAsrEngines } from "@/composables/useAsrEngines"
@@ -171,6 +172,8 @@ const {
   deleteSubtitleTrimEdits,
 } = useEdit(projectRef, pushSnapshot)
 
+const { showToast } = useToast()
+
 const {
   selectedSegmentId: editSelectedSegmentId,
   selectRange: selectEditRange,
@@ -190,9 +193,23 @@ const {
   projectRef as any,
   (val: ProjectResponse) => emit("project-updated", val),
   pushSnapshot,
+  // v3.0.1 R7.5: destructive reconcile is never silent -- counters toast.
+  (c) =>
+    showToast(
+      `联动消解：挤压 ${c.squeezed} · 移除 ${c.removed} · 解绑 ${c.unbound}`,
+      "info",
+      4000,
+    ),
 )
 
-const { showToast } = useToast()
+// v3.0.1 M5-2: extension-track editing (optimistic + debounced, separate
+// composable by design -- see SPEC M5-2 ruling).
+const { updateTrackSegmentTime, flushPendingTrackUpdates } = useTrackEdit(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  projectRef as any,
+  (val: ProjectResponse) => emit("project-updated", val),
+  pushSnapshot,
+)
 
 const statusMessage = ref("")
 const errorMessage = ref("")
@@ -754,6 +771,7 @@ function handleClickOutside(e: MouseEvent) {
 
 async function handleUndo() {
   await flushPendingUpdates()
+  await flushPendingTrackUpdates()
   if (!projectRef.value) return
   const res = await undo(projectRef.value)
   if (res.ok) {
@@ -770,6 +788,7 @@ async function handleUndo() {
 
 async function handleRedo() {
   await flushPendingUpdates()
+  await flushPendingTrackUpdates()
   if (!projectRef.value) return
   const res = await redo(projectRef.value)
   if (res.ok) {
@@ -1306,6 +1325,7 @@ onUnmounted(() => {
       :demo-mode="demoMode"
       :tracks="activeTracks"
       :update-time="updateSegmentTime"
+      :update-track-time="updateTrackSegmentTime"
       :global-edit-mode="globalEditMode"
       :selection-mode="selectionMode"
       @seek="handleSeek"
