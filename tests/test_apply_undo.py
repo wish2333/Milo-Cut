@@ -195,3 +195,91 @@ class TestValidation:
         assert res["success"]
         ids = [s.id for s in svc.active_timeline.transcript.segments]
         assert ids == ["a", "b"]
+
+
+# ------------------------------------------------------------------
+# v3.0.1 M5-1: tracks/bindings undo layers (stacked timeline linkage)
+# ------------------------------------------------------------------
+
+def _seed_track(svc: ProjectService) -> None:
+    """Attach one extension track with a bound segment (import path)."""
+    import json
+    import tempfile
+
+    srt = tempfile.NamedTemporaryFile("w", suffix=".srt", delete=False, encoding="utf-8")
+    srt.write("1\n00:00:00,500 --> 00:00:04,500\nfirst line\n\n2\n00:00:10,200 --> 00:00:14,800\nsecond line\n")
+    srt.close()
+    res = svc.import_srt_as_track(srt.name, language="en")
+    assert res["success"], res
+
+
+class TestTrackBindingUndoLayers:
+    def test_undo_accepts_tracks_and_bindings_layers(self, svc: ProjectService) -> None:
+        _seed_segments(svc)
+        _seed_track(svc)
+        tl = svc.active_timeline
+        snapshot = {
+            "segments": [s.model_dump(mode="json") for s in tl.transcript.segments],
+            "tracks": [t.model_dump(mode="json") for t in tl.transcript.tracks],
+            "bindings": [b.model_dump(mode="json") for b in tl.transcript.bindings],
+        }
+        res = svc.apply_undo(snapshot, base_revision=svc._revision)
+        assert res["success"], res
+        # patch carries all three restored layers
+        for layer in ("segments", "tracks", "bindings"):
+            assert res["data"][layer] is not None
+
+    def test_undo_restores_tracks_after_removal(self, svc: ProjectService) -> None:
+        _seed_segments(svc)
+        _seed_track(svc)
+        tl = svc.active_timeline
+        snap_tracks = [t.model_dump(mode="json") for t in tl.transcript.tracks]
+        snap_bindings = [b.model_dump(mode="json") for b in tl.transcript.bindings]
+        snap_segments = [s.model_dump(mode="json") for s in tl.transcript.segments]
+
+        # Mutate: drop the track layer wholesale (simulating a destructive op).
+        from core.models import TranscriptData
+        svc._update_active_timeline(
+            transcript=tl.transcript.model_copy(update={"tracks": [], "bindings": []})
+        )
+        assert svc.active_timeline.transcript.tracks == []
+
+        res = svc.apply_undo(
+            {"tracks": snap_tracks, "bindings": snap_bindings, "segments": snap_segments},
+            base_revision=svc._revision,
+        )
+        assert res["success"], res
+        tl2 = svc.active_timeline
+        assert len(tl2.transcript.tracks) == 1
+        # the 300ms import tolerance only bound the second line (0.2s offset);
+        # the restore must reproduce exactly what the snapshot held.
+        assert len(tl2.transcript.bindings) == 1
+
+    def test_invalid_tracks_payload_rejected_atomically(self, svc: ProjectService) -> None:
+        _seed_segments(svc)
+        _seed_track(svc)
+        before_tracks = svc.active_timeline.transcript.tracks
+        res = svc.apply_undo(
+            {"tracks": "not-a-list", "segments": []},
+            base_revision=svc._revision,
+        )
+        assert res["success"] is False
+        assert "invalid snapshot" in res["error"]
+        # atomic: no layer touched
+        assert svc.active_timeline.transcript.tracks is before_tracks
+        assert len(svc.active_timeline.transcript.segments) == 2
+
+    def test_invalid_track_shape_rejected_atomically(self, svc: ProjectService) -> None:
+        _seed_segments(svc)
+        res = svc.apply_undo(
+            {"tracks": [{"id": "trk_x"}]},  # missing role/name/segments ok? role has default; id-only is valid!
+            base_revision=svc._revision,
+        )
+        # SubtitleTrack has all-default fields except id -> id-only IS valid.
+        assert res["success"] is True
+        assert svc.active_timeline.transcript.tracks[0].id == "trk_x"
+
+    def test_unknown_layer_still_rejected(self, svc: ProjectService) -> None:
+        res = svc.apply_undo({"media": {}}, base_revision=svc._revision)
+        assert res["success"] is False
+        assert "unknown layer" in res["error"]

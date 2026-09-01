@@ -170,7 +170,9 @@ class ProjectService:
     # v3.0.0 M5: layered undo. Undoable layers are the timeline-scoped ones
     # the frontend actually snapshots before an operation. ``media`` /
     # ``active_timeline_id`` are not undoable (no caller snapshots them).
-    _UNDO_LAYERS = ("segments", "edits", "analysis")
+    # v3.0.1 M5-1: tracks/bindings join for the stacked-timeline linkage
+    # operations (atomic three-layer snapshots).
+    _UNDO_LAYERS = ("segments", "edits", "analysis", "tracks", "bindings")
 
     def apply_undo(self, layers_payload: dict, base_revision: int) -> dict:
         """Replace timeline layers from an undo/redo snapshot (M5-2).
@@ -220,7 +222,7 @@ class ProjectService:
             }
 
         # Validate all layers first - no mutation on any failure.
-        from core.models import AnalysisData, EditDecision, Segment
+        from core.models import AnalysisData, EditDecision, Segment, SubtitleTrack, TrackBinding
 
         validated: dict = {}
         try:
@@ -240,15 +242,36 @@ class ProjectService:
                 validated["analysis"] = AnalysisData.model_validate(
                     layers_payload["analysis"]
                 )
+            if "tracks" in layers_payload:
+                if not isinstance(layers_payload["tracks"], list):
+                    raise ValueError("tracks must be a list")
+                validated["tracks"] = [
+                    SubtitleTrack.model_validate(t) for t in layers_payload["tracks"]
+                ]
+            if "bindings" in layers_payload:
+                if not isinstance(layers_payload["bindings"], list):
+                    raise ValueError("bindings must be a list")
+                validated["bindings"] = [
+                    TrackBinding.model_validate(b) for b in layers_payload["bindings"]
+                ]
         except Exception as exc:  # pydantic ValidationError or shape error
             return {"success": False, "error": f"apply_undo: invalid snapshot: {exc}"}
 
+        # v3.0.1 M5-1: transcript-scoped layers merge into ONE transcript
+        # model_copy so a combined segments+tracks+bindings snapshot applies
+        # atomically (single replacement, no intermediate states).
         updates: dict = {}
+        transcript_updates: dict = {}
         if "segments" in validated:
-            new_transcript = self.active_timeline.transcript.model_copy(
-                update={"segments": validated["segments"]}
+            transcript_updates["segments"] = validated["segments"]
+        if "tracks" in validated:
+            transcript_updates["tracks"] = validated["tracks"]
+        if "bindings" in validated:
+            transcript_updates["bindings"] = validated["bindings"]
+        if transcript_updates:
+            updates["transcript"] = self.active_timeline.transcript.model_copy(
+                update=transcript_updates
             )
-            updates["transcript"] = new_transcript
         if "edits" in validated:
             updates["edits"] = validated["edits"]
         if "analysis" in validated:

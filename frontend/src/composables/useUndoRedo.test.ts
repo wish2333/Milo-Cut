@@ -168,3 +168,64 @@ describe("useUndoRedo -- shared state", () => {
     expect(canRedo.value).toBe(true)
   })
 })
+
+// ------------------------------------------------------------------
+// v3.0.1 M5-1: tracks/bindings capture layers
+// ------------------------------------------------------------------
+
+import { captureLayers, UNDO_LAYERS } from "@/utils/undoRecords"
+import type { SubtitleTrack, TrackBinding } from "@/types/project"
+
+describe("captureLayers with track layers (v3.0.1 M5-1)", () => {
+  const track: SubtitleTrack = {
+    id: "trk_1",
+    role: "extension",
+    name: "en",
+    language: "en",
+    segments: [],
+  }
+  const binding: TrackBinding = {
+    id: "bind-1",
+    track_id: "trk_1",
+    main_segment_id: "seg-1",
+    extension_segment_id: "track_trk_1_seg_0",
+    start_offset: 0.1,
+    end_offset: -0.1,
+  }
+
+  function projectWithTracks(): Project {
+    const p = makeProject("tracks")
+    p.timelines[0].transcript.tracks = [track]
+    p.timelines[0].transcript.bindings = [binding]
+    return p
+  }
+
+  it("registers tracks/bindings in the undoable layer set", () => {
+    expect(UNDO_LAYERS).toContain("tracks")
+    expect(UNDO_LAYERS).toContain("bindings")
+  })
+
+  it("captures shallow copies of the track layers", () => {
+    const project = projectWithTracks()
+    const snap = captureLayers(project, ["tracks", "bindings"])
+    const tracks = snap.tracks as SubtitleTrack[]
+    const bindings = snap.bindings as TrackBinding[]
+    expect(tracks).toHaveLength(1)
+    expect(bindings).toHaveLength(1)
+    expect(tracks[0]).toBe(track) // shallow reference copy
+    expect(bindings[0]).toBe(binding)
+    expect(tracks).not.toBe(project.timelines[0].transcript.tracks)
+  })
+
+  it("returns empty arrays for projects without tracks", () => {
+    const snap = captureLayers(makeProject("plain"), ["tracks", "bindings"])
+    expect(snap.tracks).toEqual([])
+    expect(snap.bindings).toEqual([])
+  })
+
+  it("omits track layers not requested", () => {
+    const snap = captureLayers(projectWithTracks(), ["segments"])
+    expect(snap.tracks).toBeUndefined()
+    expect(snap.bindings).toBeUndefined()
+  })
+})
