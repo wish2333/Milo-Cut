@@ -213,24 +213,36 @@ async function handleExportSrt() {
   }
 }
 
-// v3.0.0 M11-2: export an extension track's SRT at its original timestamps.
+// v3.0.0 M11-2 / v3.0.1 M6-1: per-track subtitle export. The track rides
+// the same confirmed-deletion mapping as the main track; payload supports
+// format (srt|vtt) and the bilingual merged mode.
 const subtitleTracks = computed(
   () => props.project.timelines.find(t => t.id === props.project.active_timeline_id)?.transcript?.tracks ?? [],
 )
 
-async function handleExportTrackSrt(track: SubtitleTrack) {
+async function handleExportTrack(
+  track: SubtitleTrack,
+  opts: { fmt: "srt" | "vtt"; mergeBilingual?: boolean },
+) {
   errorMessage.value = ""
-  statusMessage.value = "正在导出副轨 SRT..."
-  const task = await createExportTask("export_subtitle", { track_id: track.id })
+  const modeLabel = opts.mergeBilingual
+    ? `双语合并 ${opts.fmt.toUpperCase()}`
+    : `副轨 ${opts.fmt.toUpperCase()}`
+  statusMessage.value = `正在导出${modeLabel}...`
+  const task = await createExportTask("export_subtitle", {
+    track_id: track.id,
+    format: opts.fmt,
+    merge_bilingual: opts.mergeBilingual === true,
+  })
   if (task) {
     pendingExportTasks.set(task, {
       type: "export_subtitle",
-      label: `副轨导出 (${track.name || track.id})`,
+      label: `${modeLabel} (${track.name || track.id})`,
     })
     statusMessage.value = ""
   } else {
     statusMessage.value = ""
-    showToast("副轨导出失败", "error")
+    showToast(`${modeLabel}导出失败`, "error")
   }
 }
 
@@ -468,17 +480,43 @@ function formatTimeShort(seconds: number): string {
             导出 SRT
           </button>
 
-          <!-- v3.0.0 M11-2: per-track SRT export (original timestamps) -->
-          <button
+          <!-- v3.0.1 M6-1: per-track export rides the deletion mapping;
+               SRT / VTT / bilingual merged variants -->
+          <div
             v-for="track in subtitleTracks"
             :key="track.id"
-            class="mc-button mc-button-secondary w-full px-4 text-sm font-semibold"
-            :disabled="isExporting"
-            :title="`导出副轨 ${track.name || track.id} 的 SRT（原始时间戳）`"
-            @click="handleExportTrackSrt(track)"
+            class="w-full"
           >
-            导出副轨 SRT{{ track.name ? `（${track.name}）` : '' }}
-          </button>
+            <div class="mb-1 px-1 text-[11px] font-semibold text-gray-600">
+              副轨 {{ track.name || track.id }}{{ track.language ? `（${track.language}）` : '' }}
+            </div>
+            <div class="flex w-full gap-2">
+              <button
+                class="mc-button mc-button-secondary flex-1 px-2 text-xs font-semibold"
+                :disabled="isExporting"
+                title="与主轨相同的删除区间映射，导出 SRT"
+                @click="handleExportTrack(track, { fmt: 'srt' })"
+              >
+                SRT
+              </button>
+              <button
+                class="mc-button mc-button-secondary flex-1 px-2 text-xs font-semibold"
+                :disabled="isExporting"
+                title="与主轨相同的删除区间映射，导出 VTT"
+                @click="handleExportTrack(track, { fmt: 'vtt' })"
+              >
+                VTT
+              </button>
+              <button
+                class="mc-button mc-button-secondary flex-1 px-2 text-xs font-semibold"
+                :disabled="isExporting"
+                title="主副字幕合并为双行同条（仅已绑定段显示第二行）"
+                @click="handleExportTrack(track, { fmt: 'srt', mergeBilingual: true })"
+              >
+                双语 SRT
+              </button>
+            </div>
+          </div>
 
           <button
             class="mc-button mc-button-secondary w-full px-4 text-sm font-semibold"

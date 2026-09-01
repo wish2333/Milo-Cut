@@ -91,6 +91,7 @@ Task types are defined in `core/models.py:TaskType`.
 | `analysis_service.py` | Rule-based Chinese filler word and error trigger detection |
 | `subtitle_service.py` | SRT parsing with multi-encoding (UTF-8, GB18030, BOM) |
 | `task_manager.py` | Background task execution with progress + cancellation |
+| `track_constraints.py` | Stacked-timeline constraint kernel (overlap/linkage/reconcile; TS twin in `frontend/src/utils/trackConstraints.ts`) |
 | `media_server.py` | Local HTTP server for streaming video to `<video>` element |
 | `models.py` | Pydantic v2 frozen models: Project, Segment, EditDecision, MediaInfo, MiloTask |
 

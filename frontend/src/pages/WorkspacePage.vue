@@ -8,6 +8,7 @@ import { useExport } from "@/composables/useExport"
 import { useEdit } from "@/composables/useEdit"
 import { useSegmentEdit } from "@/composables/useSegmentEdit"
 import { useTrackEdit } from "@/composables/useTrackEdit"
+import { useSettings } from "@/composables/useSettings"
 import { useToast } from "@/composables/useToast"
 import { useUndoRedo } from "@/composables/useUndoRedo"
 import { useAsrEngines } from "@/composables/useAsrEngines"
@@ -209,6 +210,14 @@ const { updateTrackSegmentTime, flushPendingTrackUpdates } = useTrackEdit(
   projectRef as any,
   (val: ProjectResponse) => emit("project-updated", val),
   pushSnapshot,
+)
+
+// v3.0.1 M6-2: secondary subtitle overlay setting; reloaded when the
+// settings modal closes so flips take effect immediately.
+const { settings: appSettings, loadSettings: reloadAppSettings } = useSettings()
+const showSecondarySubtitle = computed(() => appSettings.value?.show_secondary_subtitle !== false)
+const activeBindings = computed(
+  () => activeTimeline.value?.transcript?.bindings ?? [],
 )
 
 const statusMessage = ref("")
@@ -1215,6 +1224,8 @@ onUnmounted(() => {
             <SubtitleOverlay
               :segments="mergedSegments"
               :video-ref="videoRef"
+              :secondary="{ tracks: activeTracks, bindings: activeBindings }"
+              :show-secondary="showSecondarySubtitle"
             />
             <!-- Proxy generation overlay -->
             <div
@@ -1373,7 +1384,7 @@ onUnmounted(() => {
     <SettingsModal
       v-if="showSettingsModal"
       :visible="showSettingsModal"
-      @close="handleSettingsClosed"
+      @close="handleSettingsClosed(); reloadAppSettings()"
     />
 
     <!-- Phase 2: P1 subtitle correction fullscreen diff view (D-16) -->

@@ -86,6 +86,8 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     "llm_prompt_presets": {},
     # Workflows (v2.1.0 Phase 3: saved workflow definitions, shared across projects)
     "workflows": [],
+    # v3.0.1 M6-2: secondary (extension-track) subtitle overlay on playback
+    "show_secondary_subtitle": True,
 }
 
 

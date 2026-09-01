@@ -291,23 +291,55 @@ class MiloCutApi(Bridge):
         project = self._project.current
         timeline = project.active_timeline
 
-        # v3.0.0 M11-2: track_id payload exports a subtitle track instead of
-        # the main transcript (original timestamps, no deletion mapping).
+        # v3.0.1 M6-1: track exports ride the confirmed-deletion mapping
+        # (same functions as the main track); payload adds format and the
+        # bilingual merged mode.
         track_id = task.payload.get("track_id")
         if track_id:
-            from core.export_service import export_track_srt
+            from core.export_service import (
+                export_bilingual_subtitle,
+                export_track_subtitle,
+            )
 
+            fmt = task.payload.get("format", "srt")
+            if fmt not in ("srt", "vtt"):
+                fmt = "srt"
+            merge_bilingual = bool(task.payload.get("merge_bilingual"))
+            media_duration = project.media.duration if project.media else 0.0
+            base = os.path.splitext(project.media.path)[0]
             track = next(
                 (t for t in timeline.transcript.tracks if t.id == track_id), None
             )
             if track is None:
                 return {"success": False, "error": f"Track {track_id} not found"}
-            output_path = task.payload.get("output_path", "")
-            if not output_path:
-                base = os.path.splitext(project.media.path)[0]
-                suffix = f"_{track.name}" if track.name else f"_{track_id}"
-                output_path = f"{base}{suffix}.srt"
-            return export_track_srt(track.model_dump(mode="json"), output_path)
+            suffix = f"_{track.name}" if track.name else f"_{track_id}"
+            if merge_bilingual:
+                segments_data, edits_data = self._get_export_segments_and_edits(
+                    task, timeline
+                )
+                output_path = task.payload.get(
+                    "output_path", f"{base}_bilingual.{fmt}"
+                )
+                return export_bilingual_subtitle(
+                    segments_data,
+                    track.model_dump(mode="json"),
+                    [b.model_dump(mode="json") for b in timeline.transcript.bindings],
+                    edits_data,
+                    output_path,
+                    media_duration=media_duration,
+                    fmt=fmt,
+                )
+            output_path = task.payload.get("output_path", f"{base}{suffix}.{fmt}")
+            _segments_data, edits_data = self._get_export_segments_and_edits(
+                task, timeline
+            )
+            return export_track_subtitle(
+                track.model_dump(mode="json"),
+                edits_data,
+                output_path,
+                media_duration=media_duration,
+                fmt=fmt,
+            )
 
         segments_data, edits_data = self._get_export_segments_and_edits(task, timeline)
         output_path = task.payload.get("output_path", "")

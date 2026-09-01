@@ -13,6 +13,7 @@ function getDemoSettings(): AppSettings {
     ffmpeg_path: "",
     ffprobe_path: "",
     theme: "light",
+    show_secondary_subtitle: true,
     language: "zh-CN",
     silence_threshold_db: -30,
     silence_min_duration: 0.5,
