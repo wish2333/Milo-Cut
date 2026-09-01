@@ -391,3 +391,116 @@ class TestUpdateTrackSegment:
         patch = res["data"]
         assert patch["tracks"] is not None and patch["bindings"] is not None
         assert patch["segments"] is None  # main layer never rides along
+
+
+# ------------------------------------------------------------------
+# v3.0.1 M2-3: paired deletion + linked split (P3-5)
+# ------------------------------------------------------------------
+
+
+class TestPairedDeletion:
+    def test_delete_removes_bound_ext_and_binding(self, svc):
+        _seed_linkage(svc)
+        res = svc.delete_segment("s1")
+        assert res["success"], res
+        patch = res["data"]
+        segs = _track_segs(svc)
+        assert "track_trk1_seg_a" not in segs
+        assert "track_trk1_seg_b" in segs  # unbound-to-s2 ext stays
+        assert "bind_a" not in _bindings(svc)
+        assert patch["meta"]["linkage"] == {"removed": 1, "unbound": 0}
+        assert patch["tracks"] is not None and patch["bindings"] is not None
+
+    def test_delete_unbound_main_has_no_track_layers(self, svc):
+        _seed_linkage(svc)
+        res = svc.delete_segment("s2")
+        # s2 is bound to b -- delete s1 instead for the unbound path.
+        res = svc.delete_segment("s1")
+        assert res["success"], res
+
+    def test_delete_unbound_main_segment(self, svc):
+        svc.update_transcript([
+            {"id": "s1", "type": "subtitle", "start": 0.0, "end": 5.0, "text": "first"},
+            {"id": "s2", "type": "subtitle", "start": 10.0, "end": 15.0, "text": "second"},
+        ])
+        res = svc.delete_segment("s1")
+        assert res["success"], res
+        patch = res["data"]
+        assert patch["tracks"] is None and patch["bindings"] is None
+        assert patch.get("meta") is None
+
+    def test_delete_rejects_track_namespace(self, svc):
+        _seed_linkage(svc)
+        res = svc.delete_segment("track_trk1_seg_a")
+        assert res["success"] is False
+        assert "track_ namespace" in res["error"]
+
+
+class TestLinkedSplit:
+    def test_split_inside_ext_splits_and_rebinds_both_halves(self, svc):
+        _seed_linkage(svc)
+        # Cut s1 at 2.0 (inside ext a [0.2, 4.8]): cut_ext = 2.2.
+        res = svc.split_segment("s1", 2.0)
+        assert res["success"], res
+        segs = _track_segs(svc)
+        assert "track_trk1_seg_a" not in segs
+        assert "track_trk1_seg_a__a" in segs and "track_trk1_seg_a__b" in segs
+        a1 = segs["track_trk1_seg_a__a"]
+        a2 = segs["track_trk1_seg_a__b"]
+        assert (a1.start, a1.end) == (0.2, 2.2)
+        assert (a2.start, a2.end) == (2.2, 4.8)
+        bnd = _bindings(svc)
+        assert "bind_a" not in bnd
+        assert "bind_a__a" in bnd and "bind_a__b" in bnd
+        assert bnd["bind_a__a"].main_segment_id == "s1-a"
+        assert bnd["bind_a__b"].main_segment_id == "s1-b"
+        # ext_a ends at 2.2 vs main a ends at 2.0 -> honest +0.2
+        assert (bnd["bind_a__a"].start_offset, bnd["bind_a__a"].end_offset) == (0.2, 0.2)
+        assert res["data"]["meta"]["linkage"]["split"] == 1
+
+    def test_split_cut_outside_rebinds_to_overlap_side(self, svc):
+        _seed_linkage(svc)
+        # Cut s2 at 10.05: cut_ext = 10.25 < b.start + MIN (10.3) -> cannot
+        # split; ext b lies entirely in the b-side (s2-b) -> rebind there.
+        res = svc.split_segment("s2", 10.05)
+        assert res["success"], res
+        segs = _track_segs(svc)
+        assert "track_trk1_seg_b" in segs  # not split
+        assert "track_trk1_seg_b__a" not in segs
+        bnd = _bindings(svc)
+        # rebind keeps the binding id (in-place update of main_segment_id)
+        assert bnd["bind_b"].main_segment_id == "s2-b"
+        assert all(b.main_segment_id != "s2" for b in bnd.values())
+        assert res["data"]["meta"]["linkage"]["rebound"] == 1
+
+    def test_split_unbinds_when_no_side_overlaps_enough(self, svc):
+        _seed_linkage(svc)
+        # Degenerate binding: ext b is only 0.05s wide (below MIN, a drift
+        # residue) at [17, 17.05]. Splitting s2 at 12 maps to cut_ext 12.2,
+        # which cannot split it, and the point-split assigns it entirely to
+        # the b-side with an overlap of 0.05 < MIN -> dissolved (unbound).
+        # A healthy-width segment elsewhere would rebind instead (previous
+        # test), so this exercises the defensive unbind branch.
+        tl = svc.active_timeline
+        track = tl.transcript.tracks[0].model_copy(
+            update={"segments": [
+                Segment(id="track_trk1_seg_a", start=0.2, end=4.8, text="en-1"),
+                Segment(id="track_trk1_seg_b", start=17.0, end=17.05, text="en-2"),
+            ]}
+        )
+        svc._update_active_timeline(
+            transcript=tl.transcript.model_copy(update={"tracks": [track]})
+        )
+        res = svc.split_segment("s2", 12.0)
+        assert res["success"], res
+        assert "track_trk1_seg_b" in _track_segs(svc)  # not split
+        assert "bind_b" not in _bindings(svc)          # dissolved
+        assert res["data"]["meta"]["linkage"]["unbound"] == 1
+
+    def test_split_patch_carries_three_layers(self, svc):
+        _seed_linkage(svc)
+        res = svc.split_segment("s1", 2.0)
+        patch = res["data"]
+        assert patch["segments"] is not None
+        assert patch["tracks"] is not None
+        assert patch["bindings"] is not None

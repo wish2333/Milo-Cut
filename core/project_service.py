@@ -1548,9 +1548,20 @@ class ProjectService:
         return {"success": True, "data": self._current.model_dump()}
 
     def delete_segment(self, segment_id: str) -> dict:
-        """Remove a segment and its associated edit decisions."""
+        """Remove a segment, its edit decisions, and (v3.0.1 M2-3) any bound
+        extension segments with their bindings (paired deletion)."""
         if self._current is None:
             return {"success": False, "error": "No project is open"}
+
+        # Extension-track segments are managed by their own channel.
+        if segment_id.startswith("track_"):
+            return {
+                "success": False,
+                "error": (
+                    "delete_segment: use update_track_segment for "
+                    "extension-track segments (track_ namespace)"
+                ),
+            }
 
         segments = self.active_timeline.transcript.segments
         target = [s for s in segments if s.id == segment_id]
@@ -1560,12 +1571,45 @@ class ProjectService:
         remaining_segs = [s for s in segments if s.id != segment_id]
         remaining_edits = [e for e in self.active_timeline.edits if e.target_id != segment_id]
 
+        # v3.0.1 M2-3: paired deletion -- bound extension segments go with
+        # the main segment, bindings dissolve.
+        tl = self.active_timeline
+        hit_bindings = [b for b in tl.transcript.bindings if b.main_segment_id == segment_id]
+        removed_ext_ids: set[str] = set()
+        for t in tl.transcript.tracks:
+            removed_ext_ids |= {s.id for s in t.segments} & {
+                b.extension_segment_id for b in hit_bindings
+            }
+        dropped_binding_ids = {b.id for b in hit_bindings}
+
+        transcript_updates: dict = {"segments": remaining_segs}
+        patch_kwargs: dict = {"segments": remaining_segs, "edits": remaining_edits}
+        if hit_bindings:
+            new_tracks = [
+                t.model_copy(
+                    update={"segments": [s for s in t.segments if s.id not in removed_ext_ids]}
+                )
+                for t in tl.transcript.tracks
+            ]
+            new_bindings = [
+                b for b in tl.transcript.bindings if b.id not in dropped_binding_ids
+            ]
+            transcript_updates["tracks"] = new_tracks
+            transcript_updates["bindings"] = new_bindings
+            patch_kwargs["tracks"] = new_tracks
+            patch_kwargs["bindings"] = new_bindings
+            patch_kwargs["meta"] = {
+                "linkage": {"removed": len(removed_ext_ids), "unbound": 0}
+            }
+
         self._update_active_timeline(
-            transcript=self.active_timeline.transcript.model_copy(update={"segments": remaining_segs}),
+            transcript=tl.transcript.model_copy(update=transcript_updates),
             edits=remaining_edits,
         )
-        logger.info("Deleted segment {}", segment_id)
-        return {"success": True, "data": self._current.model_dump()}
+        logger.info("Deleted segment {} (paired ext removals: {})", segment_id, len(removed_ext_ids))
+        return self._success_patch(meta=patch_kwargs.get("meta"), **{
+            k: v for k, v in patch_kwargs.items() if k != "meta"
+        })
 
     def clear_subtitles(self) -> dict:
         """Remove all subtitle-type segments and their associated edit decisions."""
@@ -1807,8 +1851,114 @@ class ProjectService:
             transcript=self.active_timeline.transcript.model_copy(update={"segments": new_segments}),
             edits=new_edits,
         )
+
+        # v3.0.1 M2-3: linked split -- bound extension segments share the
+        # same absolute cut instant (mapped through their offset). Per
+        # binding: cut inside the ext segment -> both halves rebind to a/b
+        # (offsets rebuilt); cut outside -> the binding rebinds to the side
+        # overlapping the ext segment more; neither side overlaps enough ->
+        # unbind (countered, never silent).
+        from core.track_constraints import MIN_SEGMENT_DURATION, rebuild_binding_offsets
+
+        tl = self.active_timeline
+        hit_bindings = [b for b in tl.transcript.bindings if b.main_segment_id == segment_id]
+        new_tracks = tl.transcript.tracks
+        new_bindings = list(tl.transcript.bindings)
+        linkage_meta = None
+        if hit_bindings:
+            counters = {"split": 0, "rebound": 0, "unbound": 0}
+            old_binding_ids = {b.id for b in hit_bindings}
+            dropped: set[str] = set()
+            tracks = list(new_tracks)
+            additions: list[TrackBinding] = []
+            by_track: dict[str, list] = {}
+            for b in hit_bindings:
+                by_track.setdefault(b.track_id, []).append(b)
+
+            for track_id, tb in by_track.items():
+                tidx = next((i for i, t in enumerate(tracks) if t.id == track_id), None)
+                if tidx is None:
+                    counters["unbound"] += len(tb)
+                    dropped.update(b.id for b in tb)
+                    continue
+                track = tracks[tidx]
+                segs = list(track.segments)
+                for b in tb:
+                    ext = next((s for s in segs if s.id == b.extension_segment_id), None)
+                    if ext is None:
+                        counters["unbound"] += 1
+                        dropped.add(b.id)
+                        continue
+                    cut_ext = round(position + b.start_offset, 3)
+                    if ext.start + MIN_SEGMENT_DURATION <= cut_ext <= ext.end - MIN_SEGMENT_DURATION:
+                        dur = ext.end - ext.start
+                        ratio = (cut_ext - ext.start) / dur
+                        cut_idx = max(1, min(len(ext.text) - 1, int(len(ext.text) * ratio)))
+                        ext_a = ext.model_copy(update={
+                            "id": f"{ext.id}__a",
+                            "end": cut_ext,
+                            "text": ext.text[:cut_idx].strip(),
+                        })
+                        ext_b = ext.model_copy(update={
+                            "id": f"{ext.id}__b",
+                            "start": cut_ext,
+                            "text": ext.text[cut_idx:].strip(),
+                        })
+                        segs = [s for s in segs if s.id != ext.id]
+                        segs.extend([ext_a, ext_b])
+                        segs.sort(key=lambda s: s.start)
+                        additions.append(b.model_copy(update={
+                            "id": f"{b.id}__a",
+                            "main_segment_id": seg_a.id,
+                            "extension_segment_id": ext_a.id,
+                            **rebuild_binding_offsets((seg_a.start, seg_a.end), (ext_a.start, ext_a.end)),
+                        }))
+                        additions.append(b.model_copy(update={
+                            "id": f"{b.id}__b",
+                            "main_segment_id": seg_b.id,
+                            "extension_segment_id": ext_b.id,
+                            **rebuild_binding_offsets((seg_b.start, seg_b.end), (ext_b.start, ext_b.end)),
+                        }))
+                        counters["split"] += 1
+                    else:
+                        ov_a = max(0.0, min(ext.end, position) - ext.start)
+                        ov_b = max(0.0, ext.end - max(ext.start, position))
+                        if max(ov_a, ov_b) >= MIN_SEGMENT_DURATION:
+                            target_seg = seg_a if ov_a >= ov_b else seg_b
+                            additions.append(b.model_copy(update={
+                                "main_segment_id": target_seg.id,
+                                **rebuild_binding_offsets(
+                                    (target_seg.start, target_seg.end), (ext.start, ext.end)
+                                ),
+                            }))
+                            counters["rebound"] += 1
+                        else:
+                            dropped.add(b.id)
+                            counters["unbound"] += 1
+                tracks[tidx] = track.model_copy(update={"segments": segs})
+
+            new_tracks = tracks
+            new_bindings = [
+                b for b in new_bindings if b.id not in old_binding_ids
+            ]
+            new_bindings.extend(additions)
+            if dropped:
+                new_bindings = [b for b in new_bindings if b.id not in dropped]
+            linkage_meta = {"linkage": counters}
+
+        self._update_active_timeline(
+            transcript=tl.transcript.model_copy(
+                update={"segments": new_segments, "tracks": new_tracks, "bindings": new_bindings}
+            ),
+            edits=new_edits,
+        )
         logger.info("Split segment {} at {:.3f}s (snap_offset={}ms)", segment_id, position, snap_offset_ms)
-        result = {"success": True, "data": self._current.model_dump()}
+        patch_kwargs: dict = {"segments": new_segments, "edits": new_edits}
+        if hit_bindings:
+            patch_kwargs["tracks"] = new_tracks
+            patch_kwargs["bindings"] = new_bindings
+            patch_kwargs["meta"] = linkage_meta
+        result = self._success_patch(**patch_kwargs)
         if snap_to_word:
             result["snap_offset_ms"] = snap_offset_ms
         return result
