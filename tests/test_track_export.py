@@ -3,7 +3,6 @@ pipeline (same mapping functions as the main track -- R9.1), plus the
 bilingual merged export (P4-2).
 """
 
-import pytest
 
 from core.export_service import (
     export_bilingual_subtitle,

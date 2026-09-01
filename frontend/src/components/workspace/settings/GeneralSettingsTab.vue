@@ -247,6 +247,17 @@ async function handleCleanupTranscripts() {
             @change="updateField('trim_subtitles_on_silence_overlap', ($event.target as HTMLInputElement).checked)"
           />
         </div>
+        <!-- v3.0.1 M6-2: secondary subtitle overlay (extension tracks) -->
+        <div class="flex items-center justify-between">
+          <label class="text-sm text-gray-600">播放时显示副轨字幕</label>
+          <input
+            type="checkbox"
+            :checked="props.settings.show_secondary_subtitle"
+            class="checkbox checkbox-sm"
+            data-test="show-secondary-toggle"
+            @change="updateField('show_secondary_subtitle', ($event.target as HTMLInputElement).checked)"
+          />
+        </div>
       </div>
     </section>
 

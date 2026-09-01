@@ -22,6 +22,8 @@ export interface AppSettings {
   // General
   theme: string
   language: string
+  // v3.0.1 M6-2: secondary (extension-track) subtitle overlay on playback
+  show_secondary_subtitle: boolean
   // Silence detection
   silence_threshold_db: number
   silence_min_duration: number
