@@ -242,18 +242,27 @@ export function applyProjectPatch(project: Project, patch: ProjectPatch): Projec
     if (patch.analysis != null) {
       newTl = { ...newTl, analysis: patch.analysis }
     }
-    // v3.0.0 M11-2: subtitle-track layers (wholesale replace, grouped with
-    // the timeline layers; independent so a bindings-only patch applies).
+    // v3.0.1 M3 (P3-2): subtitle-track layers switch from wholesale
+    // replace to in-place id merge -- single extension-segment drags keep
+    // every sibling track/segment/binding reference stable (perf gate
+    // R6.2); gate assertion falls back to wholesale replace on id-sequence
+    // mismatch. Layers stay independent so a bindings-only patch applies.
     if (patch.tracks != null) {
       newTl = {
         ...newTl,
-        transcript: { ...newTl.transcript, tracks: patch.tracks },
+        transcript: {
+          ...newTl.transcript,
+          tracks: mergeTracksInPlace(newTl.transcript.tracks ?? [], patch.tracks),
+        },
       }
     }
     if (patch.bindings != null) {
       newTl = {
         ...newTl,
-        transcript: { ...newTl.transcript, bindings: patch.bindings },
+        transcript: {
+          ...newTl.transcript,
+          bindings: mergeBindingsInPlace(newTl.transcript.bindings ?? [], patch.bindings),
+        },
       }
     }
     return newTl
