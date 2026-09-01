@@ -454,6 +454,9 @@ class ProjectPatch(BaseModel, frozen=True):
     media: MediaInfo | None = None
     active_timeline_id: str | None = None
     full_project: Project | None = None
+    # v3.0.1 M2-1: side-channel payload (linkage counters etc.). Absence
+    # means "no meta"; old frontends ignore unknown fields.
+    meta: dict | None = None
 
     def is_full_project_fallback(self) -> bool:
         return self.full_project is not None

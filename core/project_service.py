@@ -134,19 +134,22 @@ class ProjectService:
             new_transcript = tl.transcript.model_copy(update={"segments": sorted_segs})
             self._update_active_timeline(transcript=new_transcript)
 
-    def _success_patch(self, **layers) -> dict:
+    def _success_patch(self, meta: dict | None = None, **layers) -> dict:
         """Build a ProjectPatch response envelope for the active timeline.
 
         ``layers`` are passed straight to :class:`ProjectPatch`; only the
         layers the caller actually mutated should be populated. The
         ``revision`` is set via :meth:`_next_revision` and ``timeline_id``
-        defaults to the active timeline.
+        defaults to the active timeline. ``meta`` carries side-channel
+        payloads (v3.0.1 linkage counters) -- optional, old frontends
+        ignore it.
         """
         from core.models import ProjectPatch
 
         patch = ProjectPatch(
             revision=self._next_revision(),
             timeline_id=self._current.active_timeline_id if self._current else None,
+            meta=meta,
             **layers,
         )
         return {"success": True, "data": patch.model_dump(mode="json")}
@@ -1095,6 +1098,142 @@ class ProjectService:
         )
         return {"success": True, "data": self._current.model_dump()}
 
+    def _apply_main_linkage(
+        self,
+        segment_id: str,
+        old_range: tuple[float, float],
+        new_range: tuple[float, float],
+    ) -> tuple[list, list, dict] | None:
+        """v3.0.1 M2-1 step 4: linkage resolution after a main-track
+        move/trim, per affected extension track:
+
+        Phase A (unbound segments): segments crossed by the new main range
+        keep their longest uncovered side; below-minimum ones are deleted
+        (the passive reconcile rule, SPEC M1-3).
+
+        Phase B (bound segments): FOLLOW WINS -- the synced geometry is the
+        segment's expected state, so it is never "resolved away" for being
+        inside the main range. It is clamped to [0, duration]; only when
+        the clamped geometry still overlaps a placed sibling is it deleted
+        and unbound (no room on the lane; MVP ruling, no fine squeezing --
+        recorded in SPEC errata).
+
+        Red lines (SPEC M0-3): reconcile NEVER rewrites the main track;
+        offsets are rebuilt wholesale from the final geometry; returned
+        layers are FULL layer arrays (frontend merges in place).
+
+        Returns ``(all_tracks, all_bindings, counters)`` or ``None`` when
+        the segment has no bindings (or there are no tracks at all).
+        """
+        from core.track_constraints import (
+            MIN_SEGMENT_DURATION,
+            clamp_extension_range,
+            overlaps_neighbors,
+            reconcile_extension_track,
+            rebuild_binding_offsets,
+            sync_bound_extension_for_main,
+        )
+
+        tl = self.active_timeline
+        tracks = list(tl.transcript.tracks)
+        if not tracks:
+            return None
+        all_bindings = list(tl.transcript.bindings)
+        bindings = [b for b in all_bindings if b.main_segment_id == segment_id]
+        if not bindings:
+            return None
+
+        duration = self._current.media.duration if self._current.media else 0.0
+        counters: dict = {"squeezed": 0, "removed": 0, "unbound": 0}
+        dropped_binding_ids: set[str] = set()
+
+        by_track: dict[str, list] = {}
+        for b in bindings:
+            by_track.setdefault(b.track_id, []).append(b)
+
+        for track_id, tbindings in by_track.items():
+            track = next((t for t in tracks if t.id == track_id), None)
+            if track is None:
+                # Dangling binding -> dissolve.
+                counters["unbound"] += len(tbindings)
+                dropped_binding_ids.update(b.id for b in tbindings)
+                continue
+
+            ext_by_id = {s.id: s for s in track.segments}
+            candidates = []  # (binding, ext_seg, synced_range)
+            for b in tbindings:
+                ext = ext_by_id.get(b.extension_segment_id)
+                if ext is None:
+                    counters["unbound"] += 1
+                    dropped_binding_ids.add(b.id)
+                    continue
+                synced = sync_bound_extension_for_main(
+                    old_range, new_range, (ext.start, ext.end)
+                )
+                candidates.append((b, ext, synced))
+            if not candidates:
+                continue
+
+            moved_ids = {ext.id for _, ext, _ in candidates}
+            # Phase A targets UNBOUND segments only -- segments bound to
+            # OTHER main segments belong to their own linkage and are never
+            # passively resolved here (they move with their own main).
+            bound_ext_ids = {b.extension_segment_id for b in all_bindings}
+            unbound_segs = [
+                s for s in track.segments
+                if s.id not in moved_ids and s.id not in bound_ext_ids
+            ]
+            result = reconcile_extension_track(unbound_segs, [new_range])
+            counters["squeezed"] += result.counters.squeezed
+            counters["removed"] += len(result.removed_ids)
+            removed_unbound = set(result.removed_ids)
+            reconciled_by_id = {item["id"]: item for item in result.segments}
+
+            placed: list = []
+            for s in track.segments:
+                if s.id in moved_ids or s.id in removed_unbound:
+                    continue
+                geom = reconciled_by_id.get(s.id)
+                if geom is not None and (
+                    abs(geom["start"] - s.start) > 1e-9 or abs(geom["end"] - s.end) > 1e-9
+                ):
+                    placed.append(
+                        s.model_copy(update={"start": geom["start"], "end": geom["end"]})
+                    )
+                else:
+                    placed.append(s)
+
+            # -- Phase B: bound segments follow (follow wins) -------------
+            for b, ext, synced in candidates:
+                g = clamp_extension_range(synced[0], synced[1], duration)
+                if g[1] - g[0] < MIN_SEGMENT_DURATION - 1e-6:
+                    # Degenerate media -- no room at all.
+                    counters["removed"] += 1
+                    counters["unbound"] += 1
+                    dropped_binding_ids.add(b.id)
+                    continue
+                if overlaps_neighbors(g[0], g[1], placed, ext.id):
+                    # No free space on the lane -> delete + unbind (MVP
+                    # ruling: honest removal + undo, no fine squeezing).
+                    counters["removed"] += 1
+                    counters["unbound"] += 1
+                    dropped_binding_ids.add(b.id)
+                    continue
+                placed.append(ext.model_copy(update={"start": g[0], "end": g[1]}))
+                new_offsets = rebuild_binding_offsets(new_range, (g[0], g[1]))
+                idx = next(i for i, x in enumerate(all_bindings) if x.id == b.id)
+                all_bindings[idx] = all_bindings[idx].model_copy(update=new_offsets)
+
+            # Extension tracks maintain their own start ordering (M11-2).
+            placed.sort(key=lambda s: s.start)
+            tidx = next(i for i, t in enumerate(tracks) if t.id == track_id)
+            tracks[tidx] = track.model_copy(update={"segments": placed})
+
+        if dropped_binding_ids:
+            all_bindings = [b for b in all_bindings if b.id not in dropped_binding_ids]
+
+        return tracks, all_bindings, counters
+
     def update_segment(self, segment_id: str, updates: dict) -> dict:
         """Update a segment's fields (start, end, text)."""
         if self._current is None:
@@ -1123,9 +1262,12 @@ class ProjectService:
         if old_seg is None:
             return {"success": False, "error": f"Segment not found: {segment_id}"}
 
-        # v3.0.1 M2-1: explicit same-track overlap rejection on time changes
-        # (previously implicit -- the sort invariant silently re-ordered
-        # visually-overlapping segments). Touching edges (<= 1e-6) allowed.
+        # v3.0.1 M2-1 step 4: linkage follow for bound extension segments
+        # (computed BEFORE the main-track mutation so the whole change —
+        # main geometry + extension tracks + bindings — lands as one patch).
+        linkage = None
+        cand_start = old_seg.start
+        cand_end = old_seg.end
         if "start" in filtered or "end" in filtered:
             cand_start = float(filtered.get("start", old_seg.start))
             cand_end = float(filtered.get("end", old_seg.end))
@@ -1144,6 +1286,11 @@ class ProjectService:
                             f"{other.id} [{other.start:.3f}, {other.end:.3f}]"
                         ),
                     }
+            linkage = self._apply_main_linkage(
+                segment_id,
+                (old_seg.start, old_seg.end),
+                (cand_start, cand_end),
+            )
 
         updated_segments = []
         updated_seg = None
@@ -1154,8 +1301,13 @@ class ProjectService:
             else:
                 updated_segments.append(seg)
 
+        updated_transcript_updates: dict = {"segments": updated_segments}
+        if linkage is not None:
+            new_tracks, new_bindings, _counters = linkage
+            updated_transcript_updates["tracks"] = new_tracks
+            updated_transcript_updates["bindings"] = new_bindings
         updated_transcript = self.active_timeline.transcript.model_copy(
-            update={"segments": updated_segments}
+            update=updated_transcript_updates
         )
 
         update_kwargs: dict = {"transcript": updated_transcript}
@@ -1190,6 +1342,9 @@ class ProjectService:
         patch_kwargs: dict = {"segments": updated_segments}
         if updated_edits is not None:
             patch_kwargs["edits"] = updated_edits
+        if linkage is not None:
+            _tracks, _bindings, linkage_counters = linkage
+            patch_kwargs["meta"] = {"linkage": linkage_counters}
         return self._success_patch(**patch_kwargs)
 
     def update_segment_text(self, segment_id: str, text: str) -> dict:
