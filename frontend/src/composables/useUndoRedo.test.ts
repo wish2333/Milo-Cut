@@ -229,3 +229,143 @@ describe("captureLayers with track layers (v3.0.1 M5-1)", () => {
     expect(snap.bindings).toBeUndefined()
   })
 })
+
+// ------------------------------------------------------------------
+// v3.0.1 M5-3: three-layer atomic undo/redo integration
+// ------------------------------------------------------------------
+
+describe("three-layer atomic undo/redo (v3.0.1 M5-3)", () => {
+  const track: SubtitleTrack = {
+    id: "trk_1",
+    role: "extension",
+    name: "en",
+    language: "en",
+    segments: [
+      { id: "track_trk_1_seg_0", version: 1, type: "subtitle", start: 0.5, end: 1.5, text: "en", speaker: "" },
+    ],
+  }
+  const binding: TrackBinding = {
+    id: "bind-1",
+    track_id: "trk_1",
+    main_segment_id: "seg-1",
+    extension_segment_id: "track_trk_1_seg_0",
+    start_offset: 0.5,
+    end_offset: -3.5,
+  }
+
+  function projectWithTrack(label: string): Project {
+    const p = makeProject(label)
+    p.timelines[0].transcript.tracks = [track]
+    p.timelines[0].transcript.bindings = [binding]
+    return p
+  }
+
+  function splitApplied(p: Project): Project {
+    // Simulate the post-linked-split state: main seg split into a/b, ext
+    // seg split into two halves, binding split into two re-bound entries.
+    const tl = p.timelines[0]
+    const mainA = { ...makeSegment(1), id: "seg-1-a", end: 7 }
+    const mainB = { ...makeSegment(1), id: "seg-1-b", start: 7, text: "segment 1 (b)" }
+    return {
+      ...p,
+      timelines: [
+        {
+          ...tl,
+          transcript: {
+            ...tl.transcript,
+            segments: [mainA, mainB],
+            tracks: [
+              {
+                ...track,
+                segments: [
+                  { ...track.segments[0], id: "track_trk_1_seg_0__a", end: 1.0 },
+                  { ...track.segments[0], id: "track_trk_1_seg_0__b", start: 1.0 },
+                ],
+              },
+            ],
+            bindings: [
+              { ...binding, id: "bind-1__a", main_segment_id: "seg-1-a", extension_segment_id: "track_trk_1_seg_0__a" },
+              { ...binding, id: "bind-1__b", main_segment_id: "seg-1-b", extension_segment_id: "track_trk_1_seg_0__b" },
+            ],
+          },
+        },
+      ],
+    }
+  }
+
+  it("linked-split undo sends segments+tracks+bindings in ONE apply_undo", async () => {
+    noteRevision(9)
+    const { pushSnapshot, undo } = useUndoRedo()
+    const before = projectWithTrack("before")
+    pushSnapshot(before, ["segments", "tracks", "bindings"], "联动拆分")
+    const after = splitApplied(projectWithTrack("after"))
+
+    applyUndoResult = {
+      success: true,
+      data: {
+        revision: 10,
+        segments: before.timelines[0].transcript.segments,
+        tracks: before.timelines[0].transcript.tracks,
+        bindings: before.timelines[0].transcript.bindings,
+      },
+    }
+    const res = await undo(after)
+    expect(res.ok).toBe(true)
+    expect(res.patch!.revision).toBe(10) // monotonic, never rewinds
+
+    const call = applyUndoCalls[applyUndoCalls.length - 1]
+    expect(Object.keys(call.layers as Record<string, unknown>).sort()).toEqual([
+      "bindings",
+      "segments",
+      "tracks",
+    ])
+    expect(call.baseRevision).toBe(9)
+  })
+
+  it("redo replays the three-layer inverse symmetrically", async () => {
+    noteRevision(3)
+    const { pushSnapshot, undo, redo } = useUndoRedo()
+    const before = projectWithTrack("before")
+    pushSnapshot(before, ["segments", "tracks", "bindings"], "联动拆分")
+    const after = splitApplied(projectWithTrack("after"))
+
+    applyUndoResult = {
+      success: true,
+      data: { revision: 4, segments: before.timelines[0].transcript.segments },
+    }
+    const undoRes = await undo(after)
+    expect(undoRes.ok).toBe(true)
+
+    applyUndoResult = {
+      success: true,
+      data: {
+        revision: 5,
+        segments: after.timelines[0].transcript.segments,
+        tracks: after.timelines[0].transcript.tracks,
+        bindings: after.timelines[0].transcript.bindings,
+      },
+    }
+    const redoRes = await redo(before)
+    expect(redoRes.ok).toBe(true)
+    expect(redoRes.patch!.revision).toBe(5) // strictly increasing
+    const call = applyUndoCalls[applyUndoCalls.length - 1]
+    expect(Object.keys(call.layers as Record<string, unknown>).sort()).toEqual([
+      "bindings",
+      "segments",
+      "tracks",
+    ])
+  })
+
+  it("a failed apply_undo keeps the three-layer record on the stack", async () => {
+    noteRevision(2)
+    const { pushSnapshot, undo, undoStack } = useUndoRedo()
+    const before = projectWithTrack("before")
+    pushSnapshot(before, ["segments", "tracks", "bindings"], "联动拆分")
+    const after = splitApplied(projectWithTrack("after"))
+
+    applyUndoResult = { success: false, error: "apply_undo: stale revision" }
+    const res = await undo(after)
+    expect(res.ok).toBe(false)
+    expect(undoStack.value).toHaveLength(1) // record kept for retry
+  })
+})
