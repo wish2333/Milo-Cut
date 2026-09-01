@@ -1129,8 +1129,8 @@ class ProjectService:
             MIN_SEGMENT_DURATION,
             clamp_extension_range,
             overlaps_neighbors,
-            reconcile_extension_track,
             rebuild_binding_offsets,
+            reconcile_extension_track,
             sync_bound_extension_for_main,
         )
 

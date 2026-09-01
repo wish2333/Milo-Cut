@@ -203,7 +203,6 @@ class TestValidation:
 
 def _seed_track(svc: ProjectService) -> None:
     """Attach one extension track with a bound segment (import path)."""
-    import json
     import tempfile
 
     srt = tempfile.NamedTemporaryFile("w", suffix=".srt", delete=False, encoding="utf-8")
@@ -238,7 +237,6 @@ class TestTrackBindingUndoLayers:
         snap_segments = [s.model_dump(mode="json") for s in tl.transcript.segments]
 
         # Mutate: drop the track layer wholesale (simulating a destructive op).
-        from core.models import TranscriptData
         svc._update_active_timeline(
             transcript=tl.transcript.model_copy(update={"tracks": [], "bindings": []})
         )
