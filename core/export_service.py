@@ -385,41 +385,178 @@ def export_track_srt(
     track: dict,
     output_path: str,
 ) -> dict:
-    """Export an extension track's segments to SRT with original timestamps.
+    """Deprecated wrapper (v3.0.1 M6-1): original-timestamps track SRT.
 
-    v3.0.0 M11-2 export boundary: subtitle tracks never participate in video
-    export or the confirmed-deletion timeline mapping (tracks are read-only
-    and bindings are not consumed this version), so the track SRT is a plain
-    dump of its segments at their original times.
+    Superseded by :func:`export_track_subtitle`, which routes the track
+    through the SAME deletion mapping as the main track (R9.1). Kept for
+    one version cycle; remove in v3.0.2.
+    """
+    return export_track_subtitle(
+        track, [], output_path, fmt="srt", map_deletions=False
+    )
 
-    Args:
-        track: SubtitleTrack dict (``segments`` list of segment dicts).
-        output_path: Destination ``.srt`` path.
 
-    Returns:
-        ``{"success": True, "data": {"path", "segment_count"}}`` envelope.
+def export_track_subtitle(
+    track: dict,
+    edits: list[dict],
+    output_path: str,
+    *,
+    media_duration: float = 0.0,
+    fmt: str = "srt",
+    map_deletions: bool = True,
+) -> dict:
+    """Export an extension track as SRT/VTT (v3.0.1 M6-1, PRD R9.1/R9.2).
+
+    The track rides the SAME confirmed-deletion mapping as the main track:
+    the identical ``_get_confirmed_deletions`` / ``_compute_keep_ranges`` /
+    ``_subtitle_survives_in_keep_ranges`` / ``_map_to_exported_timeline``
+    helpers used by :func:`export_srt` (one mapping, one implementation --
+    main and track subtitles land on the same exported timeline).
+
+    With ``map_deletions=False`` the export is a plain dump at original
+    timestamps (the legacy ``export_track_srt`` behavior).
+
+    Survivors follow the main-track rule: a segment is kept whole when it
+    retains enough content in the keep ranges, otherwise dropped with a
+    lost-segments log line.
     """
     try:
         output_path = _validate_output_path(output_path)
-        segs = sorted(
-            (
+        segments = track.get("segments", [])
+        subtitle_segs = [
+            s for s in segments if s.get("type", "subtitle") == "subtitle"
+        ]
+        subtitle_segs.sort(key=lambda s: s["start"])
+
+        if map_deletions:
+            deletions = _get_confirmed_deletions(edits)
+            total_duration = _get_media_duration(subtitle_segs, edits, media_duration)
+            keep_ranges = _compute_keep_ranges(total_duration, deletions)
+            kept = [
                 s
-                for s in track.get("segments", [])
-                if s.get("type", "subtitle") == "subtitle"
-            ),
-            key=lambda s: s["start"],
-        )
-        with open(output_path, "w", encoding="utf-8") as f:
-            for idx, seg in enumerate(segs, 1):
-                f.write(f"{idx}\n")
-                f.write(
-                    f"{_format_srt_time(seg['start'])} --> {_format_srt_time(seg['end'])}\n"
+                for s in subtitle_segs
+                if _subtitle_survives_in_keep_ranges(
+                    s["start"], s["end"], keep_ranges
                 )
-                f.write(f"{seg.get('text', '')}\n\n")
-        logger.info("Exported track SRT with {} segments to {}", len(segs), output_path)
-        return {"success": True, "data": {"path": output_path, "segment_count": len(segs)}}
+            ]
+            lost = [s for s in subtitle_segs if s not in kept]
+            if lost:
+                logger.warning(
+                    "export_track_subtitle: {} track subtitles dropped "
+                    "(outside keep_ranges): {}",
+                    len(lost),
+                    [(s["start"], s["end"], s.get("text", "")[:30]) for s in lost],
+                )
+            adjusted: list[tuple[float, float, str]] = []
+            for s in kept:
+                new_start, new_end = _map_to_exported_timeline(
+                    s["start"], s["end"], keep_ranges
+                )
+                adjusted.append((new_start, new_end, s.get("text", "")))
+        else:
+            adjusted = [(s["start"], s["end"], s.get("text", "")) for s in subtitle_segs]
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            if fmt == "vtt":
+                f.write("WEBVTT\n\n")
+            for idx, (start, end, text) in enumerate(adjusted, 1):
+                if fmt == "vtt":
+                    time_str = f"{_format_vtt_time(start)} --> {_format_vtt_time(end)}"
+                else:
+                    time_str = f"{_format_srt_time(start)} --> {_format_srt_time(end)}"
+                if fmt == "vtt":
+                    f.write(f"{time_str}\n{text}\n\n")
+                else:
+                    f.write(f"{idx}\n{time_str}\n{text}\n\n")
+
+        logger.info(
+            "Exported track subtitle fmt={} map_deletions={} segments={} -> {}",
+            fmt, map_deletions, len(adjusted), output_path,
+        )
+        return {"success": True, "data": {"path": output_path, "segment_count": len(adjusted)}}
     except Exception as e:
-        logger.exception("export_track_srt failed")
+        logger.exception("export_track_subtitle failed")
+        return {"success": False, "error": str(e)}
+
+
+def export_bilingual_subtitle(
+    main_segments: list[dict],
+    track: dict,
+    bindings: list[dict],
+    edits: list[dict],
+    output_path: str,
+    *,
+    media_duration: float = 0.0,
+    fmt: str = "srt",
+) -> dict:
+    """Export a bilingual merged subtitle (v3.0.1 M6-1, PRD R9.2).
+
+    The main segment is line 1 (mapped through the confirmed-deletion
+    timeline); its bound extension segment's text is appended as line 2.
+    Only BOUND extension segments appear -- unbound ones are skipped, and
+    unbound main segments stay single-line. Time axis follows the mapped
+    main segment (the ext geometry is informational only).
+    """
+    try:
+        output_path = _validate_output_path(output_path)
+        ext_text_by_id = {
+            s.get("id"): s.get("text", "")
+            for s in track.get("segments", [])
+            if s.get("type", "subtitle") == "subtitle"
+        }
+        bound_text_by_main = {}
+        for b in bindings:
+            text = ext_text_by_id.get(b.get("extension_segment_id"))
+            if text is not None:
+                bound_text_by_main[b.get("main_segment_id")] = text
+
+        subtitle_segs = [
+            s for s in main_segments if s.get("type") == "subtitle"
+        ]
+        deletions = _get_confirmed_deletions(edits)
+        total_duration = _get_media_duration(subtitle_segs, edits, media_duration)
+        keep_ranges = _compute_keep_ranges(total_duration, deletions)
+        kept = [
+            s
+            for s in subtitle_segs
+            if _subtitle_survives_in_keep_ranges(s["start"], s["end"], keep_ranges)
+        ]
+        kept.sort(key=lambda s: s["start"])
+
+        rows: list[tuple[float, float, str]] = []
+        for s in kept:
+            new_start, new_end = _map_to_exported_timeline(
+                s["start"], s["end"], keep_ranges
+            )
+            second = bound_text_by_main.get(s.get("id"))
+            text = s.get("text", "")
+            if second:
+                text = f"{text}\n{second}"
+            rows.append((new_start, new_end, text))
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            if fmt == "vtt":
+                f.write("WEBVTT\n\n")
+            for idx, (start, end, text) in enumerate(rows, 1):
+                if fmt == "vtt":
+                    f.write(
+                        f"{_format_vtt_time(start)} --> {_format_vtt_time(end)}\n"
+                        f"{text}\n\n"
+                    )
+                else:
+                    f.write(
+                        f"{idx}\n"
+                        f"{_format_srt_time(start)} --> {_format_srt_time(end)}\n"
+                        f"{text}\n\n"
+                    )
+
+        logger.info(
+            "Exported bilingual subtitle ({} rows, fmt={}) -> {}",
+            len(rows), fmt, output_path,
+        )
+        return {"success": True, "data": {"path": output_path, "segment_count": len(rows)}}
+    except Exception as e:
+        logger.exception("export_bilingual_subtitle failed")
         return {"success": False, "error": str(e)}
 
 
