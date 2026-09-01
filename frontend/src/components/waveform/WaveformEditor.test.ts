@@ -110,3 +110,138 @@ describe("WaveformEditor hover seek preview (M6-2)", () => {
     wrapper.unmount()
   })
 })
+
+// ------------------------------------------------------------------
+// v3.0.1 M4-4: stacked-timeline orchestration
+// ------------------------------------------------------------------
+
+import { describe as describeStacked, expect as expectStacked } from "vitest"
+import { ref as vueRef } from "vue"
+import type { SubtitleTrack } from "@/types/project"
+import { PLAYBACK_CLOCK_KEY } from "./injectionKeys"
+import type { PlaybackClock } from "@/composables/usePlaybackClock"
+
+function makeStackTrack(id: string, count = 2): SubtitleTrack {
+  return {
+    id,
+    role: "extension",
+    name: `lang-${id}`,
+    language: id,
+    segments: Array.from({ length: count }, (_, i) => ({
+      id: `track_${id}_seg_${i}`,
+      version: 1,
+      type: "subtitle" as const,
+      start: 1 + i * 2,
+      end: 2 + i * 2,
+      text: `t-${id}-${i}`,
+      speaker: "",
+    })),
+  }
+}
+
+function makeClock(): PlaybackClock {
+  return {
+    getTime: () => 0,
+    isPlaying: () => false,
+    ingest: () => {},
+    subscribe: () => () => {},
+    coarseTime: vueRef(0),
+    start: () => {},
+    stop: () => {},
+  }
+}
+
+describeStacked("stacked timeline orchestration (M4-4)", () => {
+  function mountStack(tracks: SubtitleTrack[]) {
+    return mount(WaveformEditor, {
+      props: {
+        segments: [],
+        edits: [],
+        duration: 30,
+        currentTime: 0,
+        tracks,
+      },
+      global: {
+        provide: {
+          [PLAYBACK_CLOCK_KEY as symbol]: makeClock(),
+        },
+        stubs: {
+          WaveformCanvas: true,
+          TimeMarksLayer: true,
+          SegmentBlocksLayer: true,
+          ScrollbarStrip: true,
+        },
+      },
+    })
+  }
+
+  it("renders one lane per visible track below the main track", () => {
+    const wrapper = mountStack([makeStackTrack("en"), makeStackTrack("ja"), makeStackTrack("fr")])
+    const lanes = wrapper.findAll('[data-test="track-lane"]')
+    expectStacked(lanes).toHaveLength(3)
+    // main track height is the fixed 112px content-driven value
+    const first = lanes[0].element as HTMLElement
+    expectStacked(first.style.top).toBe("112px")
+    expectStacked(first.style.height).toBe("48px")
+    const second = lanes[1].element as HTMLElement
+    expectStacked(second.style.top).toBe("160px")
+    wrapper.unmount()
+  })
+
+  it("stack height covers the main track plus all lane heights", () => {
+    const wrapper = mountStack([makeStackTrack("en"), makeStackTrack("ja")])
+    const stack = wrapper.find('[data-test="timeline-stack"]')
+    // 112 + 2x48 = 208
+    expectStacked((stack.element as HTMLElement).style.height).toBe("208px")
+    wrapper.unmount()
+  })
+
+  it("hidden lanes do not render (layout state is global and persisted)", () => {
+    localStorage.setItem("milocut:timeline-layout:v1", JSON.stringify({ hidden: { en: true } }))
+    const wrapper = mountStack([makeStackTrack("en"), makeStackTrack("ja")])
+    const lanes = wrapper.findAll('[data-test="track-lane"]')
+    expectStacked(lanes).toHaveLength(1)
+    expectStacked(lanes[0].text()).toContain("lang-ja")
+    localStorage.removeItem("milocut:timeline-layout:v1")
+    wrapper.unmount()
+  })
+
+  it("renders exactly one playhead node on the stack surface (promoted owner)", () => {
+    const wrapper = mountStack([makeStackTrack("en")])
+    const stack = wrapper.find('[data-test="timeline-stack"]')
+    // The playhead is a DIRECT child of the stack (promoted owner), not
+    // inside the main layer. (PlayheadOverlay has two .bg-red-500 nodes:
+    // the head bar + its triangle tip.)
+    const directChild = Array.from(stack.element.children).find(el =>
+      el.className.includes("bg-red-500"),
+    )
+    expectStacked(directChild).toBeDefined()
+    expectStacked((directChild as HTMLElement).className).toContain("inset-y-0")
+    const mainLayer = wrapper.find('[data-test="waveform-layer"]')
+    expectStacked(mainLayer.find(".bg-red-500").exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it("shows the soft overflow hint beyond four tracks", () => {
+    const tracks = ["a", "b", "c", "d", "e"].map(id => makeStackTrack(id))
+    const wrapper = mountStack(tracks)
+    expectStacked(wrapper.find('[data-test="track-overflow-hint"]').exists()).toBe(true)
+    wrapper.unmount()
+    const wrapper2 = mountStack(tracks.slice(0, 4))
+    expectStacked(wrapper2.find('[data-test="track-overflow-hint"]').exists()).toBe(false)
+    wrapper2.unmount()
+  })
+
+  it("collapse emits recompute lane geometry (24px collapsed height)", async () => {
+    const wrapper = mountStack([makeStackTrack("en"), makeStackTrack("ja")])
+    const lanes = wrapper.findAll('[data-test="track-lane"]')
+    await lanes[0].find('[data-test="lane-collapse"]').trigger("click")
+    await wrapper.vm.$nextTick()
+    const after = wrapper.findAll('[data-test="track-lane"]')
+    expectStacked(((after[0].element as HTMLElement).style.height)).toBe("24px")
+    // stack shrank by 48 - 24
+    const stack = wrapper.find('[data-test="timeline-stack"]')
+    expectStacked((stack.element as HTMLElement).style.height).toBe("184px")
+    wrapper.unmount()
+  })
+})

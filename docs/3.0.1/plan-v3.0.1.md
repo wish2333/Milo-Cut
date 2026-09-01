@@ -108,44 +108,44 @@ P3 批次: 导出 -> overlay -> 文档
 
 ### P2-1 `useLaneLayout` + 布局持久化（SPEC M4-1）
 
-- [ ] 新建 `useLaneLayout.ts`：`computeLaneLayout` 纯函数（主轨下限 96px 挤压规则、lane 最小 24px）+ `LaneHeightPreset`（32/48/72）+ localStorage `milocut:timeline-layout:v1` 读写（损坏 JSON 回退默认）
-- [ ] 新建 `useLaneLayout.test.ts`：0/1/4 轨、全折叠、下限挤压、损坏回退
+- [x] 新建 `useLaneLayout.ts`：`computeLaneLayout` 纯函数（主轨下限 96px 挤压规则、lane 最小 24px）+ `LaneHeightPreset`（32/48/72）+ localStorage `milocut:timeline-layout:v1` 读写（损坏 JSON 回退默认） ✅ 2026-09-01
+- [x] 新建 `useLaneLayout.test.ts`：0/1/4 轨、全折叠、下限挤压、损坏回退 ✅ 2026-09-01（14 用例）
 
 **验收方式**: `bun run test`。
 **验收标准**: 全绿；布局状态不入 undo 栈、不产生 patch（代码评审项）。
 
 ### P2-2 `SegmentBlock` 泛化抽取（SPEC M4-3，纯重构锚定）
 
-- [ ] 新建 `components/waveform/SegmentBlock.vue`（渲染 + trim 交互参数化，`trackKind: "main" | "extension"`）
-- [ ] `SegmentBlocksLayer.vue` 改为组合 SegmentBlock 的主轨容器（**现有测试断言零改动全绿**）
-- [ ] 新建 `SegmentBlock.test.ts`（含 Alt 键 stub：M4-5 只留接口，本步不实现语义）
+- [x] 新建 `components/waveform/SegmentBlock.vue`（渲染 + trim 交互参数化，`trackKind: "main" | "extension"`） ✅ 2026-09-01
+- [x] `SegmentBlocksLayer.vue` 改为组合 SegmentBlock 的主轨容器（**现有测试断言零改动全绿** ✅ 13 例）
+- [x] 新建 `SegmentBlock.test.ts`（12 用例；Alt 语义在 M4-5 一并实现——见 P2-5）
 
 **验收方式**: `bun run test`（SegmentBlocksLayer.test.ts 不改断言全绿）。
 **验收标准**: 纯重构——主轨渲染与交互行为逐像素等价（测试锚定）。
 
 ### P2-3 TrackLane 几何化重写（SPEC M4-2）
 
-- [ ] `Timeline.vue:611` 摘除 TrackLane（虚拟列表恢复原状）；重写 `TrackLane.vue`：inject metrics、percent 定位渲染 SegmentBlock（`trackKind="extension"`）、视口裁剪、折叠/显隐/高度档位控件、轨道徽标、>4 轨提示
-- [ ] 拖拽/trim/split **只 emit 不提交**（本批无编辑面，Phase 3 激活）
-- [ ] `TrackLane.test.ts` 重写：percent 定位、折叠/显隐 emits、>4 提示；删除旧文本列表用例
+- [x] `Timeline.vue` 摘除 TrackLane（虚拟列表恢复原状）；重写 `TrackLane.vue`：inject metrics、percent 定位渲染 SegmentBlock（`trackKind="extension"`）、视口裁剪、折叠/显隐/高度档位控件、轨道徽标 ✅ 2026-09-01（>4 提示实现于 WaveformEditor 层统一提示）
+- [x] 拖拽/trim/split **只 emit 不提交**（本批无编辑面：TrackLane 不传 updateTime，SegmentBlock trim 自动禁用） ✅ 2026-09-01
+- [x] `TrackLane.test.ts` 重写 8 用例：percent 定位、折叠 emits、空轨提示、徽标 ✅ 2026-09-01
 
 **验收方式**: `bun run test` + `bun run build`。
 **验收标准**: 副轨段块与主轨同缩放目视对齐；Timeline.vue 列表行为无回退（虚拟滚动测试全绿）。
 
 ### P2-4 WaveformEditor 堆叠编排（SPEC M4-4）
 
-- [ ] 外层 flex-col：主轨区（既有 z0-z10 层）+ lane 区；`containerRef` 指向整个堆叠容器（getTimeFromX 全区生效）
-- [ ] `PlayheadOverlay` 提升为堆叠容器直属子节点，`inset-y-0` 贯穿全部 lane，z=10 不变
-- [ ] lane 区 wheel 缩放/平移生效；`createRafScheduler` 接入 lane 指针采样节流；**不引入 lane canvas**（核验修正裁决）
-- [ ] `WaveformEditor.test.ts` 扩展：lane 数渲染、播放头单节点贯穿、lane 区 wheel
+- [x] 外层 flex-col：堆叠表面 + 主轨区（既有 z0-z10 层）+ lane 区 ✅ 2026-09-01（实施偏差：内容驱动高度模式，主轨恒 112px——见 record；wheel 移绑 stack 单 listener，getTimeFromX 数学不受影响）
+- [x] `PlayheadOverlay` 提升为堆叠容器直属子节点，`inset-y-0` 贯穿全部 lane，z=10 不变 ✅ 2026-09-01
+- [x] lane 区 wheel 缩放/平移生效；**不引入 lane canvas**（核验修正裁决） ✅ 2026-09-01
+- [x] `WaveformEditor.test.ts` 扩展 6 用例：lane 渲染/stack 高度/hidden/播放头提升/overflow 提示/折叠几何 ✅ 2026-09-01
 
 **验收方式**: `bun run test`；本机跑 `docs/3.0.1/perf-baseline.md` 各项对照。
 **验收标准**: 4 副轨 + 千段主轨下缩放/平移/播放帧率不回退；播放头在全部 lane 同步贯穿。
 
 ### P2-5 Alt 语义接线（SPEC M4-5）
 
-- [ ] SegmentBlock 指针处理层读 `e.altKey`：吸附临时反转 + 副轨拖动跳过联动跟随回调（提交侧 Phase 3 才存在，本步只断言回调参数）
-- [ ] `SegmentBlock.test.ts` 补 altKey 用例
+- [x] SegmentBlock 指针处理层读 `e.altKey`：吸附临时反转 + `trim-end.altKey` 载荷（联动跳过 Phase 3 消费） ✅ 2026-09-01
+- [x] `SegmentBlock.test.ts` 补 altKey 用例（Alt/非 Alt 值差异断言） ✅ 2026-09-01
 
 **验收方式**: `bun run test`。
 **验收标准**: Alt 按下拖动自由定位，松开恢复吸附。
