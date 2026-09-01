@@ -35,7 +35,8 @@
 - `segments: list[Segment]`，**主轨按 start 升序**（sort invariant，`_enforce_segment_sort_invariant` 保证；v3.0.0 M11-2 起契约锁定**只管主轨**，副轨各 track 自维护有序）
 - `tracks: list[SubtitleTrack]`（v3.0.0 M11-2）：只读副轨。`{id: trk_<hex8>, role: extension|translation|caption, name, language, segments}`；副轨段 id 命名空间隔离为 `track_{track_id}_seg_{start:.3f}`，防止 merge/决策系统与主轨误匹配
 - `bindings: list[TrackBinding]`（v3.0.0 M11-2）：主轨段 ↔ 副轨段绑定（`{id: bind_<hex8>, track_id, main_segment_id, extension_segment_id, start_offset, end_offset}`，offset = 副轨 − 主轨，秒）。**本版只写不消费**（导入时 300ms 起点容差贪心匹配生成，一对一）；联动编辑/解绑交互推迟到 v3.1
-- ProjectPatch 对应 `tracks` / `bindings` 两层（timeline 内层组，整体替换语义），见 `core/project_patch.py` / `frontend/src/utils/projectPatch.ts`
+- ProjectPatch 对应 `tracks` / `bindings` 两层（timeline 内层组，整体替换语义，前端按 id in-place 合并保持引用稳定），见 `core/project_patch.py` / `frontend/src/utils/projectPatch.ts`
+- v3.0.1：新增可选 `meta: dict`（旁路载荷，如联动消解计数 `{linkage: {squeezed, removed, unbound}}`）；缺省 None，旧前端忽略
 
 ## Segment
 

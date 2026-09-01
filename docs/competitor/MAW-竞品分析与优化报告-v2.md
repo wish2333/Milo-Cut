@@ -3,8 +3,9 @@
 > 前置报告：[MAW-竞品分析与优化报告.md](./MAW-竞品分析与优化报告.md)（v1，竞品侧全景，保留不动）。
 > v2 方法：三个并行深查分别逐行阅读我方 LLM 链路（llm_service.py 1303 行 / workflow_engine.py 936 行 / 前端 AI 面板）、前端性能与风格（WorkspacePage.vue 2386 行 / SettingsModal.vue / 波形五组件 / bridge 双端）、字幕管线与多轨（models / subtitle_service / asr_scripts / project_service.py 2320 行），并对照 MAW 对应实现；所有关键负面结论均经本人二次源码验证（含一次对子代理误判的反证与再纠正）。
 
----
+> **时效声明（2026-09-01，v3.0.1）**：本文第一节"多轨字幕完全缺失"已**过时**——v3.0.0 M11-2 落地了多轨数据层（`SubtitleTrack` / `TrackBinding` / ProjectPatch 双 layer / 300ms 容差导入绑定），v3.0.1 完成堆叠时间线（几何渲染 / 副轨编辑 / 绑定联动 / 导出映射）。现状以 [docs/3.0.1/PRD-v3.0.1.md](../3.0.1/PRD-v3.0.1.md) §0.3 能力差距表为准。
 
+---
 ## 〇、总裁决：我们的本质需求与真实差距
 
 **本质需求**（Milo-Cut 立品之本，不可动摇）：把 1 小时口播粗录变成 40 分钟干净可剪素材——删除决策的质量与效率、出片能力、本地优先。

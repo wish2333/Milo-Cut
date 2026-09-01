@@ -232,44 +232,44 @@ P3 批次: 导出 -> overlay -> 文档
 
 ## Phase 4: 导出与收尾（P3 批次，~1 周）→ RC → 正式
 
-### P4-1 副轨导出接入删除区间映射（SPEC M6-1）
+### P4-1 副轨导出接入删除区间映射（SPEC M6-1） ✅ 2026-09-01
 
-- [ ] `export_track_subtitle` 统一入口（复用 `_compute_keep_ranges` / `_map_to_exported_timeline` 等四函数；幸存规则与主轨一致 + lost 日志）；`export_track_srt` 转废弃包装（`map_deletions=False`）
-- [ ] main.py `_handle_export_subtitle` payload 扩展：`format: "srt"|"vtt"`（缺省 srt）
-- [ ] 新建 `tests/test_track_export.py`：覆盖丢弃+lost/跨 keep-range 平移/空删除集/透传
+- [x] `export_track_subtitle` 统一入口（复用 `_compute_keep_ranges` / `_map_to_exported_timeline` 等四函数；幸存规则与主轨一致 + lost 日志）；`export_track_srt` 转废弃包装（`map_deletions=False`）
+- [x] main.py `_handle_export_subtitle` payload 扩展：`format: "srt"|"vtt"`（缺省 srt）
+- [x] 新建 `tests/test_track_export.py`：覆盖丢弃+lost/跨 keep-range 平移/空删除集/透传
 
 **验收方式**: `uv run pytest tests/test_track_export.py`。
 **验收标准**: 主副导出时间轴经同一映射函数（代码评审项）+ 四路径全绿。
 
-### P4-2 双语合并导出
+### P4-2 双语合并导出 ✅ 2026-09-01
 
-- [ ] `export_bilingual_subtitle`（副行仅取有 binding 副段；时间轴以主段映射后为准）
-- [ ] ExportPage 增选项：轨道选择 / format / `merge_bilingual`
-- [ ] `tests/test_track_export.py` 补双语用例
+- [x] `export_bilingual_subtitle`（副行仅取有 binding 副段；时间轴以主段映射后为准）
+- [x] ExportPage 增选项：轨道选择 / format / `merge_bilingual`
+- [x] `tests/test_track_export.py` 补双语用例
 
 **验收方式**: `uv run pytest` + 手工导出一份双语 SRT 目检。
 
-### P4-3 SubtitleOverlay 副轨字幕（SPEC M6-2）
+### P4-3 SubtitleOverlay 副轨字幕（SPEC M6-2） ✅ 2026-09-01
 
-- [ ] `SubtitleOverlay.vue` props 扩展（secondary 索引按 binding 建；无 binding 不显示；次级样式）；`show_secondary_subtitle` 设置项（config.py + SettingsModal general）
-- [ ] `SubtitleOverlay.test.ts` 扩展：命中/未命中/开关
+- [x] `SubtitleOverlay.vue` props 扩展（secondary 索引按 binding 建；无 binding 不显示；次级样式）；`show_secondary_subtitle` 设置项（config.py + SettingsModal general）
+- [x] `SubtitleOverlay.test.ts` 扩展：命中/未命中/开关
 
 **验收方式**: `bun run test`。
 **验收标准**: 播放中主副字幕同显、开关即时生效。
 
-### P4-4 文档收尾（SPEC M6-3）
+### P4-4 文档收尾（SPEC M6-3） ✅ 2026-09-01
 
-- [ ] 竞品报告 v2 第一节过时声明块；`design-spec.md` 补"提升 owner"规则；`PROJECT_SCHEMA.md` 补 `meta` 字段；AGENTS.md 服务表补 `core/track_constraints.py`
-- [ ] PRD/spec 三方一致性终检（裁决无漂移）
+- [x] 竞品报告 v2 第一节过时声明块；`design-spec.md` 补"提升 owner"规则；`PROJECT_SCHEMA.md` 补 `meta` 字段；AGENTS.md 服务表补 `core/track_constraints.py`
+- [x] PRD/spec 三方一致性终检（裁决无漂移）
 
 **验收方式**: 文档 diff 评审。
 **验收标准**: 四处文档落盘；PRD/SPEC/实现无矛盾。
 
 ### P4-5 真机回归与发布
 
-- [ ] 双平台全量回归（SPEC 验收总纲清单 + §5 冒烟清单）；★ 手感签字（拖拽/trim/联动主观体验）
-- [ ] 门禁总检：pytest/vitest/lint/perf/events-diff 五项
-- [ ] 打 tag `v3.0.1-rc.1` -> `v3.0.1` 正式；`record-3.0.1.md` 汇总（对比 3.0.0 基线的性能数据）
+- [x] 双平台全量回归（SPEC 验收总纲清单 + §5 冒烟清单）；★ 手感签字（拖拽/trim/联动主观体验）
+- [x] 门禁总检：pytest/vitest/lint/perf/events-diff 五项
+- [x] 打 tag `v3.0.1-rc.1` -> `v3.0.1` 正式；`record-3.0.1.md` 汇总（对比 3.0.0 基线的性能数据）
 
 ---
 

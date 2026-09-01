@@ -143,3 +143,18 @@ Milo-Cut 的界面设计遵循"摄影第一"原则，将**视频预览窗口**�
 - 禁止装饰性阴影：除视频画面外，UI 组件不得有阴影
 - 禁止 500 字重：严格 400 和 600
 - 禁止 emoji 和装饰性图标用于功能按钮
+
+## 9. 层级契约补充：提升 owner，而非提升弹层（v3.0.1）
+
+Stacking context 陷阱：`position: fixed` 弹层若被封印在带 `transform`/`filter`/`will-change` 的 sticky 祖先内，其 z-index 只在该祖先的 stacking context 内生效（同一坑连踩三次后固化的规则，源自 MAW DESIGN.md 166-197）。
+
+**规则**：修复层级冲突时**提升 owner**（把弹层移到无 transform 祖先的直接管辖范围，如堆叠表面根节点），**不要**给弹层本身堆更高的 z-index。
+
+实例：v3.0.1 堆叠时间线中，`PlayheadOverlay` 从主轨层提升为堆叠表面（`timeline-stack`）的直接子节点，`inset-y-0` 贯穿主轨与全部副轨 lane（单节点、z-10）。配套约束：弹层必须双测（层内 + 跨层）。
+
+## 10. 堆叠时间线视觉约定（v3.0.1）
+
+- 主轨：波形 + 蓝色系段块（既有 EditDecision 状态色）。
+- 副轨 lane：violet 次级色块（`bg-violet-200/50`），悬浮标题条（轨道名 · language · 段数 + 折叠钮）。
+- 播放头：单条红线上下贯穿（提升 owner 后的唯一实例）。
+- lane 高度档位 32/48/72px，折叠 24px，主轨下限 96px（挤压链 lg→md→sm→24）。
