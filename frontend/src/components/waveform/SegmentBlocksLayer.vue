@@ -4,15 +4,9 @@ import type { Segment, EditDecision } from "@/types/project"
 import { buildSegmentStateMap } from "@/utils/segmentHelpers"
 import type { SegmentState } from "@/utils/segmentHelpers"
 import { openContextMenu } from "@/utils/contextMenuManager"
-import { findWordIndexAtTime } from "@/utils/wordHighlight"
-// v3.0.1 M1: constants live in the constraint kernel (single source of truth)
-import {
-  MIN_SEGMENT_DURATION,
-  getTrackNeighborBounds,
-  snapToStep,
-} from "@/utils/trackConstraints"
 import { TIMELINE_METRICS_KEY } from "./injectionKeys"
 import type { TimelineMetrics } from "@/composables/useTimelineMetrics"
+import SegmentBlock from "./SegmentBlock.vue"
 
 const props = defineProps<{
   segments: Segment[]
@@ -34,12 +28,12 @@ const emit = defineEmits<{
   "set-time": [time: number]
   /** v2.1.1 A-03: edit mode toast notification */
   toast: [msg: string]
+  /** v3.0.1 M4-3: forwarded from SegmentBlock (Phase 3 linkage consumes). */
+  "trim-end": [payload: { segmentId: string; field: "start" | "end"; value: number; altKey: boolean }]
 }>()
 
 const metrics = inject<TimelineMetrics>(TIMELINE_METRICS_KEY)!
 
-const hoverEdge = ref<"left" | "right" | "body" | null>(null)
-const EDGE_HANDLE_HIT_PX = 16
 const selectedBlockId = ref<string | null>(null)
 const contextMenu = ref<{ x: number; y: number; segmentId: string } | null>(null)
 const containerRef = ref<HTMLElement | null>(null)
@@ -113,145 +107,25 @@ const visibleEditRanges = computed<EditRangeBlock[]>(() => {
     })
 })
 
-function statusColor(block: Block): string {
-  if (block.state.styleClass === "masked") return "bg-red-200/60 border-red-400"
-  if (block.state.styleClass === "kept") return "bg-green-200/60 border-green-400"
-  if (block.seg.type === "silence") return "bg-gray-200/50 border-gray-300"
-  return "bg-blue-100/60 border-blue-300"
-}
-
 function handleEmptyClick(e: MouseEvent) {
   const time = metrics.getTimeFromX(e.clientX)
   emit("add-segment", time, time + 0.5)
 }
 
-function snapToFrame(time: number): number {
-  // v3.0.1 M1: delegate to the constraint kernel (bit-identical to the
-  // legacy Math.round(time * 100) / 100, pinned by trackConstraints.test.ts)
-  return snapToStep(time)
-}
-
-function clampTime(
-  raw: number,
-  edge: "left" | "right",
-  seg: Segment,
-): number {
-  // v3.0.1 M2-1: trim is bounded by the same-track neighbor gap
-  // (constrain-first), not just the min duration. Trim is a one-edge
-  // clamp: no slide-in-place semantics (that is for whole-segment moves).
-  // Blocked (empty legal range) keeps the edge where it was.
-  const bounds = getTrackNeighborBounds(props.segments, seg.id)
-  if (edge === "left") {
-    const hi = seg.end - MIN_SEGMENT_DURATION
-    const lo = bounds.prevEnd ?? Number.NEGATIVE_INFINITY
-    if (lo > hi) return seg.start
-    return Math.min(Math.max(raw, lo), hi)
-  }
-  const lo = seg.start + MIN_SEGMENT_DURATION
-  const hi = bounds.nextStart ?? Number.POSITIVE_INFINITY
-  if (hi < lo) return seg.end
-  return Math.min(Math.max(raw, lo), hi)
-}
-
-function detectEdge(e: MouseEvent): "left" | "right" | "body" {
-  const el = e.currentTarget as HTMLElement
-  const rect = el.getBoundingClientRect()
-  const x = e.clientX - rect.left
-  if (x < EDGE_HANDLE_HIT_PX) return "left"
-  if (x > rect.width - EDGE_HANDLE_HIT_PX) return "right"
-  return "body"
-}
-
-function handleBlockMouseMove(block: Block, e: MouseEvent) {
-  hoveredSegId.value = block.seg.id
-  hoverEdge.value = detectEdge(e)
-}
-
-function handleBlockMouseLeave(block: Block) {
-  if (hoveredSegId.value === block.seg.id) hoveredSegId.value = null
-  hoverEdge.value = null
-}
-
-// v3.0.0 P4-1: word highlight while hovering a block with words. The
-// highlighted word tracks the playback time (coarse clock mirror, <=10Hz)
-// clamped to the hovered segment -- karaoke-style preview seeding (PRD D1.3).
-// Pure display: no data writes, no seeks.
-const hoveredSegId = ref<string | null>(null)
-
-const wordHighlight = computed<{ segId: string; index: number } | null>(() => {
-  const id = hoveredSegId.value
-  if (!id) return null
-  const seg = props.segments.find(s => s.id === id)
-  if (!seg || seg.type !== "subtitle" || !seg.words || seg.words.length === 0) {
-    return null
-  }
-  const t = Math.min(Math.max(props.currentTime ?? 0, seg.start), seg.end)
-  const index = findWordIndexAtTime(seg.words, t)
-  if (index < 0) return null
-  return { segId: seg.id, index }
-})
-
-function isWordHighlighted(block: Block, wordIndex: number): boolean {
-  return (
-    wordHighlight.value !== null &&
-    wordHighlight.value.segId === block.seg.id &&
-    wordHighlight.value.index === wordIndex
-  )
-}
-
-function handleBlockMouseDown(
-  block: Block,
-  e: MouseEvent,
-) {
-  focusContainer()
-  selectedBlockId.value = block.seg.id
-  const edge = detectEdge(e)
-  if (edge === "body") {
-    emit("select-range", block.seg.start, block.seg.end)
-    return
-  }
-  if (!props.updateTime) return
-
-  e.stopPropagation()
-  const initialValue = edge === "left" ? block.seg.start : block.seg.end
-  const offset = initialValue - metrics.getTimeFromX(e.clientX)
-
-  const onMove = (e: MouseEvent) => {
-    const raw = metrics.getTimeFromX(e.clientX) + offset
-    const clamped = clampTime(raw, edge, block.seg)
-    props.updateTime!(block.seg.id, edge === "left" ? "start" : "end", clamped)
-  }
-
-  const onUp = (e: MouseEvent) => {
-    const raw = metrics.getTimeFromX(e.clientX) + offset
-    // snap after clamp, then re-clamp: a 0.01 snap step can push the edge
-    // back over the neighbor bound (half-step overshoot).
-    const snapped = snapToFrame(clampTime(raw, edge, block.seg))
-    props.updateTime!(block.seg.id, edge === "left" ? "start" : "end", clampTime(snapped, edge, block.seg))
-    document.removeEventListener("mousemove", onMove)
-    document.removeEventListener("mouseup", onUp)
-    document.body.style.cursor = ""
-  }
-
-  document.body.style.cursor = edge === "left" ? "w-resize" : "e-resize"
-  document.addEventListener("mousemove", onMove)
-  document.addEventListener("mouseup", onUp)
-}
-
-function handleBlockContextMenu(block: Block, e: MouseEvent) {
+function handleBlockContextMenu(segmentId: string, e: MouseEvent) {
   e.preventDefault()
   e.stopPropagation()
-  selectedBlockId.value = block.seg.id
-  contextMenu.value = { x: e.clientX, y: e.clientY, segmentId: block.seg.id }
+  selectedBlockId.value = segmentId
+  contextMenu.value = { x: e.clientX, y: e.clientY, segmentId }
   // v3.0.0 M9-1: single-instance mutex via the shared manager -- opening
   // here closes any other open menu (e.g. the Timeline row menu); the
   // former `closeallcontextmenus` broadcast is retired.
   openContextMenu(() => { contextMenu.value = null })
 }
 
-function handleBlockClick(block: Block) {
+function handleBlockClick(seg: Segment) {
   selectedBlockId.value = null
-  emit("seek-segment", block.seg)
+  emit("seek-segment", seg)
 }
 
 function closeContextMenu() {
@@ -361,53 +235,25 @@ onUnmounted(() => {
     @keydown="handleKeyDown"
     @click.self="selectedBlockId = null; closeContextMenu()"
   >
-    <div
+    <SegmentBlock
       v-for="block in visibleBlocks"
       :key="block.seg.id"
-      class="absolute top-1 bottom-1 rounded border select-none group"
-      :class="[
-        statusColor(block),
-        hoverEdge === 'left' || hoverEdge === 'right' ? 'cursor-ew-resize' : 'cursor-grab',
-        selectedBlockId === block.seg.id ? 'ring-2 ring-blue-500' : '',
-      ]"
-      :style="{
-        left: block.leftPercent + '%',
-        width: block.widthPercent + '%',
-      }"
-      :title="block.seg.text || `[${block.seg.type}]`"
-      @mousemove="handleBlockMouseMove(block, $event)"
-      @mouseleave="handleBlockMouseLeave(block)"
-      @mousedown="handleBlockMouseDown(block, $event)"
-      @contextmenu="handleBlockContextMenu(block, $event)"
-      @click="handleBlockClick(block)"
-    >
-      <!-- Left edge handle -->
-      <div
-        class="absolute left-0 top-0 bottom-0 w-2 opacity-0 group-hover:opacity-100 transition-opacity bg-blue-400 rounded-l"
-        style="pointer-events: none"
-      />
-      <!-- Right edge handle -->
-      <div
-        class="absolute right-0 top-0 bottom-0 w-2 opacity-0 group-hover:opacity-100 transition-opacity bg-blue-400 rounded-r"
-        style="pointer-events: none"
-      />
-      <!-- Content -->
-      <div class="flex h-full items-center overflow-hidden px-2">
-        <span
-          v-if="block.seg.type === 'subtitle' && block.seg.words?.length && wordHighlight?.segId === block.seg.id"
-          class="truncate text-[10px] leading-tight text-gray-700"
-        >
-          <span
-            v-for="(w, wi) in block.seg.words"
-            :key="wi"
-            :class="isWordHighlighted(block, wi) ? 'rounded-sm bg-blue-500/40' : ''"
-          >{{ w.word }}</span>
-        </span>
-        <span v-else class="truncate text-[10px] leading-tight text-gray-700">
-          {{ block.seg.text || (block.seg.type === 'silence' ? '...' : '') }}
-        </span>
-      </div>
-    </div>
+      :seg="block.seg"
+      :left-percent="block.leftPercent"
+      :width-percent="block.widthPercent"
+      :state="block.state"
+      :segments="segments"
+      :selected="selectedBlockId === block.seg.id"
+      :update-time="updateTime"
+      :current-time="currentTime"
+      :duration="duration"
+      :global-edit-mode="globalEditMode"
+      @select-range="(s, e) => emit('select-range', s, e)"
+      @seek-segment="handleBlockClick"
+      @contextmenu="handleBlockContextMenu"
+      @trim-end="emit('trim-end', $event)"
+      @toast="emit('toast', $event)"
+    />
 
     <!-- Edit range overlays (e.g., subtitle trim delete ranges) -->
     <div

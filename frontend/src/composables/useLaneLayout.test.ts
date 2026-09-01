@@ -56,7 +56,7 @@ describe("computeLaneLayout", () => {
   })
 
   it("honors per-lane presets", () => {
-    const state = { ...defaultLaneLayoutState(), preset: { trk_a: "lg", trk_b: "sm" } }
+    const state = { ...defaultLaneLayoutState(), preset: { trk_a: "lg" as const, trk_b: "sm" as const } }
     const r = computeLaneLayout(600, IDS, state)
     expect(r.lanes[0].height).toBe(72)
     expect(r.lanes[1].height).toBe(32)
@@ -64,7 +64,7 @@ describe("computeLaneLayout", () => {
 
   it("compresses lanes in order when the main track floor is violated", () => {
     // 4x lg = 288; container 350 -> main would be 62 < 96 -> compress.
-    const state = { ...defaultLaneLayoutState(), preset: { trk_a: "lg", trk_b: "lg", trk_c: "lg", trk_d: "lg" } }
+    const state = { ...defaultLaneLayoutState(), preset: { trk_a: "lg" as const, trk_b: "lg" as const, trk_c: "lg" as const, trk_d: "lg" as const } }
     const r = computeLaneLayout(350, IDS, state)
     const main = r.mainTrackHeight
     expect(main).toBeGreaterThanOrEqual(MAIN_TRACK_MIN_HEIGHT)
