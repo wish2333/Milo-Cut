@@ -1,70 +1,106 @@
 <script setup lang="ts">
-import { ref } from "vue"
+import { computed, inject } from "vue"
 import type { SubtitleTrack } from "@/types/project"
+import type { LaneLayoutItem } from "@/composables/useLaneLayout"
+import { TIMELINE_METRICS_KEY } from "@/components/waveform/injectionKeys"
+import type { TimelineMetrics } from "@/composables/useTimelineMetrics"
+import SegmentBlock from "@/components/waveform/SegmentBlock.vue"
 
 /**
- * v3.0.0 M11-2 MVP: read-only extension-track lane at the bottom of the
- * Timeline. Collapsible; rows display original timestamps + text and seek
- * on click. No editing surface -- bindings are write-only this version.
+ * v3.0.1 M4-2: geometric extension-track lane for the stacked timeline
+ * (replaces the v3.0.0 read-only text list). Renders the track's segments
+ * as percent-positioned SegmentBlocks sharing the timeline metrics with
+ * the main track (same zoom/scroll). Positioned by the parent stack via
+ * the `lane` layout item. P2 batch: read-only -- no updateTime passed, so
+ * SegmentBlock trim stays disabled (Phase 3 activates editing).
  */
-defineProps<{
-  tracks: SubtitleTrack[]
+const props = defineProps<{
+  track: SubtitleTrack
+  lane: LaneLayoutItem
 }>()
 
 const emit = defineEmits<{
   seek: [time: number]
+  "toggle-collapse": [trackId: string]
 }>()
 
-const open = ref(true)
+const metrics = inject<TimelineMetrics>(TIMELINE_METRICS_KEY)!
 
-function formatTime(t: number): string {
-  const m = Math.floor(t / 60)
-  const s = t - m * 60
-  return `${m}:${s.toFixed(1).padStart(4, "0")}`
-}
+const visibleSegments = computed(() => {
+  const vs = metrics.viewStart.value
+  const ve = metrics.viewEnd.value
+  const vd = metrics.viewDuration.value
+  if (vd <= 0) return []
+  return props.track.segments
+    .filter(seg => seg.end > vs && seg.start < ve)
+    .map(seg => {
+      const clampStart = Math.max(seg.start, vs)
+      const clampEnd = Math.min(seg.end, ve)
+      return {
+        seg,
+        leftPercent: ((clampStart - vs) / vd) * 100,
+        widthPercent: ((clampEnd - clampStart) / vd) * 100,
+      }
+    })
+})
 </script>
 
 <template>
-  <div v-if="tracks.length > 0" class="border-t border-hairline" data-test="track-lane">
-    <button
-      class="flex w-full items-center gap-2 px-4 py-1.5 text-xs text-ink-muted transition-colors hover:bg-parchment"
-      :title="open ? '收起副轨' : '展开副轨'"
-      @click="open = !open"
+  <div
+    class="absolute inset-x-0 border-t border-hairline bg-surface-tile-1/60"
+    :style="{ top: lane.top + 'px', height: lane.height + 'px' }"
+    data-test="track-lane"
+  >
+    <!-- Floating title strip (track identity + collapse) -->
+    <div
+      class="absolute left-1 top-0.5 flex items-center gap-1.5 rounded bg-surface px-1 py-px text-[10px] leading-none text-ink-muted shadow-sm"
+      style="z-index: 1"
     >
-      <svg
-        xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 transition-transform"
-        :class="open ? 'rotate-90' : ''" fill="none" viewBox="0 0 24 24"
-        stroke="currentColor" stroke-width="2"
+      <button
+        class="flex items-center hover:text-ink"
+        :title="lane.collapsed ? '展开副轨' : '收起副轨'"
+        data-test="lane-collapse"
+        @click.stop="emit('toggle-collapse', track.id)"
       >
-        <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
-      </svg>
-      <span class="font-semibold">副轨字幕 ({{ tracks.length }})</span>
-      <span
-        v-for="track in tracks" :key="track.id"
-        class="rounded bg-primary-soft px-1.5 py-0.5 text-[10px] text-primary"
-      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg" class="h-2.5 w-2.5 transition-transform"
+          :class="lane.collapsed ? '' : 'rotate-90'" fill="none" viewBox="0 0 24 24"
+          stroke="currentColor" stroke-width="2.5"
+        >
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
+        </svg>
+      </button>
+      <span class="font-semibold rounded bg-primary-soft px-1 py-px text-primary">
         {{ track.name || track.id }}{{ track.language ? ` · ${track.language}` : '' }}
       </span>
-      <span class="ml-auto text-[10px]">只读</span>
-    </button>
+      <span>{{ track.segments.length }} 段</span>
+      <span v-if="lane.collapsed" class="text-ink-muted/60">已折叠</span>
+    </div>
 
-    <div v-if="open" class="max-h-40 overflow-y-auto">
-      <div v-for="track in tracks" :key="track.id" class="px-4 pb-2">
-        <div
-          v-for="seg in track.segments" :key="seg.id"
-          class="flex cursor-pointer items-baseline gap-3 rounded px-2 py-1 text-xs transition-colors hover:bg-parchment"
-          :data-test="`track-row-${seg.id}`"
-          @click="emit('seek', seg.start)"
-        >
-          <span class="shrink-0 font-mono text-[10px] text-ink-muted">
-            {{ formatTime(seg.start) }} - {{ formatTime(seg.end) }}
-          </span>
-          <span class="truncate text-ink">{{ seg.text }}</span>
-        </div>
-        <p v-if="track.segments.length === 0" class="px-2 py-1 text-xs text-ink-muted">
-          空轨道
-        </p>
-      </div>
+    <!-- Block area (hidden while collapsed) -->
+    <div
+      v-if="!lane.collapsed"
+      class="absolute inset-x-0 bottom-0 top-4"
+      data-test="lane-blocks"
+    >
+      <SegmentBlock
+        v-for="item in visibleSegments"
+        :key="item.seg.id"
+        :seg="item.seg"
+        :left-percent="item.leftPercent"
+        :width-percent="item.widthPercent"
+        :segments="track.segments"
+        track-kind="extension"
+        :title="item.seg.text"
+        @seek-segment="emit('seek', item.seg.start)"
+      />
+      <p
+        v-if="track.segments.length === 0"
+        class="absolute inset-0 flex items-center justify-center text-[10px] text-ink-muted"
+        data-test="lane-empty"
+      >
+        空轨道
+      </p>
     </div>
   </div>
 </template>

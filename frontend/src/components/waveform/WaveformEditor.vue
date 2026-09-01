@@ -1,7 +1,13 @@
 <script setup lang="ts">
-import { toRef, provide, ref, onMounted, onUnmounted } from "vue"
-import type { Segment, EditDecision } from "@/types/project"
+import { toRef, provide, ref, computed, onMounted, onUnmounted } from "vue"
+import type { Segment, EditDecision, SubtitleTrack } from "@/types/project"
 import { useTimelineMetrics, type TimelineMetrics } from "@/composables/useTimelineMetrics"
+import {
+  useLaneLayout,
+  computeLaneLayout,
+  LANE_COLLAPSED_HEIGHT,
+  LANE_PRESET_HEIGHTS,
+} from "@/composables/useLaneLayout"
 import { createRafScheduler } from "@/utils/rafScheduler"
 import { formatTimeShort } from "@/utils/format"
 import { TIMELINE_METRICS_KEY } from "./injectionKeys"
@@ -10,6 +16,7 @@ import TimeMarksLayer from "./TimeMarksLayer.vue"
 import SegmentBlocksLayer from "./SegmentBlocksLayer.vue"
 import PlayheadOverlay from "./PlayheadOverlay.vue"
 import ScrollbarStrip from "./ScrollbarStrip.vue"
+import TrackLane from "@/components/workspace/TrackLane.vue"
 
 const props = defineProps<{
   segments: Segment[]
@@ -18,6 +25,8 @@ const props = defineProps<{
   currentTime: number
   waveformPath?: string
   demoMode?: boolean
+  /** v3.0.0 M11-2: extension tracks for the stacked lanes (v3.0.1 M4-4). */
+  tracks?: SubtitleTrack[]
   updateTime?: (segmentId: string, field: "start" | "end", value: number) => void
   /** v2.1.1 A-03: full-text edit mode — blocks structural ops */
   globalEditMode?: boolean
@@ -43,21 +52,42 @@ const metrics = useTimelineMetrics(durationRef, currentTimeRef)
 
 provide<TimelineMetrics>(TIMELINE_METRICS_KEY, metrics)
 
-let layerEl: HTMLElement | null = null
-
-function setLayerRef(el: unknown) {
-  const htmlEl = el instanceof HTMLElement ? el : null
-  layerEl = htmlEl
-  metrics.containerRef.value = htmlEl
-}
-
-// -- v3.0.0 M6-2: hover seek preview --------------------------------------
+// -- v3.0.1 M4-4: stacked-timeline orchestration --------------------------
 //
-// pointermove only records a pending sample; a rAF task paints a
-// pointer-events:none DOM indicator (vertical line + time label) directly --
-// no Vue reactive state, zero component patches while hovering. The preview
-// NEVER seeks: clicking keeps the existing per-surface behavior (time strip
-// and segment blocks seek, empty area selects).
+// Content-driven heights: the main track keeps its h-28 (112px) height and
+// lanes stack below at their preset heights, so the WorkspacePage layout
+// flows naturally (SPEC M4-4 squeeze rules remain available in
+// computeLaneLayout for fixed-height containers; in this mode the input
+// height equals desired height, so compression never triggers).
+const MAIN_TRACK_HEIGHT = 112
+
+const tracksRef = computed(() => props.tracks ?? [])
+const laneCtl = useLaneLayout(() => tracksRef.value.map(t => t.id))
+
+const laneLayout = computed(() => {
+  const tracks = tracksRef.value
+  const desired = tracks.reduce((sum, t) => {
+    if (laneCtl.state.value.hidden[t.id]) return sum
+    return (
+      sum +
+      (laneCtl.state.value.collapsed[t.id]
+        ? LANE_COLLAPSED_HEIGHT
+        : LANE_PRESET_HEIGHTS[laneCtl.state.value.preset[t.id] ?? "md"])
+    )
+  }, 0)
+  return computeLaneLayout(
+    MAIN_TRACK_HEIGHT + desired,
+    tracks.map(t => t.id),
+    laneCtl.state.value,
+  )
+})
+
+const stackHeight = computed(() => MAIN_TRACK_HEIGHT + laneLayout.value.totalLanesHeight)
+
+const trackById = computed(() => new Map(tracksRef.value.map(t => [t.id, t])))
+const trackOverflow = computed(() => tracksRef.value.length > 4)
+
+// -- v3.0.0 M6-2: hover seek preview (unchanged, scoped to the main track) --
 const hoverLineRef = ref<HTMLElement | null>(null)
 const hoverLabelRef = ref<HTMLElement | null>(null)
 let pendingHover: { x: number; t: number } | null = null
@@ -100,9 +130,27 @@ function handleHoverLeave() {
 
 let hoverResizeObserver: ResizeObserver | null = null
 
+let layerEl: HTMLElement | null = null
+let stackEl: HTMLElement | null = null
+
+function setLayerRef(el: unknown) {
+  const htmlEl = el instanceof HTMLElement ? el : null
+  layerEl = htmlEl
+  metrics.containerRef.value = htmlEl
+  if (htmlEl) containerRect = htmlEl.getBoundingClientRect()
+}
+
+function setStackRef(el: unknown) {
+  stackEl = el instanceof HTMLElement ? el : null
+}
+
 onMounted(() => {
+  // v3.0.1 M4-4: wheel zoom/scroll moves to the WHOLE stack so lanes share
+  // the main-track navigation (one listener -- no double handling).
+  if (stackEl) {
+    stackEl.addEventListener("wheel", metrics.handleWheel, { passive: false })
+  }
   if (layerEl) {
-    layerEl.addEventListener("wheel", metrics.handleWheel, { passive: false })
     containerRect = layerEl.getBoundingClientRect()
     if (typeof ResizeObserver !== "undefined") {
       hoverResizeObserver = new ResizeObserver(() => {
@@ -114,12 +162,13 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  if (layerEl) {
-    layerEl.removeEventListener("wheel", metrics.handleWheel)
+  if (stackEl) {
+    stackEl.removeEventListener("wheel", metrics.handleWheel)
   }
   hoverScheduler.cancel()
   hoverResizeObserver?.disconnect()
   hoverResizeObserver = null
+  laneCtl.cleanup()
 })
 
 function handleSeek(time: number) {
@@ -178,55 +227,90 @@ function handleSplitSegment(segmentId: string, position: number) {
       <span>{{ metrics.viewEnd.value.toFixed(1) }}s</span>
     </div>
 
-    <!-- Layer container -->
+    <!-- Stacked surface: main track + N extension lanes + single playhead -->
     <div
-      :ref="setLayerRef"
-      data-test="waveform-layer"
-      class="relative h-28 overflow-hidden"
-      @pointermove="handleHoverMove"
-      @pointerleave="handleHoverLeave"
+      :ref="setStackRef"
+      data-test="timeline-stack"
+      class="relative overflow-hidden"
+      :style="{ height: stackHeight + 'px' }"
     >
-      <WaveformCanvas
-        :segments="segments"
-        :waveform-path="waveformPath"
-        :duration="duration"
-        :demo-mode="demoMode"
-        style="z-index: 0; pointer-events: none"
-      />
-      <TimeMarksLayer
-        style="z-index: 1"
-        @seek="handleSeek"
-      />
-      <SegmentBlocksLayer
-        :segments="segments"
-        :edits="edits"
-        :update-time="updateTime"
-        :current-time="currentTime"
-        :duration="duration"
-        :global-edit-mode="globalEditMode"
-        style="z-index: 2"
-        @select-range="handleSelectRange"
-        @add-segment="handleAddSegment"
-        @delete-segment="handleDeleteSegment"
-        @seek-segment="handleSeekSegment"
-        @split-segment="handleSplitSegment"
-        @set-time="emit('set-time', $event)"
-        @toast="emit('toast', $event)"
-      />
-      <!-- v3.0.0 M6-2: hover seek preview (imperative, pointer-events:none) -->
+      <!-- Main track area (z0-z10 layering unchanged) -->
       <div
-        ref="hoverLineRef"
-        data-test="hover-preview"
-        class="pointer-events-none absolute inset-y-0 left-0 opacity-0"
-        style="z-index: 5"
+        :ref="setLayerRef"
+        data-test="waveform-layer"
+        class="relative overflow-hidden"
+        :style="{ height: laneLayout.mainTrackHeight + 'px' }"
+        @pointermove="handleHoverMove"
+        @pointerleave="handleHoverLeave"
       >
-        <div class="h-full w-px bg-ink-muted/60"></div>
+        <WaveformCanvas
+          :segments="segments"
+          :waveform-path="waveformPath"
+          :duration="duration"
+          :demo-mode="demoMode"
+          style="z-index: 0; pointer-events: none"
+        />
+        <TimeMarksLayer
+          style="z-index: 1"
+          @seek="handleSeek"
+        />
+        <SegmentBlocksLayer
+          :segments="segments"
+          :edits="edits"
+          :update-time="updateTime"
+          :current-time="currentTime"
+          :duration="duration"
+          :global-edit-mode="globalEditMode"
+          style="z-index: 2"
+          @select-range="handleSelectRange"
+          @add-segment="handleAddSegment"
+          @delete-segment="handleDeleteSegment"
+          @seek-segment="handleSeekSegment"
+          @split-segment="handleSplitSegment"
+          @set-time="emit('set-time', $event)"
+          @toast="emit('toast', $event)"
+          @trim-end="emit('toast', '裁剪已应用')"
+        />
+        <!-- v3.0.0 M6-2: hover seek preview (imperative, pointer-events:none) -->
         <div
-          ref="hoverLabelRef"
-          class="absolute left-1 top-6 whitespace-nowrap rounded bg-surface-tile-1 px-1 py-0.5 text-[10px] leading-none text-ink-muted shadow-sm"
-        ></div>
+          ref="hoverLineRef"
+          data-test="hover-preview"
+          class="pointer-events-none absolute inset-y-0 left-0 opacity-0"
+          style="z-index: 5"
+        >
+          <div class="h-full w-px bg-ink-muted/60"></div>
+          <div
+            ref="hoverLabelRef"
+            class="absolute left-1 top-6 whitespace-nowrap rounded bg-surface-tile-1 px-1 py-0.5 text-[10px] leading-none text-ink-muted shadow-sm"
+          ></div>
+        </div>
       </div>
+
+      <!-- Extension lanes (v3.0.1 M4-2/M4-4) -->
+      <template v-for="lane in laneLayout.lanes" :key="lane.trackId">
+        <TrackLane
+          v-if="!lane.hidden && trackById.get(lane.trackId)"
+          :track="trackById.get(lane.trackId)!"
+          :lane="{ ...lane, top: laneLayout.mainTrackHeight + lane.top }"
+          @seek="(t) => handleSeek(t)"
+          @toggle-collapse="laneCtl.toggleCollapse"
+        />
+      </template>
+
+      <!-- v3.0.1 M4-4: single playhead promoted to the stack surface --
+           inset-y-0 spans the main track AND every lane (one owner, red
+           line M0-3 / design-spec "promote the owner" rule). -->
       <PlayheadOverlay style="z-index: 10; pointer-events: none" />
+
+      <!-- v3.0.1 R3.4: soft track-count hint (no hard cap) -->
+      <div
+        v-if="trackOverflow"
+        data-test="track-overflow-hint"
+        class="absolute bottom-0 right-1 rounded bg-amber-50 px-1 py-px text-[10px] leading-tight text-amber-700"
+        style="z-index: 6"
+      >
+        副轨较多（{{ tracksRef.length }} 条），建议合并或隐藏
+      </div>
     </div>
 
     <!-- Scrollbar -->

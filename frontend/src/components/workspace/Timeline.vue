@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, reactive, watch, nextTick, onMounted, onUnmounted } from "vue"
-import type { Segment, EditDecision, AnalysisResult, SubtitleTrack } from "@/types/project"
+import type { Segment, EditDecision, AnalysisResult } from "@/types/project"
 import {
   buildSubtitleIndex,
   findSubtitleAtTime,
@@ -15,7 +15,6 @@ import {
 } from "@/utils/virtualList"
 import TranscriptRow from "@/components/workspace/TranscriptRow.vue"
 import SilenceRow from "@/components/workspace/SilenceRow.vue"
-import TrackLane from "@/components/workspace/TrackLane.vue"
 import SuggestionPanel from "@/components/workspace/SuggestionPanel.vue"
 import AIAssistantPanel from "@/components/workspace/AIAssistantPanel.vue"
 import HighlightModeView from "@/components/workspace/HighlightModeView.vue"
@@ -26,8 +25,6 @@ const props = defineProps<{
   analysisResults: AnalysisResult[]
   subtitleCount: number
   silenceCount: number
-  /** v3.0.0 M11-2: read-only extension tracks for the bottom lane */
-  tracks?: SubtitleTrack[]
   selectedSegmentId?: string | null
   globalEditMode?: boolean
   // v2.1.1 M4-1: multi-select mode
@@ -606,13 +603,6 @@ watch(
         </div>
       </Transition>
     </div>
-
-    <!-- v3.0.0 M11-2: read-only extension-track lane (collapsed by row toggle) -->
-    <TrackLane
-      v-if="tracks && tracks.length > 0"
-      :tracks="tracks"
-      @seek="(t) => emit('seek', t)"
-    />
   </div>
 </template>
 
