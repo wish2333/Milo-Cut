@@ -516,3 +516,211 @@ describe("WaveformEditor multi wheel gestures (M5-1/M5-2)", () => {
     wrapper.unmount()
   })
 })
+
+// ------------------------------------------------------------------
+// v3.0.2 M5-3: in-row pointer gestures (scrub / Ctrl-create / marquee)
+// ------------------------------------------------------------------
+
+import { defineComponent } from "vue"
+
+/** SegmentBlocksLayer stand-in that emits the M5-3 empty-area events. */
+const EmptyAreaLayerStub = defineComponent({
+  name: "SegmentBlocksLayer",
+  emits: ["empty-press", "empty-double-click"],
+  template: `<div
+    data-test="seg-layer-stub"
+    class="absolute inset-0"
+    @mousedown.self="
+      $emit('empty-press', {
+        clientX: $event.clientX,
+        clientY: $event.clientY,
+        ctrlKey: $event.ctrlKey,
+        shiftKey: $event.shiftKey,
+        time: 0,
+      })
+    "
+    @dblclick.self="$emit('empty-double-click')"
+  ></div>`,
+})
+
+describe("WaveformEditor in-row pointer gestures (M5-3)", () => {
+  // Geometry model: rows are 600px wide, stride 130 (rowHeight 120 + gap),
+  // content origin at (0, 0). x -> time inside a row: (x/600)*spr.
+  let clientHeightDescriptor: PropertyDescriptor | undefined
+  let rectDescriptor: PropertyDescriptor | undefined
+
+  beforeAll(() => {
+    clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight")
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.getAttribute?.("data-test") === "multi-scroll") return 320
+        return clientHeightDescriptor?.get?.call(this) ?? 0
+      },
+    })
+    rectDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "getBoundingClientRect")
+    Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", {
+      configurable: true,
+      value(this: HTMLElement) {
+        if (this.classList?.contains("waveform-row")) {
+          const idx = Number(this.getAttribute("data-row-index") ?? 0)
+          return rect(0, idx * 130, 600, 120)
+        }
+        if (this.getAttribute?.("data-test") === "multi-content") {
+          return rect(0, 0, 600, 1290)
+        }
+        return rect(0, 0, 0, 0)
+      },
+    })
+  })
+
+  afterAll(() => {
+    if (clientHeightDescriptor) {
+      Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeightDescriptor)
+    }
+    if (rectDescriptor) {
+      Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", rectDescriptor)
+    }
+  })
+
+  function rect(left: number, top: number, width: number, height: number): DOMRect {
+    return { left, top, width, height, right: left + width, bottom: top + height, x: left, y: top, toJSON: () => ({}) } as DOMRect
+  }
+
+  function makeMouse(type: string, x: number, y: number, modifiers: { ctrlKey?: boolean; shiftKey?: boolean } = {}) {
+    const ev = new MouseEvent(type, { bubbles: true, cancelable: true })
+    // happy-dom drops modifier keys from event constructors.
+    Object.defineProperty(ev, "clientX", { value: x })
+    Object.defineProperty(ev, "clientY", { value: y })
+    Object.defineProperty(ev, "ctrlKey", { value: modifiers.ctrlKey ?? false })
+    Object.defineProperty(ev, "shiftKey", { value: modifiers.shiftKey ?? false })
+    return ev
+  }
+
+  function mountGestures(segments: Array<{ id: string; start: number; end: number }>) {
+    return mount(WaveformEditor, {
+      props: {
+        segments: segments.map(s => ({
+          id: s.id,
+          version: 1,
+          type: "subtitle" as const,
+          start: s.start,
+          end: s.end,
+          text: `t-${s.id}`,
+          speaker: "",
+        })),
+        edits: [],
+        duration: 100,
+        currentTime: -1,
+      },
+      global: {
+        stubs: {
+          WaveformCanvas: true,
+          TimeMarksLayer: true,
+          SegmentBlocksLayer: EmptyAreaLayerStub,
+          ScrollbarStrip: true,
+          PlayheadOverlay: true,
+        },
+      },
+    })
+  }
+
+  beforeEach(() => {
+    localStorage.clear()
+    localStorage.setItem(
+      ROW_LAYOUT_STORAGE_KEY,
+      JSON.stringify({ mode: "multi", secondsPerRow: 10, rowHeight: 120 }),
+    )
+  })
+  afterEach(() => {
+    localStorage.clear()
+  })
+
+  it("plain press scrubs: 32ms throttle collapses sync moves, release seeks precisely", async () => {
+    const wrapper = mountGestures([])
+    const stub = wrapper.find('[data-test="seg-layer-stub"]').element
+    stub.dispatchEvent(makeMouse("mousedown", 300, 60)) // row 0, 5s
+    // Throttled moves within the same tick: only the FIRST emits.
+    for (let i = 0; i < 3; i++) document.dispatchEvent(makeMouse("mousemove", 360, 60)) // 6s
+    await wrapper.vm.$nextTick()
+    expect(wrapper.emitted("set-time")).toEqual([[6]])
+    expect((wrapper.vm as unknown as { waveformScrubbing: boolean }).waveformScrubbing).toBe(true)
+    // Release emits ONE precise seek at the final position.
+    document.dispatchEvent(makeMouse("mouseup", 480, 60)) // 8s
+    await wrapper.vm.$nextTick()
+    expect(wrapper.emitted("set-time")).toEqual([[6], [8]])
+    expect((wrapper.vm as unknown as { waveformScrubbing: boolean }).waveformScrubbing).toBe(false)
+    // A plain press clears the global selection upstream (清选上行).
+    expect(wrapper.emitted("clear-selection")?.length).toBe(1)
+    wrapper.unmount()
+  })
+
+  it("double click on empty area toggles playback", async () => {
+    const wrapper = mountGestures([])
+    await wrapper.find('[data-test="seg-layer-stub"]').trigger("dblclick")
+    expect(wrapper.emitted("toggle-play")?.length).toBe(1)
+    wrapper.unmount()
+  })
+
+  it("Ctrl+drag previews row-bounded creation and commits via add-segment", async () => {
+    const wrapper = mountGestures([{ id: "a", start: 20, end: 22 }])
+    const stub = wrapper.find('[data-test="seg-layer-stub"]').element
+    stub.dispatchEvent(makeMouse("mousedown", 120, 60, { ctrlKey: true })) // 2s
+    document.dispatchEvent(makeMouse("mousemove", 300, 60)) // 5s
+    await wrapper.vm.$nextTick()
+    const preview = wrapper.find('[data-test="create-preview"]')
+    expect(preview.exists()).toBe(true)
+    expect((preview.element as HTMLElement).style.left).toBe("20%")
+    expect((preview.element as HTMLElement).style.width).toBe("30%")
+    document.dispatchEvent(makeMouse("mouseup", 300, 60))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.emitted("add-segment")).toEqual([[2, 5]])
+    expect(wrapper.find('[data-test="create-preview"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it("Ctrl-create preview stops at an existing block edge; narrow gaps reject", async () => {
+    // Segment [4,6]: sweeping across it clamps the preview at 4s.
+    const wrapper = mountGestures([{ id: "s", start: 4, end: 6 }])
+    const stub = wrapper.find('[data-test="seg-layer-stub"]').element
+    stub.dispatchEvent(makeMouse("mousedown", 120, 60, { ctrlKey: true })) // 2s
+    document.dispatchEvent(makeMouse("mousemove", 420, 60)) // raw sweep to 7s
+    await wrapper.vm.$nextTick()
+    expect((wrapper.find('[data-test="create-preview"]').element as HTMLElement).style.width).toBe("20%") // 2..4s
+    document.dispatchEvent(makeMouse("mouseup", 420, 60))
+    expect(wrapper.emitted("add-segment")).toEqual([[2, 4]])
+    wrapper.unmount()
+
+    // Gap 1.95..2.0 is narrower than MIN_SEGMENT_DURATION: reject silently.
+    const wrapper2 = mountGestures([
+      { id: "x", start: 1.9, end: 1.95 },
+      { id: "y", start: 2.0, end: 2.05 },
+    ])
+    const stub2 = wrapper2.find('[data-test="seg-layer-stub"]').element
+    stub2.dispatchEvent(makeMouse("mousedown", 118.2, 60, { ctrlKey: true })) // anchor 1.97s
+    document.dispatchEvent(makeMouse("mousemove", 240, 60))
+    await wrapper2.vm.$nextTick()
+    expect(wrapper2.find('[data-test="create-preview"]').classes()).toContain("border-red-500")
+    document.dispatchEvent(makeMouse("mouseup", 240, 60))
+    expect(wrapper2.emitted("add-segment")).toBeFalsy()
+    wrapper2.unmount()
+  })
+
+  it("Shift+drag marquee hits blocks across two rows and merges selection", async () => {
+    const wrapper = mountGestures([
+      { id: "a", start: 1, end: 3 }, // row 0
+      { id: "b", start: 12, end: 14 }, // row 1
+      { id: "c", start: 25, end: 27 }, // row 2 (outside the marquee)
+    ])
+    const stub = wrapper.find('[data-test="seg-layer-stub"]').element
+    stub.dispatchEvent(makeMouse("mousedown", 60, 60, { shiftKey: true })) // row 0
+    document.dispatchEvent(makeMouse("mousemove", 480, 190)) // into row 1
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="marquee-rect"]').exists()).toBe(true)
+    document.dispatchEvent(makeMouse("mouseup", 480, 190))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.emitted("select-segments")).toEqual([[["a", "b"]]])
+    expect(wrapper.find('[data-test="marquee-rect"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+})

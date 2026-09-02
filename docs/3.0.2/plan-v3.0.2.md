@@ -206,10 +206,10 @@ P3 批次:   M7 排版/组合/文档
 
 ### P3-2 行内指针交互（SPEC M5-3）
 
-- [ ] `SegmentBlocksLayer` 增 `emptyAreaMode` prop（"add" 默认零变化 / "seek" multi）；WaveformRow 注入
-- [ ] 点击空白（bounded）清选+seek；scrub（unbounded + 32ms 节流 + 松手精确 + scrubbing 抑制列表跟随）；双击空白播放/暂停
-- [ ] Ctrl+拖建段（预览停边界 + 占用检查）；Shift+拖跨行框选（命中 id 并入全局 selectedSegmentIds）
-- [ ] vitest：emptyAreaMode 双模式、占用拒绝、框选跨两行命中、scrub 节流
+- [x] `SegmentBlocksLayer` 增 `emptyAreaMode` prop（"add" 默认零变化 / "seek" multi）；WaveformRow 注入（2026-09-02：multi 恒以 empty-area-mode="seek" 传入）
+- [x] 点击空白（bounded）清选+seek；scrub（unbounded + 32ms 节流 + 松手精确 + scrubbing 抑制列表跟随）；双击空白播放/暂停（2026-09-02：scrub 全程 emit set-time 不改播放态；waveformScrubbing 编排层 ref 经 defineExpose 暴露，列表侧抑制接线随 M6-1 跟随三分落地——现状列表无播放自动滚动可抑制）
+- [x] Ctrl+拖建段（预览停边界 + 占用检查）；Shift+拖跨行框选（命中 id 并入全局 selectedSegmentIds）（2026-09-02：占用 = boundsAtAnchor + constrainCueRangeToTrack，窄缝 ok:false 拒绝；框选 emit select-segments 由 WorkspacePage 合并非替换）
+- [x] vitest：emptyAreaMode 双模式、占用拒绝、框选跨两行命中、scrub 节流（+10 例：层 3 + 编辑器 5 + 节流门 2）
 
 **验收方式**: `bun run test`。
 **验收标准**: ★ 双平台手势真机清单初验（M5-5 前半：滚动/scrub/框选）。

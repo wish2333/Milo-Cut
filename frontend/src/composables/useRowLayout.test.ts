@@ -31,6 +31,7 @@ import {
   isRowInComfortZone,
   followScrollTop,
   cyclePreset,
+  shouldEmitScrubSeek,
   timeFromPointerInRow,
   loadRowLayoutState,
   saveRowLayoutState,
@@ -401,5 +402,20 @@ describe("cyclePreset (M5-1 wheel burst ladder)", () => {
     expect(cyclePreset(SECONDS_PER_ROW_PRESETS, 10, 0)).toBe(10)
     // Off-ladder current (corrupt storage) anchors at index 0.
     expect(cyclePreset(SECONDS_PER_ROW_PRESETS, 7 as never, 1)).toBe(10)
+  })
+})
+
+describe("shouldEmitScrubSeek (M5-3 32ms throttle gate)", () => {
+  it("fires only after the full interval has elapsed", () => {
+    expect(shouldEmitScrubSeek(1000, 1000)).toBe(false)
+    expect(shouldEmitScrubSeek(1000, 1031.9)).toBe(false)
+    expect(shouldEmitScrubSeek(1000, 1032)).toBe(true)
+    expect(shouldEmitScrubSeek(1000, 1100)).toBe(true)
+  })
+
+  it("first sample and custom intervals", () => {
+    expect(shouldEmitScrubSeek(Number.NEGATIVE_INFINITY, 0)).toBe(true)
+    expect(shouldEmitScrubSeek(100, 150, 32)).toBe(true)
+    expect(shouldEmitScrubSeek(100, 120, 32)).toBe(false)
   })
 })

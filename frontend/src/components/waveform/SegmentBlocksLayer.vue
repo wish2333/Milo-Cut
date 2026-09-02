@@ -25,6 +25,13 @@ const props = defineProps<{
   rowEnd?: number
   /** v3.0.2 M3-2 (③): frozen pointer->time converter (multi-row trim). */
   getTimeFromPointer?: (clientX: number) => number
+  /**
+   * v3.0.2 M5-3: empty-area click semantics. "add" (default, basic) keeps
+   * the v3.0.1 add-segment behavior EXACTLY; "seek" (multi, injected by
+   * WaveformRow) clears selection and hands the press to the orchestrator
+   * (scrub / Ctrl-create / Shift-marquee via empty-press). Undefined = "add".
+   */
+  emptyAreaMode?: "add" | "seek"
 }>()
 
 const emit = defineEmits<{
@@ -39,6 +46,12 @@ const emit = defineEmits<{
   toast: [msg: string]
   /** v3.0.1 M4-3: forwarded from SegmentBlock (Phase 3 linkage consumes). */
   "trim-end": [payload: { segmentId: string; field: "start" | "end"; value: number; altKey: boolean }]
+  /** v3.0.2 M5-3: seek-mode empty press (row forwards to the editor). */
+  "empty-press": [
+    payload: { clientX: number; clientY: number; ctrlKey: boolean; shiftKey: boolean; time: number },
+  ]
+  /** v3.0.2 M5-3: seek-mode empty double click (play/pause). */
+  "empty-double-click": []
 }>()
 
 const metrics = inject<TimelineMetrics>(TIMELINE_METRICS_KEY)!
@@ -124,8 +137,29 @@ const visibleEditRanges = computed<EditRangeBlock[]>(() => {
 })
 
 function handleEmptyClick(e: MouseEvent) {
+  // v3.0.2 M5-3: dual empty-area semantics. "seek" (multi) clears the
+  // row-local selection and forwards the press (modifiers included) so the
+  // orchestrator can route scrub / Ctrl-create / Shift-marquee; "add"
+  // (default/basic) is the untouched v3.0.1 path.
+  if (props.emptyAreaMode === "seek") {
+    selectedBlockId.value = null
+    closeContextMenu()
+    emit("empty-press", {
+      clientX: e.clientX,
+      clientY: e.clientY,
+      ctrlKey: e.ctrlKey,
+      shiftKey: e.shiftKey,
+      time: metrics.getTimeFromX(e.clientX),
+    })
+    return
+  }
   const time = metrics.getTimeFromX(e.clientX)
   emit("add-segment", time, time + 0.5)
+}
+
+/** v3.0.2 M5-3: double-click empty area in seek mode toggles playback. */
+function handleEmptyDoubleClick() {
+  if (props.emptyAreaMode === "seek") emit("empty-double-click")
 }
 
 function handleBlockContextMenu(segmentId: string, e: MouseEvent) {
@@ -248,6 +282,7 @@ onUnmounted(() => {
     tabindex="0"
     @mousedown="focusContainer"
     @mousedown.self="handleEmptyClick"
+    @dblclick.self="handleEmptyDoubleClick"
     @keydown="handleKeyDown"
     @click.self="selectedBlockId = null; closeContextMenu()"
   >

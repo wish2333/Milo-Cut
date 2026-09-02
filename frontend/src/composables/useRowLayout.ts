@@ -134,6 +134,18 @@ export function rowIndexAtTime(time: number, secondsPerRow: number): number {
   return Math.floor(Math.max(0, time) / secondsPerRow)
 }
 
+/**
+ * M5-3: scrub-seek throttle gate. Pure so vitest can pin the boundary;
+ * the editor's scrub machine consults this before emitting each move.
+ */
+export function shouldEmitScrubSeek(
+  lastEmit: number,
+  now: number,
+  interval: number = SCRUB_SEEK_INTERVAL_MS,
+): boolean {
+  return now - lastEmit >= interval
+}
+
 /** Comfort-zone inset: 20% of the viewport, clamped to [48, 120] px. */
 export function comfortInset(viewportHeight: number): number {
   return Math.min(120, Math.max(48, viewportHeight * 0.2))

@@ -854,6 +854,16 @@ const workspaceActions = createWorkspaceActions({
   confirmAction,
 })
 provideWorkspaceActions(workspaceActions)
+
+// v3.0.2 M5-3: Shift-marquee hits on the multi-row waveform merge into the
+// SAME global selection set the subtitle list uses (M3-2 ownership ruling).
+function handleWaveformSelectSegments(ids: string[]) {
+  if (ids.length === 0) return
+  const next = new Set(selectedSegmentIds.value)
+  for (const id of ids) next.add(id)
+  selectedSegmentIds.value = next
+}
+
 const {
   handleRegenerateWaveform, handleRequestProxy, handleSeek, handleSetTime,
   handleVideoLoaded, handleTimeUpdate, handleTogglePlay, handleSeekTo,
@@ -1348,6 +1358,9 @@ onUnmounted(() => {
       @regenerate-waveform="handleRegenerateWaveform"
       @split-segment="handleSplitSegment"
       @toast="(msg) => showToast(msg, 'info', 3000)"
+      @toggle-play="handleTogglePlay"
+      @select-segments="handleWaveformSelectSegments"
+      @clear-selection="clearMultiSelection"
     />
 
     <!-- Delete silence confirmation dialog -->

@@ -7,15 +7,23 @@ import {
   ROW_HEIGHT_PRESETS,
   ROW_GAP,
   REVEAL_BIAS,
+  SCRUB_SEEK_INTERVAL_MS,
   WHEEL_DEBOUNCE_MS,
   cyclePreset,
   computeRowCount,
   followScrollTop,
   rowIndexAtTime,
+  shouldEmitScrubSeek,
   useRowLayout,
   strideOf,
   lastRowWidthPercent,
 } from "@/composables/useRowLayout"
+import { useRowDragCapture, type RowEmptyGesture } from "@/composables/useRowDragCapture"
+import {
+  MIN_SEGMENT_DURATION,
+  constrainCueRangeToTrack,
+  type TrackNeighborBounds,
+} from "@/utils/trackConstraints"
 import {
   useLaneLayout,
   computeLaneLayout,
@@ -61,6 +69,12 @@ const emit = defineEmits<{
   "regenerate-waveform": []
   "split-segment": [segmentId: string, position: number]
   toast: [msg: string]
+  /** v3.0.2 M5-3: empty-area double click toggles playback. */
+  "toggle-play": []
+  /** v3.0.2 M5-3: Shift-marquee hit ids merge into the global selection. */
+  "select-segments": [segmentIds: string[]]
+  /** v3.0.2 M5-3: plain empty-area press clears the global multi-selection. */
+  "clear-selection": []
 }>()
 
 const durationRef = toRef(props, "duration")
@@ -377,6 +391,237 @@ function detachMultiWheel(): void {
   if (scrollEl) scrollEl.removeEventListener("wheel", handleMultiWheel)
 }
 
+// -- v3.0.2 M5-3: in-row pointer gestures (scrub / Ctrl-create / marquee) --
+//
+// The EDITOR owns every cross-pointer-event state (M3-2): rows only freeze
+// their geometry into the shared drag-capture singleton on empty-press and
+// emit the gesture descriptor up. Routing by modifier: plain = scrub,
+// Ctrl = create segment, Shift = cross-row marquee. basic mode never gets
+// here (rows do not exist there; its empty click still creates segments).
+
+const rowDrag = useRowDragCapture()
+/**
+ * Orchestrator-level scrubbing flag (M5-3): the subtitle-list follow
+ * consumer skips list scrolling while true. The list-side wiring lands
+ * with the M6-1 follow three-way split; the contract is exposed now.
+ */
+const waveformScrubbing = ref(false)
+
+/** multi-content element: marquee/create-preview coordinate basis. */
+let contentEl: HTMLElement | null = null
+function setContentRef(el: unknown) {
+  contentEl = el instanceof HTMLElement ? el : null
+}
+
+/** Tear down the document gesture listeners + transient state. */
+let gestureCleanup: (() => void) | null = null
+function beginDocumentGesture(
+  onMove: (e: MouseEvent) => void,
+  onUp: (e: MouseEvent) => void,
+): void {
+  // onUp runs FIRST (it still reads frozen geometry / preview state),
+  // cleanup then drops listeners and transient state.
+  const up = (e: MouseEvent) => {
+    try {
+      onUp(e)
+    } finally {
+      cleanup()
+    }
+  }
+  function cleanup() {
+    document.removeEventListener("mousemove", onMove)
+    document.removeEventListener("mouseup", up)
+    gestureCleanup = null
+    rowDrag.release()
+    waveformScrubbing.value = false
+    createPreview.value = null
+    marquee.value = null
+  }
+  gestureCleanup = cleanup
+  document.addEventListener("mousemove", onMove)
+  document.addEventListener("mouseup", up)
+}
+
+// Scrub: frozen unbounded time + clamp[0,duration], 32ms-throttled set-time
+// while moving, ONE precise set-time on release. set-time (not seek) keeps
+// the play state untouched -- scrub positions the playhead (M5-3 裁决).
+function startScrubGesture(): void {
+  waveformScrubbing.value = true
+  let lastEmit = Number.NEGATIVE_INFINITY
+  const seekAt = (clientX: number) => {
+    const t = rowDrag.timeAt(clientX, { bounded: false })
+    if (t === null) return
+    emit("set-time", Math.min(Math.max(0, t), props.duration))
+  }
+  beginDocumentGesture(
+    e => {
+      const now = performance.now()
+      if (!shouldEmitScrubSeek(lastEmit, now, SCRUB_SEEK_INTERVAL_MS)) return
+      lastEmit = now
+      seekAt(e.clientX)
+    },
+    e => seekAt(e.clientX),
+  )
+}
+
+// Ctrl-create: row-bounded preview range from the frozen anchor, clamped
+// against the neighbor gap around the anchor (preview STOPS at an existing
+// block edge); release emits add-segment through the existing chain only
+// when the range is legal.
+interface CreatePreviewRect {
+  rowIndex: number
+  start: number
+  end: number
+  valid: boolean
+}
+const createPreview = ref<CreatePreviewRect | null>(null)
+
+/** Neighbor gap around a PROSPECTIVE segment anchored at `anchor` (no id yet). */
+function boundsAtAnchor(anchor: number): TrackNeighborBounds {
+  let prevEnd: number | null = null
+  let nextStart: number | null = null
+  for (const s of props.segments) {
+    if (s.end <= anchor + 1e-6 && (prevEnd === null || s.end > prevEnd)) prevEnd = s.end
+    if (s.start >= anchor - 1e-6 && (nextStart === null || s.start < nextStart)) nextStart = s.start
+  }
+  return { prevEnd, nextStart }
+}
+
+function startCreateGesture(g: RowEmptyGesture): void {
+  const anchor = rowDrag.timeAt(g.clientX, { bounded: true })
+  if (anchor === null) return
+  const bounds = boundsAtAnchor(anchor)
+  const updatePreview = (clientX: number) => {
+    const t = rowDrag.timeAt(clientX, { bounded: true })
+    if (t === null) return
+    const rawStart = Math.min(anchor, t)
+    const rawEnd = Math.max(anchor, t)
+    const r = constrainCueRangeToTrack(rawStart, rawEnd, bounds)
+    createPreview.value = r.ok
+      ? {
+          rowIndex: g.rowIndex,
+          start: r.start,
+          end: r.end,
+          valid: r.end - r.start >= MIN_SEGMENT_DURATION - 1e-6,
+        }
+      : { rowIndex: g.rowIndex, start: rawStart, end: rawEnd, valid: false }
+  }
+  updatePreview(g.clientX)
+  beginDocumentGesture(
+    e => updatePreview(e.clientX),
+    () => {
+      const p = createPreview.value
+      if (p?.valid) handleAddSegment(p.start, p.end) // existing add-segment chain
+    },
+  )
+}
+
+// Shift-marquee: selection rectangle on multi-content (cross-row), hit ids
+// merge into the global selectedSegmentIds via the select-segments event.
+interface MarqueeRect {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+const marquee = ref<MarqueeRect | null>(null)
+
+function contentPoint(e: MouseEvent): { x: number; y: number } | null {
+  if (!contentEl) return null
+  const rect = contentEl.getBoundingClientRect()
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top }
+}
+
+function startMarqueeGesture(g: RowEmptyGesture): void {
+  const anchor = { x: g.clientX, y: g.clientY }
+  const updateRect = (e: MouseEvent) => {
+    const p = contentPoint(e)
+    if (!p) return
+    marquee.value = {
+      x: Math.min(anchor.x, p.x),
+      y: Math.min(anchor.y, p.y),
+      w: Math.abs(p.x - anchor.x),
+      h: Math.abs(p.y - anchor.y),
+    }
+  }
+  beginDocumentGesture(
+    updateRect,
+    () => {
+      const rect = marquee.value
+      // Degenerate rectangle (plain shift-click) is a selection no-op.
+      if (rect && (rect.w > 2 || rect.h > 2)) {
+        emit("select-segments", hitSegmentsInMarquee(rect))
+      }
+    },
+  )
+}
+
+/** Rect-intersect every visible row's block band; returns hit segment ids. */
+function hitSegmentsInMarquee(rect: MarqueeRect): string[] {
+  if (!contentEl) return []
+  const width = contentEl.getBoundingClientRect().width
+  if (!(width > 0)) return []
+  const spr = rowLayout.state.value.secondsPerRow
+  const rowHeight = rowLayout.state.value.rowHeight
+  const stride = strideOf(rowHeight)
+  const x1 = rect.x
+  const x2 = rect.x + rect.w
+  const y1 = rect.y
+  const y2 = rect.y + rect.h
+  const firstRow = Math.max(0, Math.floor(y1 / stride))
+  const lastRow = Math.min(rowLayout.rowCount.value - 1, Math.floor(y2 / stride))
+  const hits = new Set<string>()
+  for (let r = firstRow; r <= lastRow; r++) {
+    // Skip rows whose band the rectangle does not actually cross (the
+    // marquee may end inside a ROW_GAP).
+    const bandTop = r * stride
+    if (bandTop + rowHeight <= y1 || bandTop >= y2) continue
+    const rowStartT = r * spr
+    const t1 = rowStartT + (x1 / width) * spr
+    const t2 = rowStartT + (x2 / width) * spr
+    for (const s of props.segments) {
+      if (s.end > t1 && s.start < t2) hits.add(s.id)
+    }
+  }
+  return [...hits]
+}
+
+/** M5-3 router: rows freeze geometry, the editor picks the gesture. */
+function handleRowEmptyGesture(g: RowEmptyGesture): void {
+  if (!isMulti.value) return
+  if (g.ctrlKey) startCreateGesture(g)
+  else if (g.shiftKey) startMarqueeGesture(g)
+  else {
+    emit("clear-selection") // 清选上行 (M5-3)
+    startScrubGesture()
+  }
+}
+
+/** Preview rectangle style inside multi-content (row-local time mapping). */
+const createPreviewStyle = computed(() => {
+  const p = createPreview.value
+  if (!p) return {}
+  const spr = rowLayout.state.value.secondsPerRow
+  const rowStartT = p.rowIndex * spr
+  return {
+    top: p.rowIndex * strideOf(rowLayout.state.value.rowHeight) + "px",
+    height: rowLayout.state.value.rowHeight + "px",
+    left: ((p.start - rowStartT) / spr) * 100 + "%",
+    width: ((p.end - p.start) / spr) * 100 + "%",
+  }
+})
+
+const marqueeStyle = computed(() => {
+  const m = marquee.value
+  if (!m) return {}
+  return {
+    left: m.x + "px",
+    top: m.y + "px",
+    width: m.w + "px",
+    height: m.h + "px",
+  }
+})
+
 // Programmatic scroll writes (revealTime / mode switch / clamp) reflect
 // into the container. A write that equals the DOM position is a no-op, so
 // user scrolling never fights this watcher in practice (P4-1 adds the
@@ -451,6 +696,7 @@ watch(isMulti, async multi => {
     rowLayout.revealTime(props.currentTime, true)
   } else {
     resetWheelBursts() // half-finished ctrl+wheel bursts never outlive multi
+    gestureCleanup?.() // nor do half-finished scrub/create/marquee gestures
     nextTick(attachBasicWheel)
   }
 })
@@ -461,6 +707,7 @@ onUnmounted(() => {
   scrollScheduler.cancel()
   detachMultiWheel()
   resetWheelBursts()
+  gestureCleanup?.()
 })
 
 // Multi-mode row event forwarding: the editor owns all navigation/edit
@@ -468,6 +715,10 @@ onUnmounted(() => {
 function handleRowSetTime(t: number) {
   emit("set-time", t)
 }
+
+// Test surface: the orchestrator-level scrubbing flag (M5-3). WorkspacePage
+// consumes it for subtitle-list follow suppression via the M6-1 wiring.
+defineExpose({ waveformScrubbing })
 
 </script>
 
@@ -540,7 +791,12 @@ function handleRowSetTime(t: number) {
       :style="{ height: multiViewportHeight + 'px' }"
       @scroll="handleScroll"
     >
-      <div data-test="multi-content" class="relative" :style="{ height: rowLayout.contentHeight.value + 'px' }">
+      <div
+        :ref="setContentRef"
+        data-test="multi-content"
+        class="relative"
+        :style="{ height: rowLayout.contentHeight.value + 'px' }"
+      >
         <WaveformRow
           v-for="row in renderedRows"
           :key="row.key"
@@ -557,6 +813,8 @@ function handleRowSetTime(t: number) {
           :demo-mode="demoMode"
           :update-time="updateTime"
           :global-edit-mode="globalEditMode"
+          empty-area-mode="seek"
+          :row-drag="rowDrag"
           @select-range="handleSelectRange"
           @add-segment="handleAddSegment"
           @delete-segment="handleDeleteSegment"
@@ -564,7 +822,24 @@ function handleRowSetTime(t: number) {
           @split-segment="handleSplitSegment"
           @set-time="handleRowSetTime"
           @toast="(msg: string) => emit('toast', msg)"
+          @empty-gesture="handleRowEmptyGesture"
+          @toggle-play="emit('toggle-play')"
         />
+        <!-- M5-3: Ctrl-create preview (row-local bounded range) -->
+        <div
+          v-if="createPreview"
+          data-test="create-preview"
+          class="pointer-events-none absolute rounded border"
+          :class="createPreview.valid ? 'border-green-500 bg-green-300/30' : 'border-red-500 bg-red-300/30'"
+          :style="createPreviewStyle"
+        ></div>
+        <!-- M5-3: Shift cross-row marquee -->
+        <div
+          v-if="marquee"
+          data-test="marquee-rect"
+          class="pointer-events-none absolute border border-blue-500 bg-blue-400/20"
+          :style="marqueeStyle"
+        ></div>
         <!-- Mini-map placeholder (P4-3 implements the mini overview strip) -->
       </div>
     </div>

@@ -4,6 +4,7 @@ import type { Segment, EditDecision } from "@/types/project"
 import type { WaveformPeak } from "@/utils/waveformPeaks"
 import { formatTimeShort } from "@/utils/format"
 import { createRowMetrics } from "@/composables/rowMetrics"
+import type { UseRowDragCaptureReturn, RowEmptyGesture } from "@/composables/useRowDragCapture"
 import { TIMELINE_METRICS_KEY } from "./injectionKeys"
 import WaveformCanvas from "./WaveformCanvas.vue"
 import TimeMarksLayer from "./TimeMarksLayer.vue"
@@ -49,6 +50,19 @@ const props = defineProps<{
   globalEditMode?: boolean
   /** P3 (M5-4): frozen drag-capture converter forwarded to blocks. */
   getTimeFromPointer?: (clientX: number) => number
+  /**
+   * v3.0.2 M5-3: empty-area semantics handed to SegmentBlocksLayer.
+   * The editor passes "seek" in multi mode; undefined keeps "add".
+   */
+  emptyAreaMode?: "add" | "seek"
+  /**
+   * v3.0.2 M5-3: the EDITOR-owned drag-capture singleton. On an empty-area
+   * press the row freezes its CURRENT rect+span into it (the frozen
+   * snapshot survives row recycling mid-gesture) and emits `empty-gesture`
+   * -- the gesture machines themselves live in the editor (M3-2: no
+   * cross-pointer-event state in rows).
+   */
+  rowDrag?: UseRowDragCaptureReturn | null
 }>()
 
 const emit = defineEmits<{
@@ -62,6 +76,10 @@ const emit = defineEmits<{
   "trim-end": [payload: { segmentId: string; field: "start" | "end"; value: number; altKey: boolean }]
   /** R5.8: row-local hover time preview (editor may consume or ignore). */
   "hover-time": [time: number | null]
+  /** v3.0.2 M5-3: empty-area press, geometry frozen, routed by the editor. */
+  "empty-gesture": [gesture: RowEmptyGesture]
+  /** v3.0.2 M5-3: double click on empty area (play/pause). */
+  "toggle-play": []
 }>()
 
 // -- Row geometry ---------------------------------------------------------
@@ -117,6 +135,34 @@ const badgeText = computed(
   () => `${formatTimeShort(rowStart.value)} → ${formatTimeShort(rowEnd.value)}`,
 )
 
+// -- M5-3: empty-area gesture conduit --------------------------------------
+
+/**
+ * Freeze THIS row's current geometry into the editor's capture singleton
+ * and hand the press upward. The editor owns the decision (scrub vs
+ * Ctrl-create vs Shift-marquee) and the document-level gesture listeners;
+ * the row contributes only the pointerdown snapshot (M3-2).
+ */
+function handleEmptyPress(payload: {
+  clientX: number
+  clientY: number
+  ctrlKey: boolean
+  shiftKey: boolean
+  time: number
+}) {
+  const el = rootRef.value
+  const rect = el?.getBoundingClientRect()
+  if (rect && props.rowDrag) {
+    props.rowDrag.capture(payload.clientX, {
+      rowLeft: rect.left,
+      rowWidth: rect.width,
+      rowStart: rowStart.value,
+      rowSpan: { start: rowStart.value, end: rowEnd.value },
+    })
+  }
+  emit("empty-gesture", { ...payload, rowIndex: props.rowIndex })
+}
+
 // Test/debug surface: the STATICALLY CAPTURED row adapter. Exposure lets
 // the editor regression test observe the stale-adapter failure mode
 // (spr change without remount leaves viewDuration frozen at the old
@@ -169,6 +215,7 @@ defineExpose({ metrics })
       :row-start="rowStart"
       :row-end="rowEnd"
       :get-time-from-pointer="getTimeFromPointer"
+      :empty-area-mode="emptyAreaMode"
       style="z-index: 2"
       @select-range="(s, e) => emit('select-range', s, e)"
       @add-segment="(s, e) => emit('add-segment', s, e)"
@@ -178,6 +225,8 @@ defineExpose({ metrics })
       @set-time="(t) => emit('set-time', t)"
       @toast="(msg) => emit('toast', msg)"
       @trim-end="(p) => emit('trim-end', p)"
+      @empty-press="handleEmptyPress"
+      @empty-double-click="emit('toggle-play')"
     />
 
     <!-- Row playhead (R5.3): rendered only while the playhead is in THIS row -->
