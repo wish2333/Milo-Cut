@@ -504,3 +504,105 @@ class TestLinkedSplit:
         assert patch["segments"] is not None
         assert patch["tracks"] is not None
         assert patch["bindings"] is not None
+
+
+# ------------------------------------------------------------------
+# v3.0.2 M1-2 (S2): update_segment linkage path carries layers
+# ------------------------------------------------------------------
+
+
+class TestLinkagePatchCarriesLayers:
+    """v3.0.1 dropped tracks/bindings from the update_segment linkage
+    patch (only meta.linkage counters shipped) -- the frontend's track
+    lanes went stale until an unrelated write refreshed the layers. The
+    linkage path must carry the resolved full arrays (v3.0.1 SPEC M2-1
+    step 5); the no-linkage path keeps its patch shape."""
+
+    def test_linkage_patch_has_all_four_parts(self, svc):
+        _seed_linkage(svc)
+        res = svc.update_segment("s1", {"start": 2.0, "end": 7.0})
+        assert res["success"], res
+        patch = res["data"]
+        assert patch["segments"] is not None
+        assert patch["tracks"] is not None
+        assert patch["bindings"] is not None
+        assert patch["meta"]["linkage"] == {"squeezed": 0, "removed": 0, "unbound": 0}
+
+    def test_patch_tracks_carry_resolved_geometry(self, svc):
+        _seed_linkage(svc)
+        res = svc.update_segment("s1", {"start": 2.0, "end": 7.0})
+        patch = res["data"]
+        tracks = {t["id"]: t for t in patch["tracks"]}
+        segs = {s["id"]: s for s in tracks["trk1"]["segments"]}
+        # ext a followed the whole-span move inside the PATCH payload,
+        # not just in the live service state
+        assert (segs["track_trk1_seg_a"]["start"], segs["track_trk1_seg_a"]["end"]) == (2.2, 6.8)
+
+    def test_patch_bindings_carry_resolved_offsets(self, svc):
+        _seed_linkage(svc)
+        res = svc.update_segment("s1", {"start": 1.0})
+        patch = res["data"]
+        bindings = {b["id"]: b for b in patch["bindings"]}
+        # trim start: ext a follows to [1.2, 4.8]; offsets rebuilt
+        assert (bindings["bind_a"]["start_offset"], bindings["bind_a"]["end_offset"]) == (0.2, -0.2)
+
+    def test_squeezed_geometry_visible_in_patch_tracks(self, svc):
+        _seed_linkage(svc)
+        tl = svc.active_timeline
+        track = tl.transcript.tracks[0].model_copy(
+            update={"segments": [*tl.transcript.tracks[0].segments,
+                                 Segment(id="track_trk1_seg_c", start=12.0, end=16.0, text="free")]}
+        )
+        svc._update_active_timeline(transcript=tl.transcript.model_copy(update={"tracks": [track]}))
+        res = svc.update_segment("s2", {"start": 11.0, "end": 15.0})
+        assert res["success"], res
+        tracks = {t["id"]: t for t in res["data"]["tracks"]}
+        segs = {s["id"]: s for s in tracks["trk1"]["segments"]}
+        assert (segs["track_trk1_seg_c"]["start"], segs["track_trk1_seg_c"]["end"]) == (15.0, 16.0)
+
+    def test_no_linkage_patch_shape_unchanged(self, svc):
+        _seed_two_segments(svc)
+        res = svc.update_segment("s1", {"end": 8.0})
+        assert res["success"], res
+        patch = res["data"]
+        assert patch["segments"] is not None
+        assert patch["tracks"] is None
+        assert patch["bindings"] is None
+        assert patch.get("meta") is None
+
+    def test_linkage_patch_on_silence_cascade_keeps_layers(self, svc):
+        # silence start/end changes cascade into edits; with bindings the
+        # patch must carry segments + edits + tracks + bindings + meta.
+        # NOTE: update_transcript resets tracks/bindings, so the track is
+        # attached after seeding (same pattern as the paired-deletion test).
+        svc.update_transcript([
+            {"id": "s1", "type": "subtitle", "start": 0.0, "end": 5.0, "text": "first"},
+            {"id": "s2", "type": "subtitle", "start": 10.0, "end": 15.0, "text": "second"},
+            {"id": "sil1", "type": "silence", "start": 30.0, "end": 35.0, "text": ""},
+        ])
+        tl = svc.active_timeline
+        track = SubtitleTrack(
+            id="trk1", role="extension", name="en", language="en",
+            segments=[Segment(id="track_trk1_seg_s", start=30.2, end=34.8, text="sil-en")],
+        )
+        binding = TrackBinding(
+            id="bind_s", track_id="trk1", main_segment_id="sil1",
+            extension_segment_id="track_trk1_seg_s", start_offset=0.2, end_offset=-0.2,
+        )
+        from core.models import EditDecision
+
+        edit = EditDecision(
+            id="ed_sil", start=30.0, end=35.0, action="delete", source="silence_detection",
+            status="confirmed", priority=100, target_type="segment", target_id="sil1",
+        )
+        svc._update_active_timeline(
+            transcript=tl.transcript.model_copy(update={"tracks": [track], "bindings": [binding]}),
+            edits=[edit],
+        )
+        res = svc.update_segment("sil1", {"start": 31.0})
+        assert res["success"], res
+        patch = res["data"]
+        assert patch["edits"] is not None
+        assert patch["tracks"] is not None
+        assert patch["bindings"] is not None
+        assert patch["meta"]["linkage"] is not None

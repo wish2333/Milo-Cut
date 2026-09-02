@@ -143,4 +143,46 @@ describe("M3 tracks/bindings patch apply perf gate", () => {
     // 4x input must not blow up quadratically (allow generous slack).
     expect(large).toBeLessThan(Math.max(small * 10, 10))
   })
+
+  // v3.0.2 M1-2 (S2) / PLAN P05-2 gate: the update_segment linkage path
+  // now ships all layers on EVERY bound main-track trim/move, so the
+  // full-layer shape is the common case, not the exception.
+  it("applies the S2 linkage patch shape under 5ms p50 at MVP scale", () => {
+    const project = buildProject()
+    const samples: number[] = []
+    for (let i = 0; i < 50; i++) {
+      // Backend linkage payload: moved main segment + resolved tracks
+      // (one bound ext follows) + full bindings array + meta counters.
+      const tracks = project.timelines[0].transcript.tracks!.map((t, ti) =>
+        ti === 0
+          ? {
+              ...t,
+              segments: t.segments.map((s, j) =>
+                j === 0 ? { ...s, start: s.start + 0.5, end: s.end + 0.5 } : s,
+              ),
+            }
+          : t,
+      )
+      const patch: ProjectPatch = {
+        revision: i + 1,
+        segments: project.timelines[0].transcript.segments.map((s, j) =>
+          j === 0 ? { ...s, start: s.start + 0.5, end: s.end + 0.5 } : s,
+        ),
+        tracks,
+        bindings: project.timelines[0].transcript.bindings!.map((b, j) =>
+          j === 0 ? { ...b, start_offset: b.start_offset + 0.5 } : b,
+        ),
+        meta: { linkage: { squeezed: 0, removed: 0, unbound: 0 } },
+      }
+      const t0 = performance.now()
+      applyProjectPatch(project, patch)
+      samples.push(performance.now() - t0)
+    }
+    samples.sort((a, b) => a - b)
+    const p50 = samples[Math.floor(samples.length / 2)]
+    console.log(
+      `[perf] applyProjectPatch(S2 linkage segments+tracks+bindings+meta, 1000+4x200) x50: p50=${p50.toFixed(3)}ms`,
+    )
+    expect(p50).toBeLessThan(5)
+  })
 })
