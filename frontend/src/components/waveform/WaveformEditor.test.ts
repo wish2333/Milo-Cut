@@ -1,7 +1,9 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest"
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest"
 import { mount } from "@vue/test-utils"
 import WaveformEditor from "./WaveformEditor.vue"
+import WaveformRow from "./WaveformRow.vue"
 import { formatTimeShort } from "@/utils/format"
+import { ROW_LAYOUT_STORAGE_KEY } from "@/composables/useRowLayout"
 
 let rectDescriptor: PropertyDescriptor | undefined
 
@@ -242,6 +244,92 @@ describeStacked("stacked timeline orchestration (M4-4)", () => {
     // stack shrank by 48 - 24
     const stack = wrapper.find('[data-test="timeline-stack"]')
     expectStacked((stack.element as HTMLElement).style.height).toBe("184px")
+    wrapper.unmount()
+  })
+})
+
+// ------------------------------------------------------------------
+// v3.0.2 M4-2: multi-row virtualization (beta.1 smoke regression)
+// ------------------------------------------------------------------
+
+describe("WaveformEditor multi-row branch (M4-1/M4-2)", () => {
+  beforeEach(() => {
+    localStorage.clear()
+    // The editor loads row state from localStorage at setup time.
+    localStorage.setItem(
+      ROW_LAYOUT_STORAGE_KEY,
+      JSON.stringify({ mode: "multi", secondsPerRow: 10, rowHeight: 120 }),
+    )
+  })
+  afterEach(() => {
+    localStorage.clear()
+  })
+
+  function mountMulti() {
+    return mount(WaveformEditor, {
+      props: {
+        segments: [],
+        edits: [],
+        duration: 30,
+        currentTime: -1, // outside any row -> no playhead mount
+      },
+      global: {
+        stubs: {
+          WaveformCanvas: true,
+          TimeMarksLayer: true,
+          SegmentBlocksLayer: true,
+          ScrollbarStrip: true,
+          PlayheadOverlay: true,
+        },
+      },
+    })
+  }
+
+  it("renders virtualized rows with spr-derived row windows", () => {
+    const wrapper = mountMulti()
+    expect(wrapper.find('[data-test="multi-scroll"]').exists()).toBe(true)
+    const rows = wrapper.findAll(".waveform-row")
+    expect(rows.length).toBeGreaterThanOrEqual(3) // spr 10, duration 30 -> 3 rows (+buffer)
+    expect(rows[0].attributes("data-row-start")).toBe("0")
+    expect(rows[0].attributes("data-row-end")).toBe("10")
+    expect(rows[1].attributes("data-row-start")).toBe("10")
+    wrapper.unmount()
+  })
+
+  it("REMOUNTS row 0 when the spr preset changes (stale-adapter regression)", async () => {
+    const wrapper = mountMulti()
+    expect(wrapper.find(".waveform-row").attributes("data-row-end")).toBe("10")
+    // Adapter ground truth (static capture): viewDuration == spr at mount.
+    const rowVm = wrapper.findComponent(WaveformRow).vm as unknown as {
+      metrics: { viewDuration: { value: number } }
+    }
+    expect(rowVm.metrics.viewDuration.value).toBe(10)
+
+    // Beta.1 smoke finding: row 0's key derived from start = 0 * spr == 0,
+    // which is spr-invariant -- the stale row adapter kept the old window
+    // until the row scrolled out and back. The key now embeds spr itself.
+    await wrapper.find('[data-test="spr-select"]').setValue("20")
+    const rows = wrapper.findAll(".waveform-row")
+    expect(rows[0].attributes("data-row-end")).toBe("20")
+    expect(rows[0].attributes("data-row-start")).toBe("0")
+    // Row 1 reflects the new window too.
+    expect(rows[1].attributes("data-row-start")).toBe("20")
+    // The ADAPTER must follow: without the remount the exposed metrics
+    // would still report the captured old preset (10) while the reactive
+    // markers above moved on.
+    const rowVmAfter = wrapper.findComponent(WaveformRow).vm as unknown as {
+      metrics: { viewDuration: { value: number } }
+    }
+    expect(rowVmAfter.metrics.viewDuration.value).toBe(20)
+    wrapper.unmount()
+  })
+
+  it("rowHeight change stays geometry-only (no data churn)", async () => {
+    const wrapper = mountMulti()
+    const before = wrapper.find(".waveform-row").attributes("data-row-end")
+    await wrapper.find('[data-test="row-height-select"]').setValue("168")
+    expect(wrapper.find(".waveform-row").attributes("data-row-end")).toBe(before)
+    expect((wrapper.find(".waveform-row").element as HTMLElement).style.height).toBe("168px")
     wrapper.unmount()
   })
 })

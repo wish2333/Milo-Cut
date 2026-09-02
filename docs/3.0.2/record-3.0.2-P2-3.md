@@ -49,3 +49,11 @@ cd frontend && bun run lint          -> 0 errors 0 warnings
 ## 未验证边界
 
 - 千段滚动/播放帧率真机体感（beta.1 冒烟清单 A 项）；peaks 每行 fetch 待 P2-4 消解
+
+## Beta.1 冒烟反馈修复（2026-09-02）
+
+- **用户发现**：多行模式切换每行秒数档位后，第 0 行不刷新，滚出视口再滚回才更新
+- **根因**：行 key 为 `r{index}-{start}`，第 0 行 start = 0×spr 恒为 0，key 对 spr 不变量 → Vue 复用旧实例 → 静态捕获旧 spr 的行适配器（M3-1 设计前提是 spr 变更全量重挂）继续渲染；其余行 start 随 spr 变化故正常
+- **修复**：key 显式嵌入 spr（`r{index}-{start}@{spr}`），任何 spr 档位切换都强制全行重挂——恢复 M4-2「spr 变更 → 全量重挂」的完整语义
+- **回归测试**：WaveformEditor.test.ts 新增 multi 分支 describe（3 例，localStorage 播种 multi 模式）：行窗标记、**row 0 stale-adapter 回归**（经 WaveformRow defineExpose(metrics) 断言适配器 viewDuration 随档位变化——已验证旧 key 下该测试失败复现症状）、rowHeight 变更几何-only
+- 门禁：vitest 598 全绿（595 + 3）/ build ✓ / lint 0

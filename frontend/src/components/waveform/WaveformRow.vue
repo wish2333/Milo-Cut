@@ -116,6 +116,12 @@ function handleHoverLeave() {
 const badgeText = computed(
   () => `${formatTimeShort(rowStart.value)} → ${formatTimeShort(rowEnd.value)}`,
 )
+
+// Test/debug surface: the STATICALLY CAPTURED row adapter. Exposure lets
+// the editor regression test observe the stale-adapter failure mode
+// (spr change without remount leaves viewDuration frozen at the old
+// preset even though the reactive props move on).
+defineExpose({ metrics })
 </script>
 
 <template>
