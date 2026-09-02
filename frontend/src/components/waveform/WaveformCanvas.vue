@@ -3,7 +3,7 @@ import { computed, inject, onMounted, onUnmounted, ref, watch } from "vue"
 import type { Segment } from "@/types/project"
 import { createRafScheduler } from "@/utils/rafScheduler"
 import { WAVEFORM_COLORS } from "@/utils/waveformTheme"
-import { parseWaveformPeaks } from "@/utils/waveformPeaks"
+import { computePeakSlice, parseWaveformPeaks, type WaveformPeak } from "@/utils/waveformPeaks"
 import { TIMELINE_METRICS_KEY } from "./injectionKeys"
 import type { TimelineMetrics } from "@/composables/useTimelineMetrics"
 
@@ -17,6 +17,13 @@ const props = defineProps<{
   waveformPath?: string
   duration?: number
   demoMode?: boolean
+  /**
+   * v3.0.2 M4-3: pre-loaded peaks (orchestrator-shared fetch). When
+   * provided, the component SKIPS its own fetch -- multi-row mode mounts
+   * N canvases and the sidecar must load once. Undefined/null keeps the
+   * legacy fetch path untouched (basic mode, zero change).
+   */
+  peaksData?: WaveformPeak[] | null
 }>()
 
 const metrics = inject<TimelineMetrics>(TIMELINE_METRICS_KEY)!
@@ -60,6 +67,12 @@ function findFirstVisibleSilence(
 // -- Load waveform data -------------------------------------------------
 
 async function loadWaveform(path: string) {
+  // v3.0.2 M4-3: an injected peaks array wins over any fetch.
+  if (props.peaksData && props.peaksData.length > 0) {
+    peaks.value = props.peaksData
+    loadError.value = false
+    return
+  }
   try {
     const res = await fetch(path)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -187,17 +200,16 @@ function drawWaveform(ctx: CanvasRenderingContext2D, w: number, _h: number, mid:
   const peakData = peaks.value!
   const vs = metrics.viewStart.value
   const ve = metrics.viewEnd.value
-  const vd = metrics.viewDuration.value
 
-  // Map peaks to viewport
+  // v3.0.2 M4-3: the bucket-window math moved to the pure
+  // computePeakSlice (same floor/ceil + bps fallback -- extracted, not
+  // rewritten) so the row layer can memoize it per {rowIndex, widthPx}.
+  const slice = computePeakSlice(peakData, vs, ve, props.duration ?? 0)
+  if (!slice) return
+
   const totalBuckets = peakData.length
-  const bucketsPerSecond = props.duration ? totalBuckets / props.duration : totalBuckets / (vs + vd)
-
-  const startBucket = Math.floor(vs * bucketsPerSecond)
-  const endBucket = Math.min(Math.ceil(ve * bucketsPerSecond), totalBuckets)
-  const visibleBuckets = endBucket - startBucket
-
-  if (visibleBuckets <= 0) return
+  const startBucket = slice.startBucket
+  const visibleBuckets = slice.endBucket - startBucket
 
   const bucketWidth = w / visibleBuckets
 
@@ -298,6 +310,12 @@ onUnmounted(() => {
 // -- Watchers ------------------------------------------------------------
 
 watch(() => props.waveformPath, (path) => {
+  // Injected peaks win (M4-3): skip fetching entirely.
+  if (props.peaksData && props.peaksData.length > 0) {
+    peaks.value = props.peaksData
+    loadError.value = false
+    return
+  }
   if (path) {
     loadWaveform(path)
   } else if (props.demoMode) {
@@ -305,6 +323,17 @@ watch(() => props.waveformPath, (path) => {
     loadError.value = false
   }
 }, { immediate: true })
+
+// Injected peaks change -> adopt them (orchestrator re-provides on media
+// switch); injection cleared -> fall back to the fetch path.
+watch(() => props.peaksData, (data) => {
+  if (data && data.length > 0) {
+    peaks.value = data
+    loadError.value = false
+  } else if (props.waveformPath) {
+    loadWaveform(props.waveformPath)
+  }
+})
 
 watch([metrics.viewDuration, peaks, () => props.segments], () => {
   scheduler.schedule()

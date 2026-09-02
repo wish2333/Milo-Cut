@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, provide, ref } from "vue"
 import type { Segment, EditDecision } from "@/types/project"
+import type { WaveformPeak } from "@/utils/waveformPeaks"
 import { formatTimeShort } from "@/utils/format"
 import { createRowMetrics } from "@/composables/rowMetrics"
 import { TIMELINE_METRICS_KEY } from "./injectionKeys"
@@ -42,6 +43,8 @@ const props = defineProps<{
   edits?: EditDecision[]
   waveformPath?: string
   demoMode?: boolean
+  /** v3.0.2 M4-3: orchestrator-shared peaks (skips per-row fetch when set). */
+  peaksData?: WaveformPeak[] | null
   updateTime?: (segmentId: string, field: "start" | "end", value: number) => void
   globalEditMode?: boolean
   /** P3 (M5-4): frozen drag-capture converter forwarded to blocks. */
@@ -142,6 +145,7 @@ const badgeText = computed(
       :waveform-path="waveformPath"
       :duration="duration"
       :demo-mode="demoMode"
+      :peaks-data="peaksData"
       style="z-index: 0; pointer-events: none"
     />
 
