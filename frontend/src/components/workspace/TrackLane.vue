@@ -11,8 +11,10 @@ import SegmentBlock from "@/components/waveform/SegmentBlock.vue"
  * (replaces the v3.0.0 read-only text list). Renders the track's segments
  * as percent-positioned SegmentBlocks sharing the timeline metrics with
  * the main track (same zoom/scroll). Positioned by the parent stack via
- * the `lane` layout item. P2 batch: read-only -- no updateTime passed, so
- * SegmentBlock trim stays disabled (Phase 3 activates editing).
+ * the `lane` layout item. v3.0.2 M1-1: `updateTime` is now forwarded to
+ * SegmentBlock (v3.0.1 M5-2 reserved semantics) -- extension blocks become
+ * trim-editable when the parent provides it; undefined keeps trim disabled
+ * for read-only reuse.
  */
 const props = defineProps<{
   track: SubtitleTrack
@@ -94,6 +96,7 @@ const visibleSegments = computed(() => {
         :segments="track.segments"
         track-kind="extension"
         :title="item.seg.text"
+        :update-time="updateTime"
         @seek-segment="emit('seek', item.seg.start)"
       />
       <p

@@ -3,13 +3,14 @@
  * list suite). Anchors: percent positioning, collapse/hidden emits, empty
  * lane hint, badge content.
  */
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { mount } from "@vue/test-utils"
 import { computed, ref } from "vue"
 import type { SubtitleTrack } from "@/types/project"
 import type { TimelineMetrics } from "@/composables/useTimelineMetrics"
 import type { LaneLayoutItem } from "@/composables/useLaneLayout"
 import { TIMELINE_METRICS_KEY } from "@/components/waveform/injectionKeys"
+import SegmentBlock from "@/components/waveform/SegmentBlock.vue"
 import TrackLane from "./TrackLane.vue"
 
 function makeTrack(overrides: Partial<SubtitleTrack> = {}): SubtitleTrack {
@@ -74,9 +75,13 @@ function createMetrics() {
   } satisfies TimelineMetrics
 }
 
-function mountLane(track: SubtitleTrack, lane: LaneLayoutItem = makeLane()) {
+function mountLane(
+  track: SubtitleTrack,
+  lane: LaneLayoutItem = makeLane(),
+  updateTime?: (segmentId: string, field: "start" | "end", value: number) => void,
+) {
   return mount(TrackLane, {
-    props: { track, lane },
+    props: { track, lane, ...(updateTime ? { updateTime } : {}) },
     global: {
       provide: { [TIMELINE_METRICS_KEY as symbol]: createMetrics() },
     },
@@ -152,5 +157,21 @@ describe("TrackLane (geometric)", () => {
     const wrapper = mountLane(makeTrack())
     expect(wrapper.text()).toContain("en.srt · en")
     expect(wrapper.text()).toContain("2 段")
+  })
+
+  // v3.0.2 M1-1: updateTime forwarding dual paths (S1 activation)
+  it("forwards updateTime to SegmentBlock when provided (trim editable)", () => {
+    const updateTime = vi.fn()
+    const wrapper = mountLane(makeTrack(), makeLane(), updateTime)
+    const block = wrapper.findComponent(SegmentBlock)
+    expect(block.exists()).toBe(true)
+    expect(block.props("updateTime")).toBe(updateTime)
+  })
+
+  it("keeps SegmentBlock trim disabled when updateTime is absent (read-only reuse)", () => {
+    const wrapper = mountLane(makeTrack())
+    const block = wrapper.findComponent(SegmentBlock)
+    expect(block.exists()).toBe(true)
+    expect(block.props("updateTime")).toBeUndefined()
   })
 })
