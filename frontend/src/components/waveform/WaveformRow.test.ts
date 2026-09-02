@@ -5,10 +5,11 @@
  * clipping, continuation markers, in-row handle rule, row-local playhead,
  * adapter no-op safety, and the getTimeFromPointer injection fallback.
  */
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest"
+import { describe, expect, it, vi, beforeEach, afterEach, beforeAll, afterAll } from "vitest"
 import { mount } from "@vue/test-utils"
 import { ref } from "vue"
 import type { Segment } from "@/types/project"
+import { useRowDragCapture } from "@/composables/useRowDragCapture"
 import WaveformRow from "./WaveformRow.vue"
 import SegmentBlock from "./SegmentBlock.vue"
 
@@ -39,6 +40,8 @@ function mountRow(overrides: {
   rowHeight?: number
   widthPercent?: number
   getTimeFromPointer?: (x: number) => number
+  rowDrag?: ReturnType<typeof useRowDragCapture>
+  updateTime?: (segmentId: string, field: "start" | "end", value: number) => void
 } = {}) {
   return mount(WaveformRow, {
     props: {
@@ -54,6 +57,8 @@ function mountRow(overrides: {
       ...(overrides.getTimeFromPointer
         ? { getTimeFromPointer: overrides.getTimeFromPointer }
         : {}),
+      ...(overrides.rowDrag ? { rowDrag: overrides.rowDrag } : {}),
+      ...(overrides.updateTime ? { updateTime: overrides.updateTime } : {}),
     },
     global: {
       provide: {
@@ -222,9 +227,11 @@ describe("WaveformRow: getTimeFromPointer injection (M3-2 ③)", () => {
     expect(w.findComponent(SegmentBlock).props("getTimeFromPointer")).toBe(frozen)
   })
 
-  it("omitting the converter passes undefined (blocks use metrics.getTimeFromX)", () => {
-    const w = mountRow({})
-    expect(w.findComponent(SegmentBlock).props("getTimeFromPointer")).toBeUndefined()
+  it("omitting the injection hands blocks the row's own frozen converter (M5-4)", () => {
+    const w = mountRow({ rowDrag: useRowDragCapture() })
+    // M5-4: the row derives a frozen source from the shared drag-capture
+    // singleton; explicit prop injection (test above) still wins.
+    expect(typeof w.findComponent(SegmentBlock).props("getTimeFromPointer")).toBe("function")
   })
 })
 
@@ -277,5 +284,134 @@ describe("WaveformRow: ref typing smoke", () => {
     })
     expect(w.exists()).toBe(true)
     expect(t.value).toBe(5)
+  })
+})
+
+// ------------------------------------------------------------------
+// v3.0.2 M5-4: frozen trim wiring (S7.8 dual mapping through the row)
+// ------------------------------------------------------------------
+
+describe("WaveformRow: M5-4 frozen trim wiring", () => {
+  // Geometry: row 1 covers [10s, 20s], mapped to 600px (1s = 60px).
+  // Block rect is faked full-row so the 16px edge strips sit at x<16 / x>584.
+  let rectDescriptor: PropertyDescriptor | undefined
+
+  function domRect(left: number, top: number, width: number, height: number): DOMRect {
+    return { left, top, width, height, right: left + width, bottom: top + height, x: left, y: top, toJSON: () => ({}) } as DOMRect
+  }
+
+  beforeAll(() => {
+    rectDescriptor = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "getBoundingClientRect",
+    )
+    Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", {
+      configurable: true,
+      value(this: HTMLElement) {
+        if (this.classList?.contains("waveform-row")) {
+          const idx = Number(this.getAttribute("data-row-index") ?? 0)
+          return domRect(0, idx * 130, 600, 120)
+        }
+        if (this.classList?.contains("rounded") && this.classList?.contains("border")) {
+          return domRect(0, 0, 600, 120)
+        }
+        return domRect(0, 0, 0, 0)
+      },
+    })
+  })
+
+  afterAll(() => {
+    if (rectDescriptor) {
+      Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", rectDescriptor)
+    }
+  })
+
+  const TARGET = seg({ id: "x", start: 12, end: 14 })
+
+  function mountTrimRow(neighbors: Segment[] = []) {
+    const rowDrag = useRowDragCapture()
+    const updateTime = vi.fn()
+    const wrapper = mountRow({
+      rowIndex: 1,
+      // TARGET FIRST so find(".rounded.border") resolves to it; the clamp
+      // kernel sorts by time, so array order never affects the bounds.
+      segments: [TARGET, ...neighbors],
+      rowDrag,
+      updateTime,
+      // duration large enough that [0, duration] clamp never interferes
+      duration: 95,
+    })
+    return { wrapper, updateTime }
+  }
+
+  it("trim crosses the row boundary unclamped (S7.8: rows never constrain)", async () => {
+    const { wrapper, updateTime } = mountTrimRow()
+    const block = wrapper.find(".rounded.border")
+    // Down at x=10 (left strip): frozen time 10.1667 -> offset = 1.8333.
+    await block.trigger("mousedown", { clientX: 10 })
+    // Move to x=-140 -> frozen time 7.6667, raw = 9.5s: BEYOND the row
+    // start (10s) and no neighbor bound -> the optimistic update must
+    // carry 9.5, NOT be clamped to the row boundary.
+    document.dispatchEvent(new MouseEvent("mousemove", { clientX: -140 }))
+    expect(updateTime.mock.calls[updateTime.mock.calls.length - 1]?.[2]).toBeCloseTo(9.5, 5)
+    document.dispatchEvent(new MouseEvent("mouseup", { clientX: -140 }))
+    wrapper.unmount()
+  })
+
+  it("same-track neighbor still clamps the cross-row trim", async () => {
+    const { wrapper, updateTime } = mountTrimRow([seg({ id: "prev", start: 9, end: 11 })])
+    const block = wrapper.find(".rounded.border")
+    await block.trigger("mousedown", { clientX: 10 })
+    // Raw 9.5s is inside the previous segment's span -> clamped to prevEnd 11.
+    document.dispatchEvent(new MouseEvent("mousemove", { clientX: -140 }))
+    expect(updateTime).toHaveBeenLastCalledWith("x", "start", 11)
+    document.dispatchEvent(new MouseEvent("mouseup", { clientX: -140 }))
+    wrapper.unmount()
+  })
+
+  it("release chain: snap can overshoot the neighbor -> second clamp wins", async () => {
+    // nextStart 14.006; raw 14.007 clamps to 14.006, snap rounds UP to
+    // 14.01, the post-snap clamp returns it to 14.006 (M5-4 chain).
+    const { wrapper, updateTime } = mountTrimRow([seg({ id: "next", start: 14.006, end: 16 })])
+    const block = wrapper.find(".rounded.border")
+    // Down at x=590 (right strip): frozen time 19.83333 -> offset = -5.83333.
+    await block.trigger("mousedown", { clientX: 590 })
+    document.dispatchEvent(new MouseEvent("mouseup", { clientX: 590.42 })) // raw 14.007
+    expect(updateTime.mock.calls[updateTime.mock.calls.length - 1]?.[2]).toBe(14.006)
+    wrapper.unmount()
+  })
+
+  it("Alt inverts snapping on release (free position, clamp intact)", async () => {
+    const { wrapper, updateTime } = mountTrimRow()
+    const block = wrapper.find(".rounded.border")
+    await block.trigger("mousedown", { clientX: 590 }) // offset -5.83333
+    // Up at raw 12.346 with Alt: NO snap -> value stays 12.346 (free grid).
+    const up = new MouseEvent("mouseup", { clientX: 490.76 })
+    Object.defineProperty(up, "altKey", { value: true })
+    document.dispatchEvent(up)
+    expect(updateTime.mock.calls[updateTime.mock.calls.length - 1]?.[2]).toBeCloseTo(12.346, 5)
+    wrapper.unmount()
+  })
+
+  it("without Alt the same release snaps to the 0.01 grid", async () => {
+    const { wrapper, updateTime } = mountTrimRow()
+    const block = wrapper.find(".rounded.border")
+    await block.trigger("mousedown", { clientX: 590 })
+    document.dispatchEvent(new MouseEvent("mouseup", { clientX: 490.76 })) // raw 12.346
+    expect(updateTime.mock.calls[updateTime.mock.calls.length - 1]?.[2]).toBe(12.35)
+    wrapper.unmount()
+  })
+
+  it("row recycle mid-drag keeps the frozen math (M3-3 continuity)", async () => {
+    const { wrapper, updateTime } = mountTrimRow()
+    const block = wrapper.find(".rounded.border")
+    await block.trigger("mousedown", { clientX: 10 }) // frozen [10,20]
+    // Force the recycle: the row (and its adapter) unmounts mid-drag.
+    wrapper.unmount()
+    // The document-level drag listeners survive; conversions still come
+    // from the FROZEN snapshot: x=-140 -> 7.6667s, raw 9.5 -> continuous.
+    document.dispatchEvent(new MouseEvent("mousemove", { clientX: -140 }))
+    expect(updateTime.mock.calls[updateTime.mock.calls.length - 1]?.[2]).toBeCloseTo(9.5, 5)
+    document.dispatchEvent(new MouseEvent("mouseup", { clientX: -140 }))
   })
 })

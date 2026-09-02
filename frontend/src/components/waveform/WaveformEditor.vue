@@ -887,8 +887,10 @@ defineExpose({ waveformScrubbing })
           @split-segment="handleSplitSegment"
           @set-time="emit('set-time', $event)"
           @toast="emit('toast', $event)"
-          @trim-end="emit('toast', '裁剪已应用')"
         />
+        <!-- M5-4: trim-end carries no editor action -- the REAL chain is the
+             optimistic updateTime path (linkage happens there and is never
+             Alt-skippable); the beta.1 placeholder toast is gone. -->
         <!-- v3.0.0 M6-2: hover seek preview (imperative, pointer-events:none) -->
         <div
           ref="hoverLineRef"

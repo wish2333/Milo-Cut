@@ -129,6 +129,42 @@ function handleHoverLeave() {
   emit("hover-time", null)
 }
 
+// -- M5-4: frozen trim source ----------------------------------------------
+
+/**
+ * M5-4: ANY mousedown in this row first freezes the row geometry into the
+ * editor's drag-capture singleton (capture-phase listener -- it must run
+ * BEFORE the block's own trim handler reads the pointer time). In-flight
+ * drags then convert through the FROZEN snapshot and survive row recycling
+ * (M3-3): unmounting this row never disturbs a live trim.
+ */
+function captureFrozenGeometry(e: MouseEvent) {
+  const el = rootRef.value
+  const rect = el?.getBoundingClientRect()
+  if (rect && props.rowDrag) {
+    props.rowDrag.capture(e.clientX, {
+      rowLeft: rect.left,
+      rowWidth: rect.width,
+      rowStart: rowStart.value,
+      rowSpan: { start: rowStart.value, end: rowEnd.value },
+    })
+  }
+}
+
+/**
+ * Frozen pointer->time converter (P4 dual mapping, unbounded): clamps to
+ * [0, duration] ONLY -- row boundaries never enter the trim constraint
+ * chain (S7.8). Falls back to the row adapter when no gesture is captured
+ * (stray reads outside a drag). Explicit prop injection still wins.
+ */
+function frozenTimeFromPointer(clientX: number): number {
+  const t = props.rowDrag?.timeAt(clientX, { bounded: false })
+  if (t === null || t === undefined) return metrics.getTimeFromX(clientX)
+  return Math.min(Math.max(0, t), props.duration)
+}
+
+const trimTimeSource = computed(() => props.getTimeFromPointer ?? frozenTimeFromPointer)
+
 // -- Badge ----------------------------------------------------------------
 
 const badgeText = computed(
@@ -182,6 +218,7 @@ defineExpose({ metrics })
     :data-row-index="rowIndex"
     :data-row-start="rowStart"
     :data-row-end="rowEnd"
+    @mousedown.capture="captureFrozenGeometry"
     @mousemove="handleHoverMove"
     @mouseleave="handleHoverLeave"
   >
@@ -214,7 +251,7 @@ defineExpose({ metrics })
       :global-edit-mode="globalEditMode"
       :row-start="rowStart"
       :row-end="rowEnd"
-      :get-time-from-pointer="getTimeFromPointer"
+      :get-time-from-pointer="trimTimeSource"
       :empty-area-mode="emptyAreaMode"
       style="z-index: 2"
       @select-range="(s, e) => emit('select-range', s, e)"

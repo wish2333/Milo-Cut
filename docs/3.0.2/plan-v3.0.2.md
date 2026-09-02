@@ -216,9 +216,9 @@ P3 批次:   M7 排版/组合/文档
 
 ### P3-3 多行 trim 接线（SPEC M5-4）
 
-- [ ] SegmentBlock trim 走 `getTimeFromPointer` 注入源（frozen unbounded）+ 约束链（clampTimeToNeighbors → snap → snap 后二次 clamp）→ 乐观更新（useSegmentEdit / useTrackEdit）
-- [ ] Alt 语义矩阵落地：仅反转 snap（联动不受 Alt 影响）；更新 WaveformEditor :274 的 trim-end 消费（移除占位 toast，接真实链路）
-- [ ] vitest：trim 越行界不被钳 / 被邻居钳 / snap 后二次 clamp / Alt 反转 / 拖拽中强制滚动行回收仍连续
+- [x] SegmentBlock trim 走 `getTimeFromPointer` 注入源（frozen unbounded）+ 约束链（clampTimeToNeighbors → snap → snap 后二次 clamp）→ 乐观更新（useSegmentEdit / useTrackEdit）（2026-09-02：行根 mousedown.capture 先冻结几何，trimTimeSource = rowDrag.timeAt(unbounded)+clamp[0,duration]，无捕获时回退 metrics；约束链为块内既有实现、经冻结源接线验证）
+- [x] Alt 语义矩阵落地：仅反转 snap（联动不受 Alt 影响）；更新 WaveformEditor :274 的 trim-end 消费（移除占位 toast，接真实链路）（2026-09-02：真实链路 = updateTime 乐观路径，联动自动发生且不可 Alt 跳过；trim-end 事件保留于层/行、编辑器侧不再消费）
+- [x] vitest：trim 越行界不被钳 / 被邻居钳 / snap 后二次 clamp / Alt 反转 / 拖拽中强制滚动行回收仍连续（+6 例行级接线专项，M8-1 五项全覆盖）
 
 **验收方式**: `bun run test`。
 **验收标准**: ★ 手势真机清单后半（trim 跨行 / Alt snap）；主轨联动（M1 修复后）在行内表现正确。
