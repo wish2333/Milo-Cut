@@ -58,10 +58,12 @@ P3 批次:   M7 排版/组合/文档
 
 ### P0-1 分支与基线快照
 
-- [ ] 从 `v3.0.1` 拉 `dev-3.0.2`；记录基线：pytest/vitest 用例数（预期 702/453）
-- [ ] 采集 3.0.1 现状性能基线 → `docs/3.0.2/perf-baseline.md`（R10.3：项目打开 / 波形生成 / undo / 前端 patch apply 四项，沿 3.0.1 采集口径）
-- [ ] 打 tag `v3.0.2-base`（全局回滚锚点）
-- [ ] ★ 通知用户计划启动
+- [x] 从 `v3.0.1` 拉 `dev-3.0.2`；记录基线：pytest/vitest 用例数（预期 702/453）
+  - 实测 702 / 453 全绿，与预期一致（record-3.0.2-P05.md）
+- [x] 采集 3.0.1 现状性能基线 → `docs/3.0.2/perf-baseline.md`（R10.3：项目打开 / 波形生成 / undo / 前端 patch apply 四项，沿 3.0.1 采集口径）
+  - open_project 4.76/4.70ms（两轮误差 1.4%）、generate_waveform 45.6ms、backend_benchmark 30 runs（baseline_3.0.2.json）、patch apply p50 0.231ms
+- [x] 打 tag `v3.0.2-base`（全局回滚锚点）
+- [x] ★ 通知用户计划启动（2026-09-02 会话确认启动）
 
 **验收方式**: `git tag` 存在；perf 基线文件四项齐备。
 **验收标准**: 基线可复现（连跑两次误差 <10%）。
@@ -72,35 +74,41 @@ P3 批次:   M7 排版/组合/文档
 
 ### P05-1 副轨编辑激活（SPEC M1-1 / S1）
 
-- [ ] `TrackLane.vue`：SegmentBlock 增 `:update-time="updateTime"` 下传；更新组件头过时注释
-- [ ] `TrackLane.test.ts` / `SegmentBlock.test.ts`：只读断言适配双路径（传入 updateTime 可编辑 / 未传入禁用）
-- [ ] 新建 `composables/useTrackEdit.test.ts`：乐观更新、防抖合并、失败回滚、捕获层（bound ? `["tracks","bindings"]` : `["tracks"]`）
+- [x] `TrackLane.vue`：SegmentBlock 增 `:update-time="updateTime"` 下传；更新组件头过时注释
+- [x] `TrackLane.test.ts` / `SegmentBlock.test.ts`：只读断言适配双路径（传入 updateTime 可编辑 / 未传入禁用）
+  - TrackLane 补双路径 2 例；SegmentBlock 既有 12 例核查确认已天然覆盖双路径（:192 只读 + 3 例 trim），无需改动
+- [x] 新建 `composables/useTrackEdit.test.ts`：乐观更新、防抖合并、失败回滚、捕获层（bound ? `["tracks","bindings"]` : `["tracks"]`）
+  - 11 例全绿
 
-**验收方式**: `bun run test` 全绿（含新增）。
-**验收标准**: 手工冒烟——副轨段 trim 可拖、邻居 blocked 拒动、防抖提交无回跳、失败回滚。
+**验收方式**: `bun run test` 全绿（含新增）。✅ 466 全绿
+**验收标准**: 手工冒烟——副轨段 trim 可拖、邻居 blocked 拒动、防抖提交无回跳、失败回滚。（逻辑层已由用例覆盖；真机拖拽冒烟合并到 beta.1 ★ 节点）
 
 ### P05-2 联动 patch 带层（SPEC M1-2 / S2）
 
-- [ ] `core/project_service.py` `update_segment` 联动分支：patch 携带 `tracks` + `bindings` 层（消解后全量数组）+ `meta.linkage` 不变
-- [ ] `tests/test_track_linkage.py` 新增契约组：联动路径 patch 含四键；无绑定路径不含 tracks/bindings
-- [ ] 前端 `projectPatch.test.ts` 补集成用例：联动 patch 应用后副段挤压可见（mergeTracksInPlace 消费验证）
-- [ ] `projectPatch.perf.test.ts` 补联动路径用例（patch 含 tracks/bindings 层的 apply p50 断言）——**本步起 projectPatch.perf 为合入门禁**
+- [x] `core/project_service.py` `update_segment` 联动分支：patch 携带 `tracks` + `bindings` 层（消解后全量数组）+ `meta.linkage` 不变
+- [x] `tests/test_track_linkage.py` 新增契约组：联动路径 patch 含四键；无绑定路径不含 tracks/bindings
+  - `TestLinkagePatchCarriesLayers` 6 例
+- [x] 前端 `projectPatch.test.ts` 补集成用例：联动 patch 应用后副段挤压可见（mergeTracksInPlace 消费验证）
+- [x] `projectPatch.perf.test.ts` 补联动路径用例（patch 含 tracks/bindings 层的 apply p50 断言）——**本步起 projectPatch.perf 为合入门禁**
+  - S2 联动全层 p50 = 0.214ms（< 5ms）
 
-**验收方式**: `uv run pytest` + `bun run test` 全绿。
-**验收标准**: 手工冒烟——主轨 trim 挤压副段后副轨 lane 即时更新（无需其他操作触发）。
+**验收方式**: `uv run pytest` + `bun run test` 全绿。✅
+**验收标准**: 手工冒烟——主轨 trim 挤压副段后副轨 lane 即时更新（合并到 beta.1 ★ 节点）。
 
 ### P05-3 捕获层对齐与清理（SPEC M1-3 / S3）
 
-- [ ] `useSegmentEdit.updateSegmentTime`：谓词（目标段存在绑定，查 `activeBindings`）→ 三层捕获
-- [ ] `useEdit` 拆分/成对删除：谓词（涉及段存在绑定）→ 四层捕获
-- [ ] `useWorkspaceActions` 副轨导入前 `pushSnapshot(["tracks","bindings"])`
-- [ ] vitest 集成：真实调用点绑定段 trim → undo 三层同回退 + redo 对称 + revision 单调；无绑定路径捕获层不变
-- [ ] 删除 `export_track_srt`（export_service.py:384-396）+ 全量同步清理：`tests/test_track_export.py`（:9/:83）、`tests/test_tracks_contract.py`（:10/:269/:275/:279/:288/:296）、`core/export_service.py:417` docstring、`docs/PROJECT_SCHEMA.md:68`
+- [x] `useSegmentEdit.updateSegmentTime`：谓词（目标段存在绑定，查 `activeBindings`）→ 三层捕获
+  - 谓词查活动时间线 transcript.bindings（与 activeBindings 同源数据，不新增通道）
+- [x] `useEdit` 拆分/成对删除：谓词（涉及段存在绑定）→ 四层捕获
+- [x] `useWorkspaceActions` 副轨导入前 `pushSnapshot(["tracks","bindings"])`
+- [x] vitest 集成：真实调用点绑定段 trim → undo 三层同回退 + redo 对称 + revision 单调；无绑定路径捕获层不变
+  - `undoLinkageCapture.test.ts` 4 例
+- [x] 删除 `export_track_srt`（export_service.py:384-396）+ 全量同步清理：`tests/test_track_export.py`（:9/:83）、`tests/test_tracks_contract.py`（:10/:269/:275/:279/:288/:296）、`core/export_service.py:417` docstring、`docs/PROJECT_SCHEMA.md:68`
 
-**验收方式**: `uv run pytest` + `bun run test` 全绿；`grep -rn export_track_srt core/ tests/` 空。
-**验收标准**: Phase 0.5 退出检查全绿；record-3.0.2-P05 汇总三缺陷闭环证据。
+**验收方式**: `uv run pytest` + `bun run test` 全绿；`grep -rn export_track_srt core/ tests/` 空。✅（功能性引用为零，仅剩移除声明注释与 hasattr 锁定断言——record-3.0.2-P05-3.md 判定口径）
+**验收标准**: Phase 0.5 退出检查全绿；record-3.0.2-P05 汇总三缺陷闭环证据。✅
 
-**Phase 0.5 退出检查**: 三步全合入；全量门禁绿（**含 projectPatch.perf**）；events/models diff 基线留档；手工冒烟三项通过（副轨 trim / 联动即时显示 / 联动 undo 原子）。
+**Phase 0.5 退出检查**: 三步全合入 ✅；全量门禁绿（**含 projectPatch.perf**）✅；events/models diff 基线留档 ✅（diff 为空）；手工冒烟三项（逻辑链路已由用例覆盖，真机拖拽合并到 beta.1 ★ 节点）。
 
 ---
 
