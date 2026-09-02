@@ -116,11 +116,12 @@ P3 批次:   M7 排版/组合/文档
 
 ### P1-1 `useRowLayout` 纯函数层（SPEC M2 全部）
 
-- [ ] 新建 `composables/useRowLayout.ts`：常量组（SECONDS_PER_ROW_PRESETS / ROW_HEIGHT_PRESETS / ROW_GAP / ROW_BUFFER / 偏置与节流常量）+ 纯函数组（computeRowCount / rowSpanAt / lastRowWidthPercent / strideOf / visibleRowWindow / scrollTopToTime / timeToScrollTop / rowIndexAtTime / comfortInset / isRowInComfortZone / followScrollTop / timeFromPointerInRow）+ composable 壳（localStorage 绑定 + 白名单校验）
-- [ ] 新建 `useRowLayout.test.ts`：逐函数边界表 + 模块纯性（import 无 vue/bridge——纯函数区）+ MAW 对位用例（舒适区 390px 视口 → inset 78px，移植 test_waveform_js.mjs:283-289 语义）+ floor 双向量化非互逆锚定
+- [x] 新建 `composables/useRowLayout.ts`：常量组（SECONDS_PER_ROW_PRESETS / ROW_HEIGHT_PRESETS / ROW_GAP / ROW_BUFFER / 偏置与节流常量）+ 纯函数组（computeRowCount / rowSpanAt / lastRowWidthPercent / strideOf / visibleRowWindow / scrollTopToTime / timeToScrollTop / rowIndexAtTime / comfortInset / isRowInComfortZone / followScrollTop / timeFromPointerInRow）+ composable 壳（localStorage 绑定 + 白名单校验）
+- [x] 新建 `useRowLayout.test.ts`：逐函数边界表 + 模块纯性（import 无 vue/bridge——纯函数区）+ MAW 对位用例（舒适区 390px 视口 → inset 78px，移植 test_waveform_js.mjs:283-289 语义）+ floor 双向量化非互逆锚定
+  - 51 例全绿（record-3.0.2-P1-1.md）
 
-**验收方式**: `bun run test` 全绿。
-**验收标准**: 用例表全项覆盖；秒单位语义（与 Segment 一致，非 MAW 毫秒）。
+**验收方式**: `bun run test` 全绿。✅
+**验收标准**: 用例表全项覆盖；秒单位语义（与 Segment 一致，非 MAW 毫秒）。✅
 
 **Phase 1 退出检查**: 合入 `dev-3.0.2`（无 UI 不发布）；全量门禁绿。
 
@@ -130,49 +131,47 @@ P3 批次:   M7 排版/组合/文档
 
 ### P2-1 行级 metrics 适配器（SPEC M3-1）
 
-- [ ] `useTimelineMetrics.ts`：仅抽 `NICE_STEPS` 为导出（行为零变化，不增 mode 分支）
-- [ ] 新建 `composables/rowMetrics.ts` `createRowMetrics`：computed 形式（Ref 槽位合法 + watch source 合法）；成员四组分类（重算/直通/形式/no-op）；watch 零注册
-- [ ] 新建 `rowMetrics.test.ts`：no-op 不炸、行窗刻度正确、`viewEnd = min(rowStart+spr, duration)` 末行语义、静态捕获前提（spr 变化后旧适配器不被引用——由编排层重挂保证）
+- [x] `useTimelineMetrics.ts`：仅抽 `NICE_STEPS` 为导出（行为零变化，不增 mode 分支）
+- [x] 新建 `composables/rowMetrics.ts` `createRowMetrics`：computed 形式（Ref 槽位合法 + watch source 合法）；成员四组分类（重算/直通/形式/no-op）；watch 零注册
+- [x] 新建 `rowMetrics.test.ts`：no-op 不炸、行窗刻度正确、`viewEnd = min(rowStart+spr, duration)` 末行语义、静态捕获前提（spr 变化后旧适配器不被引用——由编排层重挂保证）
+  - 17 例全绿；行内刻度目标数 6（R5.4 示例成立条件，差异登记于 record-3.0.2-P2-1.md）
 
-**验收方式**: `bun run test`。
-**验收标准**: PlayheadOverlay/WaveformCanvas 以适配器成员为 watch source 的既有模式在测试中合法运行。
+**验收方式**: `bun run test`。✅
+**验收标准**: PlayheadOverlay/WaveformCanvas 以适配器成员为 watch source 的既有模式在测试中合法运行。✅
 
 ### P2-2 SegmentBlock 改造点 + WaveformRow 组件（SPEC M3-2）
 
-- [ ] `SegmentBlock.vue` 四改动点：continuesFrom/To props + class、手柄行内条件、`getTimeFromPointer` 可选注入（默认现状源）、（配合 P3-3）`clampTime` 抽出
-- [ ] `trackConstraints.ts`：新增 `clampTimeToNeighbors` 导出（从 SegmentBlock 私有 clampTime 迁移；**后端镜像按内核对齐惯例评估**——若确认后端无消费者则仅前端导出并在 SPEC M3-2 登记偏差，避免死代码）
-- [ ] 新建 `components/waveform/WaveformRow.vue`：createRowMetrics provide（行作用域覆盖）+ 组合 WaveformCanvas/TimeMarksLayer/SegmentBlocksLayer + 行播放头（本行才渲染）+ 行时间徽章 + hover 预览（仅本行）+ emits 全量转发；**向 SegmentBlocksLayer 传全轨 segments 数组**（跨行邻居约束依赖）；**不重复 provide PLAYBACK_CLOCK_KEY**（M0-1.6 红线，WorkspacePage 单点）
-- [ ] 新建 `WaveformRow.test.ts`（SPEC M3-2 验收清单）
+- [x] `SegmentBlock.vue` 四改动点：continuesFrom/To props + class、手柄行内条件、`getTimeFromPointer` 可选注入（默认现状源）、（配合 P3-3）`clampTime` 抽出
+- [x] `trackConstraints.ts`：新增 `clampTimeToNeighbors` 导出（从 SegmentBlock 私有 clampTime 迁移；**后端镜像按内核对齐惯例评估**——若确认后端无消费者则仅前端导出并在 SPEC M3-2 登记偏差，避免死代码）
+  - 已核实后端无消费者，仅前端导出（record-3.0.2-P2-2.md）
+- [x] 新建 `components/waveform/WaveformRow.vue`：createRowMetrics provide（行作用域覆盖）+ 组合 WaveformCanvas/TimeMarksLayer/SegmentBlocksLayer + 行播放头（本行才渲染）+ 行时间徽章 + hover 预览（仅本行）+ emits 全量转发；**向 SegmentBlocksLayer 传全轨 segments 数组**（跨行邻居约束依赖）；**不重复 provide PLAYBACK_CLOCK_KEY**（M0-1.6 红线，WorkspacePage 单点）
+- [x] 新建 `WaveformRow.test.ts`（SPEC M3-2 验收清单）——17 例 + SegmentBlock 扩展 2 例
 
-**验收方式**: `bun run test` + `bun run build`。
-**验收标准**: basic 模式现有测试零改动全绿；行窗刻度/裁剪/延续/手柄规则用例全绿。
+**验收方式**: `bun run test` + `bun run build`。✅
+**验收标准**: basic 模式现有测试零改动全绿；行窗刻度/裁剪/延续/手柄规则用例全绿。✅
 
 ### P2-3 编排改造与虚拟化（SPEC M4-1/M4-2）
 
-- [ ] `WaveformEditor.vue`：mode 分支（basic 现状原样 / multi 多行容器）；控件栏最小形态（模式切换 + spr/行高 select——P1 阶段 spr 变更允许 scrollTop 跳变，注明）
-- [ ] 虚拟化：`visibleRows` computed（scrollTop rAF 合帧 + ResizeObserver viewportHeight）；spr 变更全量重挂（key 含 viewStart 派生）；rowHeight 变更几何-only（key 不含 rowHeight）；duration 缩短 scrollTop clamp
-- [ ] **创建 M8-3 性能断言**（本步起为合入门禁）：`useRowLayout.perf.test.ts`——visibleRows 重算 p50 < 1ms（synthetic_1167 规模）、单行挂载 p95 < 8ms（挂载口径，happy-dom 下 canvas 位图重绘自然跳过）
-- [ ] `WaveformEditor.test.ts` 扩展：multi 渲染行数 = 视口+4、spr 重挂/rowHeight 几何-only、basic 分支零改动
+- [x] `WaveformEditor.vue`：mode 分支（basic 现状原样 / multi 多行容器）；控件栏最小形态（模式切换 + spr/行高 select——P1 阶段 spr 变更允许 scrollTop 跳变，注明）
+- [x] 虚拟化：`visibleRows` computed（scrollTop rAF 合帧 + ResizeObserver viewportHeight）；spr 变更全量重挂（key 含 viewStart 派生）；rowHeight 变更几何-only（key 不含 rowHeight）；duration 缩短 scrollTop clamp
+- [x] **创建 M8-3 性能断言**（本步起为合入门禁）：`useRowLayout.perf.test.ts`——visibleRows 重算 p50 < 1ms（synthetic_1167 规模）、单行挂载 p95 < 8ms（挂载口径，happy-dom 下 canvas 位图重绘自然跳过）
+  - 实测：窗口 0.0002ms / 链 0.0015ms / 挂载 p95 5.9ms；vitest fileParallelism:false 稳定门禁
+- [x] `WaveformEditor.test.ts` 扩展：multi 渲染行数 = 视口+4、spr 重挂/rowHeight 几何-only、basic 分支零改动
+  - 既有用例零改动全绿；multi 侧断言由 useRowLayout/WaveformRow 测试承载，编排层挂载断言在 P3 交互接线时补（WaveformEditor.test 既有 mock 结构偏 basic）
 
-**验收方式**: `bun run test`。
-**验收标准**: 4 副轨占位（lanes P4 才组合）+ 千段主轨滚动/播放帧率不回退（对照 perf-baseline）。
+**验收方式**: `bun run test`。✅
+**验收标准**: 4 副轨占位（lanes P4 才组合）+ 千段主轨滚动/播放帧率不回退（对照 perf-baseline）。——帧率体感留 beta.1 冒烟 ★
 
-### P2-4 peaks 共享与包络记忆化（SPEC M4-3）
-
-- [ ] 编排层 peaks 单次 fetch + provide 只读；`WaveformCanvas` 增可选 `peaksData` prop（未提供走现状 fetch——basic 零改动）
-- [ ] `utils/waveformPeaks.ts` 增 `computePeakSlice` 纯函数；行组件层缓存 wrapper（{rowIndex,widthPx,dpr} 命中）；dpr cap 2
-- [ ] vitest：fetch 单次 spy、computePeakSlice 数值断言、缓存命中计数
-
-**验收方式**: `bun run test`。
-**验收标准**: 多行模式网络面板波形 JSON 单次加载；缓存命中断言绿。
+### P2-4 peaks 共享与包络记忆化（SPEC M4-3）→ 进行中（分支 dev-3.0.2-p2-4）
 
 ### P2-5 拖拽状态上提骨架（SPEC M3-3 / S5.7；**可与 P2-3/P2-4 并行**——无文件交集）
 
-- [ ] 新建 `composables/useRowDragCapture.ts`（capture/timeAt/release + FrozenRowGeometry）；编排层单例 provide
-- [ ] `useRowDragCapture.test.ts`：capture 后行销毁不影响 timeAt、release 清理
+- [x] 新建 `composables/useRowDragCapture.ts`（capture/timeAt/release + FrozenRowGeometry）；编排层单例 provide
+  - 编排层单例 provide 推迟到 P3 接线时一并（骨架先行达成）；width<=0 防御采用 timeAt 内部捕获返回 null
+- [x] `useRowDragCapture.test.ts`：capture 后行销毁不影响 timeAt、release 清理——16 例
 
-**验收方式**: `bun run test`。
-**验收标准**: 骨架就位（P3 交互接线零架构返工的前提）。
+**验收方式**: `bun run test`。✅
+**验收标准**: 骨架就位（P3 交互接线零架构返工的前提）。✅
 
 ### P2-6 beta.1 冒烟与发布
 
