@@ -964,3 +964,121 @@ describe("WaveformEditor mode migration + persisted restore (M6-2/M6-3)", () => 
     expect(loadRowLayoutState().scrollTopTime).toBe(20)
   })
 })
+
+// ------------------------------------------------------------------
+// v3.0.2 M6-4: mini overview strip (multi-mode ScrollbarStrip)
+// ------------------------------------------------------------------
+
+describe("WaveformEditor mini overview strip (M6-4)", () => {
+  // Viewport 320, stride 130, duration 100 @ spr 10 -> rowCount 10.
+  let clientHeightDescriptor: PropertyDescriptor | undefined
+  let rectDescriptor: PropertyDescriptor | undefined
+
+  function domRect(left: number, top: number, width: number, height: number): DOMRect {
+    return { left, top, width, height, right: left + width, bottom: top + height, x: left, y: top, toJSON: () => ({}) } as DOMRect
+  }
+
+  beforeAll(() => {
+    clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight")
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.getAttribute?.("data-test") === "multi-scroll") return 320
+        return clientHeightDescriptor?.get?.call(this) ?? 0
+      },
+    })
+    rectDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "getBoundingClientRect")
+    Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", {
+      configurable: true,
+      value(this: HTMLElement) {
+        if (this.getAttribute?.("data-test") === "overview-strip") return domRect(0, 0, 600, 12)
+        return domRect(0, 0, 0, 0)
+      },
+    })
+  })
+
+  afterAll(() => {
+    if (clientHeightDescriptor) {
+      Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeightDescriptor)
+    }
+    if (rectDescriptor) {
+      Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", rectDescriptor)
+    }
+  })
+
+  beforeEach(() => {
+    localStorage.clear()
+    localStorage.setItem(
+      ROW_LAYOUT_STORAGE_KEY,
+      JSON.stringify({ mode: "multi", secondsPerRow: 10, rowHeight: 120 }),
+    )
+  })
+
+  afterEach(() => {
+    localStorage.clear()
+  })
+
+  function mountOverview(currentTime: number) {
+    return mount(WaveformEditor, {
+      props: { segments: [], edits: [], duration: 100, currentTime },
+      global: {
+        stubs: {
+          WaveformCanvas: true,
+          TimeMarksLayer: true,
+          SegmentBlocksLayer: true,
+          PlayheadOverlay: true,
+        },
+      },
+    })
+  }
+
+  function nextFrame(): Promise<void> {
+    return new Promise(r => requestAnimationFrame(() => r()))
+  }
+
+  it("coverage geometry matches visibleRows (first/last x spr / duration)", async () => {
+    const wrapper = mountOverview(25)
+    await wrapper.vm.$nextTick() // setScrollRef feeds viewportHeight -> re-window
+    const coverage = wrapper.find('[data-test="overview-coverage"]')
+    // At scrollTop 0: visibleRows 0..5 -> left 0%, width 6*10/100 = 60%.
+    expect((coverage.element as HTMLElement).style.left).toBe("0%")
+    expect((coverage.element as HTMLElement).style.width).toBe("60%")
+    // Playhead tick at currentTime/duration.
+    expect((wrapper.find('[data-test="overview-playhead"]').element as HTMLElement).style.left).toBe("calc(25% - 1px)")
+    wrapper.unmount()
+  })
+
+  it("coverage follows the scrolled window and clamps at the timeline end", async () => {
+    const wrapper = mountOverview(25)
+    await wrapper.vm.$nextTick()
+    ;(wrapper.vm as unknown as { revealTime: (t: number) => void }).revealTime(45) // row 4 -> 376
+    await wrapper.vm.$nextTick()
+    // visibleRows 0..8 -> width 90%.
+    expect((wrapper.find('[data-test="overview-coverage"]').element as HTMLElement).style.width).toBe("90%")
+    ;(wrapper.vm as unknown as { revealTime: (t: number) => void }).revealTime(85) // row 8 -> 896
+    await wrapper.vm.$nextTick()
+    // visibleRows clamp: first 4, last 9 -> left 40%, width 60%.
+    const coverage = wrapper.find('[data-test="overview-coverage"]')
+    expect((coverage.element as HTMLElement).style.left).toBe("40%")
+    expect((coverage.element as HTMLElement).style.width).toBe("60%")
+    wrapper.unmount()
+  })
+
+  it("clicking the strip seeks through revealTime with row alignment", async () => {
+    const wrapper = mountOverview(25)
+    await wrapper.vm.$nextTick()
+    const strip = wrapper.find('[data-test="overview-strip"]')
+    // Click at 300/600 = 50s -> row 5 -> REVEAL_BIAS placement.
+    await strip.trigger("mousedown", { clientX: 300 })
+    const el = wrapper.find('[data-test="multi-scroll"]').element as HTMLElement
+    await wrapper.vm.$nextTick()
+    expect(el.scrollTop).toBe(506) // 5*130 - 320*0.45, row-aligned
+    // Drag: rAF-throttled move emits another seek at 80s -> row 8 -> 896.
+    document.dispatchEvent(new MouseEvent("mousemove", { clientX: 480 }))
+    await nextFrame()
+    await new Promise(r => setTimeout(r, 20))
+    expect(el.scrollTop).toBe(896)
+    document.dispatchEvent(new MouseEvent("mouseup", { clientX: 480 }))
+    wrapper.unmount()
+  })
+})

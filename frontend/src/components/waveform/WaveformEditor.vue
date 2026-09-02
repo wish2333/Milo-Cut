@@ -716,6 +716,32 @@ const renderedRows = computed(() => {
 const MULTI_VIEWPORT_HEIGHT = 320
 const multiViewportHeight = computed(() => MULTI_VIEWPORT_HEIGHT)
 
+// -- M6-4: mini overview strip geometry (multi) -----------------------------
+//
+// Coverage comes from visibleRows x spr / duration -- deliberately NOT the
+// single-window thumbLeft/thumbWidth (评审修正: those are single-window
+// window geometry). The playhead tick is its own ratio. Seeking routes
+// through revealTime so jumps stay row-aligned.
+const overviewGeometry = computed(() => {
+  const { first, last } = rowLayout.visibleRows.value
+  const spr = rowLayout.state.value.secondsPerRow
+  const duration = props.duration
+  if (!(duration > 0)) {
+    return { leftPercent: 0, widthPercent: 100, playheadPercent: 0, duration: 0 }
+  }
+  const leftPercent = Math.min(100, (first * spr * 100) / duration)
+  const widthPercent = Math.min(
+    100 - leftPercent,
+    ((last + 1 - first) * spr * 100) / duration,
+  )
+  const playheadPercent = Math.min(100, Math.max(0, (props.currentTime * 100) / duration))
+  return { leftPercent, widthPercent, playheadPercent, duration }
+})
+
+function handleOverviewSeek(time: number): void {
+  rowLayout.revealTime(time)
+}
+
 /** Controls-bar middle info (beta.1 minimal form; coverage range lands P5-1). */
 const rowCountLabel = computed(() => {
   const { first, last } = rowLayout.visibleRows.value
@@ -1020,7 +1046,15 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
       </div>
     </div>
 
-    <!-- Scrollbar (basic mode only; multi gets the mini overview strip in P4-3) -->
-    <ScrollbarStrip v-if="!isMulti" />
+    <!-- M6-4: basic keeps the single-window scrollbar; multi gets the mini
+         overview strip (full-timeline coverage + playhead tick). -->
+    <ScrollbarStrip
+      v-if="!isMulti"
+    />
+    <ScrollbarStrip
+      v-else
+      :overview="overviewGeometry"
+      @overview-seek="handleOverviewSeek"
+    />
   </div>
 </template>
