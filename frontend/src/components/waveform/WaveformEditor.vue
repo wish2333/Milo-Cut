@@ -7,6 +7,7 @@ import {
   ROW_HEIGHT_PRESETS,
   ROW_GAP,
   REVEAL_BIAS,
+  FOLLOW_BIAS,
   SCRUB_SEEK_INTERVAL_MS,
   WHEEL_DEBOUNCE_MS,
   cyclePreset,
@@ -287,9 +288,49 @@ const scrollScheduler = createRafScheduler(() => {
   if (scrollEl) rowLayout.scrollTop.value = scrollEl.scrollTop
 })
 
-function handleScroll() {
+// M6-1: classify each scroll event. A TRUSTED event whose position matches
+// the last programmatic write is our own echo (no cooldown); any other
+// trusted event is the user's hand -> pause playback-follow for the 3s
+// cooldown. Untrusted events skip classification entirely (test/programmatic).
+function handleScroll(e: Event) {
+  const source = e.target as HTMLElement | null
+  if (source && (e as Event & { isTrusted?: boolean }).isTrusted === true) {
+    if (!rowLayout.consumeAutoScroll(source.scrollTop)) {
+      rowLayout.markManualScroll()
+    }
+  }
   scrollScheduler.schedule()
 }
+
+// -- M6-1: playback follow (multi only; basic keeps maybeFollowPlayhead) ---
+//
+// 换行才判定: the row index must CHANGE before follow even evaluates.
+// Comfortable row -> playhead-only (no scroll). Otherwise park the playing
+// row at FOLLOW_BIAS, marking the write so its scroll echo is recognized.
+// The manual cooldown gates BEFORE row tracking, so rows crossed while the
+// user scrolls never trigger a late jump after the cooldown expires.
+let lastFollowedRow: number | null = null
+
+watch(
+  () => props.currentTime,
+  t => {
+    if (!isMulti.value) return
+    if (rowLayout.isFollowCoolingDown()) return
+    const row = rowIndexAtTime(t, rowLayout.state.value.secondsPerRow)
+    if (row === lastFollowedRow) return
+    lastFollowedRow = row
+    if (rowLayout.isRowVisibleInComfortZone(row)) return
+    const target = followScrollTop(
+      row,
+      rowLayout.viewportHeight.value,
+      rowLayout.state.value.rowHeight,
+      rowLayout.maxScrollTop.value,
+      FOLLOW_BIAS,
+    )
+    rowLayout.noteAutoScroll(target)
+    rowLayout.scrollTop.value = target
+  },
+)
 
 // -- v3.0.2 M5-1: multi-container wheel gesture family --------------------
 //
@@ -692,6 +733,7 @@ function rowWidthPercent(index: number): number {
 // state (v3.0.1 semantics untouched).
 watch(isMulti, async multi => {
   if (multi) {
+    lastFollowedRow = null // fresh follow semantics on each multi entry
     await nextTick()
     rowLayout.revealTime(props.currentTime, true)
   } else {
@@ -716,9 +758,16 @@ function handleRowSetTime(t: number) {
   emit("set-time", t)
 }
 
-// Test surface: the orchestrator-level scrubbing flag (M5-3). WorkspacePage
-// consumes it for subtitle-list follow suppression via the M6-1 wiring.
-defineExpose({ waveformScrubbing })
+// Test surface + M6-1 navigation entry: the subtitle-list seek path calls
+// revealTime so jumps share the reveal semantics (REVEAL_BIAS, comfort
+// skip, follow cooldown). No-op in basic mode (its window keeps its own
+// navigation state).
+function revealFromNavigation(time: number): void {
+  if (!isMulti.value) return
+  rowLayout.revealTime(time)
+}
+
+defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
 
 </script>
 

@@ -864,6 +864,15 @@ function handleWaveformSelectSegments(ids: string[]) {
   selectedSegmentIds.value = next
 }
 
+// v3.0.2 M6-1: subtitle-list navigation jumps share the waveform's reveal
+// semantics (REVEAL_BIAS + comfort skip + follow cooldown) so the playing
+// row is actually in view after a list click. No-op in basic mode.
+const waveformEditorRef = ref<InstanceType<typeof WaveformEditor> | null>(null)
+function handleListSeek(time: number) {
+  handleSeek(time)
+  waveformEditorRef.value?.revealTime(time)
+}
+
 const {
   handleRegenerateWaveform, handleRequestProxy, handleSeek, handleSetTime,
   handleVideoLoaded, handleTimeUpdate, handleTogglePlay, handleSeekTo,
@@ -1300,7 +1309,7 @@ onUnmounted(() => {
             :highlight-total-duration="highlightTotalDuration"
             :highlight-target-duration="highlightTargetDuration"
             :jump-cuts="jumpCuts"
-            @seek="handleSeek"
+            @seek="handleListSeek"
             @update-text="handleUpdateText"
             @update-time="handleUpdateTime"
             @toggle-status="(seg) => handleToggleEditStatus(seg)"
@@ -1312,7 +1321,7 @@ onUnmounted(() => {
             @confirm-suggestion-batch="(ids: string[]) => batchUpdateEdits(ids, 'confirmed')"
             @reject-suggestion-batch="(ids: string[]) => batchUpdateEdits(ids, 'rejected')"
             @delete-suggestion-batch="(ids: string[]) => deleteEdits(ids)"
-            @seek-suggestion="handleSeek"
+            @seek-suggestion="handleListSeek"
             @toggle-edit-mode="globalEditMode = !globalEditMode"
             @start-smart-delete="handleStartSmartDelete"
             @start-subtitle-correction="handleStartSubtitleCorrection"
@@ -1338,6 +1347,7 @@ onUnmounted(() => {
 
     <!-- Bottom: Waveform editor -->
     <WaveformEditor
+      ref="waveformEditorRef"
       :segments="mergedSegments"
       :edits="edits"
       :duration="duration"
