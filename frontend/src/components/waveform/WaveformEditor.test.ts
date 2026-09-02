@@ -1,9 +1,9 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest"
 import { mount } from "@vue/test-utils"
 import WaveformEditor from "./WaveformEditor.vue"
 import WaveformRow from "./WaveformRow.vue"
 import { formatTimeShort } from "@/utils/format"
-import { ROW_LAYOUT_STORAGE_KEY } from "@/composables/useRowLayout"
+import { ROW_LAYOUT_STORAGE_KEY, WHEEL_DEBOUNCE_MS } from "@/composables/useRowLayout"
 
 let rectDescriptor: PropertyDescriptor | undefined
 
@@ -330,6 +330,189 @@ describe("WaveformEditor multi-row branch (M4-1/M4-2)", () => {
     await wrapper.find('[data-test="row-height-select"]').setValue("168")
     expect(wrapper.find(".waveform-row").attributes("data-row-end")).toBe(before)
     expect((wrapper.find(".waveform-row").element as HTMLElement).style.height).toBe("168px")
+    wrapper.unmount()
+  })
+})
+
+// ------------------------------------------------------------------
+// v3.0.2 M5-1/M5-2: multi-container wheel gesture family
+// ------------------------------------------------------------------
+
+describe("WaveformEditor multi wheel gestures (M5-1/M5-2)", () => {
+  // Anchor math needs a real viewport: happy-dom reports clientHeight 0,
+  // so give the multi-scroll container a fixed 320px like the real UI.
+  let clientHeightDescriptor: PropertyDescriptor | undefined
+
+  beforeAll(() => {
+    clientHeightDescriptor = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "clientHeight",
+    )
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.getAttribute?.("data-test") === "multi-scroll") return 320
+        return clientHeightDescriptor?.get?.call(this) ?? 0
+      },
+    })
+  })
+
+  afterAll(() => {
+    if (clientHeightDescriptor) {
+      Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeightDescriptor)
+    }
+  })
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    localStorage.clear()
+    localStorage.setItem(
+      ROW_LAYOUT_STORAGE_KEY,
+      JSON.stringify({ mode: "multi", secondsPerRow: 10, rowHeight: 120 }),
+    )
+  })
+
+  afterEach(() => {
+    vi.clearAllTimers()
+    vi.useRealTimers()
+    localStorage.clear()
+  })
+
+  function mountMulti(currentTime = 25) {
+    return mount(WaveformEditor, {
+      props: {
+        segments: [],
+        edits: [],
+        duration: 100,
+        currentTime,
+      },
+      global: {
+        stubs: {
+          WaveformCanvas: true,
+          TimeMarksLayer: true,
+          SegmentBlocksLayer: true,
+          ScrollbarStrip: true,
+          PlayheadOverlay: true,
+        },
+      },
+    })
+  }
+
+  function multiScroll(wrapper: ReturnType<typeof mountMulti>): HTMLElement {
+    return wrapper.find('[data-test="multi-scroll"]').element as HTMLElement
+  }
+
+  function dispatchWheel(
+    el: HTMLElement,
+    init: { deltaY: number; ctrlKey?: boolean; shiftKey?: boolean },
+  ): boolean {
+    // happy-dom's WheelEvent constructor drops modifier keys (ctrlKey comes
+    // out undefined), so force-define them on the instance before dispatch.
+    const ev = new WheelEvent("wheel", {
+      deltaY: init.deltaY,
+      bubbles: true,
+      cancelable: true,
+    })
+    Object.defineProperty(ev, "ctrlKey", { value: init.ctrlKey ?? false })
+    Object.defineProperty(ev, "shiftKey", { value: init.shiftKey ?? false })
+    return !el.dispatchEvent(ev)
+  }
+
+  it("plain wheel stays native: no preventDefault, no preset churn", async () => {
+    const wrapper = mountMulti()
+    const scroll = multiScroll(wrapper)
+    expect(dispatchWheel(scroll, { deltaY: 120 })).toBe(false)
+    expect(dispatchWheel(scroll, { deltaY: -45 })).toBe(false)
+    vi.advanceTimersByTime(WHEEL_DEBOUNCE_MS + 50)
+    await wrapper.vm.$nextTick()
+    expect((wrapper.find('[data-test="spr-select"]').element as HTMLSelectElement).value).toBe("10")
+    expect(
+      (wrapper.find('[data-test="row-height-select"]').element as HTMLSelectElement).value,
+    ).toBe("120")
+    wrapper.unmount()
+  })
+
+  it("ctrl+wheel merges the burst into ONE spr cycle and anchors the playing row", async () => {
+    const wrapper = mountMulti(25) // playing time 25s -> row 2 under spr 10
+    const scroll = multiScroll(wrapper)
+    // Three quick zoom-in notches: net -3, clamped at the ladder start.
+    for (let i = 0; i < 3; i++) dispatchWheel(scroll, { deltaY: -120, ctrlKey: true })
+    // Debounce pending: nothing applied yet.
+    expect((wrapper.find('[data-test="spr-select"]').element as HTMLSelectElement).value).toBe("10")
+    vi.advanceTimersByTime(WHEEL_DEBOUNCE_MS)
+    await wrapper.vm.$nextTick()
+    expect((wrapper.find('[data-test="spr-select"]').element as HTMLSelectElement).value).toBe("5")
+    // M5-2 anchor: time 25s sits in row 5 under spr 5 (row 5 start = 25).
+    // followScrollTop(5, 320, 120, 2270, 0.45) = 5*130 - 144 = 506.
+    expect(scroll.scrollTop).toBe(506)
+    // The playing row is inside the rendered window (playback row stays visible).
+    const starts = wrapper.findAll(".waveform-row").map(r => r.attributes("data-row-start"))
+    expect(starts).toContain("25")
+    wrapper.unmount()
+  })
+
+  it("ctrl+shift+wheel cycles row height geometry-only and anchors", async () => {
+    const wrapper = mountMulti(25)
+    const scroll = multiScroll(wrapper)
+    // One zoom-out notch: wheel-down -> shorter rows (120 -> 96).
+    dispatchWheel(scroll, { deltaY: 120, ctrlKey: true, shiftKey: true })
+    vi.advanceTimersByTime(WHEEL_DEBOUNCE_MS)
+    await wrapper.vm.$nextTick()
+    expect(
+      (wrapper.find('[data-test="row-height-select"]').element as HTMLSelectElement).value,
+    ).toBe("96")
+    // spr untouched: rowHeight is geometry-only.
+    expect((wrapper.find('[data-test="spr-select"]').element as HTMLSelectElement).value).toBe("10")
+    expect(wrapper.find(".waveform-row").attributes("data-row-end")).toBe("10")
+    // M5-2 anchor with the new geometry: row 2, strideOf(96)=106,
+    // max = 10*106-10-320 = 730 -> followScrollTop(2, 320, 96, 730, 0.45) = 212-144 = 68.
+    expect(scroll.scrollTop).toBe(68)
+    wrapper.unmount()
+  })
+
+  it("intercepts ctrl+wheel with preventDefault (zoom boundary) and keeps families exclusive", async () => {
+    const wrapper = mountMulti()
+    const scroll = multiScroll(wrapper)
+    // Ctrl+wheel IS cancelable interception (stops WebView page zoom)...
+    expect(dispatchWheel(scroll, { deltaY: -120, ctrlKey: true, shiftKey: true })).toBe(true)
+    // ...while plain wheel inside the same pass is never canceled.
+    expect(dispatchWheel(scroll, { deltaY: 120 })).toBe(false)
+    // Shift-only burst: the row-height family moves, spr stays put.
+    vi.advanceTimersByTime(WHEEL_DEBOUNCE_MS + 50)
+    await wrapper.vm.$nextTick()
+    expect(
+      (wrapper.find('[data-test="row-height-select"]').element as HTMLSelectElement).value,
+    ).toBe("144")
+    expect((wrapper.find('[data-test="spr-select"]').element as HTMLSelectElement).value).toBe("10")
+    // Now a plain ctrl burst: the spr family moves, row height stays put.
+    dispatchWheel(scroll, { deltaY: 120, ctrlKey: true })
+    vi.advanceTimersByTime(WHEEL_DEBOUNCE_MS + 50)
+    await wrapper.vm.$nextTick()
+    expect((wrapper.find('[data-test="spr-select"]').element as HTMLSelectElement).value).toBe("20")
+    expect(
+      (wrapper.find('[data-test="row-height-select"]').element as HTMLSelectElement).value,
+    ).toBe("144")
+    wrapper.unmount()
+  })
+
+  it("basic branch mounts no multi wheel host (zero-change regression)", () => {
+    localStorage.setItem(
+      ROW_LAYOUT_STORAGE_KEY,
+      JSON.stringify({ mode: "basic", secondsPerRow: 10, rowHeight: 120 }),
+    )
+    const wrapper = mount(WaveformEditor, {
+      props: { segments: [], edits: [], duration: 100, currentTime: 25 },
+      global: {
+        stubs: {
+          WaveformCanvas: true,
+          TimeMarksLayer: true,
+          SegmentBlocksLayer: true,
+          ScrollbarStrip: true,
+          PlayheadOverlay: true,
+        },
+      },
+    })
+    expect(wrapper.find('[data-test="multi-scroll"]').exists()).toBe(false)
     wrapper.unmount()
   })
 })

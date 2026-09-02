@@ -197,9 +197,9 @@ P3 批次:   M7 排版/组合/文档
 
 ### P3-1 wheel 手势家族（SPEC M5-1/M5-2）
 
-- [ ] multi 容器 wheel：普通滚动（deltaMode 归一）/ Ctrl(Cmd)+滚轮 spr 档（160ms debounce + 播放行锚定 REVEAL_BIAS）/ Ctrl+Shift 行高档（几何-only + 锚定）
-- [ ] 手势互斥与 preventDefault 边界；basic 分支零改动回归
-- [ ] vitest：档位循环、锚定 scrollTop 数值断言
+- [x] multi 容器 wheel：普通滚动（deltaMode 归一）/ Ctrl(Cmd)+滚轮 spr 档（160ms debounce + 播放行锚定 REVEAL_BIAS）/ Ctrl+Shift 行高档（几何-only + 锚定）（2026-09-02：普通滚动全原生零 JS，WebView 引擎归一 deltaMode；ctrl 路径只读 deltaY 符号与 deltaMode 无关）
+- [x] 手势互斥与 preventDefault 边界；basic 分支零改动回归（2026-09-02：仅 ctrl/meta 拦截并 preventDefault；spr/行高两族独立 burst 累积）
+- [x] vitest：档位循环、锚定 scrollTop 数值断言（2026-09-02：cyclePreset 边界表 4 例 + 编辑器 5 例含 scrollTop 506/68 数值锚定；happy-dom WheelEvent 丢修饰键已用 defineProperty 注入并注释）
 
 **验收方式**: `bun run test`。
 **验收标准**: 换 spr 后播放行保持视口内；行高变更不重建行 DOM（复用断言）。

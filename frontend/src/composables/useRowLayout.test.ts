@@ -30,6 +30,7 @@ import {
   comfortInset,
   isRowInComfortZone,
   followScrollTop,
+  cyclePreset,
   timeFromPointerInRow,
   loadRowLayoutState,
   saveRowLayoutState,
@@ -372,5 +373,33 @@ describe("module purity (M2 discipline)", () => {
     expect(rowIndexAtTime(12, 5)).toBe(2)
     expect(scrollTopToTime(0, 120, 10)).toBe(0)
     expect(timeToScrollTop(0, 120, 10)).toBe(0)
+  })
+})
+
+describe("cyclePreset (M5-1 wheel burst ladder)", () => {
+  it("cycles one notch in both directions", () => {
+    expect(cyclePreset(SECONDS_PER_ROW_PRESETS, 10, 1)).toBe(20)
+    expect(cyclePreset(SECONDS_PER_ROW_PRESETS, 10, -1)).toBe(5)
+    expect(cyclePreset(ROW_HEIGHT_PRESETS, 120, 1)).toBe(144)
+    expect(cyclePreset(ROW_HEIGHT_PRESETS, 120, -1)).toBe(96)
+  })
+
+  it("merges a net multi-notch burst", () => {
+    expect(cyclePreset(SECONDS_PER_ROW_PRESETS, 10, 2)).toBe(30)
+    expect(cyclePreset(SECONDS_PER_ROW_PRESETS, 10, -2)).toBe(5)
+    expect(cyclePreset(ROW_HEIGHT_PRESETS, 120, 3)).toBe(168)
+  })
+
+  it("clamps at both ladder ends (no wraparound)", () => {
+    expect(cyclePreset(SECONDS_PER_ROW_PRESETS, 30, 3)).toBe(30)
+    expect(cyclePreset(SECONDS_PER_ROW_PRESETS, 5, -3)).toBe(5)
+    expect(cyclePreset(ROW_HEIGHT_PRESETS, 168, 1)).toBe(168)
+    expect(cyclePreset(ROW_HEIGHT_PRESETS, 64, -1)).toBe(64)
+  })
+
+  it("treats zero steps and off-ladder currents as no-ops", () => {
+    expect(cyclePreset(SECONDS_PER_ROW_PRESETS, 10, 0)).toBe(10)
+    // Off-ladder current (corrupt storage) anchors at index 0.
+    expect(cyclePreset(SECONDS_PER_ROW_PRESETS, 7 as never, 1)).toBe(10)
   })
 })

@@ -170,6 +170,18 @@ export function followScrollTop(
   return Math.min(Math.max(target, 0), Math.max(0, maxScrollTop))
 }
 
+/**
+ * M5-1: cycle through a preset list by `steps` net wheel notches
+ * (positive = toward larger values), clamped at both ends. Pure so the
+ * editor's debounced wheel bursts and the vitest table share one ladder.
+ */
+export function cyclePreset<T>(presets: readonly T[], current: T, steps: number): T {
+  const index = presets.indexOf(current)
+  const base = index === -1 ? 0 : index
+  const next = Math.min(presets.length - 1, Math.max(0, base + Math.trunc(steps)))
+  return presets[next]
+}
+
 export interface RowPointerGeometry {
   left: number
   width: number
