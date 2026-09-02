@@ -46,6 +46,14 @@ Milo-Cut is a local-first, AI-powered desktop video preprocessing tool for oral 
 - **Batched bridge events + adaptive tick** -- one `evaluate_js` per batch (512 KB budget), idle tick drops to 250 ms; waveform generation no longer blocks the UI thread.
 - **Waveform rendering pipeline** -- rAF-coalesced draws, DPR-aware canvas resizing, imperative playhead (zero Vue patches during playback), hover seek preview.
 
+### Multi-Row Timeline (v3.0.2)
+
+- **Multi-row timeline** -- flip the waveform into a virtualized row list ("one row = one window", presets 5/10/20/30 s per row) to see minutes of material at once; the last row shrinks to the remaining duration and a mini overview strip shows the covered range plus the playhead tick (click/drag to jump, row-aligned).
+- **Row gestures** -- plain wheel scrolls rows natively; Ctrl/Cmd+wheel cycles seconds-per-row, Ctrl/Cmd+Shift+wheel cycles row height (160 ms burst merge, then the playing row re-anchors at its new geometry).
+- **In-row editing** -- click empty space to seek, drag to scrub (32 ms throttled), double-click to toggle playback; Ctrl+drag creates a segment (preview stops at block edges, narrow gaps rejected); Shift+drag marquees across rows into the global selection; trim crosses row boundaries freely (row edges never clamp -- neighbor bounds + snap with a post-snap re-clamp; Alt only inverts snapping).
+- **Follow & persistence** -- playback follow judges on row change only (comfort zone = playhead-only), manual scrolling pauses it for 3 s, and list navigation jumps through the same reveal path; mode, presets, scroll position and panel height persist in localStorage and survive re-open.
+- **Tracks inside every row** -- extension lanes compose inside each row (collapse/preset state stays in lockstep across rows); with tracks present the default row height bumps to 168 px unless you already picked your own.
+
 ### Multi-Track Subtitles & Stacked Timeline (v3.0.0 data layer / v3.0.1 full UX)
 
 - **Stacked timeline** -- main track and every extension lane stack on one zoom/scroll surface with a single playhead spanning all lanes; lanes collapse/resize/hide (heights persist globally).

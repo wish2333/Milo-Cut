@@ -50,12 +50,16 @@
 |---|---|
 | `applyProjectPatch`（segments+tracks+bindings 全层）p50 | 0.231 ms |
 
-## v3.0.2 目标对账（P3 末 P5-3 回填）
+## v3.0.2 目标对账（P5-3 回填，2026-09-02）
 
 | 目标 | 基线 | 目标值 | SPEC 依据 | 状态 |
 |---|---|---|---|---|
-| multi visibleRows 重算 | 待 Phase 2 落地后测 | p50 < 1 ms（synthetic_1167 规模） | M8-3 | ⏳ |
-| 单行挂载 | 待 Phase 2 落地后测 | p95 < 8 ms（挂载口径，happy-dom） | M8-3 | ⏳ |
-| peaks 加载 | 待 Phase 2 落地后测 | multi 模式单次 fetch（spy 断言） | M4-3 | ⏳ |
-| 千段滚动/播放/行重排帧率 | 本文件采集日体感 + 计时 | 不低于本基线 | PRD §7 | ⏳ |
-| 五项工程门禁 | 本文件采集日全绿（pytest 702 / vitest 453） | 全程全绿 + events-diff 空 + models-diff 零 | M8-2 | ⏳ |
+| multi visibleRows 重算 | 纯计算 p50 实测 | p50 < 1 ms（synthetic_1167 规模） | M8-3 | ✅ visibleRowWindow x200 p50=0.0002ms；composable 链 x100 p50=0.0017ms |
+| 单行挂载 | 无（v3.0.1 无行概念） | p95 < 8 ms（挂载口径，happy-dom） | M8-3 | ✅ 3 批×20 挂载最优批 p95 = 5.945 ms（1167 段， warmed；批次 p95 5.945/6.859/7.531） |
+| peaks 加载 | 每窗 fetch | multi 模式单次 fetch（spy 断言） | M4-3 | ✅ orchestrator 单次 fetch + provide 注入（WaveformCanvas.peaks.test：fetchSpy toHaveBeenCalledTimes(1)）；行级 LRU 缓存 64 |
+| 千段滚动/播放/行重排帧率 | 本文件采集日体感 + 计时 | 不低于本基线 | PRD §7 | ⏳ 真机清单 C（canvas 位图重绘口径，M5-5/M8-3 移交双平台） |
+| 五项工程门禁 | 本文件采集日全绿（pytest 702 / vitest 453） | 全程全绿 + events-diff 空 + models-diff 零 | M8-2 | ✅ pytest 708 / vitest 653 / build / lint 0 / ruff 0；events+models diff vs v3.0.2-base = 0 |
+
+对账说明：
+- 单行挂载门测量口径 = 3 批 × 20 挂载取最优批 p95（P3-1 加固，阈值 8ms 不变）——p95(20) 即最大样本，单次 GC 停顿在跨测试文件负载下会误杀（实测全量跑 15.4ms vs 单跑 ~6ms），最优批过滤环境噪声、只锚定组件内在成本。
+- 帧率项依赖真实 WebView 渲染管线（happy-dom 无位图重绘），按 M8-3 评审裁决移交双平台真机清单 C；不阻塞 RC 打 tag 前的全量自动化门禁。

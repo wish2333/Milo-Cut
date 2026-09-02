@@ -158,3 +158,23 @@ Stacking context 陷阱：`position: fixed` 弹层若被封印在带 `transform`
 - 副轨 lane：violet 次级色块（`bg-violet-200/50`），悬浮标题条（轨道名 · language · 段数 + 折叠钮）。
 - 播放头：单条红线上下贯穿（提升 owner 后的唯一实例）。
 - lane 高度档位 32/48/72px，折叠 24px，主轨下限 96px（挤压链 lg→md→sm→24）。
+
+## 11. 多行时间线交互规范（v3.0.2）
+
+- **双模式**：聚焦（basic，单窗 + 副轨堆叠，v3.0.1 语义）与多行（multi，虚拟化行列表，"一行 = 一窗"）随存随切；互迁公式：multi→basic 居中 `scrollTopTime + spr/2`，basic→multi reveal 视窗中心。
+- **行几何**：行 = 派生几何（duration / secondsPerRow），末行按剩余时长缩短；行高预设 64–168px 与面板高度解耦（divider 只改可视行数）；行键含 spr，档位切换整行重挂（行级适配器静态捕获 spr）。
+- **wheel 手势表**：
+
+| 手势 | 行为 |
+|---|---|
+| 普通滚轮 / 触控板 | 原生竖向滚行（不拦截） |
+| Ctrl/Cmd + 滚轮 | 每行秒数档 5/10/20/30 循环（160ms burst 合并净步数） |
+| Ctrl/Cmd + Shift + 滚轮 | 行高档 64–168 循环（wheel 下 = 缩小内容） |
+| 档位结算后 | 播放行锚定 REVEAL_BIAS（0.45） |
+
+- **空点双语义**（`emptyAreaMode`）：basic 空点建段（现状）；multi 空点 = 清选 + 定位。修饰路由：plain 拖 = scrub（32ms 节流，松手精确定位，不改播放态）；Ctrl 拖 = 建段（预览停块缘、窄缝拒绝）；Shift 拖 = 跨行框选（并入全局多选）；双击空点 = 播放/暂停。
+- **bounded / unbounded 双映射**：点击/建段钳行内；scrub 与 trim 用冻结换算（unbounded，仅钳 [0, duration]）——行边界永不进 trim 约束链（S7.8），拖拽中行回收不失连续。
+- **trim 约束链**：unbounded → 邻居钳（blocked 拒动）→ snap 0.01s（Alt 反转）→ snap 后二次钳。Alt 无跳过联动语义（联动自动且不可跳过）。
+- **跟随三分**：播放跟随换行才判定（舒适区只动播放头，否则 FOLLOW_BIAS 0.35）；手动滚动 3s 冷却（程序回声经 autoScrollTarget 匹配豁免）；revealTime 跳转 = REVEAL_BIAS + 免滚 + 冷却置位，字幕列表导航统一走此入口。
+- **持久化**：`milocut:timeline-rows:v1` = `{ mode, secondsPerRow, rowHeight, scrollTopTime, editorHeightPx }`；档位/高度变更即写，滚动位置 300ms 防抖 + 卸载兜底；白名单校验损坏回退；重开恢复按行边界量化。
+- **副轨行内组合**：每行 = 主 lane（blocks）+ 副轨 lanes（32/48/72/折叠 24，与聚焦模式共享折叠态）；有副轨时默认行高自动 168（用户自选值尊重）；副轨 trim 组合态可用。

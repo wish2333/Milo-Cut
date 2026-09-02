@@ -284,9 +284,9 @@ P3 批次:   M7 排版/组合/文档
 ### P5-3 文档、回写与性能对账（SPEC M7-3）
 
 - [x] **PRD 回写与差异登记**（SPEC 附录三项义务落点）：R5.5 二分切片预案化、R7.7 Alt 语义收敛、§0.3 P2 原则补 emptyAreaMode 注记——核对已回写则勾销，未回写则补；SPEC 差异回写记录表终检；**PRD/SPEC/PLAN 三方一致性终检**（对齐 3.0.1 P4-4 先例）（2026-09-02 终检通过：PRD L178 R5.5 预案化 ✓ / PRD L209 R7.7 收敛 ✓ / PRD L55 §0.3 P2 emptyAreaMode 注记 ✓ / SPEC 附录差异表 3 行齐全 ✓；emptyAreaMode 三方表述一致 ✓）
-- [ ] README 功能段；docs/design-spec.md 增补多行交互规范（手势表/跟随语义/双映射/Alt 矩阵）；开发报告版本池注记
-- [ ] `docs/3.0.2/perf-baseline.md` 回填对账（滚动/播放/行重排帧率、单行挂载 p95、peaks 单次）——**PRD §7 的基线引用同步改为本文件**（现引 3.0.1，属口径不一致）
-- [ ] 全量门禁终检：pytest ≥702+新增 / vitest ≥453+新增 / ruff 0 / eslint 0 / events-diff 空 / models-diff 零（S2/S3 外）
+- [x] README 功能段；docs/design-spec.md 增补多行交互规范（手势表/跟随语义/双映射/Alt 矩阵）；开发报告版本池注记（2026-09-02：README 增 Multi-Row Timeline 段；design-spec 增 §11 交互规范九节；开发报告版本池注记随 P5-4 总 record 一并落——版本池归档属发布动作）
+- [x] `docs/3.0.2/perf-baseline.md` 回填对账（滚动/播放/行重排帧率、单行挂载 p95、peaks 单次）——**PRD §7 的基线引用同步改为本文件**（现引 3.0.1，属口径不一致）（2026-09-02：对账表 5 项回填——4 ✅ 1 ⏳（帧率项真机清单 C）；核对 PRD §7 L287 已引本文件，无需改）
+- [x] 全量门禁终检：pytest ≥702+新增 / vitest ≥453+新增 / ruff 0 / eslint 0 / events-diff 空 / models-diff 零（S2/S3 外）（2026-09-02 终检：pytest 708 / vitest 653 / build 0 错 / lint 0 / ruff 0 / events-diff 0 / models-diff 0，全绿）
 
 **验收方式**: 全部门禁命令 + 文档链完整性检查。
 
