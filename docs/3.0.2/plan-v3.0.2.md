@@ -253,8 +253,8 @@ P3 批次:   M7 排版/组合/文档
 
 ### P4-3 迷你总览条（SPEC M6-4）
 
-- [ ] multi 模式 ScrollbarStrip 转型：覆盖区间新计算（visibleRows 起止/duration）+ 播放头刻线 + 点击/拖拽 revealTime；basic 现状零改动
-- [ ] vitest：覆盖区间与 visibleRows 一致数值断言、跳转行对齐
+- [x] multi 模式 ScrollbarStrip 转型：覆盖区间新计算（visibleRows 起止/duration）+ 播放头刻线 + 点击/拖拽 revealTime；basic 现状零改动（2026-09-02：overview prop 双分支——legacy 注入路径逐字节保留；拖拽 rAF 节流复用既有模式）
+- [x] vitest：覆盖区间与 visibleRows 一致数值断言、跳转行对齐（+3 例：0-60%/播放头 25%/滚动跟随 90%→40%+60% 钳制/点击 50s → 行对齐 506 + 拖拽 896）
 
 **验收方式**: `bun run test`。
 
