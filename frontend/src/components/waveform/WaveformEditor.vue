@@ -291,10 +291,14 @@ watch(
 )
 
 /**
- * Virtualized row descriptors. The key embeds the spr-derived row start
- * (M4-2): changing the spr preset changes every key -> wholesale row
- * remount (adapters statically capture spr); changing rowHeight only
- * mutates top/height props -> geometry-only keyed reuse.
+ * Virtualized row descriptors. The key embeds the spr itself (M4-2):
+ * changing the spr preset changes every key -> wholesale row remount
+ * (adapters statically capture spr). Keying on the derived start alone is
+ * NOT enough -- row 0's start is 0*spr == 0 under every preset, so its
+ * key would never change and the stale adapter kept rendering (fixed
+ * after beta.1 smoke finding: first row ignored spr changes until
+ * scrolled out and back). Changing rowHeight only mutates top/height
+ * props -> geometry-only keyed reuse.
  */
 const renderedRows = computed(() => {
   if (!isMulti.value) return []
@@ -307,7 +311,7 @@ const renderedRows = computed(() => {
       index: i,
       start,
       top: i * stride,
-      key: `r${i}-${start}`,
+      key: `r${i}-${start}@${spr}`,
     })
   }
   return rows
