@@ -243,9 +243,11 @@ P3 批次:   M7 排版/组合/文档
 
 ### P4-2 模式切换与持久化（SPEC M6-2/M6-3）
 
-- [ ] setMode 状态重置 + 双向迁移（basic↔multi 的 viewStart/scrollTopTime 互迁公式）
-- [ ] localStorage `milocut:timeline-rows:v1`：**schema 一次性定全**（`{ mode, secondsPerRow, rowHeight, scrollTopTime, editorHeightPx }`——heightPx 本步只读默认、P5-1 才写入，避免二次改 schema）；变更即写 + scrollTopTime debounce 300ms + 卸载兜底；损坏回退；恢复量化
-- [ ] vitest：round-trip、损坏回退、debounce 生效、双向迁移数值
+- [x] setMode 状态重置 + 双向迁移（basic↔multi 的 viewStart/scrollTopTime 互迁公式）（2026-09-02：multi→basic 居中 scrollTopTime+spr/2、basic→multi revealTime(视窗中心, center)；bursts/gesture/lastFollowedRow 随模式切换清零）
+- [x] localStorage `milocut:timeline-rows:v1`：**schema 一次性定全**（`{ mode, secondsPerRow, rowHeight, scrollTopTime, editorHeightPx }`——heightPx 本步只读默认、P5-1 才写入，避免二次改 schema）；变更即写 + scrollTopTime debounce 300ms + 卸载兜底；损坏回退；恢复量化（2026-09-02：卸载兜底直接写 storage——unmount 时 composable watcher 已停、走 state watch 不会落盘；挂载恢复 = timeToScrollTop 量化 + maxScrollTop clamp）
+- [x] vitest：round-trip、损坏回退、debounce 生效、双向迁移数值（+8 例：簿记 5 + 编辑器 3）
+
+**附带修复**：controls 条 `<template v-if/v-else>` fragment 在 happy-dom 下卸载崩溃（Vue 注释锚点被丢弃，pre-existing，真实浏览器不受影响）——改用 `display:contents` 包裹 div，布局不变。
 
 **验收方式**: `bun run test`。
 

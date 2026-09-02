@@ -3,7 +3,7 @@ import { mount } from "@vue/test-utils"
 import WaveformEditor from "./WaveformEditor.vue"
 import WaveformRow from "./WaveformRow.vue"
 import { formatTimeShort } from "@/utils/format"
-import { ROW_LAYOUT_STORAGE_KEY, WHEEL_DEBOUNCE_MS } from "@/composables/useRowLayout"
+import { ROW_LAYOUT_STORAGE_KEY, WHEEL_DEBOUNCE_MS, loadRowLayoutState } from "@/composables/useRowLayout"
 
 let rectDescriptor: PropertyDescriptor | undefined
 
@@ -867,5 +867,100 @@ describe("WaveformEditor follow three-way (M6-1)", () => {
     await wrapper.setProps({ currentTime: 85 }) // row 8 -> follows
     expect(el.scrollTop).toBe(928)
     wrapper.unmount()
+  })
+})
+
+// ------------------------------------------------------------------
+// v3.0.2 M6-2/M6-3: mode-switch migration + persisted restore
+// ------------------------------------------------------------------
+
+describe("WaveformEditor mode migration + persisted restore (M6-2/M6-3)", () => {
+  let clientHeightDescriptor: PropertyDescriptor | undefined
+
+  beforeAll(() => {
+    clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight")
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.getAttribute?.("data-test") === "multi-scroll") return 320
+        return clientHeightDescriptor?.get?.call(this) ?? 0
+      },
+    })
+  })
+
+  afterAll(() => {
+    if (clientHeightDescriptor) {
+      Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeightDescriptor)
+    }
+  })
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    localStorage.clear()
+    localStorage.setItem(
+      ROW_LAYOUT_STORAGE_KEY,
+      JSON.stringify({ mode: "multi", secondsPerRow: 10, rowHeight: 120 }),
+    )
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    localStorage.clear()
+  })
+
+  function mountEditor(currentTime: number) {
+    return mount(WaveformEditor, {
+      props: { segments: [], edits: [], duration: 100, currentTime },
+      global: {
+        stubs: {
+          WaveformCanvas: true,
+          TimeMarksLayer: true,
+          SegmentBlocksLayer: true,
+          ScrollbarStrip: true,
+          PlayheadOverlay: true,
+        },
+      },
+    })
+  }
+
+  it("multi -> basic centers the viewport top row; back reveals its center", async () => {
+    const wrapper = mountEditor(5)
+    const el = wrapper.find('[data-test="multi-scroll"]').element as HTMLElement
+    // Park the multi viewport: reveal row 4 -> scrollTop 376 (t=20s).
+    ;(wrapper.vm as unknown as { revealTime: (t: number) => void }).revealTime(45)
+    await wrapper.vm.$nextTick()
+    expect(el.scrollTop).toBe(376)
+
+    // Leave multi: the basic window centers on scrollTopTime + spr/2 = 25s.
+    await wrapper.find('[data-test="mode-basic"]').trigger("click")
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="basic-view-start"]').text()).toBe("10.0s")
+
+    // Re-enter multi: reveal the basic window's center (25s, row 2) at 0.5.
+    await wrapper.find('[data-test="mode-multi"]').trigger("click")
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="multi-scroll"]').element.scrollTop).toBe(100)
+    wrapper.unmount()
+  })
+
+  it("restore quantizes the persisted scrollTopTime to a row boundary", async () => {
+    localStorage.setItem(
+      ROW_LAYOUT_STORAGE_KEY,
+      JSON.stringify({ mode: "multi", secondsPerRow: 10, rowHeight: 120, scrollTopTime: 25 }),
+    )
+    const wrapper = mountEditor(5)
+    const el = wrapper.find('[data-test="multi-scroll"]').element as HTMLElement
+    await wrapper.vm.$nextTick()
+    // timeToScrollTop(25) floors to the row-2 boundary: 2 * 130 = 260.
+    expect(el.scrollTop).toBe(260)
+    wrapper.unmount()
+  })
+
+  it("unmount flushes the pending scrollTopTime write (兜底)", async () => {
+    const wrapper = mountEditor(5)
+    ;(wrapper.vm as unknown as { revealTime: (t: number) => void }).revealTime(45)
+    await wrapper.vm.$nextTick() // debounce timer armed with scrollTopTime = 20
+    wrapper.unmount() // before the 300ms window elapses
+    expect(loadRowLayoutState().scrollTopTime).toBe(20)
   })
 })
