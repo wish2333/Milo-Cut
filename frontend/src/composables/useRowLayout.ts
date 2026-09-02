@@ -288,6 +288,13 @@ export interface UseRowLayoutReturn {
   /** M6-1: scroll so `time`'s row sits at REVEAL_BIAS (no-op if comfortable). */
   revealTime: (time: number, center?: boolean) => void
   isRowVisibleInComfortZone: (rowIndex: number) => boolean
+  /** M6-1: pause playback-follow for the manual-scroll cooldown window. */
+  markManualScroll: () => void
+  isFollowCoolingDown: () => boolean
+  /** M6-1: record a programmatic scrollTop write (echo suppression). */
+  noteAutoScroll: (target: number) => void
+  /** M6-1: true when `actual` is the echo of the last programmatic write. */
+  consumeAutoScroll: (actual: number) => boolean
 }
 
 /**
@@ -342,9 +349,39 @@ export function useRowLayout(duration: Ref<number>): UseRowLayoutReturn {
     return isRowInComfortZone(rowIndex, scrollTop.value, viewportHeight.value, state.value.rowHeight)
   }
 
+  // -- M6-1: follow bookkeeping (cooldown + auto-scroll echo) --------------
+  //
+  // Plain closure state on purpose: no reactive consumer, just gate math.
+  // `manualFollowUntil` pauses playback-follow after the user scrolls or a
+  // revealTime jump; `autoScrollTarget` remembers the editor's last
+  // programmatic scrollTop write so the scroll handler can tell its own
+  // echo apart from a genuine manual scroll.
+
+  let manualFollowUntil = 0
+  let autoScrollTarget: number | null = null
+
+  function markManualScroll(): void {
+    manualFollowUntil = Date.now() + MANUAL_FOLLOW_COOLDOWN_MS
+  }
+
+  function isFollowCoolingDown(): boolean {
+    return Date.now() < manualFollowUntil
+  }
+
+  function noteAutoScroll(target: number): void {
+    autoScrollTarget = target
+  }
+
+  /** True when `actual` matches the pending programmatic write (its echo). */
+  function consumeAutoScroll(actual: number): boolean {
+    const matched = autoScrollTarget !== null && Math.abs(actual - autoScrollTarget) <= 1
+    autoScrollTarget = null
+    return matched
+  }
+
   function revealTime(time: number, center = false): void {
     const row = rowIndexAtTime(time, state.value.secondsPerRow)
-    if (isRowVisibleInComfortZone(row)) return // comfort-zone skip (M6-1)
+    if (isRowVisibleInComfortZone(row)) return // comfort-zone skip: playhead only
     // center=true (mode switch-in) centers the row; jumps use REVEAL_BIAS.
     scrollTop.value = followScrollTop(
       row,
@@ -353,6 +390,8 @@ export function useRowLayout(duration: Ref<number>): UseRowLayoutReturn {
       maxScrollTop.value,
       center ? 0.5 : REVEAL_BIAS,
     )
+    // M6-1: an explicit jump pauses playback-follow for the cooldown window.
+    manualFollowUntil = Date.now() + MANUAL_FOLLOW_COOLDOWN_MS
   }
 
   return {
@@ -369,5 +408,9 @@ export function useRowLayout(duration: Ref<number>): UseRowLayoutReturn {
     scrollTopTime,
     revealTime,
     isRowVisibleInComfortZone,
+    markManualScroll,
+    isFollowCoolingDown,
+    noteAutoScroll,
+    consumeAutoScroll,
   }
 }

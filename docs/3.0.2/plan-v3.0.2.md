@@ -236,8 +236,8 @@ P3 批次:   M7 排版/组合/文档
 
 ### P4-1 跟随三分（SPEC M6-1）
 
-- [ ] 播放跟随（换行才判定 + FOLLOW_BIAS + autoScrollTarget 回环抑制）；手动滚动 3s 冷却（isTrusted && !wasAutoScroll）；revealTime（REVEAL_BIAS + 舒适区免滚 + 视口内只动播放头）；字幕列表导航统一走 revealTime
-- [ ] vitest：冷却窗口、回环抑制、免滚路径、换行才判定（同行内不触发滚动）
+- [x] 播放跟随（换行才判定 + FOLLOW_BIAS + autoScrollTarget 回环抑制）；手动滚动 3s 冷却（isTrusted && !wasAutoScroll）；revealTime（REVEAL_BIAS + 舒适区免滚 + 视口内只动播放头）；字幕列表导航统一走 revealTime（2026-09-02：回环判别 = autoScrollTarget 匹配(±1px)替代 wasAutoScroll 布尔；跟随写入为瞬时赋值未启 smooth——精确回环分类优先，smooth+时间窗抑制待真机手感评估；WorkspacePage 列表 seek 走 waveformEditorRef.revealTime，basic 下 no-op）
+- [x] vitest：冷却窗口、回环抑制、免滚路径、换行才判定（同行内不触发滚动）（+9 例：内核簿记 4 + 编辑器 5）
 
 **验收方式**: `bun run test`。
 

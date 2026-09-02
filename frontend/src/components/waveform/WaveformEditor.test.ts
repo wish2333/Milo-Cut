@@ -724,3 +724,148 @@ describe("WaveformEditor in-row pointer gestures (M5-3)", () => {
     wrapper.unmount()
   })
 })
+
+// ------------------------------------------------------------------
+// v3.0.2 M6-1: follow three-way (playback follow / cooldown / reveal)
+// ------------------------------------------------------------------
+
+describe("WaveformEditor follow three-way (M6-1)", () => {
+  // Viewport 320px, stride 130 (rowHeight 120), comfort rowTop window
+  // [64, 136]; follow target for row r = r*130 - 320*0.35 = r*130 - 112.
+  let clientHeightDescriptor: PropertyDescriptor | undefined
+
+  beforeAll(() => {
+    clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight")
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.getAttribute?.("data-test") === "multi-scroll") return 320
+        return clientHeightDescriptor?.get?.call(this) ?? 0
+      },
+    })
+  })
+
+  afterAll(() => {
+    if (clientHeightDescriptor) {
+      Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeightDescriptor)
+    }
+  })
+
+  beforeEach(() => {
+    // Full fake timers: Date drives the 3s cooldown, setTimeout drives the
+    // M5-1 wheel burst used to reposition via the M5-2 anchor.
+    vi.useFakeTimers()
+    localStorage.clear()
+    localStorage.setItem(
+      ROW_LAYOUT_STORAGE_KEY,
+      JSON.stringify({ mode: "multi", secondsPerRow: 10, rowHeight: 120 }),
+    )
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    localStorage.clear()
+  })
+
+  function mountFollow(currentTime: number) {
+    return mount(WaveformEditor, {
+      props: { segments: [], edits: [], duration: 100, currentTime },
+      global: {
+        stubs: {
+          WaveformCanvas: true,
+          TimeMarksLayer: true,
+          SegmentBlocksLayer: true,
+          ScrollbarStrip: true,
+          PlayheadOverlay: true,
+        },
+      },
+    })
+  }
+
+  function scrollElOf(wrapper: ReturnType<typeof mountFollow>): HTMLElement {
+    return wrapper.find('[data-test="multi-scroll"]').element as HTMLElement
+  }
+
+  function trustedScroll(el: HTMLElement, isTrusted: boolean) {
+    const ev = new Event("scroll")
+    Object.defineProperty(ev, "isTrusted", { value: isTrusted })
+    el.dispatchEvent(ev)
+  }
+
+  function dispatchWheel(
+    el: HTMLElement,
+    init: { deltaY: number; ctrlKey?: boolean; shiftKey?: boolean },
+  ) {
+    // happy-dom drops modifier keys from event constructors (see M5-1 note).
+    const ev = new WheelEvent("wheel", { deltaY: init.deltaY, bubbles: true, cancelable: true })
+    Object.defineProperty(ev, "ctrlKey", { value: init.ctrlKey ?? false })
+    Object.defineProperty(ev, "shiftKey", { value: init.shiftKey ?? false })
+    el.dispatchEvent(ev)
+  }
+
+  it("follows the playing row at FOLLOW_BIAS only when the row changes", async () => {
+    const wrapper = mountFollow(5) // row 0
+    const el = scrollElOf(wrapper)
+    await wrapper.setProps({ currentTime: 8 }) // same row 0 -> no judgment
+    expect(el.scrollTop).toBe(0)
+    await wrapper.setProps({ currentTime: 25 }) // row 2 -> 2*130 - 112
+    expect(el.scrollTop).toBe(148)
+    wrapper.unmount()
+  })
+
+  it("the programmatic write's scroll echo is NOT a manual scroll (回环抑制)", async () => {
+    const wrapper = mountFollow(5)
+    const el = scrollElOf(wrapper)
+    await wrapper.setProps({ currentTime: 25 }) // follow writes 148
+    expect(el.scrollTop).toBe(148)
+    trustedScroll(el, true) // echo of our own write
+    await wrapper.setProps({ currentTime: 45 }) // row 4, no cooldown -> 408
+    expect(el.scrollTop).toBe(408)
+    wrapper.unmount()
+  })
+
+  it("a genuine manual scroll pauses follow for the 3s cooldown", async () => {
+    const wrapper = mountFollow(5)
+    const el = scrollElOf(wrapper)
+    await wrapper.setProps({ currentTime: 25 }) // follow writes 148, target pending
+    expect(el.scrollTop).toBe(148)
+    trustedScroll(el, true) // first trusted event: echo of our write (no cooldown)
+    trustedScroll(el, true) // second: no pending target -> genuine manual -> cooldown
+    await wrapper.setProps({ currentTime: 45 }) // row 4 blocked by the cooldown
+    expect(el.scrollTop).toBe(148)
+    vi.advanceTimersByTime(3000) // cooldown expired
+    await wrapper.setProps({ currentTime: 65 }) // row 6 -> follows again
+    expect(el.scrollTop).toBe(668)
+    wrapper.unmount()
+  })
+
+  it("a row already comfortable keeps the playhead-only path (免滚)", async () => {
+    const wrapper = mountFollow(5)
+    const el = scrollElOf(wrapper)
+    // M5-2 anchor (ctrl+wheel -> spr 5) parks the playing row at scrollTop 0,
+    // which leaves row 1 comfortable (rowTop 130 in [64, 136]).
+    dispatchWheel(el, { deltaY: -120, ctrlKey: true })
+    vi.advanceTimersByTime(WHEEL_DEBOUNCE_MS)
+    await wrapper.vm.$nextTick()
+    expect(el.scrollTop).toBe(0)
+    await wrapper.setProps({ currentTime: 8 }) // row 1 (spr 5): comfortable -> skip
+    expect(el.scrollTop).toBe(0)
+    await wrapper.setProps({ currentTime: 13 }) // row 2: uncomfortable -> follows
+    expect(el.scrollTop).toBe(148)
+    wrapper.unmount()
+  })
+
+  it("exposed revealTime jumps with REVEAL_BIAS and arms the cooldown", async () => {
+    const wrapper = mountFollow(5)
+    const el = scrollElOf(wrapper)
+    ;(wrapper.vm as unknown as { revealTime: (t: number) => void }).revealTime(45) // row 4
+    await wrapper.vm.$nextTick()
+    expect(el.scrollTop).toBe(376) // 4*130 - 320*0.45
+    await wrapper.setProps({ currentTime: 65 }) // row 6 within cooldown: blocked
+    expect(el.scrollTop).toBe(376)
+    vi.advanceTimersByTime(3000)
+    await wrapper.setProps({ currentTime: 85 }) // row 8 -> follows
+    expect(el.scrollTop).toBe(928)
+    wrapper.unmount()
+  })
+})

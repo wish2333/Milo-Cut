@@ -4,7 +4,7 @@
  * MAW comfort-zone alignment case (390px viewport -> 78px inset), and the
  * floor-quantization non-inverse anchor (M2-2 裁决).
  */
-import { describe, expect, it, beforeEach, afterEach } from "vitest"
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest"
 import { ref } from "vue"
 import {
   SECONDS_PER_ROW_PRESETS,
@@ -417,5 +417,63 @@ describe("shouldEmitScrubSeek (M5-3 32ms throttle gate)", () => {
     expect(shouldEmitScrubSeek(Number.NEGATIVE_INFINITY, 0)).toBe(true)
     expect(shouldEmitScrubSeek(100, 150, 32)).toBe(true)
     expect(shouldEmitScrubSeek(100, 120, 32)).toBe(false)
+  })
+})
+
+describe("M6-1 follow bookkeeping (cooldown + auto-scroll echo)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] })
+    localStorage.clear()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    localStorage.clear()
+  })
+
+  function makeLayout(viewport = 400) {
+    const duration = ref(100)
+    const layout = useRowLayout(duration)
+    layout.setMode("multi")
+    layout.viewportHeight.value = viewport
+    return layout
+  }
+
+  it("revealTime arms the 3s manual-follow cooldown", () => {
+    const layout = makeLayout()
+    layout.revealTime(500) // deep row -> real scroll
+    expect(layout.isFollowCoolingDown()).toBe(true)
+    vi.advanceTimersByTime(MANUAL_FOLLOW_COOLDOWN_MS - 1)
+    expect(layout.isFollowCoolingDown()).toBe(true)
+    vi.advanceTimersByTime(1)
+    expect(layout.isFollowCoolingDown()).toBe(false)
+  })
+
+  it("comfort-zone reveal scrolls nothing and arms no cooldown", () => {
+    const layout = makeLayout()
+    // followScrollTop(10, 400, 120, max, 0.45) = 1120 puts row 10 inside
+    // the comfort band (rowTop 180 in [80, 320-200]... i.e. [80, 200]).
+    layout.scrollTop.value = 1120
+    layout.revealTime(100) // row 10
+    expect(layout.scrollTop.value).toBe(1120) // untouched
+    expect(layout.isFollowCoolingDown()).toBe(false)
+  })
+
+  it("markManualScroll gates exactly for the cooldown window", () => {
+    const layout = makeLayout()
+    layout.markManualScroll()
+    vi.advanceTimersByTime(2999)
+    expect(layout.isFollowCoolingDown()).toBe(true)
+    vi.advanceTimersByTime(1)
+    expect(layout.isFollowCoolingDown()).toBe(false)
+  })
+
+  it("consumeAutoScroll matches the pending write once and clears on miss", () => {
+    const layout = makeLayout()
+    layout.noteAutoScroll(500)
+    expect(layout.consumeAutoScroll(500.5)).toBe(true) // echo within 1px
+    expect(layout.consumeAutoScroll(500)).toBe(false) // already consumed
+    layout.noteAutoScroll(300)
+    expect(layout.consumeAutoScroll(400)).toBe(false) // miss clears the target
+    expect(layout.consumeAutoScroll(300)).toBe(false)
   })
 })
