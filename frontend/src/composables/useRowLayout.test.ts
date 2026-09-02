@@ -5,7 +5,7 @@
  * floor-quantization non-inverse anchor (M2-2 裁决).
  */
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest"
-import { ref } from "vue"
+import { ref, nextTick } from "vue"
 import {
   SECONDS_PER_ROW_PRESETS,
   ROW_HEIGHT_PRESETS,
@@ -31,6 +31,7 @@ import {
   isRowInComfortZone,
   followScrollTop,
   cyclePreset,
+  SCROLL_TOP_SAVE_DEBOUNCE_MS,
   shouldEmitScrubSeek,
   timeFromPointerInRow,
   loadRowLayoutState,
@@ -475,5 +476,96 @@ describe("M6-1 follow bookkeeping (cooldown + auto-scroll echo)", () => {
     layout.noteAutoScroll(300)
     expect(layout.consumeAutoScroll(400)).toBe(false) // miss clears the target
     expect(layout.consumeAutoScroll(300)).toBe(false)
+  })
+})
+
+describe("M6-3 persistence timing + full schema", () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    localStorage.clear()
+    localStorage.setItem(
+      ROW_LAYOUT_STORAGE_KEY,
+      JSON.stringify({ mode: "multi", secondsPerRow: 10, rowHeight: 120 }),
+    )
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    localStorage.clear()
+  })
+
+  function makeLayout() {
+    const duration = ref(100)
+    const layout = useRowLayout(duration)
+    layout.setMode("multi")
+    layout.viewportHeight.value = 320
+    return layout
+  }
+
+  it("scrollTopTime writes are debounced by 300ms", async () => {
+    const layout = makeLayout()
+    layout.scrollTop.value = 265 // scrollTopTime = 20
+    await nextTick() // let the watch arm the debounce timer
+    expect(loadRowLayoutState().scrollTopTime).toBeUndefined() // debounce pending
+    vi.advanceTimersByTime(SCROLL_TOP_SAVE_DEBOUNCE_MS - 1)
+    await nextTick()
+    expect(loadRowLayoutState().scrollTopTime).toBeUndefined()
+    vi.advanceTimersByTime(1)
+    await nextTick() // the state watch persists on the next flush
+    expect(loadRowLayoutState().scrollTopTime).toBe(20)
+  })
+
+  it("rapid scrolling coalesces into ONE trailing write", async () => {
+    const layout = makeLayout()
+    layout.scrollTop.value = 130 // t=10
+    await nextTick()
+    vi.advanceTimersByTime(200)
+    layout.scrollTop.value = 260 // t=20 restarts the window
+    await nextTick()
+    vi.advanceTimersByTime(200)
+    layout.scrollTop.value = 390 // t=30 restarts again
+    await nextTick()
+    vi.advanceTimersByTime(SCROLL_TOP_SAVE_DEBOUNCE_MS)
+    await nextTick()
+    expect(loadRowLayoutState().scrollTopTime).toBe(30)
+  })
+
+  it("flushScrollTopSave writes the pending position immediately", async () => {
+    const layout = makeLayout()
+    layout.scrollTop.value = 390 // t=30
+    await nextTick() // timer armed
+    layout.flushScrollTopSave()
+    expect(loadRowLayoutState().scrollTopTime).toBe(30)
+  })
+
+  it("the extended schema round-trips (scrollTopTime + editorHeightPx)", () => {
+    const storage = localStorage
+    const state = {
+      mode: "multi" as const,
+      secondsPerRow: 20,
+      rowHeight: 96,
+      scrollTopTime: 45.5,
+      editorHeightPx: 480,
+    }
+    saveRowLayoutState(state, storage)
+    expect(loadRowLayoutState(storage)).toEqual(state)
+  })
+
+  it("corrupted optional fields are dropped, core fields survive", () => {
+    const storage = localStorage
+    saveRowLayoutState(
+      {
+        mode: "multi",
+        secondsPerRow: 20,
+        rowHeight: 96,
+        scrollTopTime: -7,
+        editorHeightPx: Number.NaN,
+      } as never,
+      storage,
+    )
+    expect(loadRowLayoutState(storage)).toEqual({
+      mode: "multi",
+      secondsPerRow: 20,
+      rowHeight: 96,
+    })
   })
 })

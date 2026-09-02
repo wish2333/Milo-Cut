@@ -15,6 +15,7 @@ import {
   followScrollTop,
   rowIndexAtTime,
   shouldEmitScrubSeek,
+  timeToScrollTop,
   useRowLayout,
   strideOf,
   lastRowWidthPercent,
@@ -731,16 +732,44 @@ function rowWidthPercent(index: number): number {
 // Mode switch (M6-2 minimal form; follow-state reset/refinement lands P4):
 // multi -> reveal the playing row; basic -> the single window keeps its own
 // state (v3.0.1 semantics untouched).
+// M6-2: mode-switch state reset + bidirectional migration.
+// multi -> reveal the BASIC WINDOW's center (the row the user was looking
+// at), not the playhead; basic -> center the single window on the top row
+// of the multi viewport (scrollTopTime + spr/2, the v3.0.1 centering
+// semantics). Frozen gesture state never outlives its mode.
 watch(isMulti, async multi => {
   if (multi) {
     lastFollowedRow = null // fresh follow semantics on each multi entry
     await nextTick()
-    rowLayout.revealTime(props.currentTime, true)
+    rowLayout.revealTime(
+      metrics.viewStart.value + metrics.viewDuration.value / 2,
+      true,
+    )
   } else {
     resetWheelBursts() // half-finished ctrl+wheel bursts never outlive multi
     gestureCleanup?.() // nor do half-finished scrub/create/marquee gestures
+    lastFollowedRow = null
+    metrics.scrollTo(
+      rowLayout.scrollTopTime.value + rowLayout.state.value.secondsPerRow / 2,
+    )
     nextTick(attachBasicWheel)
   }
+})
+
+// M6-3 restore: a fresh editor in multi mode jumps back to the persisted
+// browsing position, quantized to the row boundary and clamped to the
+// (possibly shrunken) duration.
+function restorePersistedScroll(): void {
+  const st = rowLayout.state.value
+  if (!st.scrollTopTime) return
+  rowLayout.scrollTop.value = Math.min(
+    timeToScrollTop(st.scrollTopTime, st.rowHeight, st.secondsPerRow),
+    rowLayout.maxScrollTop.value,
+  )
+}
+
+onMounted(() => {
+  if (isMulti.value) restorePersistedScroll() // M6-3: re-open restores position
 })
 
 onUnmounted(() => {
@@ -750,6 +779,7 @@ onUnmounted(() => {
   detachMultiWheel()
   resetWheelBursts()
   gestureCleanup?.()
+  rowLayout.flushScrollTopSave() // M6-3: unmount fallback write
 })
 
 // Multi-mode row event forwarding: the editor owns all navigation/edit
@@ -803,7 +833,10 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
           聚焦
         </button>
       </div>
-      <template v-if="isMulti">
+      <!-- M6-2 note: wrapper DIVs (display:contents) instead of <template
+           v-if> fragments -- happy-dom drops Vue's comment anchors, which
+           crashed fragment removal in tests; a real browser never did. -->
+      <div v-if="isMulti" class="contents">
         <select
           class="shrink-0 rounded border border-gray-300 bg-surface px-1 py-0 text-[11px]"
           data-test="spr-select"
@@ -823,12 +856,12 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
           <option v-for="h in rowHeightPresets" :key="h" :value="h">{{ h }}px</option>
         </select>
         <span class="flex-1 text-center">{{ rowCountLabel }}</span>
-      </template>
-      <template v-else>
-        <span>{{ metrics.viewStart.value.toFixed(1) }}s</span>
+      </div>
+      <div v-else class="contents">
+        <span data-test="basic-view-start">{{ metrics.viewStart.value.toFixed(1) }}s</span>
         <span class="flex-1 text-center">{{ metrics.viewDuration.value.toFixed(1) }}s window</span>
         <span>{{ metrics.viewEnd.value.toFixed(1) }}s</span>
-      </template>
+      </div>
     </div>
 
     <!-- v3.0.2 M4-1: multi-row virtualized surface -->

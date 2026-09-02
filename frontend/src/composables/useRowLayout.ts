@@ -37,6 +37,8 @@ export const SCRUB_SEEK_INTERVAL_MS = 32
 export const FOLLOW_BIAS = 0.35
 /** Jump/reveal bias: target line sits under 1/2 from the top (M6-1). */
 export const REVEAL_BIAS = 0.45
+/** scrollTopTime persistence debounce: write after scrolling settles (M6-3). */
+export const SCROLL_TOP_SAVE_DEBOUNCE_MS = 300
 
 /** localStorage key (M0-1.4) -- sibling of `milocut:timeline-layout:v1`. */
 export const ROW_LAYOUT_STORAGE_KEY = "milocut:timeline-rows:v1"
@@ -50,6 +52,14 @@ export interface RowLayoutState {
   mode: "multi" | "basic"
   secondsPerRow: number
   rowHeight: number
+  /**
+   * M6-3: restore position (row-start quantized seconds). Schema-complete
+   * in P4-2; the debounced writer fills it, P5-1's editorHeightPx joins
+   * the write side later (schema frozen once, per plan).
+   */
+  scrollTopTime?: number
+  /** M6-3: multi viewport height. Read-side default only until P5-1. */
+  editorHeightPx?: number
 }
 
 // -- Pure geometry (seconds in, seconds/px out; no reactivity) ------------
@@ -230,7 +240,7 @@ export function defaultRowLayoutState(): RowLayoutState {
 
 function normalizeState(raw: Partial<RowLayoutState> | null | undefined): RowLayoutState {
   const def = defaultRowLayoutState()
-  return {
+  const state: RowLayoutState = {
     mode: raw?.mode === "multi" ? "multi" : def.mode,
     secondsPerRow: (SECONDS_PER_ROW_PRESETS as readonly number[]).includes(raw?.secondsPerRow ?? NaN)
       ? (raw!.secondsPerRow as number)
@@ -239,6 +249,15 @@ function normalizeState(raw: Partial<RowLayoutState> | null | undefined): RowLay
       ? (raw!.rowHeight as number)
       : def.rowHeight,
   }
+  // M6-3 whitelist: corrupted/out-of-domain optional fields are dropped
+  // (undefined -> caller defaults), never thrown into the layout math.
+  if (typeof raw?.scrollTopTime === "number" && Number.isFinite(raw.scrollTopTime) && raw.scrollTopTime >= 0) {
+    state.scrollTopTime = raw.scrollTopTime
+  }
+  if (typeof raw?.editorHeightPx === "number" && Number.isFinite(raw.editorHeightPx) && raw.editorHeightPx > 0) {
+    state.editorHeightPx = raw.editorHeightPx
+  }
+  return state
 }
 
 export function loadRowLayoutState(
@@ -295,6 +314,8 @@ export interface UseRowLayoutReturn {
   noteAutoScroll: (target: number) => void
   /** M6-1: true when `actual` is the echo of the last programmatic write. */
   consumeAutoScroll: (actual: number) => boolean
+  /** M6-3: unmount fallback -- flush the debounced scrollTopTime write. */
+  flushScrollTopSave: () => void
 }
 
 /**
@@ -328,6 +349,35 @@ export function useRowLayout(duration: Ref<number>): UseRowLayoutReturn {
     s => saveRowLayoutState(s),
     { deep: true },
   )
+
+  // M6-3: scrollTopTime is scroll-driven -- debounce 300ms so scrolling
+  // never hammers localStorage, plus a flush hook for unmount (兜底).
+  let scrollTopSaveTimer: ReturnType<typeof setTimeout> | null = null
+
+  function persistScrollTopTime(time: number): void {
+    if (!Number.isFinite(time) || time < 0) return
+    state.value = { ...state.value, scrollTopTime: time }
+  }
+
+  watch(scrollTopTime, time => {
+    if (scrollTopSaveTimer !== null) clearTimeout(scrollTopSaveTimer)
+    scrollTopSaveTimer = setTimeout(() => {
+      scrollTopSaveTimer = null
+      persistScrollTopTime(time)
+    }, SCROLL_TOP_SAVE_DEBOUNCE_MS)
+  })
+
+  /** Unmount fallback: write the pending quantized position immediately. */
+  function flushScrollTopSave(): void {
+    if (scrollTopSaveTimer === null) return
+    clearTimeout(scrollTopSaveTimer)
+    scrollTopSaveTimer = null
+    const t = scrollTopTime.value
+    if (!Number.isFinite(t) || t < 0) return
+    const next = { ...state.value, scrollTopTime: t }
+    state.value = next // keep reactive state consistent (no-op once stopped)
+    saveRowLayoutState(next) // direct write: the state watcher is dead at unmount
+  }
 
   function setSecondsPerRow(v: number): void {
     if ((SECONDS_PER_ROW_PRESETS as readonly number[]).includes(v)) {
@@ -412,5 +462,6 @@ export function useRowLayout(duration: Ref<number>): UseRowLayoutReturn {
     isFollowCoolingDown,
     noteAutoScroll,
     consumeAutoScroll,
+    flushScrollTopSave,
   }
 }
