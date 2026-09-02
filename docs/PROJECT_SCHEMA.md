@@ -65,5 +65,5 @@
 ## 导出边界
 
 - 视频导出（segment-concat 管线）只消费主轨 segments/edits；SRT/VTT 导出由 export_srt 生成；OTIO/EDL/FCPXML/Premiere XML 由 export_timeline 生成（audio-only fps=0 安全）。
-- **副轨（tracks）不参与视频导出与时间轴裁剪映射**（v3.0.0 M11-2）：确认删除/keep-range 只作用于主轨；副轨 SRT 通过 `export_subtitle` 任务携带 `track_id` 单独导出（`export_track_srt`，按原始时间戳直出，不做删除映射），导出对话框按轨道逐个出按钮。
+- **副轨（tracks）不参与视频导出与时间轴裁剪映射**（v3.0.0 M11-2）：确认删除/keep-range 只作用于主轨；副轨 SRT 通过 `export_subtitle` 任务携带 `track_id` 单独导出（v3.0.1 起走 `export_track_subtitle`：默认与主轨同一删除映射落到导出时间轴，`map_deletions=False` 时按原始时间戳直出；v3.0.2 移除了旧的 `export_track_srt` 直出包装），导出对话框按轨道逐个出按钮。
 - v3.0.0 转写自动导出的 SRT（`data/transcripts/`）仅为归档交付物，**不再回读**（M1-1）。

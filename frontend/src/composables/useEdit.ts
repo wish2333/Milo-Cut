@@ -15,6 +15,17 @@ export function useEdit(
     }
   }
 
+  // v3.0.2 M1-3 (S3/R3.2): binding predicate for the M5-1 capture mapping.
+  // Split of a bound segment rebuilds its bindings; deleting one cascades
+  // the paired extension deletion -- both touch the track layers on the
+  // backend, so undo must capture them or the rollback is partial.
+  function segmentIsBound(segmentId: string): boolean {
+    const p = project.value
+    if (!p) return false
+    const tl = p.timelines.find(t => t.id === p.active_timeline_id)
+    return (tl?.transcript?.bindings ?? []).some(b => b.main_segment_id === segmentId)
+  }
+
   async function updateSegmentText(segmentId: string, text: string): Promise<boolean> {
     const res = await call<Project>("update_segment_text", segmentId, text)
     if (res.success && res.data) {
@@ -54,7 +65,12 @@ export function useEdit(
     // backend replies with `snap_offset_ms` for UI toast feedback.
     const res = await call<Project>("split_segment", segmentId, position, snapToWord)
     if (res.success && res.data) {
-      snapshot(["segments", "edits"], "拆分段落") // B4: cross-layer atomic undo
+      // v3.0.2 M1-3 (S3/R3.2): linked split joins the track layers when the
+      // split target has bindings (backend rebuilds/rebinds them).
+      snapshot(
+        segmentIsBound(segmentId) ? ["segments", "edits", "tracks", "bindings"] : ["segments", "edits"],
+        "拆分段落",
+      ) // B4: cross-layer atomic undo
       project.value = res.data
       // snap_offset_ms is a sibling of `data` on the envelope (M1-4)
       const snapOffsetMs =
@@ -130,7 +146,12 @@ export function useEdit(
   async function deleteSegment(segmentId: string): Promise<string | null> {
     const res = await call<Project>("delete_segment", segmentId)
     if (res.success && res.data) {
-      snapshot(["segments", "edits"], "删除段落") // B9: cascades ED removal
+      // v3.0.2 M1-3 (S3/R3.2): deleting a bound segment cascades the paired
+      // extension deletion + binding removal -- capture all four layers.
+      snapshot(
+        segmentIsBound(segmentId) ? ["segments", "edits", "tracks", "bindings"] : ["segments", "edits"],
+        "删除段落",
+      ) // B9: cascades ED removal
       project.value = res.data
       return null
     }

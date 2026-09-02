@@ -381,21 +381,6 @@ def export_srt(
         return {"success": False, "error": str(e)}
 
 
-def export_track_srt(
-    track: dict,
-    output_path: str,
-) -> dict:
-    """Deprecated wrapper (v3.0.1 M6-1): original-timestamps track SRT.
-
-    Superseded by :func:`export_track_subtitle`, which routes the track
-    through the SAME deletion mapping as the main track (R9.1). Kept for
-    one version cycle; remove in v3.0.2.
-    """
-    return export_track_subtitle(
-        track, [], output_path, fmt="srt", map_deletions=False
-    )
-
-
 def export_track_subtitle(
     track: dict,
     edits: list[dict],
@@ -414,7 +399,7 @@ def export_track_subtitle(
     main and track subtitles land on the same exported timeline).
 
     With ``map_deletions=False`` the export is a plain dump at original
-    timestamps (the legacy ``export_track_srt`` behavior).
+    timestamps.
 
     Survivors follow the main-track rule: a segment is kept whole when it
     retains enough content in the keep ranges, otherwise dropped with a

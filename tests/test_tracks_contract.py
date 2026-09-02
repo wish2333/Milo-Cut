@@ -7,7 +7,8 @@ Locks:
 - _enforce_segment_sort_invariant never touches extension tracks.
 - Old projects without the tracks/bindings fields open unchanged.
 - import_srt_as_track: id namespace isolation + 300 ms tolerance binding.
-- export_track_srt: original timestamps, no deletion mapping.
+- Track export at original timestamps (via export_track_subtitle
+  map_deletions=False since v3.0.2 removed the export_track_srt wrapper).
 """
 
 from __future__ import annotations
@@ -266,17 +267,19 @@ class TestImportSrtAsTrack:
 
 
 # ---------------------------------------------------------------------------
-# export_track_srt
+# track export at original timestamps (v3.0.2 M1-3: the deprecated
+# export_track_srt wrapper was removed; the same original-timestamp
+# semantics go through export_track_subtitle(map_deletions=False))
 # ---------------------------------------------------------------------------
 
 
-class TestExportTrackSrt:
+class TestExportTrackOriginalTimestamps:
     def test_original_timestamps_no_deletion_mapping(self, tmp_path):
-        from core.export_service import export_track_srt
+        from core.export_service import export_track_subtitle
 
         track = _track().model_dump(mode="json")
         out = tmp_path / "track.srt"
-        res = export_track_srt(track, str(out))
+        res = export_track_subtitle(track, [], str(out), map_deletions=False)
         assert res["success"] and res["data"]["segment_count"] == 2
         content = out.read_text(encoding="utf-8")
         # Original times, NOT remapped through keep ranges.
@@ -285,7 +288,7 @@ class TestExportTrackSrt:
         assert "hello" in content
 
     def test_silence_rows_filtered(self, tmp_path):
-        from core.export_service import export_track_srt
+        from core.export_service import export_track_subtitle
 
         track = _track()
         segs = list(track.segments) + [
@@ -293,5 +296,5 @@ class TestExportTrackSrt:
         ]
         dumped = track.model_copy(update={"segments": segs}).model_dump(mode="json")
         out = tmp_path / "track.srt"
-        res = export_track_srt(dumped, str(out))
+        res = export_track_subtitle(dumped, [], str(out), map_deletions=False)
         assert res["data"]["segment_count"] == 2
