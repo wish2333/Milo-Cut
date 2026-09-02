@@ -16,6 +16,15 @@ const props = defineProps<{
   duration?: number
   /** v2.1.1 A-03: edit mode interception for structural ops */
   globalEditMode?: boolean
+  /**
+   * v3.0.2 M3-2: row window (multi-row mode). When set, cross-row blocks
+   * get continuesFrom/continuesTo markers and trim handles render only
+   * for edges inside the row. Undefined = single-window (basic) behavior.
+   */
+  rowStart?: number
+  rowEnd?: number
+  /** v3.0.2 M3-2 (③): frozen pointer->time converter (multi-row trim). */
+  getTimeFromPointer?: (clientX: number) => number
 }>()
 
 const emit = defineEmits<{
@@ -52,6 +61,9 @@ interface Block {
   leftPercent: number
   widthPercent: number
   state: SegmentState
+  /** v3.0.2: cross-row continuation markers (row-window mode only). */
+  continuesFrom?: boolean
+  continuesTo?: boolean
 }
 
 interface EditRangeBlock {
@@ -84,6 +96,10 @@ const visibleBlocks = computed<Block[]>(() => {
         leftPercent: ((clampStart - vs) / vd) * 100,
         widthPercent: ((clampEnd - clampStart) / vd) * 100,
         state,
+        continuesFrom:
+          props.rowStart !== undefined ? seg.start < props.rowStart - 1e-6 : undefined,
+        continuesTo:
+          props.rowEnd !== undefined ? seg.end > props.rowEnd + 1e-6 : undefined,
       }
     })
 })
@@ -248,6 +264,11 @@ onUnmounted(() => {
       :current-time="currentTime"
       :duration="duration"
       :global-edit-mode="globalEditMode"
+      :continues-from="block.continuesFrom"
+      :continues-to="block.continuesTo"
+      :row-start="rowStart"
+      :row-end="rowEnd"
+      :get-time-from-pointer="getTimeFromPointer"
       @select-range="(s, e) => emit('select-range', s, e)"
       @seek-segment="handleBlockClick"
       @contextmenu="handleBlockContextMenu"

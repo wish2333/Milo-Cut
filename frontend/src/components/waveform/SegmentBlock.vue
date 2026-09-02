@@ -7,9 +7,8 @@ import { TIMELINE_METRICS_KEY } from "./injectionKeys"
 import type { TimelineMetrics } from "@/composables/useTimelineMetrics"
 // v3.0.1 M1: constants live in the constraint kernel (single source of truth)
 import {
-  MIN_SEGMENT_DURATION,
-  getTrackNeighborBounds,
   snapToStep,
+  clampTimeToNeighbors,
 } from "@/utils/trackConstraints"
 
 /**
@@ -37,6 +36,22 @@ const props = withDefaults(
     currentTime?: number
     duration?: number
     globalEditMode?: boolean
+    /** v3.0.2 M3-2 (①): cross-row continuation markers (multi-row mode). */
+    continuesFrom?: boolean
+    continuesTo?: boolean
+    /**
+     * v3.0.2 M3-2 (②): row window in seconds. When provided, trim handles
+     * render only for edges living inside this row (S7.8: row boundaries
+     * gate handle VISIBILITY only, never the trim constraint math).
+     */
+    rowStart?: number
+    rowEnd?: number
+    /**
+     * v3.0.2 M3-2 (③): optional pointer->time source override. Defaults
+     * to metrics.getTimeFromX; multi-row mode injects the frozen drag
+     * capture converter so in-flight drags survive row recycling (M5-4).
+     */
+    getTimeFromPointer?: (clientX: number) => number
   }>(),
   {
     state: undefined,
@@ -46,6 +61,11 @@ const props = withDefaults(
     currentTime: undefined,
     duration: undefined,
     globalEditMode: false,
+    continuesFrom: false,
+    continuesTo: false,
+    rowStart: undefined,
+    rowEnd: undefined,
+    getTimeFromPointer: undefined,
   },
 )
 
@@ -87,20 +107,27 @@ function statusColor(): string {
 
 // -- Trim (one-edge neighbor clamp, v3.0.1 M2-1) --------------------------
 
+const EDGE_EPSILON = 1e-6
+
+/** v3.0.2 M3-2 (②): is the segment's left/right edge inside this row? */
+const leftEdgeInRow = computed(
+  () => props.rowStart === undefined || props.seg.start >= props.rowStart - EDGE_EPSILON,
+)
+const rightEdgeInRow = computed(
+  () => props.rowEnd === undefined || props.seg.end <= props.rowEnd + EDGE_EPSILON,
+)
+
+/** Pointer->time source: injected frozen converter, else row metrics. */
+function pointerTime(clientX: number): number {
+  return props.getTimeFromPointer
+    ? props.getTimeFromPointer(clientX)
+    : metrics.getTimeFromX(clientX)
+}
+
 function clampTime(raw: number, edge: "left" | "right", seg: Segment): number {
-  // Trim is a one-edge clamp against the same-track neighbor gap: no
-  // slide-in-place semantics. Blocked (empty legal range) keeps the edge.
-  const bounds = getTrackNeighborBounds(props.segments, seg.id)
-  if (edge === "left") {
-    const hi = seg.end - MIN_SEGMENT_DURATION
-    const lo = bounds.prevEnd ?? Number.NEGATIVE_INFINITY
-    if (lo > hi) return seg.start
-    return Math.min(Math.max(raw, lo), hi)
-  }
-  const lo = seg.start + MIN_SEGMENT_DURATION
-  const hi = bounds.nextStart ?? Number.POSITIVE_INFINITY
-  if (hi < lo) return seg.end
-  return Math.min(Math.max(raw, lo), hi)
+  // Single kernel implementation (v3.0.2 M3-2 ④): one-edge clamp against
+  // the same-track neighbor gap; blocked keeps the edge.
+  return clampTimeToNeighbors(raw, edge, seg, props.segments)
 }
 
 function snapToFrame(time: number): number {
@@ -122,20 +149,30 @@ function handleBlockMouseDown(e: MouseEvent) {
     emit("select-range", props.seg.start, props.seg.end)
     return
   }
+  // v3.0.2 M3-2 (②): an edge living outside this row has no handle --
+  // treat the press as a body select (row boundaries gate visibility).
+  if (edge === "left" && !leftEdgeInRow.value) {
+    emit("select-range", props.seg.start, props.seg.end)
+    return
+  }
+  if (edge === "right" && !rightEdgeInRow.value) {
+    emit("select-range", props.seg.start, props.seg.end)
+    return
+  }
   if (!props.updateTime) return
 
   e.stopPropagation()
   const initialValue = edge === "left" ? props.seg.start : props.seg.end
-  const offset = initialValue - metrics.getTimeFromX(e.clientX)
+  const offset = initialValue - pointerTime(e.clientX)
 
   const onMove = (ev: MouseEvent) => {
-    const raw = metrics.getTimeFromX(ev.clientX) + offset
+    const raw = pointerTime(ev.clientX) + offset
     const clamped = clampTime(raw, edge, props.seg)
     props.updateTime!(props.seg.id, edge === "left" ? "start" : "end", clamped)
   }
 
   const onUp = (ev: MouseEvent) => {
-    const raw = metrics.getTimeFromX(ev.clientX) + offset
+    const raw = pointerTime(ev.clientX) + offset
     // v3.0.1 M4-5 Alt semantics: holding Alt inverts snapping (free
     // position); the neighbor clamp still applies. The trim-end payload
     // carries altKey for the Phase 3 linkage skip.
@@ -189,10 +226,20 @@ function isWordHighlighted(wordIndex: number): boolean {
       statusColor(),
       hoverEdge === 'left' || hoverEdge === 'right' ? 'cursor-ew-resize' : 'cursor-grab',
       selected ? 'ring-2 ring-blue-500' : '',
+      continuesFrom ? 'continues-from' : '',
+      continuesTo ? 'continues-to' : '',
     ]"
     :style="{
       left: leftPercent + '%',
       width: widthPercent + '%',
+      // v3.0.2 (①): square off the side that continues into the next row
+      // (inline style wins over the `rounded` utility deterministically).
+      ...(continuesFrom
+        ? { borderTopLeftRadius: 0, borderBottomLeftRadius: 0 }
+        : null),
+      ...(continuesTo
+        ? { borderTopRightRadius: 0, borderBottomRightRadius: 0 }
+        : null),
     }"
     :title="seg.text || `[${seg.type}]`"
     @mousemove="handleBlockMouseMove($event); hovered = true"
@@ -201,13 +248,15 @@ function isWordHighlighted(wordIndex: number): boolean {
     @contextmenu="emit('contextmenu', seg.id, $event)"
     @click="emit('seek-segment', seg)"
   >
-    <!-- Left edge handle -->
+    <!-- Left edge handle (only when the left edge lives in this row, v3.0.2 ②) -->
     <div
+      v-if="leftEdgeInRow"
       class="absolute left-0 top-0 bottom-0 w-2 opacity-0 group-hover:opacity-100 transition-opacity bg-blue-400 rounded-l"
       style="pointer-events: none"
     />
-    <!-- Right edge handle -->
+    <!-- Right edge handle (only when the right edge lives in this row, v3.0.2 ②) -->
     <div
+      v-if="rightEdgeInRow"
       class="absolute right-0 top-0 bottom-0 w-2 opacity-0 group-hover:opacity-100 transition-opacity bg-blue-400 rounded-r"
       style="pointer-events: none"
     />

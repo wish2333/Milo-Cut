@@ -87,6 +87,32 @@ export function getTrackNeighborBounds(
   return { prevEnd, nextStart }
 }
 
+/**
+ * v3.0.2 M3-2 改动点④: one-edge trim clamp against same-track neighbor
+ * bounds (M2-1 semantics). Extracted from SegmentBlock's private clampTime
+ * so main-track blocks, extension lanes, and multi-row blocks (trim is
+ * row-boundary-free, S7.8) share ONE implementation. Blocked (empty legal
+ * range) keeps the current edge value.
+ */
+export function clampTimeToNeighbors(
+  raw: number,
+  edge: "left" | "right",
+  seg: Pick<Segment, "id" | "start" | "end">,
+  segments: ReadonlyArray<GeomSegment>,
+): number {
+  const bounds = getTrackNeighborBounds(segments, seg.id)
+  if (edge === "left") {
+    const hi = seg.end - MIN_SEGMENT_DURATION
+    const lo = bounds.prevEnd ?? Number.NEGATIVE_INFINITY
+    if (lo > hi) return seg.start
+    return Math.min(Math.max(raw, lo), hi)
+  }
+  const lo = seg.start + MIN_SEGMENT_DURATION
+  const hi = bounds.nextStart ?? Number.POSITIVE_INFINITY
+  if (hi < lo) return seg.end
+  return Math.min(Math.max(raw, lo), hi)
+}
+
 export type ConstrainCueResult =
   | { ok: true; start: number; end: number }
   | { ok: false; reason: "gap-too-narrow"; gap: number }

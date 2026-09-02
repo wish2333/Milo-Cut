@@ -58,6 +58,9 @@ function mountBlock(overrides: {
   updateTime?: (segmentId: string, field: "start" | "end", value: number) => void
   currentTime?: number
   getTimeFromX?: (x: number) => number
+  getTimeFromPointer?: (x: number) => number
+  rowStart?: number
+  rowEnd?: number
 } = {}) {
   const metrics = createMetrics(overrides.getTimeFromX)
   return mount(SegmentBlock, {
@@ -70,6 +73,9 @@ function mountBlock(overrides: {
       selected: overrides.selected,
       updateTime: overrides.updateTime,
       ...(overrides.currentTime !== undefined ? { currentTime: overrides.currentTime } : {}),
+      ...(overrides.getTimeFromPointer ? { getTimeFromPointer: overrides.getTimeFromPointer } : {}),
+      ...(overrides.rowStart !== undefined ? { rowStart: overrides.rowStart } : {}),
+      ...(overrides.rowEnd !== undefined ? { rowEnd: overrides.rowEnd } : {}),
     },
     global: {
       provide: { [TIMELINE_METRICS_KEY as symbol]: metrics },
@@ -218,5 +224,48 @@ describe("SegmentBlock trim drag (M2-1 clamp + M4-5 Alt)", () => {
     // -> clamped up to prevEnd (2.0), never overlaps "a".
     document.dispatchEvent(new MouseEvent("mousemove", { clientX: 5 }))
     expect(updateTime).toHaveBeenLastCalledWith("seg-1", "start", 2)
+  })
+
+  // v3.0.2 M3-2 (③): the frozen pointer->time converter (multi-row trim)
+  // drives the drag INSTEAD of metrics.getTimeFromX.
+  it("trim uses the injected getTimeFromPointer source when provided", async () => {
+    const updateTime = vi.fn()
+    // Frozen converter: deliberately different from the metrics-based
+    // x/10 mapping (a row-recycled drag keeps its original geometry).
+    const getTimeFromPointer = vi.fn((x: number) => 3 + x / 100)
+    const wrapper = mountBlock({ updateTime, getTimeFromPointer })
+    const block = wrapper.find(".rounded.border")
+    mockRect(block)
+    // mousedown at 10: pointerTime = 3.1 -> offset = 1.0 - 3.1 = -2.1
+    await block.trigger("mousedown", { clientX: 10 })
+    // mousemove at 60: pointerTime = 3.6 -> raw = 3.6 - 2.1 = 1.5
+    document.dispatchEvent(new MouseEvent("mousemove", { clientX: 60 }))
+    expect(getTimeFromPointer).toHaveBeenCalled()
+    expect(updateTime).toHaveBeenLastCalledWith("seg-1", "start", 1.5)
+    document.dispatchEvent(new MouseEvent("mouseup", { clientX: 60 }))
+  })
+
+  // v3.0.2 M3-2 (②): row boundaries gate HANDLE VISIBILITY only --
+  // an out-of-row edge press degrades to a body select.
+  it("treats an out-of-row edge press as a body select", async () => {
+    const updateTime = vi.fn()
+    const wrapper = mountBlock({
+      updateTime,
+      seg: seg({ id: "seg-1", start: 8, end: 12 }),
+      rowStart: 0,
+      rowEnd: 10,
+    })
+    const block = wrapper.find(".rounded.border")
+    mockRect(block)
+    // Row window [0, 10): the right edge (12) lives outside -> press on the
+    // right 16px strip selects instead of trimming.
+    await block.trigger("mousedown", { clientX: 195 })
+    expect(wrapper.emitted("select-range")).toBeTruthy()
+    expect(wrapper.emitted("trim-end")).toBeFalsy()
+    // Left edge (8) is inside the row -> trim still engages.
+    await block.trigger("mousedown", { clientX: 10 })
+    document.dispatchEvent(new MouseEvent("mousemove", { clientX: 20 }))
+    expect(updateTime).toHaveBeenCalled()
+    document.dispatchEvent(new MouseEvent("mouseup", { clientX: 20 }))
   })
 })
