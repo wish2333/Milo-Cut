@@ -712,9 +712,66 @@ const renderedRows = computed(() => {
   return rows
 })
 
-/** Beta.1 fixed multi viewport (px); P5-1 replaces it with the draggable divider + persistence. */
-const MULTI_VIEWPORT_HEIGHT = 320
-const multiViewportHeight = computed(() => MULTI_VIEWPORT_HEIGHT)
+// -- M7-1 (P5-1): user-resizable multi viewport -----------------------------
+//
+// editorHeightPx persists in the M6-3 schema; unset -> 45% of the window,
+// always clamped to [20%, 70%] of the current window height. Rows keep
+// their preset rowHeight, so dragging only changes HOW MANY rows are
+// visible (no canvas stretch/redraw needed in the row model). The divider
+// sits on the container's top edge and writes through immediately (M6-3:
+// heightPx is a write-on-change field).
+
+const MIN_HEIGHT_RATIO = 0.2
+const MAX_HEIGHT_RATIO = 0.7
+const DEFAULT_HEIGHT_RATIO = 0.45
+
+function windowInnerHeight(): number {
+  return typeof window !== "undefined" ? window.innerHeight : 0
+}
+
+function clampEditorHeight(px: number): number {
+  const vh = windowInnerHeight()
+  if (!(vh > 0)) return Math.max(120, px)
+  return Math.min(Math.max(px, Math.round(vh * MIN_HEIGHT_RATIO)), Math.round(vh * MAX_HEIGHT_RATIO))
+}
+
+const multiViewportHeight = computed(() => {
+  const persisted = rowLayout.state.value.editorHeightPx
+  if (persisted && persisted > 0) return clampEditorHeight(persisted)
+  const vh = windowInnerHeight()
+  if (!(vh > 0)) return 320 // headless fallback (tests / exotic shells)
+  return Math.round(vh * DEFAULT_HEIGHT_RATIO)
+})
+
+let dividerDragStartY = 0
+let dividerDragStartHeight = 0
+
+function handleDividerMouseDown(e: MouseEvent) {
+  dividerDragStartY = e.clientY
+  dividerDragStartHeight = multiViewportHeight.value
+  const onMove = (ev: MouseEvent) => {
+    // Dragging UP grows the panel.
+    rowLayout.state.value = {
+      ...rowLayout.state.value,
+      editorHeightPx: clampEditorHeight(dividerDragStartHeight + (dividerDragStartY - ev.clientY)),
+    }
+  }
+  const onUp = () => {
+    document.removeEventListener("mousemove", onMove)
+    document.removeEventListener("mouseup", onUp)
+  }
+  document.addEventListener("mousemove", onMove)
+  document.addEventListener("mouseup", onUp)
+}
+
+// M7-1: controls-bar middle label -- the time range the viewport covers.
+const viewportCoverageLabel = computed(() => {
+  const { first, last } = rowLayout.visibleRows.value
+  const spr = rowLayout.state.value.secondsPerRow
+  const start = rowLayout.scrollTopTime.value
+  const end = Math.min(props.duration, (last + 1 - first) * spr + start)
+  return `${formatTimeShort(start)}–${formatTimeShort(end)} / 全片 ${formatTimeShort(props.duration)}`
+})
 
 // -- M6-4: mini overview strip geometry (multi) -----------------------------
 //
@@ -741,12 +798,6 @@ const overviewGeometry = computed(() => {
 function handleOverviewSeek(time: number): void {
   rowLayout.revealTime(time)
 }
-
-/** Controls-bar middle info (beta.1 minimal form; coverage range lands P5-1). */
-const rowCountLabel = computed(() => {
-  const { first, last } = rowLayout.visibleRows.value
-  return `行 ${first + 1}–${last + 1} / 共 ${rowLayout.rowCount.value} 行`
-})
 
 /** Last row shrinks to the remaining duration (R4.1). */
 function rowWidthPercent(index: number): number {
@@ -881,7 +932,7 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
         >
           <option v-for="h in rowHeightPresets" :key="h" :value="h">{{ h }}px</option>
         </select>
-        <span class="flex-1 text-center">{{ rowCountLabel }}</span>
+        <span class="flex-1 text-center" data-test="viewport-coverage">{{ viewportCoverageLabel }}</span>
       </div>
       <div v-else class="contents">
         <span data-test="basic-view-start">{{ metrics.viewStart.value.toFixed(1) }}s</span>
@@ -889,6 +940,15 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
         <span>{{ metrics.viewEnd.value.toFixed(1) }}s</span>
       </div>
     </div>
+
+    <!-- M7-1: viewport height divider (drag up = grow) -->
+    <div
+      v-if="isMulti"
+      data-test="viewport-divider"
+      class="h-1.5 shrink-0 cursor-ns-resize bg-transparent transition-colors hover:bg-gray-200"
+      title="拖拽调整多行区高度"
+      @mousedown="handleDividerMouseDown"
+    ></div>
 
     <!-- v3.0.2 M4-1: multi-row virtualized surface -->
     <div
