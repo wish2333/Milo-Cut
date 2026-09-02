@@ -8,6 +8,8 @@ declare module "*?raw" {
 
 interface ImportMetaEnv {
   readonly VITE_DEMO_MODE?: string
+  /** Vite builtin (vite/client types are not referenced in this project). */
+  readonly DEV?: boolean
 }
 
 interface ImportMeta {
