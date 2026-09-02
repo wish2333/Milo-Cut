@@ -325,7 +325,8 @@ onUnmounted(() => {
       <div class="h-full w-full" style="background-image: repeating-linear-gradient(45deg, transparent, transparent 3px, rgba(239,68,68,0.15) 3px, rgba(239,68,68,0.15) 6px);" />
     </div>
 
-    <!-- Context Menu -->
+    <!-- Context Menu (R9.4: kbd badges turn the menu into a cheat sheet --
+         only shortcuts that actually exist get a badge) -->
     <Teleport to="body">
       <div
         v-if="contextMenu"
@@ -334,23 +335,27 @@ onUnmounted(() => {
         @click="closeContextMenu"
       >
         <button
-          class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+          class="w-full flex items-center justify-between gap-3 text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
           @click="splitSelectedAtCursor"
         >
-          按时间指针分割
+          <span>按时间指针分割</span>
         </button>
         <button
-          class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+          class="w-full flex items-center justify-between gap-3 text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
           @click="splitSelectedAtMidpoint"
         >
-          从中点分割
+          <span>从中点分割</span>
         </button>
         <div class="border-t border-gray-100 my-1" />
         <button
-          class="w-full text-left px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
+          class="w-full flex items-center justify-between gap-3 text-left px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
           @click="deleteSelected"
         >
-          删除
+          <span>删除</span>
+          <kbd
+            data-test="menu-kbd-delete"
+            class="rounded border border-gray-200 bg-gray-50 px-1 font-mono text-[10px] leading-4 text-gray-400"
+          >Del</kbd>
         </button>
       </div>
     </Teleport>
