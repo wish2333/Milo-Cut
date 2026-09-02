@@ -58,6 +58,23 @@ export interface UseRowDragCaptureReturn {
 }
 
 /**
+ * M5-3: descriptor of an empty-area press inside a row. The row freezes
+ * its geometry into the shared drag-capture singleton, then hands this
+ * descriptor up; the EDITOR (orchestrator) owns the gesture machine that
+ * decides scrub / Ctrl-create / Shift-marquee from the modifiers (rows
+ * keep no cross-pointer-event state, M3-2).
+ */
+export interface RowEmptyGesture {
+  clientX: number
+  clientY: number
+  ctrlKey: boolean
+  shiftKey: boolean
+  /** Bounded time under the press (row metrics, P4 dual mapping). */
+  time: number
+  rowIndex: number
+}
+
+/**
  * Drag-capture singleton skeleton (M3-3). Callers own the DOM read:
  * on pointerdown they resolve the row under `clientX`, read its rect,
  * and hand both to `capture`. From then on the snapshot is detached from

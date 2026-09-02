@@ -211,3 +211,68 @@ describe("SegmentBlocksLayer", () => {
     expect(wrapper.text()).toContain("no words")
   })
 })
+
+// ------------------------------------------------------------------
+// v3.0.2 M5-3: emptyAreaMode dual semantics
+// ------------------------------------------------------------------
+
+describe("SegmentBlocksLayer emptyAreaMode (M5-3)", () => {
+  function mountWithMode(mode?: "add" | "seek", getTimeFromX?: (x: number) => number) {
+    const metrics = createMetrics()
+    if (getTimeFromX) metrics.getTimeFromX = getTimeFromX
+    const wrapper = mount(SegmentBlocksLayer, {
+      props: { segments: [], edits: [], ...(mode ? { emptyAreaMode: mode } : {}) },
+      global: { provide: { [TIMELINE_METRICS_KEY as symbol]: metrics } },
+    })
+    return wrapper
+  }
+
+  function emptyMousedown(wrapper: ReturnType<typeof mountWithMode>, init: Record<string, number | boolean> = {}) {
+    return wrapper.find("div[tabindex='0']").trigger("mousedown", { clientX: 300, ...init })
+  }
+
+  it("add mode (default) keeps the legacy empty-click add-segment", async () => {
+    for (const mode of [undefined, "add"] as const) {
+      const wrapper = mountWithMode(mode)
+      await emptyMousedown(wrapper)
+      expect(wrapper.emitted("add-segment")?.length).toBe(1)
+      expect(wrapper.emitted("empty-press")).toBeFalsy()
+      wrapper.unmount()
+    }
+  })
+
+  it("seek mode: empty press forwards bounded time + modifiers, never add-segment", async () => {
+    const wrapper = mountWithMode("seek", x => (x / 600) * 10)
+    await emptyMousedown(wrapper, { shiftKey: true })
+    expect(wrapper.emitted("add-segment")).toBeFalsy()
+    const presses = wrapper.emitted("empty-press") ?? []
+    expect(presses.length).toBe(1)
+    const payload = presses[0][0] as {
+      clientX: number
+      clientY: number
+      ctrlKey: boolean
+      shiftKey: boolean
+      time: number
+    }
+    expect(payload.clientX).toBe(300)
+    expect(payload.time).toBe(5) // bounded row time (300/600 * 10)
+    expect(payload.shiftKey).toBe(true)
+    expect(payload.ctrlKey).toBe(false)
+    // Modifiers pass through for the editor's gesture routing.
+    await emptyMousedown(wrapper, { ctrlKey: true })
+    expect(((wrapper.emitted("empty-press") ?? [])[1]?.[0] as { ctrlKey: boolean }).ctrlKey).toBe(true)
+    wrapper.unmount()
+  })
+
+  it("seek mode: empty double click asks for play/pause; add mode stays silent", async () => {
+    const seekWrapper = mountWithMode("seek")
+    await seekWrapper.find("div[tabindex='0']").trigger("dblclick")
+    expect(seekWrapper.emitted("empty-double-click")?.length).toBe(1)
+    seekWrapper.unmount()
+
+    const addWrapper = mountWithMode("add")
+    await addWrapper.find("div[tabindex='0']").trigger("dblclick")
+    expect(addWrapper.emitted("empty-double-click")).toBeFalsy()
+    addWrapper.unmount()
+  })
+})
