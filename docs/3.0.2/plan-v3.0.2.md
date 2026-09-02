@@ -162,7 +162,15 @@ P3 批次:   M7 排版/组合/文档
 **验收方式**: `bun run test`。✅
 **验收标准**: 4 副轨占位（lanes P4 才组合）+ 千段主轨滚动/播放帧率不回退（对照 perf-baseline）。——帧率体感留 beta.1 冒烟 ★
 
-### P2-4 peaks 共享与包络记忆化（SPEC M4-3）→ 进行中（分支 dev-3.0.2-p2-4）
+### P2-4 peaks 共享与包络记忆化（SPEC M4-3）
+
+- [x] 编排层 peaks 单次 fetch + provide 只读；`WaveformCanvas` 增可选 `peaksData` prop（未提供走现状 fetch——basic 零改动）
+  - 偏差：WaveformCanvas peaksData 注入 + WaveformRow 透传已落地；**编排层 fetch+provide 推迟到 P4-3 前置接线**（beta.1 每行 fetch 为已接受临时状态，record-3.0.2-P2-4.md 登记）；computePeakSlice 保持 4 参签名（宽度抽稀属 mipmap 预案，差异登记）
+- [x] `utils/waveformPeaks.ts` 增 `computePeakSlice` 纯函数；行组件层缓存 wrapper（{rowIndex,widthPx,dpr} 命中）；dpr cap 2
+- [x] vitest：fetch 单次 spy、computePeakSlice 数值断言、缓存命中计数——17 例
+
+**验收方式**: `bun run test`。✅
+**验收标准**: 多行模式网络面板波形 JSON 单次加载；缓存命中断言绿。——单次加载待编排层接线后随 P4-3 真机验收；缓存命中断言已绿
 
 ### P2-5 拖拽状态上提骨架（SPEC M3-3 / S5.7；**可与 P2-3/P2-4 并行**——无文件交集）
 
@@ -175,13 +183,13 @@ P3 批次:   M7 排版/组合/文档
 
 ### P2-6 beta.1 冒烟与发布
 
-- [ ] ★ macOS 冒烟（§8 清单 A）
-- [ ] ★ Windows WebView2 冒烟（§8 清单 A，deltaMode 观察）
-- [ ] 打 tag `v3.0.2-beta.1`；`record-3.0.2-beta.1.md`
+- [ ] ★ macOS 冒烟（§8 清单 A）——**待用户执行**（2026-09-02 已通知；多行显示/滚动/播放头换行/basic↔multi 往返；交互手势 Phase 3 才接入，冒烟范围 = 显示级）
+- [ ] ★ Windows WebView2 冒烟（§8 清单 A，deltaMode 观察）——待用户执行
+- [ ] 打 tag `v3.0.2-beta.1`；`record-3.0.2-beta.1.md`（冒烟通过后落 tag；编码工作可并行推进 Phase 3，beta.1 tag 不阻塞开发，仅阻塞 beta.2 发布）
 
 **验收标准**: 冒烟清单全过、无体验回退；record 落盘。
 
-**Phase 2 退出检查**: 五步全合入；全量门禁绿（含 projectPatch.perf **与 M8-3 性能断言**）；性能四项对照不回退。
+**Phase 2 退出检查**: 五步全合入 ✅（P2-4 含已登记偏差：编排层 peaks provide 推迟 P4-3）；全量门禁绿（含 projectPatch.perf **与 M8-3 性能断言**：窗口 0.0002ms / 挂载 p95 5.9ms）✅；vitest 595 / pytest 全绿 / events-models diff 空 ✅；性能四项对照不回退（open/waveform/undo/patch-apply 与基线同量级）✅；★ 真机冒烟两项待用户。
 
 ---
 
