@@ -266,10 +266,10 @@ P3 批次:   M7 排版/组合/文档
 
 ### P5-1 底部区高度与控件栏（SPEC M7-1）
 
-- [ ] 高度 divider（clamp 20-70%，multi 默认 45%）+ localStorage；布局拖拽期 canvas CSS 拉伸、松手重绘
-- [ ] 控件栏完整形态：视口覆盖范围显示（`12:00–12:50 / 全片 58:30`）
-- [ ] R9.4 右键菜单 kbd 角标（涉及菜单改动顺带）；R9.5 toast 上限 3 条 + 高频冷却
-- [ ] vitest：高度 round-trip；菜单角标渲染
+- [ ] 高度 divider（clamp 20-70%，multi 默认 45%）+ localStorage；布局拖拽期 canvas CSS 拉伸、松手重绘（**进行中 2026-09-02**：divider + clamp + editorHeightPx 变更即写已合入；行模型下行高与面板高度解耦——divider 只改可视行数，无 stretch/redraw 需求，record-3.0.2-P5-1 登记）
+- [x] 控件栏完整形态：视口覆盖范围显示（`12:00–12:50 / 全片 58:30`）（2026-09-02：`viewport-coverage`，formatTimeShort 格式）
+- [ ] R9.4 右键菜单 kbd 角标（涉及菜单改动顺带）；R9.5 toast 上限 3 条 + 高频冷却（**待 P5-1b**）
+- [ ] vitest：高度 round-trip；菜单角标渲染（**高度 round-trip + clamp + 拖拽持久化 2 例已合入；菜单角标随 R9.4**）
 
 **验收方式**: `bun run test`。
 

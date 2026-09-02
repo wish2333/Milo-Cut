@@ -1082,3 +1082,99 @@ describe("WaveformEditor mini overview strip (M6-4)", () => {
     wrapper.unmount()
   })
 })
+
+// ------------------------------------------------------------------
+// v3.0.2 M7-1: viewport height divider + persisted editorHeightPx
+// ------------------------------------------------------------------
+
+describe("WaveformEditor viewport height divider (M7-1)", () => {
+  let innerHeightDescriptor: PropertyDescriptor | undefined
+  let mockInnerHeight = 800
+
+  beforeAll(() => {
+    innerHeightDescriptor = Object.getOwnPropertyDescriptor(window, "innerHeight")
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      get: () => mockInnerHeight,
+    })
+  })
+
+  afterAll(() => {
+    if (innerHeightDescriptor) {
+      Object.defineProperty(window, "innerHeight", innerHeightDescriptor)
+    }
+  })
+
+  beforeEach(() => {
+    mockInnerHeight = 800 // clamp window: [160, 560]
+    localStorage.clear()
+    localStorage.setItem(
+      ROW_LAYOUT_STORAGE_KEY,
+      JSON.stringify({ mode: "multi", secondsPerRow: 10, rowHeight: 120 }),
+    )
+  })
+
+  afterEach(() => {
+    localStorage.clear()
+  })
+
+  function mountEditor() {
+    return mount(WaveformEditor, {
+      props: { segments: [], edits: [], duration: 100, currentTime: 5 },
+      global: {
+        stubs: {
+          WaveformCanvas: true,
+          TimeMarksLayer: true,
+          SegmentBlocksLayer: true,
+          ScrollbarStrip: true,
+          PlayheadOverlay: true,
+        },
+      },
+    })
+  }
+
+  function seedState(extra: Record<string, unknown>) {
+    localStorage.setItem(
+      ROW_LAYOUT_STORAGE_KEY,
+      JSON.stringify({ mode: "multi", secondsPerRow: 10, rowHeight: 120, ...extra }),
+    )
+  }
+
+  it("round-trips editorHeightPx with the 20-70% viewport clamp", async () => {
+    for (const [stored, expected] of [
+      [{ editorHeightPx: 480 }, "480px"], // inside the clamp window: verbatim
+      [{ editorHeightPx: 50 }, "160px"], // below 20% -> clamped to 160
+      [{ editorHeightPx: 5000 }, "560px"], // above 70% -> clamped to 560
+      [{}, "360px"], // unset -> 45% default
+    ] as const) {
+      seedState(stored)
+      const wrapper = mountEditor()
+      await wrapper.vm.$nextTick()
+      expect(
+        (wrapper.find('[data-test="multi-scroll"]').element as HTMLElement).style.height,
+      ).toBe(expected)
+      wrapper.unmount()
+    }
+  })
+
+  it("divider drag grows the panel and persists editorHeightPx (变更即写)", async () => {
+    const wrapper = mountEditor()
+    await wrapper.vm.$nextTick()
+    expect(
+      (wrapper.find('[data-test="multi-scroll"]').element as HTMLElement).style.height,
+    ).toBe("360px")
+    const divider = wrapper.find('[data-test="viewport-divider"]')
+    await divider.trigger("mousedown", { clientY: 500 })
+    // Drag up 80px -> 360 + 80 = 440.
+    const move = new MouseEvent("mousemove")
+    Object.defineProperty(move, "clientY", { value: 420 })
+    document.dispatchEvent(move)
+    await wrapper.vm.$nextTick()
+    expect(
+      (wrapper.find('[data-test="multi-scroll"]').element as HTMLElement).style.height,
+    ).toBe("440px")
+    document.dispatchEvent(new MouseEvent("mouseup"))
+    expect(loadRowLayoutState().editorHeightPx).toBe(440)
+    wrapper.unmount()
+  })
+})
