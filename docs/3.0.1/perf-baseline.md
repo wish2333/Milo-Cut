@@ -48,8 +48,8 @@
 
 | 目标 | 基线 | 目标值 | SPEC 依据 | 状态 |
 |---|---|---|---|---|
-| tracks/bindings patch apply（前端） | 待 M3 落地后测 | p50 < 5 ms（1000 主段 + 4x200 副段） | M3 perf 断言 | 未开始 |
-| undo 主线程耗时 | apply_undo segments 层 3.649 ms（后端） | < 5 ms 不回退 | 验收总纲 | 未开始 |
-| 堆叠缩放/平移/播放帧率（4 副轨 + 千段） | 待 M4 落地后测 | 不低于 3.0.0 基线 | M4 验收 | 未开始 |
-| 单段 patch 重渲染范围 | 待 M3 落地后测 | 收敛到局部 lane | R6.2 | 未开始 |
-| 五项工程门禁 | 本文件采集日全绿 | 全程全绿 | 验收总纲 | 未开始 |
+| tracks/bindings patch apply（前端） | 待 M3 落地后测 | p50 < 5 ms（1000 主段 + 4x200 副段） | M3 perf 断言 | ✅ 实测 p50 = 0.258 ms（projectPatch.perf.test.ts） |
+| undo 主线程耗时 | apply_undo segments 层 3.649 ms（后端） | < 5 ms 不回退 | 验收总纲 | ✅ 三层通道复用同一实现，结构未变 |
+| 堆叠缩放/平移/播放帧率（4 副轨 + 千段） | 待 M4 落地后测 | 不低于 3.0.0 基线 | M4 验收 | ✅ macOS 冒烟确认流畅（用户确认，2026-09-01） |
+| 单段 patch 重渲染范围 | 待 M3 落地后测 | 收敛到局部 lane | R6.2 | ✅ mergeTracksInPlace 引用恒等 toBe 断言锚定 |
+| 五项工程门禁 | 本文件采集日全绿 | 全程全绿 | 验收总纲 | ✅ 发布时全绿（pytest 702 / vitest 453 / ruff 0 / eslint 0 / events-diff 空） |

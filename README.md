@@ -46,10 +46,13 @@ Milo-Cut is a local-first, AI-powered desktop video preprocessing tool for oral 
 - **Batched bridge events + adaptive tick** -- one `evaluate_js` per batch (512 KB budget), idle tick drops to 250 ms; waveform generation no longer blocks the UI thread.
 - **Waveform rendering pipeline** -- rAF-coalesced draws, DPR-aware canvas resizing, imperative playhead (zero Vue patches during playback), hover seek preview.
 
-### Multi-Track Subtitles (v3.0.0 MVP)
+### Multi-Track Subtitles & Stacked Timeline (v3.0.0 data layer / v3.0.1 full UX)
 
-- **Extension tracks** -- import an SRT as a read-only second track with automatic 300 ms-tolerance binding to the main track; collapsible track lane in the timeline; per-track SRT export at original timestamps.
-- **Workflow failure rollback** -- per-step layer snapshots persisted cross-session; when a workflow step fails you can roll back just that step (keeping earlier steps) or the whole workflow.
+- **Stacked timeline** -- main track and every extension lane stack on one zoom/scroll surface with a single playhead spanning all lanes; lanes collapse/resize/hide (heights persist globally).
+- **Extension tracks** -- import an SRT as a second track with automatic 300 ms-tolerance binding; trim/drag extension segments with neighbor-gap constraints; linked split/paired deletion keep bindings honest (destructive resolves are always counted in a toast and undone atomically).
+- **Linkage that never drifts** -- binding offsets are rebuilt wholesale from final geometry after every edit; the main track is never rewritten by reconciliation.
+- **Track exports** -- per-track SRT/VTT through the same confirmed-deletion mapping as the main track, plus a bilingual merged (two-line) export; playback shows the bound extension line under the main subtitle (toggle in settings).
+- **Workflow failure rollback** (v3.0.0) -- per-step layer snapshots persisted cross-session; roll back just the failed step or the whole workflow.
 
 ### Platform & Local-First
 
