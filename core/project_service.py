@@ -1343,7 +1343,13 @@ class ProjectService:
         if updated_edits is not None:
             patch_kwargs["edits"] = updated_edits
         if linkage is not None:
-            _tracks, _bindings, linkage_counters = linkage
+            # v3.0.2 M1-2 (S2): the linkage path must carry the resolved
+            # tracks + bindings layers in the patch (v3.0.1 SPEC M2-1 step
+            # 5) -- dropping them left the frontend's track state stale
+            # until an unrelated write happened to refresh the layers.
+            tracks_arr, bindings_arr, linkage_counters = linkage
+            patch_kwargs["tracks"] = tracks_arr
+            patch_kwargs["bindings"] = bindings_arr
             patch_kwargs["meta"] = {"linkage": linkage_counters}
         return self._success_patch(**patch_kwargs)
 

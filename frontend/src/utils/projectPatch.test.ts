@@ -348,6 +348,97 @@ describe("applyProjectPatch", () => {
       }
       expect(describePatchLayers(patch)).toEqual(["tracks", "bindings"])
     })
+
+    // v3.0.2 M1-2 (S2): the update_segment linkage path now ships the
+    // resolved tracks+bindings layers alongside segments+meta. The
+    // frontend merge path must surface the squeezed extension geometry
+    // with zero frontend changes (R2.3).
+    it("surfaces squeezed extension segments after a combined linkage patch", () => {
+      const base = makeProject()
+      const project = makeProject({
+        timelines: [
+          {
+            ...base.timelines[0],
+            transcript: {
+              engine: "srt",
+              language: "zh-CN",
+              segments: [
+                makeSegment({ id: "seg-1", start: 0, end: 5 }),
+                makeSegment({ id: "seg-2", start: 10, end: 15 }),
+              ],
+              tracks: [
+                {
+                  id: "trk_1",
+                  role: "extension",
+                  name: "en",
+                  language: "en",
+                  segments: [
+                    makeSegment({ id: "track_trk_1_a", start: 0.2, end: 4.8 }),
+                    makeSegment({ id: "track_trk_1_c", start: 12, end: 16, text: "free" }),
+                  ],
+                },
+              ],
+              bindings: [
+                {
+                  id: "bind_a",
+                  track_id: "trk_1",
+                  main_segment_id: "seg-1",
+                  extension_segment_id: "track_trk_1_a",
+                  start_offset: 0.2,
+                  end_offset: -0.2,
+                },
+              ],
+            },
+            edits: [],
+          },
+        ],
+      })
+
+      // The exact patch shape the backend linkage path emits after
+      // moving seg-2 to [11, 15]: segments + resolved tracks (free
+      // segment c squeezed to [15, 16]) + bindings + meta.linkage.
+      const squeezedTrack: SubtitleTrack = {
+        id: "trk_1",
+        role: "extension",
+        name: "en",
+        language: "en",
+        segments: [
+          makeSegment({ id: "track_trk_1_a", start: 0.2, end: 4.8 }),
+          makeSegment({ id: "track_trk_1_c", start: 15, end: 16, text: "free" }),
+        ],
+      }
+      const patch: ProjectPatch = {
+        revision: 2,
+        segments: [
+          makeSegment({ id: "seg-1", start: 0, end: 5 }),
+          makeSegment({ id: "seg-2", start: 11, end: 15 }),
+        ],
+        tracks: [squeezedTrack],
+        bindings: [
+          {
+            id: "bind_a",
+            track_id: "trk_1",
+            main_segment_id: "seg-1",
+            extension_segment_id: "track_trk_1_a",
+            start_offset: 0.2,
+            end_offset: -0.2,
+          },
+        ],
+        meta: { linkage: { squeezed: 1, removed: 0, unbound: 0 } },
+      }
+
+      const result = applyProjectPatch(project, patch)
+      const tl = result.timelines.find(t => t.id === result.active_timeline_id)!
+      // main layer moved atomically with the track layer
+      expect(tl.transcript.segments[1].start).toBe(11)
+      // the squeezed extension segment is immediately visible
+      const c = tl.transcript.tracks![0].segments.find(s => s.id === "track_trk_1_c")!
+      expect(c.start).toBe(15)
+      expect(c.end).toBe(16)
+      // unchanged sibling keeps reference identity (mergeTracksInPlace)
+      const a = tl.transcript.tracks![0].segments.find(s => s.id === "track_trk_1_a")!
+      expect(a).toBe(project.timelines[0].transcript.tracks![0].segments[0])
+    })
   })
 
   describe("active_timeline_id override", () => {
