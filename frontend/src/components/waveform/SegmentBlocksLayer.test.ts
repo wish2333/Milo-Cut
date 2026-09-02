@@ -276,3 +276,22 @@ describe("SegmentBlocksLayer emptyAreaMode (M5-3)", () => {
     addWrapper.unmount()
   })
 })
+
+describe("SegmentBlocksLayer context menu kbd badges (R9.4)", () => {
+  it("renders a Del badge on the delete item and none on split items", async () => {
+    const { wrapper } = mountLayer([seg()])
+    await wrapper.find(".rounded.border").trigger("contextmenu")
+    // The menu teleports to body: query the document, not the wrapper.
+    const menu = document.body.querySelector(".fixed.z-dropdown")
+    expect(menu).not.toBeNull()
+    const badges = menu!.querySelectorAll("kbd")
+    expect(badges.length).toBe(1)
+    expect(badges[0].textContent).toBe("Del")
+    expect(badges[0].getAttribute("data-test")).toBe("menu-kbd-delete")
+    // Split items have no invented shortcuts: text only.
+    expect(menu!.textContent).toContain("按时间指针分割")
+    expect(menu!.textContent).toContain("从中点分割")
+    wrapper.unmount()
+    expect(document.body.querySelector(".fixed.z-dropdown")).toBeNull()
+  })
+})
