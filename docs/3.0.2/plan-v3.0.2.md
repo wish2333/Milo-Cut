@@ -275,9 +275,9 @@ P3 批次:   M7 排版/组合/文档
 
 ### P5-2 副轨每行组合（SPEC M7-2）
 
-- [ ] 存在 tracks 时每行组合主 lane + 副轨 lanes（useLaneLayout 每行实例化，沿现状 LANE_PRESET_HEIGHTS 档位）
-- [ ] 行高联动（副轨存在默认 168 + userTouchedRowHeight 尊重用户）；副轨 trim 组合态验证
-- [ ] vitest + 冒烟：双语工程多行显示、行内副轨 trim、行高联动
+- [x] 存在 tracks 时每行组合主 lane + 副轨 lanes（useLaneLayout 每行实例化，沿现状 LANE_PRESET_HEIGHTS 档位）（2026-09-02：WaveformRow 主区包裹 + TrackLane v-for 行相对定位；laneState 编辑器级共享全行 lockstep）
+- [x] 行高联动（副轨存在默认 168 + userTouchedRowHeight 尊重用户）；副轨 trim 组合态验证（2026-09-02：联动 = stored rowHeight 仍为默认 120 时自动切 168，任何持久化非默认值视为用户已改即尊重——无需 schema 增字段；副轨 trim 经 updateTime 既有链路组合态可用）
+- [x] vitest + 冒烟：双语工程多行显示、行内副轨 trim、行高联动（+3 例：每行 1:1 子 lane/联动 bump 与尊重/折叠跨行 lockstep；真机冒烟归清单 C）
 
 **验收方式**: `bun run test` + 双语工程手工冒烟。
 

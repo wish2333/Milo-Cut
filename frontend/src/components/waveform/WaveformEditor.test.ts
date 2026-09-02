@@ -1178,3 +1178,102 @@ describe("WaveformEditor viewport height divider (M7-1)", () => {
     wrapper.unmount()
   })
 })
+
+// ------------------------------------------------------------------
+// v3.0.2 M7-2: per-row extension-track lanes + row-height linkage
+// ------------------------------------------------------------------
+
+describe("WaveformEditor per-row track lanes (M7-2)", () => {
+  let clientHeightDescriptor: PropertyDescriptor | undefined
+
+  beforeAll(() => {
+    clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight")
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.getAttribute?.("data-test") === "multi-scroll") return 320
+        return clientHeightDescriptor?.get?.call(this) ?? 0
+      },
+    })
+  })
+
+  afterAll(() => {
+    if (clientHeightDescriptor) {
+      Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeightDescriptor)
+    }
+  })
+
+  beforeEach(() => {
+    localStorage.clear()
+    localStorage.setItem(
+      ROW_LAYOUT_STORAGE_KEY,
+      JSON.stringify({ mode: "multi", secondsPerRow: 10, rowHeight: 120 }),
+    )
+  })
+
+  afterEach(() => {
+    localStorage.clear()
+  })
+
+  function mountLanes(rowHeight: number) {
+    localStorage.setItem(
+      ROW_LAYOUT_STORAGE_KEY,
+      JSON.stringify({ mode: "multi", secondsPerRow: 10, rowHeight }),
+    )
+    return mount(WaveformEditor, {
+      props: {
+        segments: [],
+        edits: [],
+        duration: 100,
+        currentTime: 5,
+        tracks: [makeStackTrack("en")],
+      },
+      global: {
+        stubs: {
+          WaveformCanvas: true,
+          TimeMarksLayer: true,
+          SegmentBlocksLayer: true,
+          ScrollbarStrip: true,
+          PlayheadOverlay: true,
+        },
+      },
+    })
+  }
+
+  it("composes one sub-lane per track inside every visible row", async () => {
+    const wrapper = mountLanes(168)
+    await wrapper.vm.$nextTick()
+    const rows = wrapper.findAll(".waveform-row")
+    const lanes = wrapper.findAll('[data-test="track-lane"]')
+    expect(rows.length).toBeGreaterThanOrEqual(3)
+    expect(lanes.length).toBe(rows.length) // 1:1 per row (single track)
+    const first = lanes[0].element as HTMLElement
+    expect(first.style.height).toBe("48px") // md preset
+    expect(first.style.top).toBe("120px") // main area = 168 - 48
+    wrapper.unmount()
+  })
+
+  it("row-height 联动: untouched default bumps to 168; touched value respected", async () => {
+    const wrapper = mountLanes(120) // untouched default + tracks -> 168
+    await wrapper.vm.$nextTick()
+    expect((wrapper.find('[data-test="row-height-select"]').element as HTMLSelectElement).value).toBe("168")
+    wrapper.unmount()
+
+    const wrapper2 = mountLanes(96) // user-touched value stays
+    await wrapper2.vm.$nextTick()
+    expect((wrapper2.find('[data-test="row-height-select"]').element as HTMLSelectElement).value).toBe("96")
+    wrapper2.unmount()
+  })
+
+  it("lane collapse is shared across every row in lockstep", async () => {
+    const wrapper = mountLanes(168)
+    await wrapper.vm.$nextTick()
+    const lanes = () => wrapper.findAll('[data-test="track-lane"]')
+    await lanes()[0].find('[data-test="lane-collapse"]').trigger("click")
+    await wrapper.vm.$nextTick()
+    for (const lane of lanes()) {
+      expect((lane.element as HTMLElement).style.height).toBe("24px")
+    }
+    wrapper.unmount()
+  })
+})
