@@ -394,8 +394,9 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
   }
 
   async function handleImportSrtAsTrack() {
-    // v3.0.0 M11-2: import an SRT as a read-only extension track. Not
-    // undoable this version (undo layers are segments/edits/analysis only).
+    // v3.0.0 M11-2: import an SRT as an extension track. v3.0.2 M1-3
+    // (S3/R3.3): the import always produces tracks + bindings, so the
+    // undo snapshot captures both layers unconditionally (M5-1 mapping).
     errorMessage.value = ""
     statusMessage.value = "Selecting file..."
     const fileRes = await call<string>("select_file")
@@ -404,6 +405,7 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
       return
     }
     statusMessage.value = "Importing track SRT..."
+    if (projectRef.value) pushSnapshot(projectRef.value, ["tracks", "bindings"], "导入副轨")
     const importRes = await call<ProjectResponse>(
       "import_srt_as_track",
       fileRes.data,

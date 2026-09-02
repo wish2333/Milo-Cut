@@ -6,7 +6,6 @@ bilingual merged export (P4-2).
 
 from core.export_service import (
     export_bilingual_subtitle,
-    export_track_srt,
     export_track_subtitle,
 )
 
@@ -67,6 +66,8 @@ class TestExportTrackSubtitle:
         text = out.read_text(encoding="utf-8")
         assert "00:00:05,000 --> 00:00:08,000" in text
         assert "gone" in text
+        # v3.0.2 M1-3 (S3/R3.5): the deprecated export_track_srt wrapper was
+        # removed; original-timestamp dumps go through map_deletions=False.
 
     def test_vtt_format(self, tmp_path):
         out = tmp_path / "track.vtt"
@@ -78,11 +79,12 @@ class TestExportTrackSubtitle:
         assert text.startswith("WEBVTT")
         assert "00:00:01.000 --> 00:00:03.000" in text
 
-    def test_legacy_srt_wrapper_keeps_original_timestamps(self, tmp_path):
-        out = tmp_path / "legacy.srt"
-        res = export_track_srt(TRACK, str(out))
-        assert res["success"], res
-        assert "00:00:05,000 --> 00:00:08,000" in out.read_text(encoding="utf-8")
+    def test_legacy_srt_wrapper_removed(self):
+        # v3.0.2 M1-3 (S3/R3.5): the deprecated wrapper is gone from the
+        # public surface.
+        import core.export_service as es
+
+        assert not hasattr(es, "export_track_srt")
 
     def test_main_and_track_share_one_mapping(self, tmp_path):
         # Same main segment mapped via export_srt and via the track channel

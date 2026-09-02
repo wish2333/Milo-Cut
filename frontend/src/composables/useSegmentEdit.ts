@@ -42,6 +42,15 @@ function activeTranscriptSegments(p: Project): Segment[] {
   return p.timelines.find(t => t.id === p.active_timeline_id)?.transcript?.segments ?? []
 }
 
+// v3.0.2 M1-3 (S3/R3.1): binding predicate for the undo capture mapping --
+// the backend linkage path fires only when the edited main segment is a
+// binding's main side, so the capture layers must match that condition.
+function segmentHasBinding(p: Project, segmentId: string): boolean {
+  const bindings =
+    p.timelines.find(t => t.id === p.active_timeline_id)?.transcript?.bindings ?? []
+  return bindings.some(b => b.main_segment_id === segmentId)
+}
+
 function replaceSegment(project: Project, segId: string, patch: Partial<Segment>): Project {
   return {
     ...project,
@@ -165,7 +174,17 @@ export function useSegmentEdit(
     const seg = activeTranscriptSegments(prev).find(s => s.id === segmentId)
     if (!seg) return
 
-    if (onBeforeProjectUpdate) onBeforeProjectUpdate(prev, ["segments"], "调整时间") // D1
+    // v3.0.2 M1-3 (S3/R3.1): capture layers follow the M5-1 mapping --
+    // bound segment (linkage fires on the backend) captures all three
+    // layers so undo rolls back atomically; unbound keeps ["segments"].
+    const bound = segmentHasBinding(prev, segmentId)
+    if (onBeforeProjectUpdate) {
+      onBeforeProjectUpdate(
+        prev,
+        bound ? ["segments", "tracks", "bindings"] : ["segments"],
+        "调整时间",
+      )
+    }
     const optimistic = replaceSegment(prev, segmentId, { [field]: value })
     onProjectUpdate(optimistic)
 
