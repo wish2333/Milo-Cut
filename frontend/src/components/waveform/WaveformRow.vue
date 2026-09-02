@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, provide, ref } from "vue"
-import type { Segment, EditDecision } from "@/types/project"
+import type { Segment, EditDecision, SubtitleTrack } from "@/types/project"
 import type { WaveformPeak } from "@/utils/waveformPeaks"
 import { formatTimeShort } from "@/utils/format"
 import { createRowMetrics } from "@/composables/rowMetrics"
 import type { UseRowDragCaptureReturn, RowEmptyGesture } from "@/composables/useRowDragCapture"
 import { TIMELINE_METRICS_KEY } from "./injectionKeys"
+import TrackLane from "@/components/workspace/TrackLane.vue"
+import { LANE_COLLAPSED_HEIGHT, LANE_PRESET_HEIGHTS, type LaneLayoutState } from "@/composables/useLaneLayout"
 import WaveformCanvas from "./WaveformCanvas.vue"
 import TimeMarksLayer from "./TimeMarksLayer.vue"
 import SegmentBlocksLayer from "./SegmentBlocksLayer.vue"
@@ -63,6 +65,15 @@ const props = defineProps<{
    * cross-pointer-event state in rows).
    */
   rowDrag?: UseRowDragCaptureReturn | null
+  /**
+   * v3.0.2 M7-2: extension tracks composed INSIDE every row -- the row
+   * splits into a main-lane area (blocks) + one sub-lane per track.
+   * Shared (editor-level) lane collapse/preset state keeps every row's
+   * lanes in lockstep.
+   */
+  tracks?: SubtitleTrack[]
+  laneState?: LaneLayoutState
+  updateTrackTime?: (trackId: string, segmentId: string, field: "start" | "end", value: number) => void
 }>()
 
 const emit = defineEmits<{
@@ -80,6 +91,9 @@ const emit = defineEmits<{
   "empty-gesture": [gesture: RowEmptyGesture]
   /** v3.0.2 M5-3: double click on empty area (play/pause). */
   "toggle-play": []
+  /** v3.0.2 M7-2: lane seek / collapse forwarded from per-row TrackLanes. */
+  seek: [time: number]
+  "toggle-collapse": [trackId: string]
 }>()
 
 // -- Row geometry ---------------------------------------------------------
@@ -128,6 +142,37 @@ function handleHoverLeave() {
   hover.value = null
   emit("hover-time", null)
 }
+
+// -- M7-2: per-row extension-track lanes ------------------------------------
+
+const visibleTracks = computed(() =>
+  (props.tracks ?? []).filter(t => !props.laneState?.hidden?.[t.id]),
+)
+
+function laneHeightOf(track: SubtitleTrack): number {
+  return props.laneState?.collapsed?.[track.id]
+    ? LANE_COLLAPSED_HEIGHT
+    : LANE_PRESET_HEIGHTS[props.laneState?.preset?.[track.id] ?? "md"]
+}
+
+const lanesTotalHeight = computed(() =>
+  visibleTracks.value.reduce((sum, track) => sum + laneHeightOf(track), 0),
+)
+
+/** Main blocks area: the row minus its sub-lanes (>= 40px guard). */
+const mainAreaHeight = computed(() =>
+  Math.max(40, props.rowHeight - lanesTotalHeight.value),
+)
+
+const laneItems = computed(() => {
+  let top = mainAreaHeight.value
+  return visibleTracks.value.map(track => {
+    const height = laneHeightOf(track)
+    const item = { track, top, height }
+    top += height
+    return item
+  })
+})
 
 // -- M5-4: frozen trim source ----------------------------------------------
 
@@ -241,7 +286,12 @@ defineExpose({ metrics })
     <!-- Row-local ruler (tick density adapts to the row seconds) -->
     <TimeMarksLayer style="z-index: 1" @seek="(t: number) => emit('set-time', t)" />
 
-    <!-- Blocks: FULL track array (cross-row trim neighbors), row-window clipping -->
+    <!-- Blocks: main-lane area (row minus sub-lanes). Without tracks this
+         equals the previous full-row geometry (top-6 + rowHeight-24). -->
+    <div
+      class="absolute inset-x-0 top-6 overflow-hidden"
+      :style="{ height: mainAreaHeight - 24 + 'px' }"
+    >
     <SegmentBlocksLayer
       :segments="segments"
       :edits="edits ?? []"
@@ -264,6 +314,25 @@ defineExpose({ metrics })
       @trim-end="(p) => emit('trim-end', p)"
       @empty-press="handleEmptyPress"
       @empty-double-click="emit('toggle-play')"
+    />
+    </div>
+
+    <!-- M7-2: one sub-lane per global track inside EVERY row -->
+    <TrackLane
+      v-for="laneItem in laneItems"
+      :key="laneItem.track.id"
+      :track="laneItem.track"
+      :lane="{
+        trackId: laneItem.track.id,
+        top: laneItem.top,
+        height: laneItem.height,
+        collapsed: !!laneState?.collapsed?.[laneItem.track.id],
+        hidden: false,
+      }"
+      :update-time="(sid, f, v) => updateTrackTime?.(laneItem.track.id, sid, f, v)"
+      style="z-index: 3"
+      @seek="(t: number) => emit('seek', t)"
+      @toggle-collapse="(id: string) => emit('toggle-collapse', id)"
     />
 
     <!-- Row playhead (R5.3): rendered only while the playhead is in THIS row -->

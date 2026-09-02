@@ -10,6 +10,7 @@ import {
   FOLLOW_BIAS,
   SCRUB_SEEK_INTERVAL_MS,
   WHEEL_DEBOUNCE_MS,
+  DEFAULT_ROW_HEIGHT,
   cyclePreset,
   computeRowCount,
   followScrollTop,
@@ -119,6 +120,7 @@ const stackHeight = computed(() => MAIN_TRACK_HEIGHT + laneLayout.value.totalLan
 
 const trackById = computed(() => new Map(tracksRef.value.map(t => [t.id, t])))
 const trackOverflow = computed(() => tracksRef.value.length > 4)
+
 
 // -- v3.0.0 M6-2: hover seek preview (unchanged, scoped to the main track) --
 const hoverLineRef = ref<HTMLElement | null>(null)
@@ -260,6 +262,20 @@ function handleSplitSegment(segmentId: string, position: number) {
 
 const rowLayout = useRowLayout(durationRef)
 const isMulti = computed(() => rowLayout.state.value.mode === "multi")
+
+// M7-2 行高联动: when extension tracks exist, the untouched default row
+// height auto-bumps to 168 so main lane + sub-lanes fit. Any user-chosen
+// value (persisted != default) is respected; no down-switch on removal.
+watch(
+  () => tracksRef.value.length > 0,
+  has => {
+    if (has && rowLayout.state.value.rowHeight === DEFAULT_ROW_HEIGHT) {
+      rowLayout.setRowHeight(168)
+    }
+  },
+  { immediate: true },
+)
+
 
 const sprPresets = SECONDS_PER_ROW_PRESETS
 const rowHeightPresets = ROW_HEIGHT_PRESETS
@@ -983,6 +999,11 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
           :global-edit-mode="globalEditMode"
           empty-area-mode="seek"
           :row-drag="rowDrag"
+          :tracks="tracks"
+          :lane-state="laneCtl.state.value"
+          :update-track-time="updateTrackTime"
+          @seek="handleSeek"
+          @toggle-collapse="laneCtl.toggleCollapse"
           @select-range="handleSelectRange"
           @add-segment="handleAddSegment"
           @delete-segment="handleDeleteSegment"
