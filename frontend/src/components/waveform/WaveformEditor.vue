@@ -5,6 +5,13 @@ import { useTimelineMetrics, type TimelineMetrics } from "@/composables/useTimel
 import {
   SECONDS_PER_ROW_PRESETS,
   ROW_HEIGHT_PRESETS,
+  ROW_GAP,
+  REVEAL_BIAS,
+  WHEEL_DEBOUNCE_MS,
+  cyclePreset,
+  computeRowCount,
+  followScrollTop,
+  rowIndexAtTime,
   useRowLayout,
   strideOf,
   lastRowWidthPercent,
@@ -170,9 +177,9 @@ onMounted(() => {
 })
 
 // Basic-mode wheel listener lifecycle: the stack unmounts in multi mode,
-// so the listener re-attaches when basic mode remounts it (M4-1: the multi
-// container uses NATIVE scrolling; the JS wheel family lands in P3-1).
-// Defined AFTER the multi-state block (isMulti TDZ) -- see watch below.
+// so the listener re-attaches when basic mode remounts it (M4-1). The multi
+// container runs its own wheel family (M5-1, handleMultiWheel above) --
+// the two listeners never coexist because only one branch is mounted.
 function attachBasicWheel() {
   if (stackEl && !isMulti.value) {
     stackEl.addEventListener("wheel", metrics.handleWheel, { passive: false })
@@ -250,6 +257,7 @@ function setScrollRef(el: unknown) {
   if (scrollEl) {
     rowLayout.viewportHeight.value = scrollEl.clientHeight
     scrollEl.scrollTop = rowLayout.scrollTop.value
+    attachMultiWheel()
     if (typeof ResizeObserver !== "undefined") {
       scrollResizeObserver?.disconnect()
       scrollResizeObserver = new ResizeObserver(() => {
@@ -267,6 +275,106 @@ const scrollScheduler = createRafScheduler(() => {
 
 function handleScroll() {
   scrollScheduler.schedule()
+}
+
+// -- v3.0.2 M5-1: multi-container wheel gesture family --------------------
+//
+// Plain wheel / trackpad: NATIVE vertical row scrolling -- never
+// preventDefault, no JS math (the WebView engine already normalizes
+// deltaMode: mac pixels vs Windows line units). Ctrl/Cmd+wheel cycles the
+// spr preset; Ctrl/Cmd+Shift+wheel cycles the row-height preset. Each
+// family keeps its own burst accumulator: a 160ms debounce (M5-1) merges
+// the burst's net notches into ONE preset jump, then re-anchors the
+// playing row (M5-2) at REVEAL_BIAS under the new geometry. Zoom metaphor:
+// wheel-down = zoom out = coarser spr / shorter rows. Gesture exclusivity:
+// only ctrl/meta bursts are intercepted (preventDefault stops the WebView
+// page zoom); the basic branch keeps metrics.handleWheel untouched (M0-1.5).
+
+/** Net-notched burst accumulator for one gesture family. */
+interface WheelBurst {
+  steps: number
+  timer: ReturnType<typeof setTimeout> | null
+}
+
+function createWheelBurst(): WheelBurst {
+  return { steps: 0, timer: null }
+}
+
+const sprBurst = createWheelBurst()
+const heightBurst = createWheelBurst()
+
+function armBurst(burst: WheelBurst, commit: (netSteps: number) => void, steps: number): void {
+  burst.steps += steps
+  if (burst.timer !== null) clearTimeout(burst.timer)
+  burst.timer = setTimeout(() => {
+    burst.timer = null
+    const net = burst.steps
+    burst.steps = 0
+    commit(net)
+  }, WHEEL_DEBOUNCE_MS)
+}
+
+/** Discard half-finished bursts (mode switch / unmount) so a stale commit never fires. */
+function resetWheelBursts(): void {
+  for (const burst of [sprBurst, heightBurst]) {
+    if (burst.timer !== null) clearTimeout(burst.timer)
+    burst.timer = null
+    burst.steps = 0
+  }
+}
+
+/**
+ * M5-2: put the playing row (the row containing currentTime under `spr`)
+ * at REVEAL_BIAS of the viewport, computed against the NEW (spr,rowHeight)
+ * geometry. Explicit inputs -- no dependency on state-update ordering.
+ */
+function anchorPlayingRow(spr: number, rowHeight: number): void {
+  const vh = rowLayout.viewportHeight.value
+  const rowCount = computeRowCount(props.duration, spr)
+  const max = Math.max(0, rowCount * strideOf(rowHeight) - ROW_GAP - vh)
+  const row = rowIndexAtTime(props.currentTime, spr)
+  rowLayout.scrollTop.value = followScrollTop(row, vh, rowHeight, max, REVEAL_BIAS)
+}
+
+function commitSprCycle(netSteps: number): void {
+  const current = rowLayout.state.value.secondsPerRow
+  const next = cyclePreset(SECONDS_PER_ROW_PRESETS, current, netSteps)
+  if (next === current) return
+  rowLayout.setSecondsPerRow(next)
+  anchorPlayingRow(next, rowLayout.state.value.rowHeight)
+}
+
+function commitRowHeightCycle(netSteps: number): void {
+  const current = rowLayout.state.value.rowHeight
+  const next = cyclePreset(ROW_HEIGHT_PRESETS, current, netSteps)
+  if (next === current) return
+  rowLayout.setRowHeight(next)
+  anchorPlayingRow(rowLayout.state.value.secondsPerRow, next)
+}
+
+function handleMultiWheel(e: WheelEvent): void {
+  if (!isMulti.value) return
+  if (!(e.ctrlKey || e.metaKey)) return // plain wheel/trackpad: native scroll
+  e.preventDefault() // boundary: stop WebView page/pinch zoom while cycling
+  const direction = e.deltaY > 0 ? 1 : e.deltaY < 0 ? -1 : 0
+  if (direction === 0) return
+  if (e.shiftKey) {
+    // Row height: wheel-down (zoom out) -> shorter rows -> smaller preset.
+    armBurst(heightBurst, commitRowHeightCycle, -direction)
+  } else {
+    // Seconds per row: wheel-down (zoom out) -> coarser rows -> larger preset.
+    armBurst(sprBurst, commitSprCycle, direction)
+  }
+}
+
+function attachMultiWheel(): void {
+  if (scrollEl && isMulti.value) {
+    scrollEl.addEventListener("wheel", handleMultiWheel, { passive: false })
+  }
+}
+
+function detachMultiWheel(): void {
+  if (scrollEl) scrollEl.removeEventListener("wheel", handleMultiWheel)
 }
 
 // Programmatic scroll writes (revealTime / mode switch / clamp) reflect
@@ -342,6 +450,7 @@ watch(isMulti, async multi => {
     await nextTick()
     rowLayout.revealTime(props.currentTime, true)
   } else {
+    resetWheelBursts() // half-finished ctrl+wheel bursts never outlive multi
     nextTick(attachBasicWheel)
   }
 })
@@ -350,6 +459,8 @@ onUnmounted(() => {
   scrollResizeObserver?.disconnect()
   scrollResizeObserver = null
   scrollScheduler.cancel()
+  detachMultiWheel()
+  resetWheelBursts()
 })
 
 // Multi-mode row event forwarding: the editor owns all navigation/edit
