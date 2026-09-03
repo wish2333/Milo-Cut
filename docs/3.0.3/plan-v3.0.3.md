@@ -71,10 +71,12 @@ P3 批次: 真机清单 → 文档 → RC → 正式
 
 ### P1-1 track 选择器与数据源（SPEC M1-1 / R1.1）
 
-- [ ] `WorkspacePage.vue`：`activeListTrackId` ref（null = 主轨）+ 删轨回退 watch 兜底
-- [ ] `Timeline.vue`：`tracks` / `activeTrackId` props + 头部 segmented 切换（沿 3.0.2 控件栏款）
-- [ ] 数据源单一 computed（主轨 `mergedSegments` / 副轨 `activeTrack.segments`），不建第二套行渲染
-- [ ] vitest：往返切换、删轨回退、主轨分支零 diff
+- [x] `WorkspacePage.vue`：`activeListTrackId` ref（null = 主轨）+ 删轨回退 watch 兜底
+  - 落点裁决：承载于新 `useListTrackSelector` composable（WorkspacePage 接线），reactive 行为可 vitest 直测（见 record-3.0.3-P1-1.md）
+- [x] `Timeline.vue`：`tracks` / `activeTrackId` props + 头部 segmented 切换（沿 3.0.2 控件栏款）
+- [x] 数据源单一 computed（主轨 `mergedSegments` / 副轨 `activeTrack.segments`），不建第二套行渲染
+  - 引用恒等断言：null 分支 `listSegments === mergedSegments`（零拷贝）
+- [x] vitest：往返切换、删轨回退、主轨分支零 diff（新增 17 例：composable 12 + Timeline 5；删轨回退 watch 采用多源形态，单 getter 有吞纠偏缺陷，踩中后修正，见 record）
 
 **验收方式**: `bun run test` 全绿（含新增）；既有 Timeline 测试不改断言。
 **验收标准**: 手工冒烟（合并 beta.1 ★ 节点）。
