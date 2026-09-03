@@ -368,3 +368,28 @@ describe("Timeline track row edit forwarding (M1-3/M1-4)", () => {
     wrapper.unmount()
   })
 })
+
+describe("Timeline empty-track create backfill (M1-2: patch tracks 层回填)", () => {
+  it("a new segment arriving via the tracks patch replaces the empty card immediately", async () => {
+    const wrapper = mountTimeline([], {
+      tracks: [{ id: "t_en", name: "English", segmentCount: 0 }],
+      activeTrackId: "t_en",
+      currentTime: 12.5,
+    })
+    await wrapper.vm.$nextTick()
+    // empty state first; the create entry emits with the playback anchor
+    expect(wrapper.find('[data-test="track-empty-state"]').exists()).toBe(true)
+    await wrapper.find('[data-test="track-empty-create"]').trigger("click")
+    expect(wrapper.emitted("create-track-segment")?.[0]).toEqual(["t_en", 12.5])
+
+    // parent applies the returned patch -> tracks/segments props update
+    await wrapper.setProps({
+      segments: [mockSegment({ id: "en-new", start: 12.5, end: 14.5, text: "new cue" })],
+      tracks: [{ id: "t_en", name: "English", segmentCount: 1 }],
+    })
+    expect(wrapper.find('[data-test="track-empty-state"]').exists()).toBe(false)
+    expect(wrapper.find('[data-segment-id="en-new"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain("new cue")
+    wrapper.unmount()
+  })
+})
