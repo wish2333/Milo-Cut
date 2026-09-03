@@ -259,13 +259,11 @@ describe("TranscriptRow track variant (M1-2)", () => {
     bound.unmount()
   })
 
-  it("renders no edit button, no status buttons, no menu", async () => {
+  it("renders no edit button, no status buttons, main menu only", async () => {
     const wrapper = mountTrack()
     expect(wrapper.find("[title='Edit text']").exists()).toBe(false)
     expect(wrapper.text()).not.toContain("无标注")
     expect(wrapper.text()).not.toContain("标记删除")
-    await wrapper.trigger("contextmenu")
-    expect(wrapper.find(".fixed.z-dropdown").exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -276,10 +274,66 @@ describe("TranscriptRow track variant (M1-2)", () => {
     wrapper.unmount()
   })
 
-  it("time stamps are display-only (no click-to-edit inputs)", async () => {
+  it("enters time edit from a stamp click and commits via track-time", async () => {
     const wrapper = mountTrack()
     await wrapper.find('[data-test="track-start"]').trigger("mousedown", { button: 0 })
-    expect(wrapper.find("input").exists()).toBe(false)
+    const input = wrapper.find("input")
+    expect(input.exists()).toBe(true)
+    await input.setValue("00:03.000")
+    await input.trigger("keydown", { key: "Enter" })
+    expect(wrapper.emitted("track-time")).toBeTruthy()
+    expect(wrapper.emitted("track-time")![0]).toEqual(["start", 3])
+    // main-path event never fired for a track row
+    expect(wrapper.emitted("update-time")).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it("commits text edits via track-text (dblclick entry)", async () => {
+    const wrapper = mountTrack()
+    await wrapper.trigger("dblclick")
+    const input = wrapper.find("input.edit-text-input")
+    expect(input.exists()).toBe(true)
+    await input.setValue("changed text")
+    await input.trigger("keydown", { key: "Enter" })
+    expect(wrapper.emitted("track-text")).toBeTruthy()
+    expect(wrapper.emitted("track-text")![0]).toEqual(["changed text"])
+    expect(wrapper.emitted("update-text")).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it("opens the track menu with 定位/编辑/删除此条字幕 and no main items", async () => {
+    const wrapper = mountTrack()
+    await wrapper.trigger("contextmenu")
+    // The menu teleports to body: query the document, not the wrapper.
+    const menu = document.body.querySelector(".fixed.z-dropdown")
+    expect(menu).not.toBeNull()
+    expect(menu!.textContent).toContain("定位")
+    expect(menu!.textContent).toContain("编辑")
+    expect(menu!.querySelector('[data-test="track-menu-delete"]')).not.toBeNull()
+    expect(menu!.textContent).not.toContain("编辑文本")
+    expect(menu!.textContent).not.toContain("标记删除")
+    wrapper.unmount()
+  })
+
+  it("menu 删除此条字幕 emits track-delete immediately (no confirm)", async () => {
+    const wrapper = mountTrack()
+    await wrapper.trigger("contextmenu")
+    const del = document.body.querySelector('[data-test="track-menu-delete"]') as HTMLButtonElement
+    expect(del).not.toBeNull()
+    del.click()
+    await nextTick()
+    expect(wrapper.emitted("track-delete")).toBeTruthy()
+    wrapper.unmount()
+  })
+
+  it("menu 定位 seeks to the segment start", async () => {
+    const wrapper = mountTrack()
+    await wrapper.trigger("contextmenu")
+    const menu = document.body.querySelector(".fixed.z-dropdown")!
+    const first = menu.querySelectorAll("button")[0] as HTMLButtonElement
+    first.click()
+    await nextTick()
+    expect(wrapper.emitted("seek")![0]).toEqual([2])
     wrapper.unmount()
   })
 

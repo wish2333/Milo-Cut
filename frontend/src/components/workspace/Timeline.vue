@@ -77,6 +77,12 @@ const emit = defineEmits<{
   "select-track": [trackId: string | null]
   /** v3.0.3 M1-2: create a segment on the viewed track at playback time. */
   "create-track-segment": [trackId: string, at: number]
+  /** v3.0.3 M1-3: list text entry -> useTrackEdit kernel. */
+  "update-track-text": [trackId: string, segmentId: string, text: string]
+  /** v3.0.3 M1-3: list time entry -> useTrackEdit kernel. */
+  "update-track-time": [trackId: string, segmentId: string, field: "start" | "end", value: number]
+  /** v3.0.3 M1-4: 删除此条字幕 -> delete_track_segment (no confirm). */
+  "delete-track-segment": [trackId: string, segmentId: string]
   "update-text": [segmentId: string, text: string]
   "update-time": [segmentId: string, field: "start" | "end", value: number]
   "toggle-status": [segment: Segment]
@@ -591,6 +597,9 @@ watch(playheadSegmentId, (id) => {
                 @seek="(t) => emit('seek', t)"
                 @update-text="(id, text) => emit('update-text', id, text)"
                 @update-time="(id, field, val) => emit('update-time', id, field, val)"
+                @track-text="(text: string) => emit('update-track-text', activeTrackId!, seg.id, text)"
+                @track-time="(field: 'start' | 'end', val: number) => emit('update-track-time', activeTrackId!, seg.id, field, val)"
+                @track-delete="emit('delete-track-segment', activeTrackId!, seg.id)"
                 @toggle-status="emit('toggle-status', seg)"
                 @confirm-edit="emit('confirm-segment', seg)"
                 @reject-edit="emit('reject-segment', seg)"

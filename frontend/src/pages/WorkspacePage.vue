@@ -209,12 +209,36 @@ const {
 
 // v3.0.1 M5-2: extension-track editing (optimistic + debounced, separate
 // composable by design -- see SPEC M5-2 ruling).
-const { updateTrackSegmentTime, flushPendingTrackUpdates } = useTrackEdit(
+// v3.0.3 M1-3: the list-side entries share the SAME kernel; backend
+// rejections surface as toasts (错误原文) while the waveform trim path
+// keeps its silent rollback.
+function trackEditErrorToast(error: string) {
+  showToast(error, "error", 4000)
+}
+const {
+  updateTrackSegmentTime,
+  editTrackSegmentText,
+  editTrackSegmentTime,
+  flushPendingTrackUpdates,
+} = useTrackEdit(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   projectRef as any,
   (val: ProjectResponse) => emit("project-updated", val),
   pushSnapshot,
 )
+
+// v3.0.3 M1-3: list-side wrappers for the Timeline track rows.
+function handleUpdateTrackText(trackId: string, segmentId: string, text: string) {
+  editTrackSegmentText(trackId, segmentId, text, trackEditErrorToast)
+}
+function handleUpdateTrackTime(
+  trackId: string,
+  segmentId: string,
+  field: "start" | "end",
+  value: number,
+) {
+  editTrackSegmentTime(trackId, segmentId, field, value, trackEditErrorToast)
+}
 
 // v3.0.1 M6-2: secondary subtitle overlay setting; reloaded when the
 // settings modal closes so flips take effect immediately.
@@ -925,6 +949,13 @@ function handleListCreateTrackSegment(trackId: string, at: number) {
   void handleAddTrackSegment(trackId, start, end)
 }
 
+// v3.0.3 M1-3: flush-on-switch -- pending list debounces commit BEFORE the
+// view switches track (flushScrollTopSave same pattern; no lost edits).
+async function handleSelectListTrack(trackId: string | null) {
+  await flushPendingTrackUpdates()
+  selectListTrack(trackId)
+}
+
 const {
   handleRegenerateWaveform, handleRequestProxy, handleSeek, handleSetTime,
   handleVideoLoaded, handleTimeUpdate, handleTogglePlay, handleSeekTo,
@@ -1359,8 +1390,11 @@ onUnmounted(() => {
             :tracks="listTrackOptions"
             :active-track-id="activeListTrackId"
             :bindings="activeBindings"
-            @select-track="selectListTrack"
+            @select-track="handleSelectListTrack"
             @create-track-segment="handleListCreateTrackSegment"
+            @update-track-text="handleUpdateTrackText"
+            @update-track-time="handleUpdateTrackTime"
+            @delete-track-segment="handleDeleteTrackSegment"
             :selected-segment-id="editSelectedSegmentId"
             :global-edit-mode="globalEditMode"
             :selection-mode="selectionMode"
