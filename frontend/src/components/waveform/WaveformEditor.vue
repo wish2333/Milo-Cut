@@ -78,6 +78,11 @@ const emit = defineEmits<{
   "select-segments": [segmentIds: string[]]
   /** v3.0.2 M5-3: plain empty-area press clears the global multi-selection. */
   "clear-selection": []
+  /** v3.0.2 smoke fix: lane menu operations forwarded with track binding. */
+  "delete-track-segment": [trackId: string, segmentId: string]
+  "clear-track": [trackId: string]
+  /** v3.0.2 M5-3: scrubbing flag for list-follow suppression. */
+  scrubbing: [active: boolean]
 }>()
 
 const durationRef = toRef(props, "duration")
@@ -263,6 +268,12 @@ function handleSplitSegment(segmentId: string, position: number) {
 const rowLayout = useRowLayout(durationRef)
 const isMulti = computed(() => rowLayout.state.value.mode === "multi")
 
+/** M7-1 smoke feedback: multi 建段模式 toggle (default off = seek/scrub). */
+const buildMode = ref(false)
+function toggleBuildMode() {
+  buildMode.value = !buildMode.value
+}
+
 // M7-2 行高联动: when extension tracks exist, the untouched default row
 // height auto-bumps to 168 so main lane + sub-lanes fit. Any user-chosen
 // value (persisted != default) is respected; no down-switch on removal.
@@ -309,8 +320,29 @@ const scrollScheduler = createRafScheduler(() => {
 // the last programmatic write is our own echo (no cooldown); any other
 // trusted event is the user's hand -> pause playback-follow for the 3s
 // cooldown. Untrusted events skip classification entirely (test/programmatic).
+// Smooth-follow echo window: while a smooth programmatic scroll animates,
+// intermediate trusted events are neither classified as manual nor synced
+// into state (state already holds the target).
+const SMOOTH_ECHO_WINDOW_MS = 800
+let programmaticUntil = 0
+
+function writeScrollTop(top: number): void {
+  rowLayout.scrollTop.value = top
+  programmaticUntil = Date.now() + SMOOTH_ECHO_WINDOW_MS
+  const el = scrollEl
+  if (!el) return
+  try {
+    el.scrollTo({ top, behavior: "smooth" })
+  } catch {
+    el.scrollTop = top // happy-dom / older engines
+  }
+}
+
 function handleScroll(e: Event) {
   const source = e.target as HTMLElement | null
+  if (Date.now() < programmaticUntil) {
+    return // smooth animation in flight: state is already the target
+  }
   if (source && (e as Event & { isTrusted?: boolean }).isTrusted === true) {
     if (!rowLayout.consumeAutoScroll(source.scrollTop)) {
       rowLayout.markManualScroll()
@@ -345,7 +377,7 @@ watch(
       FOLLOW_BIAS,
     )
     rowLayout.noteAutoScroll(target)
-    rowLayout.scrollTop.value = target
+    writeScrollTop(target)
   },
 )
 
@@ -885,6 +917,8 @@ function handleRowSetTime(t: number) {
 // revealTime so jumps share the reveal semantics (REVEAL_BIAS, comfort
 // skip, follow cooldown). No-op in basic mode (its window keeps its own
 // navigation state).
+watch(waveformScrubbing, v => emit("scrubbing", v))
+
 function revealFromNavigation(time: number): void {
   if (!isMulti.value) return
   rowLayout.revealTime(time)
@@ -948,6 +982,15 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
         >
           <option v-for="h in rowHeightPresets" :key="h" :value="h">{{ h }}px</option>
         </select>
+        <button
+          class="shrink-0 rounded px-1.5 py-0.5 text-[11px] leading-none transition-colors"
+          :class="buildMode ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
+          data-test="build-mode-toggle"
+          title="建段模式：开启后点击多行空白区域直接新建字幕（关闭时点击为定位/拖动刷选）"
+          @click="toggleBuildMode"
+        >
+          {{ buildMode ? "建段中" : "建段" }}
+        </button>
         <span class="flex-1 text-center" data-test="viewport-coverage">{{ viewportCoverageLabel }}</span>
       </div>
       <div v-else class="contents">
@@ -997,7 +1040,7 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
           :demo-mode="demoMode"
           :update-time="updateTime"
           :global-edit-mode="globalEditMode"
-          empty-area-mode="seek"
+          :empty-area-mode="buildMode ? 'add' : 'seek'"
           :row-drag="rowDrag"
           :tracks="tracks"
           :lane-state="laneCtl.state.value"
@@ -1013,6 +1056,8 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
           @toast="(msg: string) => emit('toast', msg)"
           @empty-gesture="handleRowEmptyGesture"
           @toggle-play="emit('toggle-play')"
+          @delete-track-segment="(tid: string, sid: string) => emit('delete-track-segment', tid, sid)"
+          @clear-track="(tid: string) => emit('clear-track', tid)"
         />
         <!-- M5-3: Ctrl-create preview (row-local bounded range) -->
         <div

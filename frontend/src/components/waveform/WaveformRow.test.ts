@@ -12,6 +12,7 @@ import type { Segment } from "@/types/project"
 import { useRowDragCapture } from "@/composables/useRowDragCapture"
 import WaveformRow from "./WaveformRow.vue"
 import SegmentBlock from "./SegmentBlock.vue"
+import SegmentBlocksLayer from "./SegmentBlocksLayer.vue"
 
 vi.mock("./WaveformCanvas.vue", () => ({
   default: { name: "WaveformCanvas", template: "<div data-test='waveform-canvas-stub' />" },
@@ -413,5 +414,20 @@ describe("WaveformRow: M5-4 frozen trim wiring", () => {
     document.dispatchEvent(new MouseEvent("mousemove", { clientX: -140 }))
     expect(updateTime.mock.calls[updateTime.mock.calls.length - 1]?.[2]).toBeCloseTo(9.5, 5)
     document.dispatchEvent(new MouseEvent("mouseup", { clientX: -140 }))
+  })
+})
+
+describe("WaveformRow: main-area wrapper geometry (smoke fix)", () => {
+  it("64px row scales the badge clearance (adaptive main area)", async () => {
+    const rowDrag = useRowDragCapture()
+    const w = mountRow({ rowIndex: 0, rowHeight: 64, rowDrag })
+    await w.vm.$nextTick()
+    const layer = w.findComponent(SegmentBlocksLayer)
+    expect(layer.props("fillContainer")).toBe(true)
+    // Clearance = clamp(round(64*0.15)=10, 8..24) -> main area = 54px.
+    const wrapperEl = layer.element.parentElement as HTMLElement
+    expect(wrapperEl.style.height).toBe("54px")
+    expect(wrapperEl.style.top).toBe("10px")
+    w.unmount()
   })
 })

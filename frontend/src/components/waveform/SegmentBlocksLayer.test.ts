@@ -295,3 +295,23 @@ describe("SegmentBlocksLayer context menu kbd badges (R9.4)", () => {
     expect(document.body.querySelector(".fixed.z-dropdown")).toBeNull()
   })
 })
+
+describe("SegmentBlocksLayer fillContainer (smoke fix)", () => {
+  it("default keeps the badge clearance; fillContainer fills its parent", () => {
+    const def = mountLayer([seg()])
+    const defRoot = def.wrapper.find("div[tabindex='0']")
+    expect(defRoot.classes()).toContain("top-6")
+    expect(defRoot.classes()).toContain("bottom-0")
+    def.wrapper.unmount()
+
+    const metrics = createMetrics()
+    const wrapper = mount(SegmentBlocksLayer, {
+      props: { segments: [], edits: [], fillContainer: true },
+      global: { provide: { [TIMELINE_METRICS_KEY as symbol]: metrics } },
+    })
+    const root = wrapper.find("div[tabindex='0']")
+    expect(root.classes()).toContain("inset-0")
+    expect(root.classes()).not.toContain("top-6")
+    wrapper.unmount()
+  })
+})

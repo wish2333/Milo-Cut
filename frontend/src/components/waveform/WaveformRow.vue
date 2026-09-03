@@ -74,6 +74,8 @@ const props = defineProps<{
   tracks?: SubtitleTrack[]
   laneState?: LaneLayoutState
   updateTrackTime?: (trackId: string, segmentId: string, field: "start" | "end", value: number) => void
+  /** M7-1 smoke feedback: 建段模式 ON -> multi empty click creates segments. */
+  buildMode?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -94,6 +96,9 @@ const emit = defineEmits<{
   /** v3.0.2 M7-2: lane seek / collapse forwarded from per-row TrackLanes. */
   seek: [time: number]
   "toggle-collapse": [trackId: string]
+  /** v3.0.2 smoke fix: lane context-menu operations (with track binding). */
+  "delete-track-segment": [trackId: string, segmentId: string]
+  "clear-track": [trackId: string]
 }>()
 
 // -- Row geometry ---------------------------------------------------------
@@ -162,6 +167,15 @@ const lanesTotalHeight = computed(() =>
 /** Main blocks area: the row minus its sub-lanes (>= 40px guard). */
 const mainAreaHeight = computed(() =>
   Math.max(40, props.rowHeight - lanesTotalHeight.value),
+)
+
+/**
+ * Smoke fix: the badge clearance ABOVE the main area must scale with the
+ * row -- a fixed 24px ate half of a 64px row (blocks invisible at 64/80).
+ * 15% of the row height, clamped to [8, 24]px.
+ */
+const mainTop = computed(() =>
+  Math.min(24, Math.max(8, Math.round(props.rowHeight * 0.15))),
 )
 
 const laneItems = computed(() => {
@@ -289,8 +303,8 @@ defineExpose({ metrics })
     <!-- Blocks: main-lane area (row minus sub-lanes). Without tracks this
          equals the previous full-row geometry (top-6 + rowHeight-24). -->
     <div
-      class="absolute inset-x-0 top-6 overflow-hidden"
-      :style="{ height: mainAreaHeight - 24 + 'px' }"
+      class="absolute inset-x-0 overflow-hidden"
+      :style="{ top: mainTop + 'px', height: mainAreaHeight - mainTop + 'px' }"
     >
     <SegmentBlocksLayer
       :segments="segments"
@@ -302,7 +316,8 @@ defineExpose({ metrics })
       :row-start="rowStart"
       :row-end="rowEnd"
       :get-time-from-pointer="trimTimeSource"
-      :empty-area-mode="emptyAreaMode"
+      :empty-area-mode="buildMode ? 'add' : (emptyAreaMode ?? 'seek')"
+      fill-container
       style="z-index: 2"
       @select-range="(s, e) => emit('select-range', s, e)"
       @add-segment="(s, e) => emit('add-segment', s, e)"
@@ -333,6 +348,8 @@ defineExpose({ metrics })
       style="z-index: 3"
       @seek="(t: number) => emit('seek', t)"
       @toggle-collapse="(id: string) => emit('toggle-collapse', id)"
+      @delete-segment="(sid: string) => emit('delete-track-segment', laneItem.track.id, sid)"
+      @clear-track="emit('clear-track', laneItem.track.id)"
     />
 
     <!-- Row playhead (R5.3): rendered only while the playhead is in THIS row -->

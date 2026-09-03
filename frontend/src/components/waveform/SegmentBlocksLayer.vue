@@ -32,6 +32,14 @@ const props = defineProps<{
    * (scrub / Ctrl-create / Shift-marquee via empty-press). Undefined = "add".
    */
   emptyAreaMode?: "add" | "seek"
+  /**
+   * v3.0.2 smoke fix: when the PARENT already owns the badge clearance
+   * (multi-row main-area wrapper sits at top-6), the layer fills its
+   * container (inset-0) instead of re-applying top-6 bottom-0 -- the
+   * double 24px offset crushed the blocks area at small row heights
+   * (64/80px showed nothing). Default false = basic unchanged.
+   */
+  fillContainer?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -278,7 +286,8 @@ onUnmounted(() => {
 <template>
   <div
     ref="containerRef"
-    class="absolute inset-x-0 top-6 bottom-0 focus:outline-none"
+    class="absolute inset-x-0 focus:outline-none"
+    :class="fillContainer ? 'inset-0' : 'top-6 bottom-0'"
     tabindex="0"
     @mousedown="focusContainer"
     @mousedown.self="handleEmptyClick"

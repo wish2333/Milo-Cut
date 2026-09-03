@@ -606,3 +606,39 @@ class TestLinkagePatchCarriesLayers:
         assert patch["tracks"] is not None
         assert patch["bindings"] is not None
         assert patch["meta"]["linkage"] is not None
+
+
+class TestDeleteTrackSegment:
+    """v3.0.2 smoke fix: extension segments become deletable end-to-end."""
+
+    def test_deletes_segment_and_returns_tracks_layer(self, svc):
+        _seed_linkage(svc)
+        res = svc.delete_track_segment("trk1", "track_trk1_seg_a")
+        assert res["success"] is True
+        patch = res["data"]
+        assert patch["tracks"] is not None
+        trk = next(t for t in patch["tracks"] if t["id"] == "trk1")
+        assert [s["id"] for s in trk["segments"]] == ["track_trk1_seg_b"]
+        # Main transcript untouched (red line M0-3).
+        assert "segments" not in patch or patch.get("segments") is None
+
+    def test_deletes_bindings_anchored_to_the_segment(self, svc):
+        _seed_linkage(svc)
+        before = _bindings(svc)
+        assert before  # seeded with bindings
+        res = svc.delete_track_segment("trk1", "track_trk1_seg_a")
+        patch = res["data"]
+        after_ids = {b["id"] for b in patch["bindings"]}
+        dropped = {
+            b.id for b in before.values() if b.extension_segment_id == "track_trk1_seg_a"
+        }
+        assert dropped and not (dropped & after_ids)
+        # Unrelated binding survives.
+        assert {b.id for b in before.values()} - dropped <= after_ids
+
+    def test_unknown_track_and_segment_rejected(self, svc):
+        _seed_linkage(svc)
+        assert svc.delete_track_segment("nope", "x")["success"] is False
+        assert svc.delete_track_segment("trk1", "nope")["success"] is False
+        # State unchanged.
+        assert len(svc.active_timeline.transcript.tracks[0].segments) == 2

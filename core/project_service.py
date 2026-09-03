@@ -1490,6 +1490,57 @@ class ProjectService:
             meta=meta,
         )
 
+    def delete_track_segment(self, track_id: str, segment_id: str) -> dict:
+        """Delete an extension-track segment (v3.0.2 smoke fix).
+
+        Bindings anchored to the deleted extension segment are dropped
+        wholesale (offsets are undefined without the anchor text -- the
+        derivative rule); the main track is NEVER touched (red line M0-3).
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        tl = self.active_timeline
+        track = next((t for t in tl.transcript.tracks if t.id == track_id), None)
+        if track is None:
+            return {"success": False, "error": f"Track not found: {track_id}"}
+
+        ext = next((s for s in track.segments if s.id == segment_id), None)
+        if ext is None:
+            return {
+                "success": False,
+                "error": f"Segment not found in track {track_id}: {segment_id}",
+            }
+
+        new_segments = sorted(
+            (s for s in track.segments if s.id != segment_id), key=lambda s: s.start
+        )
+        new_tracks = [
+            t.model_copy(update={"segments": new_segments})
+            if t.id == track_id
+            else t
+            for t in tl.transcript.tracks
+        ]
+
+        dropped = sum(
+            1 for b in tl.transcript.bindings if b.extension_segment_id == segment_id
+        )
+        new_bindings = [
+            b for b in tl.transcript.bindings if b.extension_segment_id != segment_id
+        ]
+
+        new_transcript = tl.transcript.model_copy(
+            update={"tracks": new_tracks, "bindings": new_bindings}
+        )
+        self._update_active_timeline(transcript=new_transcript)
+
+        meta = {"linkage": {"unbound": dropped}} if dropped else None
+        return self._success_patch(
+            tracks=new_tracks,
+            bindings=new_bindings,
+            meta=meta,
+        )
+
     def update_segment_text(self, segment_id: str, text: str) -> dict:
         """Update a subtitle segment's text and set dirty_flags."""
         if self._current is None:

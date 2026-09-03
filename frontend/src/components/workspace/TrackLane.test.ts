@@ -175,3 +175,40 @@ describe("TrackLane (geometric)", () => {
     expect(block.props("updateTime")).toBeUndefined()
   })
 })
+
+// ------------------------------------------------------------------
+// v3.0.2 smoke fix: lane block context menu (删除此条字幕 / 清空此轨)
+// ------------------------------------------------------------------
+
+describe("TrackLane context menu (smoke fix)", () => {
+  it("删除此条字幕 emits delete-segment and closes the menu", async () => {
+    const wrapper = mountLane(makeTrack())
+    const block = wrapper.findComponent(SegmentBlock)
+    await block.trigger("contextmenu")
+    const menu = document.body.querySelector(".fixed.z-dropdown")
+    expect(menu).not.toBeNull()
+    expect(menu!.textContent).toContain("删除此条字幕")
+    expect(menu!.textContent).toContain("清空此轨")
+    const deleteBtn = Array.from(menu!.querySelectorAll("button")).find(b =>
+      b.textContent?.includes("删除此条字幕"),
+    )!
+    deleteBtn.click()
+    await wrapper.vm.$nextTick()
+    expect(wrapper.emitted("delete-segment")?.[0]).toEqual([`track_trk_ab12cd34_seg_1.000`])
+    expect(document.body.querySelector(".fixed.z-dropdown")).toBeNull()
+    wrapper.unmount()
+  })
+
+  it("清空此轨 emits clear-track", async () => {
+    const wrapper = mountLane(makeTrack())
+    await wrapper.findComponent(SegmentBlock).trigger("contextmenu")
+    const menu = document.body.querySelector(".fixed.z-dropdown")!
+    const clearBtn = Array.from(menu.querySelectorAll("button")).find(b =>
+      b.textContent?.includes("清空此轨"),
+    )!
+    clearBtn.click()
+    await wrapper.vm.$nextTick()
+    expect(wrapper.emitted("clear-track")?.length).toBe(1)
+    wrapper.unmount()
+  })
+})

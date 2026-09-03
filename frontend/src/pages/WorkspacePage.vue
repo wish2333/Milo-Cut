@@ -864,10 +864,22 @@ function handleWaveformSelectSegments(ids: string[]) {
   selectedSegmentIds.value = next
 }
 
+// v3.0.2 smoke fix: lane menu operations on per-row sub-tracks.
+async function handleClearTrack(trackId: string) {
+  const track = activeTracks.value.find(t => t.id === trackId)
+  if (!track || track.segments.length === 0) return
+  if (!window.confirm(`确定清空副轨「${track.name || track.id}」的全部 ${track.segments.length} 条字幕？此操作不可撤销。`)) return
+  for (const seg of [...track.segments]) {
+    await handleDeleteTrackSegment(trackId, seg.id)
+  }
+}
+
 // v3.0.2 M6-1: subtitle-list navigation jumps share the waveform's reveal
 // semantics (REVEAL_BIAS + comfort skip + follow cooldown) so the playing
 // row is actually in view after a list click. No-op in basic mode.
 const waveformEditorRef = ref<InstanceType<typeof WaveformEditor> | null>(null)
+/** M5-3: true while the waveform playhead is scrubbed (list follow skips). */
+const waveformScrubbing = ref(false)
 function handleListSeek(time: number) {
   handleSeek(time)
   waveformEditorRef.value?.revealTime(time)
@@ -879,6 +891,7 @@ const {
   handleVolumeChange, handleRateChange, handleFullscreen,
   handleSwitchTimeline, handleCreateTimeline, handleDeleteTimeline,
   handleImportSrt, handleImportSrtAsTrack, handleDetectSilence, handleClearSubtitles, handleTranscribe,
+  handleDeleteTrackSegment,
   handleToggleEditStatus, handleSegmentClickInSelection, handleToggleSelectionMode,
   handleMergeSelected, handleSplitSegment, handleUpdateText, handleUpdateTime,
   handleSelectRange, handleAddSegment, handleDeleteSegment, handleSeekSegment,
@@ -1298,6 +1311,7 @@ onUnmounted(() => {
             :selected-count="selectedCount"
             :show-search-bar="showSearchBar"
             :current-time="currentTime"
+            :scrubbing="waveformScrubbing"
             :llm-configured="llmConfig.configured"
             :llm-model="llmConfig.model"
             :llm-is-running="llmIsRunning"
@@ -1371,6 +1385,9 @@ onUnmounted(() => {
       @toggle-play="handleTogglePlay"
       @select-segments="handleWaveformSelectSegments"
       @clear-selection="clearMultiSelection"
+      @delete-track-segment="handleDeleteTrackSegment"
+      @clear-track="handleClearTrack"
+      @scrubbing="waveformScrubbing = $event"
     />
 
     <!-- Delete silence confirmation dialog -->
