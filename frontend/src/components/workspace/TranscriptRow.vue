@@ -190,13 +190,17 @@ const mainMenuItems = computed<RowMenuItem[]>(() => [
     label: "从时间指针分割",
     title: "在时间指针位置分割",
     show: props.isPlayheadInside,
+    // v3.0.2 parity: the static divider sat before the split GROUP; it
+    // moves with the lead item and vanishes when the group lead is hidden
+    // (split-mid carries it instead -- see below).
+    dividerBefore: true,
     action: handleSplitAtPointer,
   },
   {
     id: "split-mid",
     label: "从中点分割",
     title: "从此段中间分为两段",
-    dividerBefore: true,
+    dividerBefore: !props.isPlayheadInside,
     action: handleSplitAtMidpoint,
   },
   {
@@ -581,7 +585,8 @@ const durationLabel = computed(() => formatTimeShort(Math.max(0, props.segment.e
         @click="closeContextMenu"
       >
         <template v-for="item in activeMenuItems" :key="item.id">
-          <div v-if="item.dividerBefore" class="border-t border-gray-100 my-1" />
+          <!-- hidden items render nothing, divider included (no orphan lines) -->
+          <div v-if="item.dividerBefore && item.show !== false" class="border-t border-gray-100 my-1" />
           <button
             v-if="item.show !== false"
             :data-test="item.id === 'track-delete' ? 'track-menu-delete' : undefined"

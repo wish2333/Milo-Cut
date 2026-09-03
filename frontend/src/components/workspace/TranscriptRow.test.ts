@@ -427,3 +427,23 @@ describe("TranscriptRow context menu kbd badges (M3)", () => {
     }
   })
 })
+
+describe("TranscriptRow menu divider parity (v3.0.2 regression audit)", () => {
+  function dividers(): number {
+    return document.body.querySelectorAll(".fixed.z-dropdown .border-t").length
+  }
+
+  it("playhead inside: divider before the split group, none between the two split items", async () => {
+    const wrapper = mount(TranscriptRow, { props: { segment: baseSegment, isPlayheadInside: true } })
+    await wrapper.trigger("contextmenu")
+    expect(dividers()).toBe(3) // before split group / before 加入精华 / before 删除段落
+    wrapper.unmount()
+  })
+
+  it("playhead outside: split group keeps a single divider, no orphan line", async () => {
+    const wrapper = mount(TranscriptRow, { props: { segment: baseSegment, isPlayheadInside: false } })
+    await wrapper.trigger("contextmenu")
+    expect(dividers()).toBe(3) // before 从中点分割 / before 加入精华 / before 删除段落
+    wrapper.unmount()
+  })
+})
