@@ -16,6 +16,7 @@ import { createWorkspaceActions, provideWorkspaceActions } from "@/composables/u
 import { useUvAvailability } from "@/composables/useUvAvailability"
 import { useLlmTasks } from "@/composables/useLlmTasks"
 import { useEditedPlayback } from "@/composables/useEditedPlayback"
+import { useListTrackSelector } from "@/composables/useListTrackSelector"
 import { createPlaybackClock } from "@/composables/usePlaybackClock"
 import { PLAYBACK_CLOCK_KEY } from "@/components/waveform/injectionKeys"
 import {
@@ -413,6 +414,17 @@ const analysisResults = computed(() => activeTimeline.value?.analysis?.results ?
 // v2.3.2 stage 3: relies on backend _enforce_segment_sort_invariant.
 // See tests/test_segment_sort_invariant.py and core/project_service.py.
 const mergedSegments = computed<Segment[]>(() => segments.value)
+
+// v3.0.3 M1-1: subtitle-list track selector (pure session view state --
+// no patch, no undo, no persistence). listSegments is THE list data
+// source: null -> mergedSegments (v3.0.2 path, byte-identical), an
+// extension track id -> that track's segments.
+const {
+  activeListTrackId,
+  selectTrack: selectListTrack,
+  options: listTrackOptions,
+  listSegments,
+} = useListTrackSelector(activeTracks, mergedSegments)
 
 const silenceCount = computed(() => segments.value.filter(s => s.type === "silence").length)
 const subtitleCount = computed(() => segments.value.filter(s => s.type === "subtitle").length)
@@ -1329,11 +1341,14 @@ onUnmounted(() => {
           <!-- Right: Timeline (transcript editor + suggestion panel) -->
           <div class="relative flex flex-1 flex-col overflow-hidden bg-canvas">
           <Timeline
-            :segments="mergedSegments"
+            :segments="listSegments"
             :edits="edits"
             :analysis-results="analysisResults"
             :subtitle-count="subtitleCount"
             :silence-count="silenceCount"
+            :tracks="listTrackOptions"
+            :active-track-id="activeListTrackId"
+            @select-track="selectListTrack"
             :selected-segment-id="editSelectedSegmentId"
             :global-edit-mode="globalEditMode"
             :selection-mode="selectionMode"

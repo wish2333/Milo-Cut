@@ -18,6 +18,7 @@ import SilenceRow from "@/components/workspace/SilenceRow.vue"
 import SuggestionPanel from "@/components/workspace/SuggestionPanel.vue"
 import AIAssistantPanel from "@/components/workspace/AIAssistantPanel.vue"
 import HighlightModeView from "@/components/workspace/HighlightModeView.vue"
+import type { ListTrackOption } from "@/composables/useListTrackSelector"
 
 const props = defineProps<{
   segments: Segment[]
@@ -25,6 +26,13 @@ const props = defineProps<{
   analysisResults: AnalysisResult[]
   subtitleCount: number
   silenceCount: number
+  /**
+   * v3.0.3 M1-1: extension-track selector entries (name + segment count).
+   * Absent/empty = v3.0.2 main-track-only list (selector not rendered).
+   */
+  tracks?: ListTrackOption[]
+  /** v3.0.3 M1-1: current list source; null = main track. */
+  activeTrackId?: string | null
   selectedSegmentId?: string | null
   /** v3.0.2 M5-3: waveform scrubbing active -> skip playhead list-follow. */
   scrubbing?: boolean
@@ -63,6 +71,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   seek: [time: number]
+  /** v3.0.3 M1-1: list source switch; null = main track. */
+  "select-track": [trackId: string | null]
   "update-text": [segmentId: string, text: string]
   "update-time": [segmentId: string, field: "start" | "end", value: number]
   "toggle-status": [segment: Segment]
@@ -401,6 +411,39 @@ watch(playheadSegmentId, (id) => {
       <!-- LEFT: Timeline title + tools -->
       <div class="flex items-center gap-2 flex-1 min-w-0">
         <span class="text-sm font-semibold">字幕时间线</span>
+        <!-- v3.0.3 M1-1: list track selector (segmented, 3.0.2 control-bar
+             style). Rendered only when extension tracks exist; null option
+             = main track. Pure view state -- selecting never patches. -->
+        <div
+          v-if="tracks && tracks.length > 0"
+          data-test="list-track-selector"
+          class="flex shrink-0 items-center overflow-hidden rounded border border-gray-300"
+        >
+          <button
+            data-test="select-main-track"
+            class="px-1.5 py-0.5 text-[11px] leading-none transition-colors"
+            :class="!activeTrackId ? 'bg-gray-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
+            title="主轨字幕列表"
+            @click="emit('select-track', null)"
+          >
+            主轨
+          </button>
+          <button
+            v-for="t in tracks"
+            :key="t.id"
+            :data-test="`select-track-${t.id}`"
+            class="flex items-center gap-1 px-1.5 py-0.5 text-[11px] leading-none transition-colors"
+            :class="activeTrackId === t.id ? 'bg-gray-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
+            :title="`切换到副轨 ${t.name}`"
+            @click="emit('select-track', t.id)"
+          >
+            <span class="max-w-[80px] truncate">{{ t.name }}</span>
+            <span
+              class="rounded bg-black/10 px-1 text-[10px]"
+              :data-test="`track-count-${t.id}`"
+            >{{ t.segmentCount }}</span>
+          </button>
+        </div>
         <!-- v2.1.1 M4-1: selection mode toggle -->
         <button
           class="rounded p-1.5 transition-colors"

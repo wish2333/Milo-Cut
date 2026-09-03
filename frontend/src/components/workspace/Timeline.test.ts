@@ -187,3 +187,69 @@ describe("Timeline virtual scrolling (M7-2)", () => {
     wrapper.unmount()
   })
 })
+
+// ---------------------------------------------------------------------------
+// v3.0.3 M1-1: list track selector (header segmented control). Pure view
+// state: the component only re-emits select-track; the parent owns the
+// data-source switch.
+// ---------------------------------------------------------------------------
+describe("Timeline list track selector (M1-1)", () => {
+  const trackOptions = [
+    { id: "t_en", name: "English", segmentCount: 2 },
+    { id: "t_zh", name: "中文翻译", segmentCount: 0 },
+  ]
+
+  it("renders no selector without tracks (main-track branch zero diff)", () => {
+    const wrapper = mountTimeline(longSegments(3))
+    expect(wrapper.find('[data-test="list-track-selector"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it("renders main + one entry per track with a live count badge", () => {
+    const wrapper = mountTimeline(longSegments(3), {
+      tracks: trackOptions,
+      activeTrackId: null,
+    })
+    const selector = wrapper.find('[data-test="list-track-selector"]')
+    expect(selector.exists()).toBe(true)
+    expect(wrapper.find('[data-test="select-main-track"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="select-track-t_en"]').text()).toContain("English")
+    expect(wrapper.find('[data-test="track-count-t_en"]').text()).toBe("2")
+    // empty track still shows its (zero) count badge
+    expect(wrapper.find('[data-test="track-count-t_zh"]').text()).toBe("0")
+    wrapper.unmount()
+  })
+
+  it("marks the main track active by default and on null", () => {
+    const wrapper = mountTimeline(longSegments(3), {
+      tracks: trackOptions,
+      activeTrackId: null,
+    })
+    expect(wrapper.find('[data-test="select-main-track"]').classes()).toContain("bg-gray-700")
+    expect(wrapper.find('[data-test="select-track-t_en"]').classes()).not.toContain("bg-gray-700")
+    wrapper.unmount()
+  })
+
+  it("moves the active mark to the selected track", () => {
+    const wrapper = mountTimeline(longSegments(3), {
+      tracks: trackOptions,
+      activeTrackId: "t_en",
+    })
+    expect(wrapper.find('[data-test="select-track-t_en"]').classes()).toContain("bg-gray-700")
+    expect(wrapper.find('[data-test="select-main-track"]').classes()).not.toContain("bg-gray-700")
+    wrapper.unmount()
+  })
+
+  it("emits select-track with the track id / null (round-trip payload)", async () => {
+    const wrapper = mountTimeline(longSegments(3), {
+      tracks: trackOptions,
+      activeTrackId: null,
+    })
+    await wrapper.find('[data-test="select-track-t_en"]').trigger("click")
+    expect(wrapper.emitted("select-track")?.[0]).toEqual(["t_en"])
+    await wrapper.setProps({ activeTrackId: "t_en" })
+    await wrapper.find('[data-test="select-main-track"]').trigger("click")
+    expect(wrapper.emitted("select-track")?.[1]).toEqual([null])
+    wrapper.unmount()
+  })
+})
