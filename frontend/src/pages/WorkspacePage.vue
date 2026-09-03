@@ -930,6 +930,7 @@ const {
   handleImportSrt, handleImportSrtAsTrack, handleDetectSilence, handleClearSubtitles, handleTranscribe,
   handleDeleteTrackSegment,
   handleDeleteTrack,
+  handleAddTrack,
   handleAddTrackSegment,
   handleClearTrackSegments,
   handleToggleEditStatus, handleSegmentClickInSelection, handleToggleSelectionMode,
@@ -1090,6 +1091,14 @@ onUnmounted(() => {
         @click="handleImportSrtAsTrack"
       >
         导入副轨
+      </button>
+      <button
+        class="mc-button"
+        data-test="add-track-button"
+        title="新建一条空的副轨（建段模式下在其上点击即可添加字幕）"
+        @click="handleAddTrack"
+      >
+        新建副轨
       </button>
       <button
         class="mc-button"

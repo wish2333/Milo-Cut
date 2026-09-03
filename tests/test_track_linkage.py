@@ -685,3 +685,16 @@ class TestAddAndClearTrackSegments:
         assert trk["segments"] == []
         assert res["data"]["bindings"] == []
         assert res["data"].get("meta", {}).get("linkage", {}).get("unbound") == 2
+
+
+class TestAddTrack:
+    def test_creates_unique_empty_track(self, svc):
+        _seed_linkage(svc)
+        res = svc.add_track("新副轨")
+        assert res["success"] is True
+        tracks = res["data"]["tracks"]
+        assert len(tracks) == 2
+        assert tracks[-1]["name"] == "新副轨"
+        assert tracks[-1]["segments"] == []
+        res2 = svc.add_track("新副轨 2")
+        assert res2["data"]["tracks"][-1]["id"] != tracks[-1]["id"]

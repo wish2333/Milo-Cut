@@ -69,3 +69,9 @@ pytest 711 ✓ / vitest 660 ✓ / build ✓ / lint 0 ✓ / ruff 0 ✓
 - **清空此轨一次到位**：后端新增 `clear_track_segments(track_id)`（单 patch 清全部段 + 连带删锚定 binding，meta.unbound 计数）；前端 handleClearTrack 改单次调用（废除逐段循环——就是用户看到的「一条一条删」）。
 - **副轨 lane 建段**：建段模式开启后，**点击任意副轨 lane 空白处**即在该轨新建 0.5s 字幕（后端 `add_track_segment`：clamp + 最短时长 + 同轨重叠拒绝，id 沿导入命名式，新建段不绑定）；链路 lane(create-at) → row(track-create + trackId) → editor → WorkspacePage。至此副轨能力 = 导入 + 波形 trim/删除 + **lane 建段** + 清空 + 删轨。
 - **回应「副轨有啥用」**：副轨定位 = 双语/翻译对照轨（导入 SRT、波形 trim、播放器双语预览、双语 SRT 导出，v3.0.0 起有）；本版补齐行内显示与增删改闭环。**仍缺（下一批次登记）**：字幕列表切换显示/编辑副轨（列表 track 选择器）。
+
+## 追加（四轮第二项：新建副轨 + 连续播放空白防护）
+
+- **新建副轨按钮**（导入副轨旁）：后端 `add_track(name)`（uuid id，空段表，tracks patch）+ 按钮链路（自动命名「副轨 N」+ 提示建段用法）。配合 lane 建段/清空/删除 → 副轨全生命周期闭环：新建 → 建段 → 管理 → 删除。
+- **连续播放空白防护**：连续跨 9 行播放测试无法复现空白（rows=5，scrollTop 钳 970，播放行 90 在窗内）。已加 **NaN/非法值防御**（follow/anchor/writeScrollTop/revealTime 四处入口）——currentTime 一旦出现 NaN，行窗计算全变 NaN → 行循环零次 → 表面整片空白，与反馈现象完全吻合（触发源疑为播放引擎在特定 seek/边界下的瞬时非法值）。新增 NaN 注入测试（不空白 + 恢复后跟随正常）。
+- **若重验仍空白**：需要屏幕录制 + F12 控制台报错——没有可复现路径无法进一步定位。

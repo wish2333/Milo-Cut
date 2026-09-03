@@ -1446,3 +1446,89 @@ describe("WaveformEditor BASIC lane menu forwarding (smoke fix)", () => {
     wrapper.unmount()
   })
 })
+
+describe("WaveformEditor continuous playback (smoke feedback #2)", () => {
+  let clientHeightDescriptor: PropertyDescriptor | undefined
+
+  beforeAll(() => {
+    clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight")
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.getAttribute?.("data-test") === "multi-scroll") return 320
+        return clientHeightDescriptor?.get?.call(this) ?? 0
+      },
+    })
+  })
+
+  afterAll(() => {
+    if (clientHeightDescriptor) {
+      Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeightDescriptor)
+    }
+  })
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    localStorage.clear()
+    localStorage.setItem(
+      ROW_LAYOUT_STORAGE_KEY,
+      JSON.stringify({ mode: "multi", secondsPerRow: 10, rowHeight: 120 }),
+    )
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    localStorage.clear()
+  })
+
+  it("continuous playback crossing 9 rows never blanks the surface", async () => {
+    const wrapper = mount(WaveformEditor, {
+      props: { segments: [], edits: [], duration: 100, currentTime: 5 },
+      global: {
+        stubs: {
+          WaveformCanvas: true,
+          TimeMarksLayer: true,
+          SegmentBlocksLayer: true,
+          ScrollbarStrip: true,
+          PlayheadOverlay: true,
+        },
+      },
+    })
+    const el = () => wrapper.find('[data-test="multi-scroll"]').element as HTMLElement
+    for (const t of [15, 25, 35, 45, 55, 65, 75, 85, 95]) {
+      await wrapper.setProps({ currentTime: t })
+    }
+    const rows = wrapper.findAll(".waveform-row")
+    console.log("[diag] rows:", rows.length, "scrollTop:", el().scrollTop,
+      "starts:", rows.map(r => r.attributes("data-row-start")).join(","))
+    expect(rows.length).toBeGreaterThan(0)
+    // The playing row (90-100s, row 9) must be within the rendered window.
+    const starts = rows.map(r => Number(r.attributes("data-row-start")))
+    expect(starts).toContain(90)
+    wrapper.unmount()
+  })
+
+  it("a non-finite currentTime never blanks the surface (blank-guard)", async () => {
+    const wrapper = mount(WaveformEditor, {
+      props: { segments: [], edits: [], duration: 100, currentTime: 5 },
+      global: {
+        stubs: {
+          WaveformCanvas: true,
+          TimeMarksLayer: true,
+          SegmentBlocksLayer: true,
+          ScrollbarStrip: true,
+          PlayheadOverlay: true,
+        },
+      },
+    })
+    await wrapper.setProps({ currentTime: Number.NaN })
+    await wrapper.vm.$nextTick()
+    const rows = wrapper.findAll(".waveform-row")
+    expect(rows.length).toBeGreaterThan(0)
+    await wrapper.setProps({ currentTime: 45 }) // recovery: follow still works
+    expect(
+      (wrapper.find('[data-test="multi-scroll"]').element as HTMLElement).scrollTop,
+    ).toBeGreaterThan(0)
+    wrapper.unmount()
+  })
+})

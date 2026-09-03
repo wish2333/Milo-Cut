@@ -430,6 +430,7 @@ export function useRowLayout(duration: Ref<number>): UseRowLayoutReturn {
   }
 
   function revealTime(time: number, center = false): void {
+    if (!Number.isFinite(time)) return
     const row = rowIndexAtTime(time, state.value.secondsPerRow)
     if (isRowVisibleInComfortZone(row)) return // comfort-zone skip: playhead only
     // center=true (mode switch-in) centers the row; jumps use REVEAL_BIAS.

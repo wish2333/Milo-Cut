@@ -330,6 +330,7 @@ const SMOOTH_ECHO_WINDOW_MS = 800
 let programmaticUntil = 0
 
 function writeScrollTop(top: number): void {
+  if (!Number.isFinite(top)) return // blank-guard: NaN scrollTop blanks the surface
   rowLayout.scrollTop.value = top
   programmaticUntil = Date.now() + SMOOTH_ECHO_WINDOW_MS
   const el = scrollEl
@@ -367,6 +368,7 @@ watch(
   () => props.currentTime,
   t => {
     if (!isMulti.value) return
+    if (!Number.isFinite(t)) return // NaN/非法值: 严禁进行窗/滚动数学 (blank-guard)
     if (rowLayout.isFollowCoolingDown()) return
     const row = rowIndexAtTime(t, rowLayout.state.value.secondsPerRow)
     if (row === lastFollowedRow) return
@@ -436,6 +438,7 @@ function resetWheelBursts(): void {
  * geometry. Explicit inputs -- no dependency on state-update ordering.
  */
 function anchorPlayingRow(spr: number, rowHeight: number): void {
+  if (!Number.isFinite(spr) || !Number.isFinite(rowHeight)) return
   const vh = rowLayout.viewportHeight.value
   const rowCount = computeRowCount(props.duration, spr)
   const max = Math.max(0, rowCount * strideOf(rowHeight) - ROW_GAP - vh)

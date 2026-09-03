@@ -144,6 +144,7 @@ export interface WorkspaceActions {
   handleClearSubtitles: () => Promise<void>
   handleDeleteTrackSegment: (trackId: string, segmentId: string) => Promise<void>
   handleDeleteTrack: (trackId: string) => Promise<void>
+  handleAddTrack: () => Promise<void>
   handleAddTrackSegment: (trackId: string, start: number, end: number) => Promise<void>
   handleClearTrackSegments: (trackId: string) => Promise<void>
   handleTranscribe: () => Promise<void>
@@ -468,6 +469,22 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
         "error",
         8000,
       )
+    }
+  }
+
+  async function handleAddTrack() {
+    const proj = projectRef.value
+    const count = proj?.timelines?.find(t => t.id === proj.active_timeline_id)?.transcript?.tracks?.length ?? 0
+    try {
+      const res = await call<ProjectResponse>("add_track", `副轨 ${count + 1}`)
+      if (res.success && res.data) {
+        emit("project-updated", res.data)
+        showToast("已新建副轨（建段模式下点击副轨空白处即可添加字幕）", "success", 4000)
+      } else {
+        showToast(res.error ?? "新建副轨失败", "error", 6000)
+      }
+    } catch (e) {
+      showToast(`新建副轨失败：${e instanceof Error ? e.message : String(e)}（请完全退出并重启应用）`, "error", 8000)
     }
   }
 
@@ -994,6 +1011,7 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
     handleImportSrt, handleImportSrtAsTrack, handleDetectSilence, handleClearSubtitles, handleTranscribe,
   handleDeleteTrackSegment,
   handleDeleteTrack,
+  handleAddTrack,
   handleAddTrackSegment,
   handleClearTrackSegments,
     // edit

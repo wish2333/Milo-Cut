@@ -1634,6 +1634,29 @@ class ProjectService:
             meta=meta,
         )
 
+    def add_track(self, name: str, language: str = "", role: str = "extension") -> dict:
+        """Create an empty extension track (v3.0.2 smoke feedback: tracks
+        could only come from SRT import -- no way to start fresh)."""
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        import uuid
+
+        from core.models import SubtitleTrack
+
+        tl = self.active_timeline
+        track = SubtitleTrack(
+            id=f"trk_{uuid.uuid4().hex[:8]}",
+            role=role,
+            name=name,
+            language=language,
+            segments=[],
+        )
+        new_tracks = [*tl.transcript.tracks, track]
+        new_transcript = tl.transcript.model_copy(update={"tracks": new_tracks})
+        self._update_active_timeline(transcript=new_transcript)
+        return self._success_patch(tracks=new_tracks)
+
     def delete_track(self, track_id: str) -> dict:
         """Delete a whole extension track and every binding anchored to it
         (v3.0.2 smoke feedback: tracks could only be cleared, not removed).
