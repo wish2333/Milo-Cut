@@ -351,7 +351,10 @@ function smoothJumpEnabled(): boolean {
 function writeScrollTop(top: number, opts?: { smooth?: boolean }): void {
   if (!Number.isFinite(top)) return // blank-guard: NaN scrollTop blanks the surface
   if (opts?.smooth && smoothJumpEnabled()) {
-    scrollAnimator.animateTo(top, { durationMs: FOLLOW_SMOOTH_DURATION_MS })
+    // `from` is taken from the LIVE layout state (not the animator's last
+    // written value): external instant writes keep the animator's internal
+    // `current` stale, and an animation from a stale position would jump.
+    scrollAnimator.animateTo(top, { durationMs: FOLLOW_SMOOTH_DURATION_MS, from: rowLayout.scrollTop.value })
     return
   }
   // Instant path (v3.0.2 semantics): a running animation loses ownership.
