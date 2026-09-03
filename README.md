@@ -54,6 +54,14 @@ Milo-Cut is a local-first, AI-powered desktop video preprocessing tool for oral 
 - **Follow & persistence** -- playback follow judges on row change only (comfort zone = playhead-only), manual scrolling pauses it for 3 s, and list navigation jumps through the same reveal path; mode, presets, scroll position and panel height persist in localStorage and survive re-open.
 - **Tracks inside every row** -- extension lanes compose inside each row (collapse/preset state stays in lockstep across rows); with tracks present the default row height bumps to 168 px unless you already picked your own.
 
+### Track-Aware Subtitle List (v3.0.3)
+
+- **List track selector** -- the subtitle list gains a segmented switch (main track / each extension track); the selection is session view state only (never patched, never persisted, always back to the main track on reload).
+- **In-list extension editing** -- extension rows show text/timestamps/duration with the binding mark; double-click or the row menu edits text, stamps are click-editable with ±0.1s nudges, and edits share the debounced optimistic kernel with waveform trims (failures roll back and surface the backend error verbatim).
+- **Row actions & undo predicates** -- click seeks, the playhead highlights the active row, and the context menu offers 定位 / 编辑 / 删除此条字幕 (no confirm -- undo covers it); capture layers follow the predicate table (text -> tracks only; time -> tracks + bindings when bound; delete always both) with atomic offsets restore on undo.
+- **Follow smoothing (opt-in)** -- navigation jumps can animate with a 140 ms ease-out (`milocut:timeline-follow-smooth:v1`, default off); the playback-clock path always writes instantly, so continuous playback behavior is unchanged.
+- **Menu kbd badges** -- row context menus annotate registered shortcuts (mono badges, R9.4 style); items without a registered shortcut render text-only.
+
 ### Multi-Track Subtitles & Stacked Timeline (v3.0.0 data layer / v3.0.1 full UX)
 
 - **Stacked timeline** -- main track and every extension lane stack on one zoom/scroll surface with a single playhead spanning all lanes; lanes collapse/resize/hide (heights persist globally).
