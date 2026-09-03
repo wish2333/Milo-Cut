@@ -23,6 +23,15 @@
 - 门禁：pytest 716 全绿；vitest **750/751**（唯一失败仍为已登记环境例）；vue-tsc/build/eslint 全绿；红线 diff 为空。
 - 自审其余面（echo 窗口与冷却互认、reveal 免滚短路、track 菜单结构、flush-on-switch、回滚路径）核验无问题。
 
+### audit-2 SPEC 验收覆盖补强（2026-09）
+
+对照 SPEC M1/M2 验收条目逐条盘点测试覆盖，补齐 2 处表现层缺口（+2 例）：
+
+- **M1-2「空轨建段后列表即时出现」**：补 Timeline 级回填测试——空轨卡片触发建段事件后，tracks/segments patch 回填即时替换空态卡并渲染新行。
+- **M2「开关往返即时生效」**：补同一组件实例内 localStorage 键 OFF→ON→OFF 翻转测试，三次跳转（瞬时/动画/瞬时）行为即时切换，无需重挂载。
+- 既有接线级边界维持登记：flush-on-switch 与 handleListCreateTrackSegment 为 WorkspacePage 内联薄包装（组件过重不单测，P1-3 裁决），由 beta.1 ★ 冒烟清单第 1/2 项覆盖。
+- 门禁：全量 vitest **752/753**（唯一失败仍为已登记环境例）；eslint 全绿。
+
 ## 2. 门禁终态（P3-2 时点）
 
 | 命令 | 结果 |
