@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } 
 import { mount } from "@vue/test-utils"
 import WaveformEditor from "./WaveformEditor.vue"
 import WaveformRow from "./WaveformRow.vue"
+import SegmentBlock from "./SegmentBlock.vue"
 import { formatTimeShort } from "@/utils/format"
 import { ROW_LAYOUT_STORAGE_KEY, WHEEL_DEBOUNCE_MS, loadRowLayoutState } from "@/composables/useRowLayout"
 
@@ -1326,6 +1327,122 @@ describe("WaveformEditor multi 建段模式 (smoke feedback #4)", () => {
     expect(stub().props("emptyAreaMode")).toBe("add")
     await wrapper.find('[data-test="build-mode-toggle"]').trigger("click")
     expect(stub().props("emptyAreaMode")).toBe("seek")
+    wrapper.unmount()
+  })
+})
+
+describe("WaveformEditor lane menu forwarding (smoke fix)", () => {
+  function mountLanesReal() {
+    localStorage.clear()
+    localStorage.setItem(
+      ROW_LAYOUT_STORAGE_KEY,
+      JSON.stringify({ mode: "multi", secondsPerRow: 10, rowHeight: 168 }),
+    )
+    return mount(WaveformEditor, {
+      props: {
+        segments: [],
+        edits: [],
+        duration: 100,
+        currentTime: 5,
+        tracks: [makeStackTrack("en")],
+      },
+      global: {
+        stubs: {
+          WaveformCanvas: true,
+          TimeMarksLayer: true,
+          SegmentBlocksLayer: true,
+          ScrollbarStrip: true,
+          PlayheadOverlay: true,
+        },
+      },
+    })
+  }
+
+  it("lane menu 删除此条字幕 forwards delete-track-segment with trackId", async () => {
+    const wrapper = mountLanesReal()
+    await wrapper.vm.$nextTick()
+    const block = wrapper.findComponent(SegmentBlock)
+    expect(block.exists()).toBe(true)
+    await block.trigger("contextmenu")
+    const menu = document.body.querySelector(".fixed.z-dropdown")
+    expect(menu).not.toBeNull()
+    const delSeg = Array.from(menu!.querySelectorAll("button")).find(b =>
+      b.textContent?.includes("删除此条字幕"),
+    )!
+    delSeg.click()
+    await wrapper.vm.$nextTick()
+    const emitted = wrapper.emitted("delete-track-segment")
+    console.log("[diag] delete-track-segment:", JSON.stringify(emitted ?? []))
+    expect(emitted?.length).toBe(1)
+    wrapper.unmount()
+  })
+
+  it("lane menu 删除此轨 forwards delete-track with trackId", async () => {
+    const wrapper = mountLanesReal()
+    await wrapper.vm.$nextTick()
+    const block = wrapper.findComponent(SegmentBlock)
+    await block.trigger("contextmenu")
+    const menu = document.body.querySelector(".fixed.z-dropdown")!
+    const delTrack = Array.from(menu.querySelectorAll("button")).find(b =>
+      b.textContent?.includes("删除此轨"),
+    )!
+    delTrack.click()
+    await wrapper.vm.$nextTick()
+    const emitted = wrapper.emitted("delete-track")
+    console.log("[diag] delete-track:", JSON.stringify(emitted ?? []))
+    expect(emitted?.length).toBe(1)
+    expect((emitted as unknown[][])[0][0]).toBe("en")
+    wrapper.unmount()
+  })
+})
+
+describe("WaveformEditor BASIC lane menu forwarding (smoke fix)", () => {
+  function mountStackLanes() {
+    localStorage.removeItem(ROW_LAYOUT_STORAGE_KEY) // default = basic
+    const wrapper = mount(WaveformEditor, {
+      props: {
+        segments: [],
+        edits: [],
+        duration: 100,
+        currentTime: 0,
+        tracks: [makeStackTrack("en")],
+      },
+      global: {
+        provide: { [PLAYBACK_CLOCK_KEY as symbol]: makeClock() },
+        stubs: {
+          WaveformCanvas: true,
+          TimeMarksLayer: true,
+          SegmentBlocksLayer: true,
+          ScrollbarStrip: true,
+        },
+      },
+    })
+    return wrapper
+  }
+
+  it("BASIC stacked lanes forward 删除此条字幕/删除此轨 (smoke fix #2)", async () => {
+    const wrapper = mountStackLanes()
+    await wrapper.vm.$nextTick()
+    const block = wrapper.findComponent(SegmentBlock)
+    expect(block.exists()).toBe(true)
+    await block.trigger("contextmenu")
+    const menu = document.body.querySelector(".fixed.z-dropdown")!
+    expect(menu).not.toBeNull()
+    const delSeg = Array.from(menu.querySelectorAll("button")).find(b =>
+      b.textContent?.includes("删除此条字幕"),
+    )!
+    delSeg.click()
+    await wrapper.vm.$nextTick()
+    expect(wrapper.emitted("delete-track-segment")?.[0]).toEqual(["en", "track_en_seg_0"])
+    // Re-open and delete the whole track.
+    await block.trigger("contextmenu")
+    const menu2 = document.body.querySelector(".fixed.z-dropdown")!
+    const delTrack = Array.from(menu2.querySelectorAll("button")).find(b =>
+      b.textContent?.includes("删除此轨"),
+    )!
+    delTrack.click()
+    await wrapper.vm.$nextTick()
+    expect(wrapper.emitted("delete-track")?.[0]).toEqual(["en"])
     wrapper.unmount()
   })
 })

@@ -1157,6 +1157,9 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
           "
           @seek="(t) => handleSeek(t)"
           @toggle-collapse="laneCtl.toggleCollapse"
+          @delete-segment="(sid: string) => emit('delete-track-segment', lane.trackId, sid)"
+          @clear-track="emit('clear-track', lane.trackId)"
+          @delete-track="emit('delete-track', lane.trackId)"
         />
       </template>
 

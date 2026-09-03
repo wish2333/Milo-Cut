@@ -57,3 +57,9 @@ pytest 711 ✓ / vitest 660 ✓ / build ✓ / lint 0 ✓ / ruff 0 ✓
 
 - handleDeleteTrack / handleDeleteTrackSegment 全路径可见化：成功绿色 toast / 业务失败红色 toast（含后端 error 文本）/ 桥接异常红色 toast（含「请完全退出并重启应用」指引）。
 - WorkspacePage onMounted 探测 `window.pywebview.api.delete_track`：缺失即红色长时 toast「后端进程为旧版本」，把「忘了重启」这类状态在打开工作区 3 秒内直接告知用户。
+
+## 追加（五轮定位：聚焦模式 lane 菜单事件未接线 = 真断点）
+
+- 用户截图在**聚焦模式**：堆叠态 TrackLane 由 editor 的另一处模板渲染，上一轮只接了多行分支的转发——**聚焦分支的 delete-segment/clear-track/delete-track 事件无监听者**（菜单是 TrackLane 内部的，所有模式可见，但事件飞了）。这就是「菜单在、点了没反应、无 toast」的完整解释。
+- 修复：聚焦分支 TrackLane 补 `@delete-segment/@clear-track/@delete-track` 转发（注意事件名：TrackLane 发 delete-segment，编辑器转发为 delete-track-segment 携 trackId）。
+- 编辑器级回归测试 +2（聚焦态：删段带 trackId+segId / 删整轨带 trackId；多行态同款 +1 修正断言）。
