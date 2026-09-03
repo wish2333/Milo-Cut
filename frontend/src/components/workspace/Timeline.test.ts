@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
 import { mount, type VueWrapper } from "@vue/test-utils"
+import { nextTick } from "vue"
 import Timeline from "./Timeline.vue"
 import { mockSegment } from "@/test/helpers/mockProject"
 import type { Segment } from "@/types/project"
@@ -313,6 +314,57 @@ describe("Timeline track list rendering (M1-2)", () => {
   it("main mode never shows the track empty card", () => {
     const wrapper = mountTimeline([])
     expect(wrapper.find('[data-test="track-empty-state"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// v3.0.3 M1-3/M1-4: track-row edit/delete events forwarded with trackId.
+// ---------------------------------------------------------------------------
+describe("Timeline track row edit forwarding (M1-3/M1-4)", () => {
+  const trackSegments = [
+    mockSegment({ id: "en-1", start: 1, end: 4, text: "hello" }),
+  ]
+
+  function mountTrackList(extraProps: Record<string, unknown> = {}) {
+    return mountTimeline(trackSegments, {
+      tracks: [{ id: "t_en", name: "English", segmentCount: trackSegments.length }],
+      activeTrackId: "t_en",
+      ...extraProps,
+    })
+  }
+
+  it("forwards row text commit as update-track-text with trackId", async () => {
+    const wrapper = mountTrackList()
+    await settle(wrapper)
+    await wrapper.find('[data-segment-id="en-1"]').trigger("dblclick")
+    const input = wrapper.find('[data-segment-id="en-1"] input.edit-text-input')
+    expect(input.exists()).toBe(true)
+    await input.setValue("changed")
+    await input.trigger("keydown", { key: "Enter" })
+    expect(wrapper.emitted("update-track-text")?.[0]).toEqual(["t_en", "en-1", "changed"])
+    wrapper.unmount()
+  })
+
+  it("forwards row time commit as update-track-time with trackId", async () => {
+    const wrapper = mountTrackList()
+    await settle(wrapper)
+    await wrapper.find('[data-segment-id="en-1"] [data-test="track-end"]').trigger("mousedown", { button: 0 })
+    const input = wrapper.find('[data-segment-id="en-1"] input')
+    await input.setValue("00:06.000")
+    await input.trigger("keydown", { key: "Enter" })
+    expect(wrapper.emitted("update-track-time")?.[0]).toEqual(["t_en", "en-1", "end", 6])
+    wrapper.unmount()
+  })
+
+  it("forwards 删除此条字幕 as delete-track-segment with trackId", async () => {
+    const wrapper = mountTrackList()
+    await settle(wrapper)
+    await wrapper.find('[data-segment-id="en-1"]').trigger("contextmenu")
+    const del = document.body.querySelector('[data-test="track-menu-delete"]') as HTMLButtonElement
+    del.click()
+    await nextTick()
+    expect(wrapper.emitted("delete-track-segment")?.[0]).toEqual(["t_en", "en-1"])
     wrapper.unmount()
   })
 })

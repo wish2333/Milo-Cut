@@ -52,6 +52,14 @@ const emit = defineEmits<{
   "add-to-highlight": [segmentId: string]
   // v3.0.0 M7-2: draft cache sync (null clears the stored draft)
   "draft-change": [segmentId: string, text: string | null]
+  // ---- v3.0.3 M1-3/M1-4: track-variant entries (segment/track ids are
+  // bound by the parent -- Timeline attaches activeTrackId) ----
+  /** Text committed from the track row editor (dblclick / menu). */
+  "track-text": [text: string]
+  /** Time field committed from the track row stamp editor. */
+  "track-time": [field: "start" | "end", value: number]
+  /** Delete this track subtitle (no confirm -- undo covers, 3.0.2 ruling). */
+  "track-delete": []
 }>()
 
 // Context menu
@@ -60,12 +68,6 @@ const contextMenu = ref<{ x: number; y: number } | null>(null)
 const isTrackVariant = computed(() => props.variant === "track")
 
 function handleContextMenu(e: MouseEvent) {
-  // v3.0.3 M1-3 will give track rows their own menu; P1-2 renders none
-  // (the main-track menu must never fire for a track segment).
-  if (isTrackVariant.value) {
-    e.preventDefault()
-    return
-  }
   e.preventDefault()
   e.stopPropagation()
   contextMenu.value = { x: e.clientX, y: e.clientY }
@@ -121,6 +123,23 @@ function handleDeleteSegment() {
   closeContextMenu()
 }
 
+// v3.0.3 M1-4: track-row menu actions -- 定位 / 编辑 / 删除此条字幕.
+// Delete has NO confirm dialog: undo covers it (3.0.2 ruling).
+function handleTrackSeek() {
+  emit("seek", props.segment.start)
+  closeContextMenu()
+}
+
+function handleTrackEdit() {
+  startEdit()
+  closeContextMenu()
+}
+
+function handleTrackDelete() {
+  emit("track-delete")
+  closeContextMenu()
+}
+
 // Text editing
 const isEditingText = ref(false)
 const editText = ref("")
@@ -156,7 +175,13 @@ function applyTimeEdit() {
   const parsed = parseTime(editingTimeValue.value)
   const finalSeconds = parsed !== null ? parsed : editingTimeSeconds.value
   if (editingTimeField.value) {
-    emit("update-time", props.segment.id, editingTimeField.value, finalSeconds)
+    // v3.0.3 M1-3: track rows route through the track-time entry (parent
+    // attaches the track id); main rows keep the update-time path.
+    if (isTrackVariant.value) {
+      emit("track-time", editingTimeField.value, finalSeconds)
+    } else {
+      emit("update-time", props.segment.id, editingTimeField.value, finalSeconds)
+    }
   }
   editingTimeField.value = null
 }
@@ -187,9 +212,7 @@ function handleTimeEditKeydown(e: KeyboardEvent) {
 
 // Text edit functions
 function startEdit() {
-  // v3.0.3 M1-2: track rows are display-only in P1-2 (text editing entry
-  // lands in P1-3); globalEditMode must never flip them into inputs.
-  if (isTrackVariant.value) return
+  if (isEditingText.value) return
   originalText.value = props.segment.text
   editText.value = props.draft ?? props.segment.text
   isEditingText.value = true
@@ -197,7 +220,10 @@ function startEdit() {
 
 function saveEdit() {
   if (editText.value !== props.segment.text) {
-    emit("update-text", props.segment.id, editText.value)
+    // v3.0.3 M1-3: track rows emit the track entry (parent attaches the
+    // track id); main rows keep update-text.
+    if (isTrackVariant.value) emit("track-text", editText.value)
+    else emit("update-text", props.segment.id, editText.value)
   }
   clearDraft()
   isEditingText.value = false
@@ -209,12 +235,14 @@ function cancelEdit() {
   isEditingText.value = false
 }
 
-// Enter edit mode when globalEditMode turns on, save when it turns off
-
+// Enter edit mode when globalEditMode turns on, save when it turns off.
+// v3.0.3 M1-3: track rows opt out of the global-edit sweep -- they enter
+// editing only via dblclick / their own menu item.
 onMounted(() => {
-  if (props.globalEditMode) startEdit()
+  if (props.globalEditMode && !isTrackVariant.value) startEdit()
 })
 watch(() => props.globalEditMode, (val) => {
+  if (isTrackVariant.value) return
   if (val && !isEditingText.value) {
     startEdit()
   } else if (!val && isEditingText.value) {
@@ -249,8 +277,9 @@ function handleTextEditKeydown(e: KeyboardEvent) {
 // Row click: in selection mode toggle selection; otherwise seek to segment.
 function handleRowClick(e: MouseEvent) {
   if (editingTimeField.value) return
-  // v2.1.1 M4-1: selection mode intercepts the click
-  if (props.selectionMode) {
+  // v3.0.3 M1-3: track rows never join selection mode (M1-1 boundary:
+  // selection stays main-track-only).
+  if (props.selectionMode && !isTrackVariant.value) {
     emit("segment-click", props.segment.id, e)
     return
   }
@@ -258,6 +287,13 @@ function handleRowClick(e: MouseEvent) {
     saveEdit()
   }
   emit("seek", props.segment.start)
+}
+
+// v3.0.3 M1-3: double-click a track row to edit its text (R1.3 entry).
+function handleRowDblclick() {
+  if (!isTrackVariant.value) return
+  if (editingTimeField.value) return
+  startEdit()
 }
 
 function handleRowKeydown(e: KeyboardEvent) {
@@ -298,6 +334,7 @@ const durationLabel = computed(() => formatTimeShort(Math.max(0, props.segment.e
     }]" 
     :data-segment-id="segment.id"
     @click="handleRowClick"
+    @dblclick="handleRowDblclick"
     @keydown="handleRowKeydown"
     @contextmenu="handleContextMenu"
   >
@@ -308,7 +345,7 @@ const durationLabel = computed(() => formatTimeShort(Math.max(0, props.segment.e
       :class="isMultiSelected ? 'bg-blue-500' : 'bg-transparent'"
     ></div>
     <!-- Time column: fixed width, no overlap. Track variant (v3.0.3
-         M1-2): display-only stamps, click-to-edit is main-only. -->
+         M1-3): same click-to-edit stamps, routed via track-time. -->
     <div class="w-[150px] shrink-0 overflow-hidden whitespace-nowrap pt-0.5 font-mono text-xs text-ink-muted">
       <template v-if="editingTimeField === 'start'">
         <input
@@ -321,7 +358,7 @@ const durationLabel = computed(() => formatTimeShort(Math.max(0, props.segment.e
         />
       </template>
       <template v-else-if="isTrackVariant">
-        <span data-test="track-start">{{ formatTime(segment.start) }}</span>
+        <span data-test="track-start" class="cursor-pointer hover:text-blue-500 hover:underline" title="点击编辑开始时间（±0.1s）" @mousedown="onTimeMouseDown('start', $event)">{{ formatTime(segment.start) }}</span>
       </template>
       <template v-else>
         <span class="cursor-pointer hover:text-blue-500 hover:underline" title="Click to edit (Arrows = ±0.1s)" @mousedown="onTimeMouseDown('start', $event)">{{ formatTime(segment.start) }}</span>
@@ -338,7 +375,7 @@ const durationLabel = computed(() => formatTimeShort(Math.max(0, props.segment.e
         />
       </template>
       <template v-else-if="isTrackVariant">
-        <span data-test="track-end">{{ formatTime(segment.end) }}</span>
+        <span data-test="track-end" class="cursor-pointer hover:text-blue-500 hover:underline" title="点击编辑结束时间（±0.1s）" @mousedown="onTimeMouseDown('end', $event)">{{ formatTime(segment.end) }}</span>
       </template>
       <template v-else>
         <span class="cursor-pointer hover:text-blue-500 hover:underline" title="Click to edit (Arrows = ±0.1s)" @mousedown="onTimeMouseDown('end', $event)">{{ formatTime(segment.end) }}</span>
@@ -452,7 +489,8 @@ const durationLabel = computed(() => formatTimeShort(Math.max(0, props.segment.e
         </span>
       </template>
     </div>
-    <!-- Context Menu -->
+    <!-- Context Menu (main variant: v2.x items; track variant v3.0.3
+         M1-4: 定位 / 编辑 / 删除此条字幕, no confirm -- undo covers) -->
     <Teleport to="body">
       <div
         v-if="contextMenu"
@@ -460,6 +498,31 @@ const durationLabel = computed(() => formatTimeShort(Math.max(0, props.segment.e
         :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
         @click="closeContextMenu"
       >
+        <!-- Track-variant menu -->
+        <template v-if="isTrackVariant">
+          <button
+            class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+            @click="handleTrackSeek"
+          >
+            定位
+          </button>
+          <button
+            class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+            @click="handleTrackEdit"
+          >
+            编辑
+          </button>
+          <div class="border-t border-gray-100 my-1" />
+          <button
+            data-test="track-menu-delete"
+            class="w-full text-left px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
+            @click="handleTrackDelete"
+          >
+            删除此条字幕
+          </button>
+        </template>
+        <!-- Main-variant menu -->
+        <template v-else>
         <button
           class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
           @click="startEdit"
@@ -502,6 +565,7 @@ const durationLabel = computed(() => formatTimeShort(Math.max(0, props.segment.e
         >
           删除段落
         </button>
+        </template>
       </div>
     </Teleport>
   </div>

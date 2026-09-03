@@ -272,3 +272,138 @@ describe("useTrackEdit", () => {
     })
   })
 })
+
+// ---------------------------------------------------------------------------
+// v3.0.3 M1-3/M1-4: list-side entries (editTrackSegmentText / Time) share
+// the kernel; rejection surfacing via onError; predicate-table rows.
+// ---------------------------------------------------------------------------
+describe("useTrackEdit list entries (M1-3)", () => {
+  let project: Ref<Project>
+  let onProjectUpdate: ReturnType<typeof vi.fn>
+  let onBeforeProjectUpdate: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.useFakeTimers()
+    vi.clearAllTimers()
+    project = projectWithTracks()
+    onProjectUpdate = vi.fn((p: Project) => {
+      project.value = p
+    })
+    onBeforeProjectUpdate = vi.fn()
+  })
+
+  describe("editTrackSegmentText", () => {
+    it("applies the text optimistically and submits after the debounce", async () => {
+      mockCall.mockResolvedValue({ success: true, data: project.value })
+      const { editTrackSegmentText } = useTrackEdit(project, onProjectUpdate, onBeforeProjectUpdate)
+      editTrackSegmentText("trk-1", "trk-1_seg-1", "changed")
+      expect(mockCall).not.toHaveBeenCalled()
+      expect(trackSegmentOf(appliedProject(onProjectUpdate), "trk-1_seg-1").text).toBe("changed")
+
+      vi.advanceTimersByTime(300)
+      await Promise.resolve()
+      expect(mockCall).toHaveBeenCalledWith("update_track_segment", "trk-1", "trk-1_seg-1", { text: "changed" })
+    })
+
+    it("merges rapid same-segment text edits into ONE submission", async () => {
+      mockCall.mockResolvedValue({ success: true, data: project.value })
+      const { editTrackSegmentText } = useTrackEdit(project, onProjectUpdate, onBeforeProjectUpdate)
+      editTrackSegmentText("trk-1", "trk-1_seg-1", "a")
+      editTrackSegmentText("trk-1", "trk-1_seg-1", "ab")
+      editTrackSegmentText("trk-1", "trk-1_seg-1", "abc")
+      vi.advanceTimersByTime(300)
+      await Promise.resolve()
+      expect(mockCall).toHaveBeenCalledTimes(1)
+      expect(mockCall).toHaveBeenCalledWith("update_track_segment", "trk-1", "trk-1_seg-1", { text: "abc" })
+    })
+
+    it("rolls back on backend rejection and surfaces the error via onError", async () => {
+      mockCall.mockResolvedValue({ success: false, error: "轨道不存在" })
+      const onError = vi.fn()
+      const { editTrackSegmentText } = useTrackEdit(project, onProjectUpdate, onBeforeProjectUpdate)
+      editTrackSegmentText("trk-1", "trk-1_seg-1", "changed", onError)
+      vi.advanceTimersByTime(300)
+      await Promise.resolve()
+      // rollback to the pre-edit snapshot
+      expect(trackSegmentOf(project.value, "trk-1_seg-1").text).toBe("hello")
+      expect(onError).toHaveBeenCalledWith("轨道不存在")
+    })
+
+    it("captures the tracks layer ONLY (predicate row 1: text never joins bindings)", () => {
+      project = projectWithTracks(mockTrack(), [mockBinding()])
+      const { editTrackSegmentText } = useTrackEdit(project, onProjectUpdate, onBeforeProjectUpdate)
+      editTrackSegmentText("trk-1", "trk-1_seg-1", "changed")
+      const [, layers] = onBeforeProjectUpdate.mock.calls[0]
+      expect(layers).toEqual(["tracks"])
+    })
+  })
+
+  describe("editTrackSegmentTime", () => {
+    it("pre-validates the minimum duration locally (no call, no optimistic write)", () => {
+      const onError = vi.fn()
+      const { editTrackSegmentTime } = useTrackEdit(project, onProjectUpdate, onBeforeProjectUpdate)
+      editTrackSegmentTime("trk-1", "trk-1_seg-1", "end", 1.05, onError) // end 1.05 vs start 1.0 < 0.1
+      expect(onError).toHaveBeenCalled()
+      expect(mockCall).not.toHaveBeenCalled()
+      expect(onProjectUpdate).not.toHaveBeenCalled()
+    })
+
+    it("clamps to the media duration upper bound before delegating", async () => {
+      project.value = { ...project.value, media: { ...project.value.media!, duration: 8 } as Project["media"] }
+      mockCall.mockResolvedValue({ success: true, data: project.value })
+      const { editTrackSegmentTime } = useTrackEdit(project, onProjectUpdate, onBeforeProjectUpdate)
+      editTrackSegmentTime("trk-1", "trk-1_seg-2", "end", 99, undefined)
+      expect(trackSegmentOf(appliedProject(onProjectUpdate), "trk-1_seg-2").end).toBe(8)
+    })
+
+    it("rejects NaN values locally", () => {
+      const onError = vi.fn()
+      const { editTrackSegmentTime } = useTrackEdit(project, onProjectUpdate, onBeforeProjectUpdate)
+      editTrackSegmentTime("trk-1", "trk-1_seg-1", "start", Number.NaN, onError)
+      expect(onError).toHaveBeenCalled()
+      expect(mockCall).not.toHaveBeenCalled()
+    })
+
+    it("rolls back on backend (overlap) rejection and surfaces 错误原文", async () => {
+      mockCall.mockResolvedValue({ success: false, error: "与相邻字幕重叠" })
+      const onError = vi.fn()
+      const { editTrackSegmentTime } = useTrackEdit(project, onProjectUpdate, onBeforeProjectUpdate)
+      editTrackSegmentTime("trk-1", "trk-1_seg-2", "start", 6.5, onError)
+      vi.advanceTimersByTime(300)
+      await Promise.resolve()
+      expect(trackSegmentOf(project.value, "trk-1_seg-2").start).toBe(6.0)
+      expect(onError).toHaveBeenCalledWith("与相邻字幕重叠")
+    })
+
+    it("captures bindings for a BOUND segment (predicate row 2)", () => {
+      project = projectWithTracks(mockTrack(), [mockBinding()])
+      const { editTrackSegmentTime } = useTrackEdit(project, onProjectUpdate, onBeforeProjectUpdate)
+      editTrackSegmentTime("trk-1", "trk-1_seg-1", "start", 2.0, undefined)
+      const [, layers] = onBeforeProjectUpdate.mock.calls[0]
+      expect(layers).toEqual(["tracks", "bindings"])
+    })
+
+    it("captures tracks only for an UNBOUND segment (predicate row 3)", () => {
+      const { editTrackSegmentTime } = useTrackEdit(project, onProjectUpdate, onBeforeProjectUpdate)
+      editTrackSegmentTime("trk-1", "trk-1_seg-2", "start", 6.5, undefined)
+      const [, layers] = onBeforeProjectUpdate.mock.calls[0]
+      expect(layers).toEqual(["tracks"])
+    })
+
+    it("shares the debounce key with the waveform path (later writer wins)", async () => {
+      mockCall.mockResolvedValue({ success: true, data: project.value })
+      const { updateTrackSegmentTime, editTrackSegmentTime } = useTrackEdit(
+        project,
+        onProjectUpdate,
+        onBeforeProjectUpdate,
+      )
+      updateTrackSegmentTime("trk-1", "trk-1_seg-1", "start", 1.5) // waveform trim
+      editTrackSegmentTime("trk-1", "trk-1_seg-1", "start", 2.5, undefined) // list entry
+      vi.advanceTimersByTime(300)
+      await Promise.resolve()
+      expect(mockCall).toHaveBeenCalledTimes(1)
+      expect(mockCall).toHaveBeenCalledWith("update_track_segment", "trk-1", "trk-1_seg-1", { start: 2.5 })
+    })
+  })
+})

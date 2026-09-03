@@ -94,11 +94,14 @@ P3 批次: 真机清单 → 文档 → RC → 正式
 
 ### P1-3 文本/时间编辑与行操作（SPEC M1-3/M1-4 / R1.3-R1.5）
 
-- [ ] useTrackEdit 增列表侧入口（text / time），防抖合并 + 失败回滚 + flush-on-switch
-- [ ] 时间编辑本地预校验（min duration / 上界）；后端拒绝回滚 + toast 错误原文
-- [ ] 副轨行单击 seek（复用 `handleListSeek`）+ 播放跟随高亮
-- [ ] 右键菜单：定位 / 编辑 / 删除此条字幕（`delete_track_segment`，无确认框）
-- [ ] **撤销捕获层谓词表**（SPEC M1-4 表）逐行落地 + vitest（含 offsets 还原、redo 对称）
+- [x] useTrackEdit 增列表侧入口（text / time），防抖合并 + 失败回滚 + flush-on-switch
+  - 与波形侧同 key 天然合并（后到者覆盖，回滚以最后一次快照为准——SPEC 裁决）；切轨前 flush
+- [x] 时间编辑本地预校验（min duration / 上界）；后端拒绝回滚 + toast 错误原文
+  - NaN 拒绝 + 媒体上界 clamp + 0.1s min duration；onError 仅列表入口（波形路径静默零变化）
+- [x] 副轨行单击 seek（复用 `handleListSeek`）+ 播放跟随高亮（复用 playheadSegmentId 机制）
+- [x] 右键菜单：定位 / 编辑 / 删除此条字幕（`delete_track_segment`，无确认框）
+- [x] **撤销捕获层谓词表**（SPEC M1-4 表）逐行落地 + vitest（含 offsets 还原、redo 对称）
+  - 新增 undoListTrackCapture.test.ts：谓词表 1-3 行经真实 undo 链路（tracks/bindings offsets 双还原 + redo 对称）；第 4 行删除捕获为 3.0.2 既有 handler，本步接线覆盖
 
 **验收方式**: `bun run test` 全绿（新增 ≥ 谓词表 4 行 + 编辑 4 组）；门禁命令全绿。
 **验收标准**: 编辑全链路冒烟合并 beta.1 ★ 节点；打 tag `v3.0.3-beta.1` + record。
