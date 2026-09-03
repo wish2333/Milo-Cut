@@ -41,3 +41,8 @@ pytest 711（+3 后端删除用例）✓ / vitest 657（+4：fillContainer/主�
 ## 门禁
 
 pytest 711 ✓ / vitest 660 ✓ / build ✓ / lint 0 ✓ / ruff 0 ✓
+
+## 追加（三轮补充：轨道级删除 + 导入 toast 修正）
+
+- **轨道只会越加越多**：后端新增 `delete_track(track_id)`（删除整轨 + 全部锚定 binding，tracks+bindings patch，主轨不动，+2 后端测试）；lane 右键菜单增「**删除此轨**」（确认框含轨道名与字幕数）全链至 WorkspacePage（截图确认 basic 堆叠态同样生效——lane 菜单两态共用）。
+- **导入 toast 红色误报**：`import_srt_as_track` 返回 **ProjectPatch**（tracks/bindings 在顶层）而非完整 Project——toast 读取按完整 Project 找 `timelines` → 永远 0。修复：双形态读取（patch 顶层 tracks 优先，末位 = 新导入轨），真实显示「已导入副轨「名称」：N 条字幕」。截图确认轨道实际创建成功（1200 段 × 7），此前的红色 0 为误报。

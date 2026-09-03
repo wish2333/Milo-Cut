@@ -864,6 +864,14 @@ function handleWaveformSelectSegments(ids: string[]) {
   selectedSegmentIds.value = next
 }
 
+// v3.0.2 smoke fix: whole-track deletion from the lane menu (确认后删除轨道及其全部字幕)。
+async function handleDeleteTrackWaveform(trackId: string) {
+  const track = activeTracks.value.find(t => t.id === trackId)
+  const label = track?.name || trackId
+  if (!window.confirm(`确定删除副轨「${label}」（含 ${track?.segments.length ?? 0} 条字幕）？此操作不可撤销。`)) return
+  await handleDeleteTrack(trackId)
+}
+
 // v3.0.2 smoke fix: lane menu operations on per-row sub-tracks.
 async function handleClearTrack(trackId: string) {
   const track = activeTracks.value.find(t => t.id === trackId)
@@ -892,6 +900,7 @@ const {
   handleSwitchTimeline, handleCreateTimeline, handleDeleteTimeline,
   handleImportSrt, handleImportSrtAsTrack, handleDetectSilence, handleClearSubtitles, handleTranscribe,
   handleDeleteTrackSegment,
+  handleDeleteTrack,
   handleToggleEditStatus, handleSegmentClickInSelection, handleToggleSelectionMode,
   handleMergeSelected, handleSplitSegment, handleUpdateText, handleUpdateTime,
   handleSelectRange, handleAddSegment, handleDeleteSegment, handleSeekSegment,
@@ -1387,6 +1396,7 @@ onUnmounted(() => {
       @clear-selection="clearMultiSelection"
       @delete-track-segment="handleDeleteTrackSegment"
       @clear-track="handleClearTrack"
+      @delete-track="handleDeleteTrackWaveform"
       @scrubbing="waveformScrubbing = $event"
     />
 

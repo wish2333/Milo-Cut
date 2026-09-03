@@ -642,3 +642,22 @@ class TestDeleteTrackSegment:
         assert svc.delete_track_segment("trk1", "nope")["success"] is False
         # State unchanged.
         assert len(svc.active_timeline.transcript.tracks[0].segments) == 2
+
+
+class TestDeleteTrack:
+    """v3.0.2 smoke feedback: whole-track deletion."""
+
+    def test_deletes_track_and_its_bindings(self, svc):
+        _seed_linkage(svc)
+        res = svc.delete_track("trk1")
+        assert res["success"] is True
+        patch = res["data"]
+        assert all(t["id"] != "trk1" for t in patch["tracks"])
+        assert len(patch["bindings"]) == 0  # both bindings were on trk1
+        # Main transcript untouched.
+        assert "segments" not in patch or patch.get("segments") is None
+
+    def test_unknown_track_rejected(self, svc):
+        _seed_linkage(svc)
+        assert svc.delete_track("nope")["success"] is False
+        assert len(svc.active_timeline.transcript.tracks) == 1

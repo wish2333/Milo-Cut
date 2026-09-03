@@ -99,6 +99,7 @@ const emit = defineEmits<{
   /** v3.0.2 smoke fix: lane context-menu operations (with track binding). */
   "delete-track-segment": [trackId: string, segmentId: string]
   "clear-track": [trackId: string]
+  "delete-track": [trackId: string]
 }>()
 
 // -- Row geometry ---------------------------------------------------------
@@ -350,6 +351,7 @@ defineExpose({ metrics })
       @toggle-collapse="(id: string) => emit('toggle-collapse', id)"
       @delete-segment="(sid: string) => emit('delete-track-segment', laneItem.track.id, sid)"
       @clear-track="emit('clear-track', laneItem.track.id)"
+      @delete-track="emit('delete-track', laneItem.track.id)"
     />
 
     <!-- Row playhead (R5.3): rendered only while the playhead is in THIS row -->

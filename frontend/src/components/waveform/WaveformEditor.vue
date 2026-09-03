@@ -81,6 +81,7 @@ const emit = defineEmits<{
   /** v3.0.2 smoke fix: lane menu operations forwarded with track binding. */
   "delete-track-segment": [trackId: string, segmentId: string]
   "clear-track": [trackId: string]
+  "delete-track": [trackId: string]
   /** v3.0.2 M5-3: scrubbing flag for list-follow suppression. */
   scrubbing: [active: boolean]
 }>()
@@ -1059,6 +1060,7 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
           @toggle-play="emit('toggle-play')"
           @delete-track-segment="(tid: string, sid: string) => emit('delete-track-segment', tid, sid)"
           @clear-track="(tid: string) => emit('clear-track', tid)"
+          @delete-track="(tid: string) => emit('delete-track', tid)"
         />
         <!-- M5-3: Ctrl-create preview (row-local bounded range) -->
         <div

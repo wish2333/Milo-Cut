@@ -30,6 +30,7 @@ const emit = defineEmits<{
   /** v3.0.2 smoke fix: lane block context menu operations. */
   "delete-segment": [segmentId: string]
   "clear-track": []
+  "delete-track": []
 }>()
 
 // R9.4 parity: lane blocks get a context menu (delete segment / clear
@@ -152,6 +153,12 @@ const visibleSegments = computed(() => {
           @click.stop="emit('clear-track'); closeMenu()"
         >
           清空此轨
+        </button>
+        <button
+          class="w-full text-left px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
+          @click.stop="emit('delete-track'); closeMenu()"
+        >
+          删除此轨
         </button>
       </div>
     </Teleport>

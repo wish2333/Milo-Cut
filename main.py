@@ -1680,6 +1680,11 @@ class MiloCutApi(Bridge):
         )
 
     @expose
+    def delete_track(self, track_id: str) -> dict:
+        """v3.0.2: delete a whole extension track (bindings dropped)."""
+        return self._mark_dirty(self._project.delete_track(track_id))
+
+    @expose
     def merge_segments(self, segment_ids: list[str]) -> dict:
         return self._mark_dirty(self._project.merge_segments(segment_ids))
 

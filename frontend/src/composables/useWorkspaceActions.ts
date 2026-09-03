@@ -3,7 +3,15 @@ import type { Ref } from "vue"
 import type { UndoLayer } from "@/utils/undoRecords"
 import type { InjectionKey } from "vue"
 import { call } from "@/bridge"
-import type { Project, ProjectResponse, Segment } from "@/types/project"
+import type { Project, ProjectPatch, ProjectResponse, Segment, SubtitleTrack } from "@/types/project"
+
+/** Tracks of a full-Project response (fallback when the payload is not a patch). */
+function projTimelineTracks(project: Project): SubtitleTrack[] {
+  const tl =
+    project.timelines?.find(t => t.id === project.active_timeline_id) ??
+    project.timelines?.[0]
+  return tl?.transcript?.tracks ?? []
+}
 import { useToast } from "@/composables/useToast"
 import type { useAsrEngines } from "@/composables/useAsrEngines"
 
@@ -135,6 +143,7 @@ export interface WorkspaceActions {
   handleDetectSilence: () => Promise<void>
   handleClearSubtitles: () => Promise<void>
   handleDeleteTrackSegment: (trackId: string, segmentId: string) => Promise<void>
+  handleDeleteTrack: (trackId: string) => Promise<void>
   handleTranscribe: () => Promise<void>
   // -- edit ------------------------------------------------------------------
   handleToggleEditStatus: (segment: Segment, nextStatus?: string) => Promise<void>
@@ -415,14 +424,12 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
     )
     if (importRes.success && importRes.data) {
       emit("project-updated", importRes.data)
-      // Smoke fix: counts read from the ACTIVE TIMELINE of the returned
-      // project (the top level has no tracks/bindings -- the old code
-      // always reported "0 条字幕，0 条绑定").
-      const proj = importRes.data as Project
-      const tl =
-        proj.timelines?.find(t => t.id === proj.active_timeline_id) ??
-        proj.timelines?.[0]
-      const tracksList = tl?.transcript?.tracks ?? []
+      // Smoke fix 2nd round: import returns a ProjectPatch (tracks and
+      // bindings layers at the TOP level -- Project has no such fields, the
+      // old code read them from the wrong shape and always showed 0). The
+      // imported track is appended last.
+      const patch = importRes.data as ProjectPatch & Project
+      const tracksList = patch.tracks ?? projTimelineTracks(patch) ?? []
       const imported = tracksList[tracksList.length - 1]
       const segCount = imported?.segments?.length ?? 0
       showToast(
@@ -456,6 +463,15 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
       // Backend missing the method = the Python process predates this fix
       // (restart dev.py). Surface it instead of dying silently.
       showToast(`删除副轨字幕失败：${e instanceof Error ? e.message : String(e)}（请重启应用后端）`, "error", 6000)
+    }
+  }
+
+  async function handleDeleteTrack(trackId: string) {
+    const res = await call<ProjectResponse>("delete_track", trackId)
+    if (res.success && res.data) {
+      emit("project-updated", res.data)
+    } else {
+      showToast(res.error ?? "删除副轨失败", "error", 5000)
     }
   }
 
@@ -933,6 +949,7 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
     handleSwitchTimeline, handleCreateTimeline, handleDeleteTimeline,
     handleImportSrt, handleImportSrtAsTrack, handleDetectSilence, handleClearSubtitles, handleTranscribe,
   handleDeleteTrackSegment,
+  handleDeleteTrack,
     // edit
     handleToggleEditStatus, handleSegmentClickInSelection, handleToggleSelectionMode,
     handleMergeSelected, handleSplitSegment, handleUpdateText, handleUpdateTime,

@@ -1541,6 +1541,34 @@ class ProjectService:
             meta=meta,
         )
 
+    def delete_track(self, track_id: str) -> dict:
+        """Delete a whole extension track and every binding anchored to it
+        (v3.0.2 smoke feedback: tracks could only be cleared, not removed).
+        Main track untouched (red line M0-3).
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        tl = self.active_timeline
+        if not any(t.id == track_id for t in tl.transcript.tracks):
+            return {"success": False, "error": f"Track not found: {track_id}"}
+
+        new_tracks = [t for t in tl.transcript.tracks if t.id != track_id]
+        dropped = sum(1 for b in tl.transcript.bindings if b.track_id == track_id)
+        new_bindings = [b for b in tl.transcript.bindings if b.track_id != track_id]
+
+        new_transcript = tl.transcript.model_copy(
+            update={"tracks": new_tracks, "bindings": new_bindings}
+        )
+        self._update_active_timeline(transcript=new_transcript)
+
+        meta = {"linkage": {"unbound": dropped}} if dropped else None
+        return self._success_patch(
+            tracks=new_tracks,
+            bindings=new_bindings,
+            meta=meta,
+        )
+
     def update_segment_text(self, segment_id: str, text: str) -> dict:
         """Update a subtitle segment's text and set dirty_flags."""
         if self._current is None:
