@@ -307,7 +307,11 @@ function setScrollRef(el: unknown) {
     if (typeof ResizeObserver !== "undefined") {
       scrollResizeObserver?.disconnect()
       scrollResizeObserver = new ResizeObserver(() => {
-        if (scrollEl) rowLayout.viewportHeight.value = scrollEl.clientHeight
+        // Change-guard: unconditional writes re-trigger layout -> the
+        // "ResizeObserver loop completed" console spam.
+        if (scrollEl && rowLayout.viewportHeight.value !== scrollEl.clientHeight) {
+          rowLayout.viewportHeight.value = scrollEl.clientHeight
+        }
       })
       scrollResizeObserver.observe(scrollEl)
     }

@@ -75,3 +75,11 @@ pytest 711 ✓ / vitest 660 ✓ / build ✓ / lint 0 ✓ / ruff 0 ✓
 - **新建副轨按钮**（导入副轨旁）：后端 `add_track(name)`（uuid id，空段表，tracks patch）+ 按钮链路（自动命名「副轨 N」+ 提示建段用法）。配合 lane 建段/清空/删除 → 副轨全生命周期闭环：新建 → 建段 → 管理 → 删除。
 - **连续播放空白防护**：连续跨 9 行播放测试无法复现空白（rows=5，scrollTop 钳 970，播放行 90 在窗内）。已加 **NaN/非法值防御**（follow/anchor/writeScrollTop/revealTime 四处入口）——currentTime 一旦出现 NaN，行窗计算全变 NaN → 行循环零次 → 表面整片空白，与反馈现象完全吻合（触发源疑为播放引擎在特定 seek/边界下的瞬时非法值）。新增 NaN 注入测试（不空白 + 恢复后跟随正常）。
 - **若重验仍空白**：需要屏幕录制 + F12 控制台报错——没有可复现路径无法进一步定位。
+
+## 追加（五轮第二项：撤销三类问题）
+
+| 问题 | 根因 | 修复 |
+|---|---|---|
+| 副轨清空/删除/删段后撤销不可恢复 | 新增的 lane 操作处理器直调后端，**没有推撤销快照**（对比 handleImportSrtAsTrack 的 S3 先例） | 四个处理器（删段/删轨/清空/建段）统一先 `pushSnapshot(projectRef, ["tracks","bindings"], label)` |
+| 拖动 trim 记录太多撤销点，覆盖历史 | useSegmentEdit / useTrackEdit 的 undo 捕获在**每次 mousemove** 都触发（后端推送有防抖、捕获没有） | 捕获按 `段:边` 键合并（1.2s 空闲窗）：首次移动捕获拖前状态，窗口内跳过；暂停 >1.2s 开新点 |
+| 控制台 ResizeObserver loop 报错 | ResizeObserver 回调无条件写 viewportHeight → 重渲染 → 再触发 | 变化守卫（值不同才写） |

@@ -455,6 +455,7 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
   // v3.0.2 smoke fix: extension-track segments become deletable (the
   // backend delete_track_segment returns a tracks+bindings ProjectPatch).
   async function handleDeleteTrackSegment(trackId: string, segmentId: string) {
+    if (projectRef.value) pushSnapshot(projectRef.value, ["tracks", "bindings"], "删除副轨字幕")
     try {
       const res = await call<ProjectResponse>("delete_track_segment", trackId, segmentId)
       if (res.success && res.data) {
@@ -489,6 +490,7 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
   }
 
   async function handleDeleteTrack(trackId: string) {
+    if (projectRef.value) pushSnapshot(projectRef.value, ["tracks", "bindings"], "删除副轨")
     try {
       const res = await call<ProjectResponse>("delete_track", trackId)
       if (res.success && res.data) {
@@ -509,6 +511,7 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
   // Smoke fix 3rd round: clear a track in ONE backend operation (the
   // per-segment loop churned N patches and looked broken).
   async function handleClearTrackSegments(trackId: string) {
+    if (projectRef.value) pushSnapshot(projectRef.value, ["tracks", "bindings"], "清空副轨")
     try {
       const res = await call<ProjectResponse>("clear_track_segments", trackId)
       if (res.success && res.data) {
@@ -523,6 +526,7 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
   }
 
   async function handleAddTrackSegment(trackId: string, start: number, end: number) {
+    if (projectRef.value) pushSnapshot(projectRef.value, ["tracks", "bindings"], "新建副轨字幕")
     try {
       const res = await call<ProjectResponse>("add_track_segment", trackId, start, end)
       if (res.success && res.data) {

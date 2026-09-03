@@ -169,6 +169,14 @@ export function useSegmentEdit(
 
   // -- Debounced time updates -------------------------------------------
 
+  // v3.0.2 smoke fix: ONE undo point per drag gesture -- a trim drag fires
+  // updateSegmentTime on every mousemove; capturing each move floods the
+  // undo stack and evicts history. Coalesce by segment+field with an idle
+  // window (first move captures the pre-drag state; pauses > 1.2s start a
+  // new point).
+  const trimCaptureAt = new Map<string, number>()
+  const TRIM_CAPTURE_COALESCE_MS = 1200
+
   function updateSegmentTime(segmentId: string, field: "start" | "end", value: number) {
     const prev = project.value
     const seg = activeTranscriptSegments(prev).find(s => s.id === segmentId)
@@ -178,7 +186,10 @@ export function useSegmentEdit(
     // bound segment (linkage fires on the backend) captures all three
     // layers so undo rolls back atomically; unbound keeps ["segments"].
     const bound = segmentHasBinding(prev, segmentId)
-    if (onBeforeProjectUpdate) {
+    const capKey = `${segmentId}:${field}`
+    const now = Date.now()
+    if (onBeforeProjectUpdate && now - (trimCaptureAt.get(capKey) ?? -Infinity) >= TRIM_CAPTURE_COALESCE_MS) {
+      trimCaptureAt.set(capKey, now)
       onBeforeProjectUpdate(
         prev,
         bound ? ["segments", "tracks", "bindings"] : ["segments"],

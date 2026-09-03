@@ -68,6 +68,9 @@ export function useTrackEdit(
   const pendingMap = new Map<string, PendingEntry>()
   const pendingTrackCount = computed(() => pendingMap.size)
 
+  const trimCaptureAt = new Map<string, number>()
+  const TRIM_CAPTURE_COALESCE_MS = 1200
+
   function updateTrackSegmentTime(
     trackId: string,
     segmentId: string,
@@ -85,7 +88,14 @@ export function useTrackEdit(
       b => b.extension_segment_id === segmentId,
     )
     const layers: UndoLayer[] = bound ? ["tracks", "bindings"] : ["tracks"]
-    onBeforeProjectUpdate?.(prev, layers, "调整副轨时间")
+    // v3.0.2 smoke fix: coalesce capture per segment+field (ONE undo point
+    // per drag; pauses > 1.2s start a new one).
+    const capKey = `${trackId}:${segmentId}:${field}`
+    const now = Date.now()
+    if (now - (trimCaptureAt.get(capKey) ?? -Infinity) >= TRIM_CAPTURE_COALESCE_MS) {
+      trimCaptureAt.set(capKey, now)
+      onBeforeProjectUpdate?.(prev, layers, "调整副轨时间")
+    }
 
     onProjectUpdate(optimisticReplace(prev, trackId, segmentId, { [field]: value }))
 
