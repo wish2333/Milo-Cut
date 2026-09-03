@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, reactive, watch, nextTick, onMounted, onUnmounted } from "vue"
-import type { Segment, EditDecision, AnalysisResult } from "@/types/project"
+import type { Segment, EditDecision, AnalysisResult, TrackBinding } from "@/types/project"
 import {
   buildSubtitleIndex,
   findSubtitleAtTime,
@@ -33,6 +33,8 @@ const props = defineProps<{
   tracks?: ListTrackOption[]
   /** v3.0.3 M1-1: current list source; null = main track. */
   activeTrackId?: string | null
+  /** v3.0.3 M1-2: main<->track bindings for the extension-binding mark. */
+  bindings?: TrackBinding[]
   selectedSegmentId?: string | null
   /** v3.0.2 M5-3: waveform scrubbing active -> skip playhead list-follow. */
   scrubbing?: boolean
@@ -73,6 +75,8 @@ const emit = defineEmits<{
   seek: [time: number]
   /** v3.0.3 M1-1: list source switch; null = main track. */
   "select-track": [trackId: string | null]
+  /** v3.0.3 M1-2: create a segment on the viewed track at playback time. */
+  "create-track-segment": [trackId: string, at: number]
   "update-text": [segmentId: string, text: string]
   "update-time": [segmentId: string, field: "start" | "end", value: number]
   "toggle-status": [segment: Segment]
@@ -328,6 +332,20 @@ const tabs: Array<{ key: RightPanelTab; label: string }> = [
 
 const segmentStateMap = computed(() => buildSegmentStateMap(props.segments, props.edits))
 const subtitleSegments = computed(() => buildSubtitleIndex(props.segments))
+
+// ---------------------------------------------------------------------------
+// v3.0.3 M1-2: track mode -- the list source is an extension track. Rows
+// render through the SAME TranscriptRow dispatch (variant="track": display
+// + duration + binding mark, no main-track edit machinery); an empty track
+// gets its own empty-state card with the create entry.
+// ---------------------------------------------------------------------------
+const isTrackMode = computed(() => (props.activeTrackId ?? null) !== null)
+const boundExtensionIds = computed(
+  () => new Set((props.bindings ?? []).map(b => b.extension_segment_id)),
+)
+function isTrackSegmentBound(segmentId: string): boolean {
+  return boundExtensionIds.value.has(segmentId)
+}
 const EMPTY_SEGMENT_STATE: SegmentState = {
   displayStatus: "none",
   styleClass: "normal",
@@ -523,7 +541,22 @@ watch(playheadSegmentId, (id) => {
           <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
           <span>选择模式 — 点击多选 Ctrl 切换 Shift 范围选 Enter 合并 Delete 删除</span>
         </div>
-        <div v-if="segments.length === 0" class="flex h-full items-center justify-center">
+        <!-- v3.0.3 M1-2: empty EXTENSION track -> create entry card.
+             Main-track empty state below stays byte-identical. -->
+        <div v-if="isTrackMode && segments.length === 0" data-test="track-empty-state" class="flex h-full items-center justify-center">
+          <div class="text-center">
+            <p class="text-sm text-ink-muted">该副轨暂无字幕</p>
+            <p class="mt-1 text-xs text-ink-muted">在当前播放位置新建一条，或在下方波形区拖拽建段</p>
+            <button
+              data-test="track-empty-create"
+              class="mc-button mc-button-primary mt-3"
+              @click="emit('create-track-segment', activeTrackId!, currentTime ?? 0)"
+            >
+              新建字幕
+            </button>
+          </div>
+        </div>
+        <div v-else-if="segments.length === 0" class="flex h-full items-center justify-center">
           <div class="text-center">
             <p class="text-sm text-ink-muted">暂无字幕片段</p>
             <p class="mt-1 text-xs text-ink-muted">点击“导入 SRT”开始编辑</p>
@@ -540,8 +573,10 @@ watch(playheadSegmentId, (id) => {
             <template v-for="seg in windowSegments" :key="seg.id">
               <TranscriptRow
                 v-if="seg.type === 'subtitle'"
-                v-memo="[seg, getSegmentState(seg).displayStatus, selectedSegmentIds?.has(seg.id) ?? false, selectedSegmentId === seg.id, seg.id === playheadSegmentId, seg.id === highlightedSegmentId, globalEditMode, selectionMode]"
+                v-memo="[seg, getSegmentState(seg).displayStatus, selectedSegmentIds?.has(seg.id) ?? false, selectedSegmentId === seg.id, seg.id === playheadSegmentId, seg.id === highlightedSegmentId, globalEditMode, selectionMode, isTrackMode, isTrackSegmentBound(seg.id)]"
                 :segment="seg"
+                :variant="isTrackMode ? 'track' : 'main'"
+                :is-bound="isTrackSegmentBound(seg.id)"
                 :display-status="getSegmentState(seg).displayStatus"
                 :style-class="getSegmentState(seg).styleClass"
                 :is-selected="selectedSegmentId === seg.id"

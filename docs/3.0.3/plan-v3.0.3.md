@@ -83,9 +83,11 @@ P3 批次: 真机清单 → 文档 → RC → 正式
 
 ### P1-2 副轨段渲染与空态（SPEC M1-2 / R1.2）
 
-- [ ] 列表行副轨分支：text / start / 时长 + 绑定标记（bindings 命中 icon）
-- [ ] 空轨空态卡 + 「新建字幕」入口（`add_track_segment`，沿波形建段 expose 与 toast）
-- [ ] vitest：字段显示、绑定标记、空态建段
+- [x] 列表行副轨分支：text / start / 时长 + 绑定标记（bindings 命中 icon）
+  - TranscriptRow 增 variant/isBound；主轨机能在 track 分支全关闭（编辑/状态/菜单/时间点击编辑）
+- [x] 空轨空态卡 + 「新建字幕」入口（`add_track_segment`，沿波形建段 expose 与 toast）
+  - `computeListCreateRange(at=播放时间)` 2s cue + 媒体上界 clamp；track 行右键按序留待 P1-3（P1-2 显式吞 contextmenu 防误发主轨操作）
+- [x] vitest：字段显示、绑定标记、空态建段（新增 18 例：TranscriptRow 7 + Timeline 5 + createRange 6）
 
 **验收方式**: `bun run test` 全绿。
 **验收标准**: 双语工程冒烟合并 beta.1 ★ 节点。

@@ -16,7 +16,10 @@ import { createWorkspaceActions, provideWorkspaceActions } from "@/composables/u
 import { useUvAvailability } from "@/composables/useUvAvailability"
 import { useLlmTasks } from "@/composables/useLlmTasks"
 import { useEditedPlayback } from "@/composables/useEditedPlayback"
-import { useListTrackSelector } from "@/composables/useListTrackSelector"
+import {
+  computeListCreateRange,
+  useListTrackSelector,
+} from "@/composables/useListTrackSelector"
 import { createPlaybackClock } from "@/composables/usePlaybackClock"
 import { PLAYBACK_CLOCK_KEY } from "@/components/waveform/injectionKeys"
 import {
@@ -915,6 +918,13 @@ function handleListSeek(time: number) {
   waveformEditorRef.value?.revealTime(time)
 }
 
+// v3.0.3 M1-2: track-list empty-state create entry -- same expose and toast
+// as the waveform lane create (handleAddTrackSegment), at = playback time.
+function handleListCreateTrackSegment(trackId: string, at: number) {
+  const { start, end } = computeListCreateRange(at, duration.value)
+  void handleAddTrackSegment(trackId, start, end)
+}
+
 const {
   handleRegenerateWaveform, handleRequestProxy, handleSeek, handleSetTime,
   handleVideoLoaded, handleTimeUpdate, handleTogglePlay, handleSeekTo,
@@ -1348,7 +1358,9 @@ onUnmounted(() => {
             :silence-count="silenceCount"
             :tracks="listTrackOptions"
             :active-track-id="activeListTrackId"
+            :bindings="activeBindings"
             @select-track="selectListTrack"
+            @create-track-segment="handleListCreateTrackSegment"
             :selected-segment-id="editSelectedSegmentId"
             :global-edit-mode="globalEditMode"
             :selection-mode="selectionMode"

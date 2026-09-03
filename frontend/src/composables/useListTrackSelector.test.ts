@@ -10,6 +10,7 @@ import { describe, it, expect } from "vitest"
 import { ref, nextTick } from "vue"
 import {
   buildListTrackOptions,
+  computeListCreateRange,
   resolveListSegments,
   resolveListTrackIdAfterTracksChange,
   useListTrackSelector,
@@ -181,5 +182,35 @@ describe("useListTrackSelector (reactive)", () => {
     ]
     expect(sel.options.value[0].segmentCount).toBe(3)
     expect(sel.listSegments.value).toHaveLength(3)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// v3.0.3 M1-2: empty-track create range (list entry -> add_track_segment).
+// ---------------------------------------------------------------------------
+describe("computeListCreateRange", () => {
+  it("starts at the playback time with the default cue length", () => {
+    expect(computeListCreateRange(10, 100)).toEqual({ start: 10, end: 12 })
+  })
+
+  it("clamps when the playback time is near the media end", () => {
+    expect(computeListCreateRange(99.5, 100)).toEqual({ start: 98, end: 100 })
+  })
+
+  it("collapses to the whole media when it is shorter than one cue", () => {
+    expect(computeListCreateRange(0.4, 1)).toEqual({ start: 0, end: 1 })
+  })
+
+  it("clamps negative/NaN playback times to 0", () => {
+    expect(computeListCreateRange(-3, 100)).toEqual({ start: 0, end: 2 })
+    expect(computeListCreateRange(Number.NaN, 100)).toEqual({ start: 0, end: 2 })
+  })
+
+  it("rounds to 2 decimals (lane-create convention)", () => {
+    expect(computeListCreateRange(1.23456, 100)).toEqual({ start: 1.23, end: 3.23 })
+  })
+
+  it("without media duration it still yields a cue from at", () => {
+    expect(computeListCreateRange(7, 0)).toEqual({ start: 7, end: 9 })
   })
 })
