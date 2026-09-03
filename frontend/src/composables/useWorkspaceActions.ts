@@ -134,6 +134,7 @@ export interface WorkspaceActions {
   handleImportSrtAsTrack: () => Promise<void>
   handleDetectSilence: () => Promise<void>
   handleClearSubtitles: () => Promise<void>
+  handleDeleteTrackSegment: (trackId: string, segmentId: string) => Promise<void>
   handleTranscribe: () => Promise<void>
   // -- edit ------------------------------------------------------------------
   handleToggleEditStatus: (segment: Segment, nextStatus?: string) => Promise<void>
@@ -430,6 +431,23 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
   async function handleDetectSilence() {
     errorMessage.value = ""
     await runSilenceDetection()
+  }
+
+  // v3.0.2 smoke fix: extension-track segments become deletable (the
+  // backend delete_track_segment returns a tracks+bindings ProjectPatch).
+  async function handleDeleteTrackSegment(trackId: string, segmentId: string) {
+    try {
+      const res = await call<ProjectResponse>("delete_track_segment", trackId, segmentId)
+      if (res.success && res.data) {
+        emit("project-updated", res.data)
+      } else {
+        showToast(res.error ?? "删除副轨字幕失败", "error", 5000)
+      }
+    } catch (e) {
+      // Backend missing the method = the Python process predates this fix
+      // (restart dev.py). Surface it instead of dying silently.
+      showToast(`删除副轨字幕失败：${e instanceof Error ? e.message : String(e)}（请重启应用后端）`, "error", 6000)
+    }
   }
 
   async function handleClearSubtitles() {
@@ -905,6 +923,7 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
     // timeline
     handleSwitchTimeline, handleCreateTimeline, handleDeleteTimeline,
     handleImportSrt, handleImportSrtAsTrack, handleDetectSilence, handleClearSubtitles, handleTranscribe,
+  handleDeleteTrackSegment,
     // edit
     handleToggleEditStatus, handleSegmentClickInSelection, handleToggleSelectionMode,
     handleMergeSelected, handleSplitSegment, handleUpdateText, handleUpdateTime,

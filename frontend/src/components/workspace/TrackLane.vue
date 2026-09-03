@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, inject } from "vue"
+import { computed, inject, ref } from "vue"
 import type { SubtitleTrack } from "@/types/project"
 import type { LaneLayoutItem } from "@/composables/useLaneLayout"
 import { TIMELINE_METRICS_KEY } from "@/components/waveform/injectionKeys"
 import type { TimelineMetrics } from "@/composables/useTimelineMetrics"
 import SegmentBlock from "@/components/waveform/SegmentBlock.vue"
+import { openContextMenu } from "@/utils/contextMenuManager"
 
 /**
  * v3.0.1 M4-2: geometric extension-track lane for the stacked timeline
@@ -26,7 +27,29 @@ const props = defineProps<{
 const emit = defineEmits<{
   seek: [time: number]
   "toggle-collapse": [trackId: string]
+  /** v3.0.2 smoke fix: lane block context menu operations. */
+  "delete-segment": [segmentId: string]
+  "clear-track": []
 }>()
+
+// R9.4 parity: lane blocks get a context menu (delete segment / clear
+// track). Single-instance mutex via the shared manager, same as the main
+// track's block menu.
+const contextMenu = ref<{ x: number; y: number; segmentId: string } | null>(null)
+const menuMaxY = typeof window !== "undefined" ? window.innerHeight - 180 : 0
+
+function closeMenu() {
+  contextMenu.value = null
+}
+
+function openBlockMenu(segmentId: string, e: MouseEvent) {
+  e.preventDefault()
+  e.stopPropagation()
+  contextMenu.value = { x: e.clientX, y: e.clientY, segmentId }
+  openContextMenu(() => {
+    contextMenu.value = null
+  })
+}
 
 const metrics = inject<TimelineMetrics>(TIMELINE_METRICS_KEY)!
 
@@ -98,6 +121,7 @@ const visibleSegments = computed(() => {
         :title="item.seg.text"
         :update-time="updateTime"
         @seek-segment="emit('seek', item.seg.start)"
+        @contextmenu="(id: string, e: MouseEvent) => openBlockMenu(id, e)"
       />
       <p
         v-if="track.segments.length === 0"
@@ -107,5 +131,28 @@ const visibleSegments = computed(() => {
         空轨道
       </p>
     </div>
+
+    <!-- Lane block context menu (v3.0.2 smoke fix) -->
+    <Teleport to="body">
+      <div
+        v-if="contextMenu"
+        class="fixed z-dropdown bg-white rounded-md shadow-lg border border-gray-200 py-1 min-w-[140px]"
+        :style="{ left: contextMenu.x + 'px', top: Math.min(contextMenu.y, menuMaxY) + 'px' }"
+        @click="closeMenu()"
+      >
+        <button
+          class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+          @click.stop="emit('delete-segment', contextMenu.segmentId); closeMenu()"
+        >
+          删除此条字幕
+        </button>
+        <button
+          class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+          @click.stop="emit('clear-track'); closeMenu()"
+        >
+          清空此轨
+        </button>
+      </div>
+    </Teleport>
   </div>
 </template>

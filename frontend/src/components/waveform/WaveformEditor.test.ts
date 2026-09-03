@@ -652,6 +652,7 @@ describe("WaveformEditor in-row pointer gestures (M5-3)", () => {
     expect((wrapper.vm as unknown as { waveformScrubbing: boolean }).waveformScrubbing).toBe(false)
     // A plain press clears the global selection upstream (清选上行).
     expect(wrapper.emitted("clear-selection")?.length).toBe(1)
+    expect(wrapper.emitted("scrubbing")?.some(c => c[0] === true)).toBe(true)
     wrapper.unmount()
   })
 
@@ -829,8 +830,10 @@ describe("WaveformEditor follow three-way (M6-1)", () => {
     const el = scrollElOf(wrapper)
     await wrapper.setProps({ currentTime: 25 }) // follow writes 148, target pending
     expect(el.scrollTop).toBe(148)
-    trustedScroll(el, true) // first trusted event: echo of our write (no cooldown)
-    trustedScroll(el, true) // second: no pending target -> genuine manual -> cooldown
+    trustedScroll(el, true) // inside the smooth echo window: ignored entirely
+    vi.advanceTimersByTime(801) // echo window over
+    trustedScroll(el, true) // matches the pending write -> consumed as echo
+    trustedScroll(el, true) // no pending target anymore -> genuine manual -> cooldown
     await wrapper.setProps({ currentTime: 45 }) // row 4 blocked by the cooldown
     expect(el.scrollTop).toBe(148)
     vi.advanceTimersByTime(3000) // cooldown expired

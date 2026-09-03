@@ -26,6 +26,8 @@ const props = defineProps<{
   subtitleCount: number
   silenceCount: number
   selectedSegmentId?: string | null
+  /** v3.0.2 M5-3: waveform scrubbing active -> skip playhead list-follow. */
+  scrubbing?: boolean
   globalEditMode?: boolean
   // v2.1.1 M4-1: multi-select mode
   selectionMode?: boolean
@@ -383,6 +385,14 @@ watch(
     scrollToSegment(id)
   },
 )
+
+// v3.0.2 smoke fix: restore playback-time list follow -- the highlighted
+// (playhead) row scrolls into view as playback crosses subtitles. Skipped
+// while the waveform is being scrubbed (M5-3 suppression contract).
+watch(playheadSegmentId, (id) => {
+  if (!id || props.scrubbing) return
+  scrollToSegment(id)
+})
 </script>
 
 <template>

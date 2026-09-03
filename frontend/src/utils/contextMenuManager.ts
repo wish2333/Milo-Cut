@@ -6,8 +6,17 @@ type CloseFn = () => void
 // close fn here instead of listening for global events.
 let activeClose: CloseFn | null = null
 let cleanupDocument: (() => void) | null = null
+// Smoke-fix: a PENDING async registration from a previous menu must be
+// cancelled, otherwise it lands after the new menu opened and its
+// once-contextmenu listener instantly closes the new menu (reported:
+// "通过右键关闭后打不开新的右键菜单").
+let pendingRegister: ReturnType<typeof setTimeout> | null = null
 
 function closeActive() {
+  if (pendingRegister !== null) {
+    clearTimeout(pendingRegister)
+    pendingRegister = null
+  }
   if (cleanupDocument) {
     cleanupDocument()
     cleanupDocument = null
@@ -34,7 +43,8 @@ export function openContextMenu(closeFn: CloseFn) {
   closeActive()
   activeClose = closeFn
 
-  setTimeout(() => {
+  pendingRegister = setTimeout(() => {
+    pendingRegister = null
     document.addEventListener("click", handleDocClick, { once: true })
     document.addEventListener("contextmenu", handleDocContextMenu, { once: true })
     document.addEventListener("scroll", handleScroll, { capture: true, once: true })
