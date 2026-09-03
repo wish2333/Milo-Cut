@@ -46,3 +46,9 @@ pytest 711 ✓ / vitest 660 ✓ / build ✓ / lint 0 ✓ / ruff 0 ✓
 
 - **轨道只会越加越多**：后端新增 `delete_track(track_id)`（删除整轨 + 全部锚定 binding，tracks+bindings patch，主轨不动，+2 后端测试）；lane 右键菜单增「**删除此轨**」（确认框含轨道名与字幕数）全链至 WorkspacePage（截图确认 basic 堆叠态同样生效——lane 菜单两态共用）。
 - **导入 toast 红色误报**：`import_srt_as_track` 返回 **ProjectPatch**（tracks/bindings 在顶层）而非完整 Project——toast 读取按完整 Project 找 `timelines` → 永远 0。修复：双形态读取（patch 顶层 tracks 优先，末位 = 新导入轨），真实显示「已导入副轨「名称」：N 条字幕」。截图确认轨道实际创建成功（1200 段 × 7），此前的红色 0 为误报。
+
+## 追加（四轮反馈：确认框失效根因 + 空轨删除入口）
+
+- **「删除此轨/清空此轨点了没用」真根因**：PyWebView **不实现 window.confirm**（静默返回假值）→ 确认流程直接跳过。改用应用内确认对话框（`app-confirm`，与既有删除静音确认框同款交互），删除整轨/清空此轨全部走新对话框。
+- **空轨删除入口**：lane 根节点挂 `@contextmenu`——右键 lane 任意位置（含空白/标题条）出菜单（清空此轨/删除此轨）；块上右键仍为三项（含删除此条字幕）。空轨（0 段）从此可删。
+- 测试 +1：空轨右键菜单（无「删除此条字幕」、有清空/删除、删除此轨 emit）。

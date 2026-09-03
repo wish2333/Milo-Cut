@@ -180,6 +180,25 @@ describe("TrackLane (geometric)", () => {
 // v3.0.2 smoke fix: lane block context menu (删除此条字幕 / 清空此轨)
 // ------------------------------------------------------------------
 
+describe("TrackLane lane-level menu (smoke fix: empty track)", () => {
+  it("right-click on the lane (no block) offers 清空此轨/删除此轨", async () => {
+    const wrapper = mountLane(makeTrack({ segments: [] }), makeLane({ height: 48 }))
+    await wrapper.find('[data-test="track-lane"]').trigger("contextmenu")
+    const menu = document.body.querySelector(".fixed.z-dropdown")
+    expect(menu).not.toBeNull()
+    expect(menu!.textContent).toContain("清空此轨")
+    expect(menu!.textContent).toContain("删除此轨")
+    expect(menu!.textContent).not.toContain("删除此条字幕") // no block targeted
+    const delBtn = Array.from(menu!.querySelectorAll("button")).find(b =>
+      b.textContent?.includes("删除此轨"),
+    )!
+    delBtn.click()
+    await wrapper.vm.$nextTick()
+    expect(wrapper.emitted("delete-track")?.length).toBe(1)
+    wrapper.unmount()
+  })
+})
+
 describe("TrackLane context menu (smoke fix)", () => {
   it("删除此条字幕 emits delete-segment and closes the menu", async () => {
     const wrapper = mountLane(makeTrack())

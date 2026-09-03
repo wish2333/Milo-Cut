@@ -36,7 +36,7 @@ const emit = defineEmits<{
 // R9.4 parity: lane blocks get a context menu (delete segment / clear
 // track). Single-instance mutex via the shared manager, same as the main
 // track's block menu.
-const contextMenu = ref<{ x: number; y: number; segmentId: string } | null>(null)
+const contextMenu = ref<{ x: number; y: number; segmentId?: string } | null>(null)
 const menuMaxY = typeof window !== "undefined" ? window.innerHeight - 180 : 0
 
 function closeMenu() {
@@ -46,6 +46,12 @@ function closeMenu() {
 function openBlockMenu(segmentId: string, e: MouseEvent) {
   e.preventDefault()
   e.stopPropagation()
+  openLaneMenu(e, segmentId)
+}
+
+/** Lane-level menu: right-click ANYWHERE in the lane (empty included). */
+function openLaneMenu(e: MouseEvent, segmentId?: string) {
+  e.preventDefault()
   // Mutex first (see SegmentBlocksLayer -- shared-ref wipe ordering).
   openContextMenu(() => {
     contextMenu.value = null
@@ -79,6 +85,7 @@ const visibleSegments = computed(() => {
     class="absolute inset-x-0 border-t border-hairline bg-surface-tile-1/60"
     :style="{ top: lane.top + 'px', height: lane.height + 'px' }"
     data-test="track-lane"
+    @contextmenu="openLaneMenu($event)"
   >
     <!-- Floating title strip (track identity + collapse) -->
     <div
@@ -143,6 +150,7 @@ const visibleSegments = computed(() => {
         @click="closeMenu()"
       >
         <button
+          v-if="contextMenu.segmentId"
           class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
           @click.stop="emit('delete-segment', contextMenu.segmentId); closeMenu()"
         >
