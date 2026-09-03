@@ -205,4 +205,31 @@ describe("WaveformEditor smooth follow (M2-1)", () => {
     expect(el.scrollTop).toBe(668)
     wrapper.unmount()
   })
+
+  it("flipping the localStorage key mid-session takes effect on the next jump, no remount", async () => {
+    // start OFF: jump is instant
+    const wrapper = mountSmooth()
+    const el = scrollElOf(wrapper)
+    reveal(wrapper, 45)
+    await wrapper.vm.$nextTick()
+    expect(el.scrollTop).toBe(376)
+    pumpFrame(16)
+    pumpFrame(16)
+
+    // flip ON (same component instance): next jump animates
+    writeSmoothEnabled(true)
+    reveal(wrapper, 65) // row 6, REVEAL_BIAS 0.45 -> kernel target 636
+    expect(el.scrollTop).not.toBe(636) // pinned at the previous position
+    pumpUntilLanded()
+    expect(el.scrollTop).toBe(636)
+
+    // flip back OFF: instant again
+    writeSmoothEnabled(false)
+    reveal(wrapper, 85) // row 8 -> 896
+    await wrapper.vm.$nextTick()
+    expect(el.scrollTop).toBe(896)
+    pumpFrame(16)
+    expect(el.scrollTop).toBe(896)
+    wrapper.unmount()
+  })
 })
