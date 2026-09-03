@@ -34,6 +34,11 @@ import {
   LANE_PRESET_HEIGHTS,
 } from "@/composables/useLaneLayout"
 import { createRafScheduler } from "@/utils/rafScheduler"
+import {
+  createScrollAnimator,
+  readSmoothEnabled,
+  FOLLOW_SMOOTH_DURATION_MS,
+} from "@/composables/useScrollAnimator"
 import { formatTimeShort } from "@/utils/format"
 import { TIMELINE_METRICS_KEY } from "./injectionKeys"
 import WaveformCanvas from "./WaveformCanvas.vue"
@@ -323,25 +328,72 @@ const scrollScheduler = createRafScheduler(() => {
   if (scrollEl) rowLayout.scrollTop.value = scrollEl.scrollTop
 })
 
-// M6-1: classify each scroll event. A TRUSTED event whose position matches
-// the last programmatic write is our own echo (no cooldown); any other
-// trusted event is the user's hand -> pause playback-follow for the 3s
-// cooldown. Untrusted events skip classification entirely (test/programmatic).
-function writeScrollTop(top: number): void {
+// -- v3.0.3 M2-1: follow smooth animation scheduler ------------------------
+//
+// The animator owns easing writes for NAVIGATION JUMPS while the smooth
+// switch (localStorage, default OFF) is on. The playback-clock consumption
+// path (follow watch) NEVER starts an animation (R2.2 守卫 -- the 3.0.2
+// blank-suspicion defense); animation frames flow through the SAME
+// rowLayout.scrollTop channel with per-frame echo marking so the scroll
+// classifier treats them as our own writes.
+const scrollAnimator = createScrollAnimator({
+  write: top => {
+    rowLayout.noteAutoScroll(top)
+    rowLayout.scrollTop.value = top
+    if (scrollEl) scrollEl.scrollTop = top
+  },
+})
+
+function smoothJumpEnabled(): boolean {
+  return isMulti.value && readSmoothEnabled()
+}
+
+function writeScrollTop(top: number, opts?: { smooth?: boolean }): void {
   if (!Number.isFinite(top)) return // blank-guard: NaN scrollTop blanks the surface
-  // Instant write (smooth experiment REVERTED: animation intermediate
-  // positions show unmounted virtual-window regions = blank surface).
+  if (opts?.smooth && smoothJumpEnabled()) {
+    scrollAnimator.animateTo(top, { durationMs: FOLLOW_SMOOTH_DURATION_MS })
+    return
+  }
+  // Instant path (v3.0.2 semantics): a running animation loses ownership.
+  scrollAnimator.cancel()
   rowLayout.scrollTop.value = top
 }
 
 function handleScroll(e: Event) {
   const source = e.target as HTMLElement | null
   if (source && (e as Event & { isTrusted?: boolean }).isTrusted === true) {
-    if (!rowLayout.consumeAutoScroll(source.scrollTop)) {
+    // R2.2 time-window suppression: while the animator (or its grace
+    // window) is driving, trusted scroll events are animation echoes.
+    // Manual wheel cancels separately (handleWheelCancel); genuine manual
+    // scrolls outside the window classify as before.
+    if (!scrollAnimator.inEchoWindow() && !rowLayout.consumeAutoScroll(source.scrollTop)) {
+      scrollAnimator.cancel()
       rowLayout.markManualScroll()
     }
   }
   scrollScheduler.schedule()
+}
+
+/** R2.2: any wheel gesture during an animation = manual intent (no preventDefault). */
+function handleWheelCancel(): void {
+  if (scrollAnimator.isActive()) scrollAnimator.cancel()
+}
+
+/**
+ * R2.1: navigation jump with optional ease-out (smooth switch on). The
+ * kernel revealTime stays untouched (M0-1.5): it instant-writes the target
+ * and this wrapper hands (from -> target) to the animator, pinning the DOM
+ * at `from` so no intermediate frame flashes the destination.
+ */
+function revealWithSmooth(time: number, center = false): void {
+  const animate = smoothJumpEnabled()
+  const from = animate ? rowLayout.scrollTop.value : null
+  rowLayout.revealTime(time, center)
+  if (from === null) return
+  const target = rowLayout.scrollTop.value
+  if (Math.abs(target - from) <= 0.5) return
+  if (scrollEl) scrollEl.scrollTop = from
+  scrollAnimator.animateTo(target, { from })
 }
 
 // -- M6-1: playback follow (multi only; basic keeps maybeFollowPlayhead) ---
@@ -351,6 +403,11 @@ function handleScroll(e: Event) {
 // row at FOLLOW_BIAS, marking the write so its scroll echo is recognized.
 // The manual cooldown gates BEFORE row tracking, so rows crossed while the
 // user scrolls never trigger a late jump after the cooldown expires.
+//
+// v3.0.3 R2.2 守卫: this watch IS the playback-clock consumption path
+// (currentTime prop) -- writes stay INSTANT and never start an animation
+// (the 3.0.2 blank-suspicion direct defense). Smooth applies to navigation
+// jumps only (revealWithSmooth).
 let lastFollowedRow: number | null = null
 
 watch(
@@ -428,6 +485,7 @@ function resetWheelBursts(): void {
  */
 function anchorPlayingRow(spr: number, rowHeight: number): void {
   if (!Number.isFinite(spr) || !Number.isFinite(rowHeight)) return
+  scrollAnimator.cancel() // geometry changed under the animation: instant wins
   const vh = rowLayout.viewportHeight.value
   const rowCount = computeRowCount(props.duration, spr)
   const max = Math.max(0, rowCount * strideOf(rowHeight) - ROW_GAP - vh)
@@ -469,11 +527,17 @@ function handleMultiWheel(e: WheelEvent): void {
 function attachMultiWheel(): void {
   if (scrollEl && isMulti.value) {
     scrollEl.addEventListener("wheel", handleMultiWheel, { passive: false })
+    // R2.2: passive wheel sentinel -- manual intent cancels a running
+    // animation (gesture semantics unchanged, never prevents default).
+    scrollEl.addEventListener("wheel", handleWheelCancel, { passive: true })
   }
 }
 
 function detachMultiWheel(): void {
-  if (scrollEl) scrollEl.removeEventListener("wheel", handleMultiWheel)
+  if (scrollEl) {
+    scrollEl.removeEventListener("wheel", handleMultiWheel)
+    scrollEl.removeEventListener("wheel", handleWheelCancel)
+  }
 }
 
 // -- v3.0.2 M5-3: in-row pointer gestures (scrub / Ctrl-create / marquee) --
@@ -711,9 +775,12 @@ const marqueeStyle = computed(() => {
 // into the container. A write that equals the DOM position is a no-op, so
 // user scrolling never fights this watcher in practice (P4-1 adds the
 // explicit autoScrollTarget loop suppression for smooth follow).
+// v3.0.3 M2-1: while the animator drives, it owns the DOM writes per frame
+// (the kernel's instant jump write is suppressed -- the jump animates).
 watch(
   () => rowLayout.scrollTop.value,
   top => {
+    if (scrollAnimator.isActive()) return
     if (scrollEl && Math.abs(scrollEl.scrollTop - top) > 0.5) {
       scrollEl.scrollTop = top
     }
@@ -724,6 +791,7 @@ watch(
 watch(
   () => rowLayout.maxScrollTop.value,
   max => {
+    scrollAnimator.cancel() // geometry changed under the animation
     if (rowLayout.scrollTop.value > max) rowLayout.scrollTop.value = max
   },
 )
@@ -839,7 +907,7 @@ const overviewGeometry = computed(() => {
 })
 
 function handleOverviewSeek(time: number): void {
-  rowLayout.revealTime(time)
+  revealWithSmooth(time)
 }
 
 /** Last row shrinks to the remaining duration (R4.1). */
@@ -896,6 +964,7 @@ onUnmounted(() => {
   scrollResizeObserver?.disconnect()
   scrollResizeObserver = null
   scrollScheduler.cancel()
+  scrollAnimator.dispose() // M2-1: no rAF leak past unmount
   detachMultiWheel()
   resetWheelBursts()
   gestureCleanup?.()
@@ -916,7 +985,7 @@ watch(waveformScrubbing, v => emit("scrubbing", v))
 
 function revealFromNavigation(time: number): void {
   if (!isMulti.value) return
-  rowLayout.revealTime(time)
+  revealWithSmooth(time)
 }
 
 defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })

@@ -112,10 +112,13 @@ P3 批次: 真机清单 → 文档 → RC → 正式
 
 ### P2-1 跟随平滑动画调度器（SPEC M2-1 / S2）——beta.1 真机 A/B 之后
 
-- [ ] 新建 `useScrollAnimator.ts`（animateTo / redirect / cancel，常量导出）
-- [ ] `writeScrollTop` 调用点接调度器；手动滚动 cancel + 播放回调期禁启动守卫
-- [ ] localStorage `milocut:timeline-follow-smooth:v1` 开关；**默认值 = beta.1 A/B 用户裁决**（回写 SPEC M2-1）
-- [ ] vitest 四组：打断 / 卸载清理 / 重定向不叠加 / 播放期禁启动 + 开关容错
+- [x] 新建 `useScrollAnimator.ts`（animateTo / redirect / cancel，常量导出）
+- [x] `writeScrollTop` 调用点接调度器；手动滚动 cancel + 播放回调期禁启动守卫
+  - 守卫裁决：播放时钟消费路径（currentTime prop follow watch）恒瞬时；smooth 仅导航跳转；时间窗回环抑制（100ms 宽限）+ passive 滚轮哨兵取消
+- [x] localStorage `milocut:timeline-follow-smooth:v1` 开关；**默认值 = beta.1 A/B 用户裁决**（回写 SPEC M2-1）
+  - 先行落地默认 false（SPEC M2-1 现行裁决）；beta.2 冒烟 A/B 后如改默认值回写
+- [x] vitest 四组：打断 / 卸载清理 / 重定向不叠加 / 播放期禁启动 + 开关容错
+  - 纯模块 12 例 + 编辑器集成 6 例（含动画期 trusted scroll 不触发冷却）
 
 **验收方式**: `bun run test` 全绿；A/B 结论记录于本步 record。
 **验收标准**: 回放 + 手动混合操作无空白/跳变（3.0.2 嫌疑不复现）。
