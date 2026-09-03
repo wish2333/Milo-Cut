@@ -55,6 +55,32 @@ export function resolveListTrackIdAfterTracksChange(
   return tracks.some(t => t.id === current) ? current : null
 }
 
+/** Default duration for a segment created from the track list (M1-2). */
+export const LIST_CREATE_SEGMENT_DURATION_S = 2
+
+/**
+ * Create range for the track-list "新建字幕" entry (M1-2): starts at `at`
+ * (the current playback time), default cue length, clamped to the media
+ * bound. 2-decimal rounding matches the waveform lane-create convention.
+ */
+export function computeListCreateRange(
+  at: number,
+  mediaDuration: number,
+  createDuration: number = LIST_CREATE_SEGMENT_DURATION_S,
+): { start: number; end: number } {
+  const finiteAt = Number.isFinite(at) ? Math.max(0, at) : 0
+  const hasDuration = Number.isFinite(mediaDuration) && mediaDuration > 0
+  const maxStart = hasDuration ? Math.max(0, mediaDuration - createDuration) : Number.POSITIVE_INFINITY
+  const start = Math.min(finiteAt, maxStart)
+  const end = hasDuration
+    ? Math.min(mediaDuration, start + createDuration)
+    : start + createDuration
+  return {
+    start: Math.round(start * 100) / 100,
+    end: Math.round(end * 100) / 100,
+  }
+}
+
 export interface UseListTrackSelectorReturn {
   /** null = main track (v3.0.2 default). Session view state only. */
   activeListTrackId: Ref<string | null>

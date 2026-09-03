@@ -1,11 +1,20 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, watch, onMounted } from "vue"
 import type { Segment } from "@/types/project"
-import { formatTime, parseTime } from "@/utils/format"
+import { formatTime, formatTimeShort, parseTime } from "@/utils/format"
 import { openContextMenu, closeContextMenu as closeContextMenuManager } from "@/utils/contextMenuManager"
 
 const props = defineProps<{
   segment: Segment
+  /**
+   * v3.0.3 M1-2 (P1-2): row variant. "main" = v3.0.2 behavior untouched
+   * (status column, edit buttons, context menu, click-to-edit times).
+   * "track" = extension-track list row: display-only text/start/end +
+   * duration + binding mark, no main-track edit machinery.
+   */
+  variant?: "main" | "track"
+  /** v3.0.3 M1-2: segment has a main-track binding (linkage mark). */
+  isBound?: boolean
   displayStatus?: string
   styleClass?: string
   isSelected?: boolean
@@ -48,7 +57,15 @@ const emit = defineEmits<{
 // Context menu
 const contextMenu = ref<{ x: number; y: number } | null>(null)
 
+const isTrackVariant = computed(() => props.variant === "track")
+
 function handleContextMenu(e: MouseEvent) {
+  // v3.0.3 M1-3 will give track rows their own menu; P1-2 renders none
+  // (the main-track menu must never fire for a track segment).
+  if (isTrackVariant.value) {
+    e.preventDefault()
+    return
+  }
   e.preventDefault()
   e.stopPropagation()
   contextMenu.value = { x: e.clientX, y: e.clientY }
@@ -170,6 +187,9 @@ function handleTimeEditKeydown(e: KeyboardEvent) {
 
 // Text edit functions
 function startEdit() {
+  // v3.0.3 M1-2: track rows are display-only in P1-2 (text editing entry
+  // lands in P1-3); globalEditMode must never flip them into inputs.
+  if (isTrackVariant.value) return
   originalText.value = props.segment.text
   editText.value = props.draft ?? props.segment.text
   isEditingText.value = true
@@ -260,6 +280,10 @@ const statusClass = computed(() => {
       return ""
   }
 })
+
+// v3.0.3 M1-2: track-row duration label (same format utilities as the
+// main row; the backend clamp keeps end >= start).
+const durationLabel = computed(() => formatTimeShort(Math.max(0, props.segment.end - props.segment.start)))
 </script>
 
 <template>
@@ -283,7 +307,8 @@ const statusClass = computed(() => {
       class="absolute left-0 top-0 bottom-0 w-1"
       :class="isMultiSelected ? 'bg-blue-500' : 'bg-transparent'"
     ></div>
-    <!-- Time column: fixed width, no overlap -->
+    <!-- Time column: fixed width, no overlap. Track variant (v3.0.3
+         M1-2): display-only stamps, click-to-edit is main-only. -->
     <div class="w-[150px] shrink-0 overflow-hidden whitespace-nowrap pt-0.5 font-mono text-xs text-ink-muted">
       <template v-if="editingTimeField === 'start'">
         <input
@@ -294,6 +319,9 @@ const statusClass = computed(() => {
           @blur="applyTimeEdit"
           @click.stop
         />
+      </template>
+      <template v-else-if="isTrackVariant">
+        <span data-test="track-start">{{ formatTime(segment.start) }}</span>
       </template>
       <template v-else>
         <span class="cursor-pointer hover:text-blue-500 hover:underline" title="Click to edit (Arrows = ±0.1s)" @mousedown="onTimeMouseDown('start', $event)">{{ formatTime(segment.start) }}</span>
@@ -308,6 +336,9 @@ const statusClass = computed(() => {
           @blur="applyTimeEdit"
           @click.stop
         />
+      </template>
+      <template v-else-if="isTrackVariant">
+        <span data-test="track-end">{{ formatTime(segment.end) }}</span>
       </template>
       <template v-else>
         <span class="cursor-pointer hover:text-blue-500 hover:underline" title="Click to edit (Arrows = ±0.1s)" @mousedown="onTimeMouseDown('end', $event)">{{ formatTime(segment.end) }}</span>
@@ -328,8 +359,9 @@ const statusClass = computed(() => {
       <span v-else class="block truncate text-base leading-6">{{ segment.text }}</span>
     </div>
 
-    <!-- Edit/Save button -->
-    <div class="flex items-center gap-1 shrink-0">
+    <!-- Edit/Save button (main variant only; track rows enter editing via
+         their own entry in M1-3) -->
+    <div v-if="!isTrackVariant" class="flex items-center gap-1 shrink-0">
       <template v-if="isEditingText">
         <span
           class="rounded bg-primary-soft px-1.5 py-0.5 text-xs text-primary transition-colors hover:bg-primary/15"
@@ -357,8 +389,25 @@ const statusClass = computed(() => {
       </template>
     </div>
 
-    <!-- Status column -->
-    <div class="flex items-center gap-1 shrink-0">
+    <!-- Status column (main) / duration + binding mark (track, M1-2) -->
+    <div v-if="isTrackVariant" class="flex items-center gap-1 shrink-0">
+      <span
+        data-test="track-duration"
+        class="rounded bg-parchment px-1.5 py-0.5 text-xs text-ink-muted"
+        :title="`时长 ${durationLabel}`"
+      >{{ durationLabel }}</span>
+      <span
+        v-if="isBound"
+        data-test="track-bound-mark"
+        class="flex items-center rounded bg-primary-soft px-1 py-0.5 text-primary"
+        title="与主轨字幕联动绑定（时间编辑会同步偏移）"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 010 5.656l-3 3a4 4 0 01-5.656-5.656l1.5-1.5m7.5-1.5l1.5-1.5a4 4 0 015.656 0 4 4 0 010 5.656l-3 3a4 4 0 01-5.656 0" />
+        </svg>
+      </span>
+    </div>
+    <div v-else class="flex items-center gap-1 shrink-0">
       <template v-if="displayStatus === 'pending'">
         <span
           class="rounded bg-status-pending px-1.5 py-0.5 text-xs text-yellow-700 transition-colors hover:bg-yellow-100"

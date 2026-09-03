@@ -253,3 +253,66 @@ describe("Timeline list track selector (M1-1)", () => {
     wrapper.unmount()
   })
 })
+
+// ---------------------------------------------------------------------------
+// v3.0.3 M1-2: track-mode list rendering + empty-track create entry.
+// ---------------------------------------------------------------------------
+describe("Timeline track list rendering (M1-2)", () => {
+  const trackSegments = [
+    mockSegment({ id: "en-1", start: 1, end: 4, text: "hello" }),
+    mockSegment({ id: "en-2", start: 6, end: 9, text: "world" }),
+  ]
+
+  function mountTrackList(segments: Segment[], extraProps: Record<string, unknown> = {}) {
+    return mountTimeline(segments, {
+      tracks: [{ id: "t_en", name: "English", segmentCount: segments.length }],
+      activeTrackId: "t_en",
+      ...extraProps,
+    })
+  }
+
+  it("renders track rows through the same list dispatch", async () => {
+    const wrapper = mountTrackList(trackSegments)
+    await settle(wrapper)
+    expect(renderedIds(wrapper)).toEqual(new Set(["en-1", "en-2"]))
+    // duration chips visible (track variant active)
+    expect(wrapper.find('[data-test="track-duration"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it("marks bound segments with the binding icon", async () => {
+    const wrapper = mountTrackList(trackSegments, {
+      bindings: [{ id: "b1", track_id: "t_en", main_segment_id: "main-1", extension_segment_id: "en-1", start_offset: 0, end_offset: 0 }],
+    })
+    await settle(wrapper)
+    const boundRow = wrapper.find('[data-segment-id="en-1"]')
+    expect(boundRow.find('[data-test="track-bound-mark"]').exists()).toBe(true)
+    const unboundRow = wrapper.find('[data-segment-id="en-2"]')
+    expect(unboundRow.find('[data-test="track-bound-mark"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it("renders the main-track empty state when the MAIN list is empty (zero diff)", () => {
+    const wrapper = mountTimeline([])
+    expect(wrapper.text()).toContain("暂无字幕片段")
+    expect(wrapper.find('[data-test="track-empty-state"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it("renders the empty-track card with a create entry for an empty extension track", async () => {
+    const wrapper = mountTrackList([], { currentTime: 12.5 })
+    await settle(wrapper)
+    const card = wrapper.find('[data-test="track-empty-state"]')
+    expect(card.exists()).toBe(true)
+    expect(card.text()).toContain("该副轨暂无字幕")
+    await wrapper.find('[data-test="track-empty-create"]').trigger("click")
+    expect(wrapper.emitted("create-track-segment")?.[0]).toEqual(["t_en", 12.5])
+    wrapper.unmount()
+  })
+
+  it("main mode never shows the track empty card", () => {
+    const wrapper = mountTimeline([])
+    expect(wrapper.find('[data-test="track-empty-state"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+})

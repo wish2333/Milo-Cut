@@ -217,3 +217,77 @@ describe("TranscriptRow", () => {
     expect(emitted[emitted.length - 1]).toEqual(["seg-0001", null])
   })
 })
+
+// ---------------------------------------------------------------------------
+// v3.0.3 M1-2: track variant -- display-only extension-track list row
+// (text/start/end + duration + binding mark, zero main-track machinery).
+// ---------------------------------------------------------------------------
+describe("TranscriptRow track variant (M1-2)", () => {
+  const trackSeg = mockSegment({
+    id: "track_en_seg_1.000",
+    start: 2,
+    end: 6,
+    text: "Hello track",
+  })
+
+  function mountTrack(extra: Record<string, unknown> = {}) {
+    return mount(TranscriptRow, {
+      props: { segment: trackSeg, variant: "track", ...extra },
+    })
+  }
+
+  it("renders text, start and end stamps", () => {
+    const wrapper = mountTrack()
+    expect(wrapper.text()).toContain("Hello track")
+    expect(wrapper.find('[data-test="track-start"]').text()).toContain("00:02")
+    expect(wrapper.find('[data-test="track-end"]').text()).toContain("00:06")
+    wrapper.unmount()
+  })
+
+  it("renders the duration chip from end - start", () => {
+    const wrapper = mountTrack()
+    expect(wrapper.find('[data-test="track-duration"]').text()).toBe("0:04")
+    wrapper.unmount()
+  })
+
+  it("shows the binding mark only when bound", () => {
+    const unbound = mountTrack()
+    expect(unbound.find('[data-test="track-bound-mark"]').exists()).toBe(false)
+    unbound.unmount()
+    const bound = mountTrack({ isBound: true })
+    expect(bound.find('[data-test="track-bound-mark"]').exists()).toBe(true)
+    bound.unmount()
+  })
+
+  it("renders no edit button, no status buttons, no menu", async () => {
+    const wrapper = mountTrack()
+    expect(wrapper.find("[title='Edit text']").exists()).toBe(false)
+    expect(wrapper.text()).not.toContain("无标注")
+    expect(wrapper.text()).not.toContain("标记删除")
+    await wrapper.trigger("contextmenu")
+    expect(wrapper.find(".fixed.z-dropdown").exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it("never enters text edit under globalEditMode", async () => {
+    const wrapper = mountTrack({ globalEditMode: true })
+    await nextTick()
+    expect(wrapper.find("input.edit-text-input").exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it("time stamps are display-only (no click-to-edit inputs)", async () => {
+    const wrapper = mountTrack()
+    await wrapper.find('[data-test="track-start"]').trigger("mousedown", { button: 0 })
+    expect(wrapper.find("input").exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it("emits seek on row click", async () => {
+    const wrapper = mountTrack()
+    await wrapper.trigger("click")
+    expect(wrapper.emitted("seek")).toBeTruthy()
+    expect(wrapper.emitted("seek")![0]).toEqual([2])
+    wrapper.unmount()
+  })
+})
