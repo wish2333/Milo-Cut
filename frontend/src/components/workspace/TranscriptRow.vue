@@ -140,6 +140,88 @@ function handleTrackDelete() {
   closeContextMenu()
 }
 
+// -- v3.0.3 M3 (S3): config-driven menu with optional kbd badges -----------
+//
+// Badges annotate REAL shortcuts only (R9.4 principle: no invented
+// shortcuts -- ShortcutsSettingsTab registry). Per that registry exactly
+// one menu action has one: 标记删除 = Delete (selection-mode main rows).
+// Everything else renders text-only; `kbd` absent -> no <kbd> node.
+interface RowMenuItem {
+  id: string
+  label: string
+  /** Registered shortcut label (ShortcutsSettingsTab registry). */
+  kbd?: string
+  tone?: "default" | "primary" | "danger"
+  dividerBefore?: boolean
+  title?: string
+  /** false = conditionally hidden (从时间指针分割 needs the playhead). */
+  show?: boolean
+  action: () => void
+}
+
+const toneClass: Record<NonNullable<RowMenuItem["tone"]> | "default", string> = {
+  default: "text-gray-700 hover:bg-gray-50",
+  primary: "text-blue-600 hover:bg-blue-50",
+  danger: "text-red-600 hover:bg-red-50",
+}
+
+const trackMenuItems = computed<RowMenuItem[]>(() => [
+  { id: "track-seek", label: "定位", action: handleTrackSeek },
+  { id: "track-edit", label: "编辑", action: handleTrackEdit },
+  {
+    id: "track-delete",
+    label: "删除此条字幕",
+    tone: "danger",
+    dividerBefore: true,
+    action: handleTrackDelete,
+  },
+])
+
+const mainMenuItems = computed<RowMenuItem[]>(() => [
+  { id: "edit-text", label: "编辑文本", action: startEdit },
+  {
+    id: "toggle-status",
+    label: props.displayStatus === "confirmed" ? "取消删除" : "标记删除",
+    kbd: "Del",
+    action: () => emit("toggle-status"),
+  },
+  {
+    id: "split-pointer",
+    label: "从时间指针分割",
+    title: "在时间指针位置分割",
+    show: props.isPlayheadInside,
+    action: handleSplitAtPointer,
+  },
+  {
+    id: "split-mid",
+    label: "从中点分割",
+    title: "从此段中间分为两段",
+    dividerBefore: true,
+    action: handleSplitAtMidpoint,
+  },
+  {
+    id: "highlight",
+    label: "加入精华",
+    tone: "primary",
+    dividerBefore: true,
+    action: () => {
+      emit("add-to-highlight", props.segment.id)
+      closeContextMenu()
+    },
+  },
+  {
+    id: "delete-segment",
+    label: "删除段落",
+    tone: "danger",
+    dividerBefore: true,
+    action: handleDeleteSegment,
+  },
+])
+
+const activeMenuItems = computed<RowMenuItem[]>(() =>
+  isTrackVariant.value ? trackMenuItems.value : mainMenuItems.value,
+)
+
 // Text editing
 const isEditingText = ref(false)
 const editText = ref("")
@@ -489,8 +571,8 @@ const durationLabel = computed(() => formatTimeShort(Math.max(0, props.segment.e
         </span>
       </template>
     </div>
-    <!-- Context Menu (main variant: v2.x items; track variant v3.0.3
-         M1-4: 定位 / 编辑 / 删除此条字幕, no confirm -- undo covers) -->
+    <!-- Context Menu (v3.0.3 M3: config-driven; kbd badges annotate REAL
+         shortcuts only -- no badge node when `kbd` is absent) -->
     <Teleport to="body">
       <div
         v-if="contextMenu"
@@ -498,73 +580,23 @@ const durationLabel = computed(() => formatTimeShort(Math.max(0, props.segment.e
         :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
         @click="closeContextMenu"
       >
-        <!-- Track-variant menu -->
-        <template v-if="isTrackVariant">
+        <template v-for="item in activeMenuItems" :key="item.id">
+          <div v-if="item.dividerBefore" class="border-t border-gray-100 my-1" />
           <button
-            class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-            @click="handleTrackSeek"
+            v-if="item.show !== false"
+            :data-test="item.id === 'track-delete' ? 'track-menu-delete' : undefined"
+            :title="item.title"
+            class="w-full flex items-center justify-between gap-3 text-left px-3 py-1.5 text-sm transition-colors"
+            :class="toneClass[item.tone ?? 'default']"
+            @click="item.action()"
           >
-            定位
+            <span>{{ item.label }}</span>
+            <kbd
+              v-if="item.kbd"
+              data-test="menu-kbd"
+              class="rounded border border-gray-200 bg-gray-50 px-1 font-mono text-[10px] leading-4 text-gray-400"
+            >{{ item.kbd }}</kbd>
           </button>
-          <button
-            class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-            @click="handleTrackEdit"
-          >
-            编辑
-          </button>
-          <div class="border-t border-gray-100 my-1" />
-          <button
-            data-test="track-menu-delete"
-            class="w-full text-left px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
-            @click="handleTrackDelete"
-          >
-            删除此条字幕
-          </button>
-        </template>
-        <!-- Main-variant menu -->
-        <template v-else>
-        <button
-          class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-          @click="startEdit"
-        >
-          编辑文本
-        </button>
-        <button
-          class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-          @click="emit('toggle-status')"
-        >
-          {{ displayStatus === 'confirmed' ? '取消删除' : '标记删除' }}
-        </button>
-        <div class="border-t border-gray-100 my-1" />
-        <button
-          v-if="isPlayheadInside"
-          class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-          title="在时间指针位置分割"
-          @click="handleSplitAtPointer"
-        >
-          从时间指针分割
-        </button>
-        <button
-          class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-          title="从此段中间分为两段"
-          @click="handleSplitAtMidpoint"
-        >
-          从中点分割
-        </button>
-        <div class="border-t border-gray-100 my-1" />
-        <button
-          class="w-full text-left px-3 py-1.5 text-sm text-blue-600 hover:bg-blue-50 transition-colors"
-          @click="emit('add-to-highlight', segment.id); closeContextMenu()"
-        >
-          加入精华
-        </button>
-        <div class="border-t border-gray-100 my-1" />
-        <button
-          class="w-full text-left px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
-          @click="handleDeleteSegment"
-        >
-          删除段落
-        </button>
         </template>
       </div>
     </Teleport>

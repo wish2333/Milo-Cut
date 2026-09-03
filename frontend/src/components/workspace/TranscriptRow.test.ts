@@ -345,3 +345,85 @@ describe("TranscriptRow track variant (M1-2)", () => {
     wrapper.unmount()
   })
 })
+
+// ---------------------------------------------------------------------------
+// v3.0.3 M3 (S3): config-driven context menus with kbd badges.
+// Registry (ShortcutsSettingsTab) maps exactly ONE menu action to a real
+// shortcut: 标记删除 -> Delete. Everything else stays text-only; no empty
+// <kbd> shells.
+// ---------------------------------------------------------------------------
+describe("TranscriptRow context menu kbd badges (M3)", () => {
+  it("main menu: 标记删除 carries the Del badge in the R9.4 style", async () => {
+    const wrapper = mount(TranscriptRow, { props: { segment: baseSegment } })
+    await wrapper.trigger("contextmenu")
+    const menu = document.body.querySelector(".fixed.z-dropdown")!
+    const badges = menu.querySelectorAll("kbd")
+    expect(badges).toHaveLength(1)
+    expect(badges[0].getAttribute("data-test")).toBe("menu-kbd")
+    expect(badges[0].textContent).toBe("Del")
+    expect(badges[0].className).toContain("font-mono")
+    // the badge sits inside the 标记删除 item
+    const delItem = badges[0].closest("button")!
+    expect(delItem.textContent).toContain("标记删除")
+    wrapper.unmount()
+  })
+
+  it("main menu: items without a registered shortcut render no kbd node", async () => {
+    const wrapper = mount(TranscriptRow, { props: { segment: baseSegment, isPlayheadInside: true } })
+    await wrapper.trigger("contextmenu")
+    const menu = document.body.querySelector(".fixed.z-dropdown")!
+    const buttons = [...menu.querySelectorAll("button")]
+    // full main menu with the playhead inside (split item present)
+    const labels = buttons.map(b => b.querySelector("span")!.textContent!.trim())
+    expect(labels).toEqual([
+      "编辑文本",
+      "标记删除",
+      "从时间指针分割",
+      "从中点分割",
+      "加入精华",
+      "删除段落",
+    ])
+    expect(menu.querySelectorAll("kbd")).toHaveLength(1) // only 标记删除
+    wrapper.unmount()
+  })
+
+  it("main menu: 取消删除 keeps the badge when the status is confirmed", async () => {
+    const wrapper = mount(TranscriptRow, {
+      props: { segment: baseSegment, displayStatus: "confirmed" },
+    })
+    await wrapper.trigger("contextmenu")
+    const menu = document.body.querySelector(".fixed.z-dropdown")!
+    const badge = menu.querySelector("kbd")!
+    expect(badge.closest("button")!.textContent).toContain("取消删除")
+    wrapper.unmount()
+  })
+
+  it("track menu: no invented shortcuts -- zero badges, actions intact", async () => {
+    const wrapper = mount(TranscriptRow, {
+      props: { segment: baseSegment, variant: "track" } as never,
+    })
+    await wrapper.trigger("contextmenu")
+    const menu = document.body.querySelector(".fixed.z-dropdown")!
+    expect(menu.querySelectorAll("kbd")).toHaveLength(0)
+    const labels = [...menu.querySelectorAll("button")].map(b => b.textContent!.trim())
+    expect(labels).toEqual(["定位", "编辑", "删除此条字幕"])
+    wrapper.unmount()
+  })
+
+  it("menu actions still fire through the config layer (split guarded by playhead)", async () => {
+    const wrapper = mount(TranscriptRow, { props: { segment: baseSegment } })
+    await wrapper.trigger("contextmenu")
+    const menu = document.body.querySelector(".fixed.z-dropdown")!
+    const labels = [...menu.querySelectorAll("button")].map(b => b.textContent!.trim())
+    expect(labels).not.toContain("从时间指针分割") // show: false hidden entirely
+    const edit = buttonsOf(menu).find(b => b.textContent!.includes("编辑文本"))!
+    edit.click()
+    await nextTick()
+    expect(wrapper.find("input").exists()).toBe(true)
+    wrapper.unmount()
+
+    function buttonsOf(m: Element): HTMLButtonElement[] {
+      return [...m.querySelectorAll("button")] as HTMLButtonElement[]
+    }
+  })
+})
