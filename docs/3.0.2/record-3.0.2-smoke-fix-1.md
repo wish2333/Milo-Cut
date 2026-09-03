@@ -28,3 +28,16 @@ pytest 711（+3 后端删除用例）✓ / vitest 657（+4：fillContainer/主�
 | 5 | 跟随无动画 + 列表不滚动 | 波形 smooth 已合入（需 WebView 支持 scrollTo options；WKWebView/WebView2 均支持）；列表跟随已恢复（playheadSegmentId watcher + scrubbing 抑制接线）。请重验；若列表仍不滚，告知播放时右侧列表是否有蓝色播放指示条移动 |
 
 另：反馈 2 需**重启 dev.py 的 Python 进程**（新增后端方法），若已重启仍失败请 F12 控制台截图报错。
+
+## 追加（三轮反馈）
+
+| # | 反馈 | 处理 |
+|---|---|---|
+| 1a | 导入副轨 toast 全显示为「绑定」非「导入」 | 根因：计数读 `data.tracks/bindings`——Project 顶层无此字段（在 `timelines[].transcript` 下），**永远显示 0 条字幕 0 条绑定**。修复：改读返回 project 的 active timeline 末位副轨（名称+条数），0 条时升级为 error 级提示 |
+| 1b | 副轨不显示字幕段但播放器预览有小字 | 待重验定位：toast 修复后重新导入——若 toast 报「N 条字幕」（N>0）而 lane 仍空 → 渲染层 bug（报我）；若 toast 报 0 → 导入数据路径 bug（报我）。播放器预览与 lane 读取同一 activeTracks 数据源，二者不一致提示可能是查询窗/行位置差异 |
+| 2 | 建段开关赋能聚焦模式（默认关） | ✅ toggle 移出 multi-only 模板双模式可见；basic 层 emptyAreaMode 随 buildMode（off=点击定位，on=点击建段）。**登记**：basic 默认空点行为从「建段」改为「定位」（用户明确裁决，覆盖 v3.0.1 现状，M0-1.5 按用户要求放行） |
+| 3 | 跟随滚动动画仍没有 | **本版明确不做**（按你的许可）：动画依赖 WebView 的 `scrollTo({behavior:"smooth"})`——已实现但实测不可靠（可能被引擎忽略、或被跟随链路的中间状态写打断产生抖动），多行跟随又是逐行离散触发（每行一次跳位），平滑收益低、稳定性风险高。跟随保持瞬时跳位（与 MAW 行为一致）；列入遗留清单，下版若做需专门的动画调度器 |
+
+## 门禁
+
+pytest 711 ✓ / vitest 660 ✓ / build ✓ / lint 0 ✓ / ruff 0 ✓
