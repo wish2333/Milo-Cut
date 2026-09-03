@@ -885,15 +885,18 @@ async function handleDeleteTrackWaveform(trackId: string) {
   })
 }
 
-// v3.0.2 smoke fix: lane menu operations on per-row sub-tracks.
+// v3.0.2 smoke fix 3rd round: clear a track = ONE backend call.
 function handleClearTrack(trackId: string) {
   const track = activeTracks.value.find(t => t.id === trackId)
   if (!track || track.segments.length === 0) return
   requestConfirm(`确定清空副轨「${track.name || track.id}」的全部 ${track.segments.length} 条字幕？此操作不可撤销。`, async () => {
-    for (const seg of [...track.segments]) {
-      await handleDeleteTrackSegment(trackId, seg.id)
-    }
+    await handleClearTrackSegments(trackId)
   })
+}
+
+// v3.0.2 smoke fix 3rd round: 建段模式 + lane click/drag -> add to that track.
+function handleTrackCreate(trackId: string, start: number, end: number) {
+  void handleAddTrackSegment(trackId, start, end)
 }
 
 // v3.0.2 M6-1: subtitle-list navigation jumps share the waveform's reveal
@@ -927,6 +930,8 @@ const {
   handleImportSrt, handleImportSrtAsTrack, handleDetectSilence, handleClearSubtitles, handleTranscribe,
   handleDeleteTrackSegment,
   handleDeleteTrack,
+  handleAddTrackSegment,
+  handleClearTrackSegments,
   handleToggleEditStatus, handleSegmentClickInSelection, handleToggleSelectionMode,
   handleMergeSelected, handleSplitSegment, handleUpdateText, handleUpdateTime,
   handleSelectRange, handleAddSegment, handleDeleteSegment, handleSeekSegment,
@@ -1423,6 +1428,7 @@ onUnmounted(() => {
       @delete-track-segment="handleDeleteTrackSegment"
       @clear-track="handleClearTrack"
       @delete-track="handleDeleteTrackWaveform"
+      @track-create="handleTrackCreate"
       @scrubbing="waveformScrubbing = $event"
     />
 

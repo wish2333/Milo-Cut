@@ -1541,6 +1541,99 @@ class ProjectService:
             meta=meta,
         )
 
+    def add_track_segment(
+        self, track_id: str, start: float, end: float, text: str = ""
+    ) -> dict:
+        """Add a segment to an extension track (v3.0.2 smoke feedback).
+
+        Mirrors update_track_segment's validation: clamp to [0, duration],
+        min duration, same-track overlap rejection. New segments are
+        unbound; ids follow the import namespacing convention.
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        from core.track_constraints import (
+            MIN_SEGMENT_DURATION,
+            clamp_extension_range,
+        )
+
+        tl = self.active_timeline
+        track = next((t for t in tl.transcript.tracks if t.id == track_id), None)
+        if track is None:
+            return {"success": False, "error": f"Track not found: {track_id}"}
+
+        if end - start < MIN_SEGMENT_DURATION - 1e-6:
+            return {
+                "success": False,
+                "error": f"add_track_segment: width {end - start:.3f} below minimum {MIN_SEGMENT_DURATION}",
+            }
+        upper = (
+            self._current.media.duration
+            if self._current.media and self._current.media.duration > 0
+            else max(start, end, MIN_SEGMENT_DURATION)
+        )
+        start, end = clamp_extension_range(start, end, upper)
+        for other in track.segments:
+            if start < other.end - OVERLAP_EPSILON and end > other.start + OVERLAP_EPSILON:
+                return {
+                    "success": False,
+                    "error": (
+                        f"add_track_segment: [{start:.3f}, {end:.3f}] overlaps "
+                        f"{other.id} [{other.start:.3f}, {other.end:.3f}]"
+                    ),
+                }
+
+        new_seg = Segment(
+            id=f"track_{track_id}_seg_{start:.3f}",
+            version=1,
+            type=SegmentType.SUBTITLE,
+            start=start,
+            end=end,
+            text=text,
+            speaker="",
+        )
+        new_segments = sorted([*track.segments, new_seg], key=lambda s: s.start)
+        new_tracks = [
+            t.model_copy(update={"segments": new_segments})
+            if t.id == track_id
+            else t
+            for t in tl.transcript.tracks
+        ]
+        new_transcript = tl.transcript.model_copy(update={"tracks": new_tracks})
+        self._update_active_timeline(transcript=new_transcript)
+        return self._success_patch(tracks=new_tracks)
+
+    def clear_track_segments(self, track_id: str) -> dict:
+        """Remove every segment of a track in ONE operation (v3.0.2 smoke
+        feedback: the per-segment loop churned N patches). Bindings
+        anchored to the track are dropped wholesale (derivative rule)."""
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        tl = self.active_timeline
+        track = next((t for t in tl.transcript.tracks if t.id == track_id), None)
+        if track is None:
+            return {"success": False, "error": f"Track not found: {track_id}"}
+
+        dropped = sum(1 for b in tl.transcript.bindings if b.track_id == track_id)
+        new_bindings = [b for b in tl.transcript.bindings if b.track_id != track_id]
+        new_tracks = [
+            t.model_copy(update={"segments": []}) if t.id == track_id else t
+            for t in tl.transcript.tracks
+        ]
+        new_transcript = tl.transcript.model_copy(
+            update={"tracks": new_tracks, "bindings": new_bindings}
+        )
+        self._update_active_timeline(transcript=new_transcript)
+
+        meta = {"linkage": {"unbound": dropped}} if dropped else None
+        return self._success_patch(
+            tracks=new_tracks,
+            bindings=new_bindings,
+            meta=meta,
+        )
+
     def delete_track(self, track_id: str) -> dict:
         """Delete a whole extension track and every binding anchored to it
         (v3.0.2 smoke feedback: tracks could only be cleared, not removed).

@@ -82,6 +82,8 @@ const emit = defineEmits<{
   "delete-track-segment": [trackId: string, segmentId: string]
   "clear-track": [trackId: string]
   "delete-track": [trackId: string]
+  /** v3.0.2 smoke fix 3rd round: 建段模式 lane click adds to that track. */
+  "track-create": [trackId: string, start: number, end: number]
   /** v3.0.2 M5-3: scrubbing flag for list-follow suppression. */
   scrubbing: [active: boolean]
 }>()

@@ -63,3 +63,9 @@ pytest 711 ✓ / vitest 660 ✓ / build ✓ / lint 0 ✓ / ruff 0 ✓
 - 用户截图在**聚焦模式**：堆叠态 TrackLane 由 editor 的另一处模板渲染，上一轮只接了多行分支的转发——**聚焦分支的 delete-segment/clear-track/delete-track 事件无监听者**（菜单是 TrackLane 内部的，所有模式可见，但事件飞了）。这就是「菜单在、点了没反应、无 toast」的完整解释。
 - 修复：聚焦分支 TrackLane 补 `@delete-segment/@clear-track/@delete-track` 转发（注意事件名：TrackLane 发 delete-segment，编辑器转发为 delete-track-segment 携 trackId）。
 - 编辑器级回归测试 +2（聚焦态：删段带 trackId+segId / 删整轨带 trackId；多行态同款 +1 修正断言）。
+
+## 追加（四轮：副轨管理闭环）
+
+- **清空此轨一次到位**：后端新增 `clear_track_segments(track_id)`（单 patch 清全部段 + 连带删锚定 binding，meta.unbound 计数）；前端 handleClearTrack 改单次调用（废除逐段循环——就是用户看到的「一条一条删」）。
+- **副轨 lane 建段**：建段模式开启后，**点击任意副轨 lane 空白处**即在该轨新建 0.5s 字幕（后端 `add_track_segment`：clamp + 最短时长 + 同轨重叠拒绝，id 沿导入命名式，新建段不绑定）；链路 lane(create-at) → row(track-create + trackId) → editor → WorkspacePage。至此副轨能力 = 导入 + 波形 trim/删除 + **lane 建段** + 清空 + 删轨。
+- **回应「副轨有啥用」**：副轨定位 = 双语/翻译对照轨（导入 SRT、波形 trim、播放器双语预览、双语 SRT 导出，v3.0.0 起有）；本版补齐行内显示与增删改闭环。**仍缺（下一批次登记）**：字幕列表切换显示/编辑副轨（列表 track 选择器）。

@@ -1685,6 +1685,20 @@ class MiloCutApi(Bridge):
         return self._mark_dirty(self._project.delete_track(track_id))
 
     @expose
+    def add_track_segment(
+        self, track_id: str, start: float, end: float, text: str = ""
+    ) -> dict:
+        """v3.0.2: add a segment to an extension track (unbound)."""
+        return self._mark_dirty(
+            self._project.add_track_segment(track_id, start, end, text)
+        )
+
+    @expose
+    def clear_track_segments(self, track_id: str) -> dict:
+        """v3.0.2: clear all segments of a track in one operation."""
+        return self._mark_dirty(self._project.clear_track_segments(track_id))
+
+    @expose
     def merge_segments(self, segment_ids: list[str]) -> dict:
         return self._mark_dirty(self._project.merge_segments(segment_ids))
 

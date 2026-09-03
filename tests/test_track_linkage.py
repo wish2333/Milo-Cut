@@ -661,3 +661,27 @@ class TestDeleteTrack:
         _seed_linkage(svc)
         assert svc.delete_track("nope")["success"] is False
         assert len(svc.active_timeline.transcript.tracks) == 1
+
+
+class TestAddAndClearTrackSegments:
+    def test_add_track_segment_appends_and_rejects_overlap(self, svc):
+        _seed_linkage(svc)
+        res = svc.add_track_segment("trk1", 5.0, 6.5, "new")
+        assert res["success"] is True
+        trk = next(t for t in res["data"]["tracks"] if t["id"] == "trk1")
+        assert len(trk["segments"]) == 3
+        added = next(s for s in trk["segments"] if s["id"] == "track_trk1_seg_5.000")
+        assert [added["start"], added["end"]] == [5.0, 6.5]
+        # Overlap with the new segment is rejected.
+        res2 = svc.add_track_segment("trk1", 6.0, 7.0)
+        assert res2["success"] is False
+        assert "overlaps" in res2["error"]
+
+    def test_clear_track_segments_one_shot(self, svc):
+        _seed_linkage(svc)
+        res = svc.clear_track_segments("trk1")
+        assert res["success"] is True
+        trk = next(t for t in res["data"]["tracks"] if t["id"] == "trk1")
+        assert trk["segments"] == []
+        assert res["data"]["bindings"] == []
+        assert res["data"].get("meta", {}).get("linkage", {}).get("unbound") == 2

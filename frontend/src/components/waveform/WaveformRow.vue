@@ -76,6 +76,8 @@ const props = defineProps<{
   updateTrackTime?: (trackId: string, segmentId: string, field: "start" | "end", value: number) => void
   /** M7-1 smoke feedback: 建段模式 ON -> multi empty click creates segments. */
   buildMode?: boolean
+  /** v3.0.2 smoke fix 3rd round: lane 建段 (with track binding). */
+  createAtInTrack?: (trackId: string, time: number) => void
 }>()
 
 const emit = defineEmits<{
@@ -352,6 +354,7 @@ defineExpose({ metrics })
       @delete-segment="(sid: string) => emit('delete-track-segment', laneItem.track.id, sid)"
       @clear-track="emit('clear-track', laneItem.track.id)"
       @delete-track="emit('delete-track', laneItem.track.id)"
+      @create-at="(time: number) => createAtInTrack?.(laneItem.track.id, time)"
     />
 
     <!-- Row playhead (R5.3): rendered only while the playhead is in THIS row -->

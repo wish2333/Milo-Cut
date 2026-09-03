@@ -22,6 +22,8 @@ const props = defineProps<{
   lane: LaneLayoutItem
   /** v3.0.1 M5-2: when provided, extension blocks become trim-editable. */
   updateTime?: (segmentId: string, field: "start" | "end", value: number) => void
+  /** v3.0.2 smoke fix 3rd round: 建段模式 ON -> click in the lane adds. */
+  buildMode?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -31,6 +33,7 @@ const emit = defineEmits<{
   "delete-segment": [segmentId: string]
   "clear-track": []
   "delete-track": []
+  "create-at": [time: number]
 }>()
 
 // R9.4 parity: lane blocks get a context menu (delete segment / clear
@@ -41,6 +44,22 @@ const menuMaxY = typeof window !== "undefined" ? window.innerHeight - 180 : 0
 
 function closeMenu() {
   contextMenu.value = null
+}
+
+/** 建段模式: click (or drag-start) in the lane adds a segment to THIS track. */
+function onLaneClick(e: MouseEvent) {
+  if (!props.buildMode) return
+  const ratio = clamp01At(e)
+  const time = metrics.viewStart.value + ratio * metrics.viewDuration.value
+  emit("create-at", Math.round(time * 100) / 100)
+}
+
+function clamp01At(e: MouseEvent): number {
+  const el = (e.currentTarget as HTMLElement) ?? null
+  if (!el) return 0
+  const rect = el.getBoundingClientRect()
+  if (rect.width <= 0) return 0
+  return Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width))
 }
 
 function openBlockMenu(segmentId: string, e: MouseEvent) {
@@ -117,7 +136,9 @@ const visibleSegments = computed(() => {
     <div
       v-if="!lane.collapsed"
       class="absolute inset-x-0 bottom-0 top-4"
+      :class="buildMode ? 'cursor-copy' : ''"
       data-test="lane-blocks"
+      @click.stop="onLaneClick"
     >
       <SegmentBlock
         v-for="item in visibleSegments"

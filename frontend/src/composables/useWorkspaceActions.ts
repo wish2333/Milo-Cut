@@ -144,6 +144,8 @@ export interface WorkspaceActions {
   handleClearSubtitles: () => Promise<void>
   handleDeleteTrackSegment: (trackId: string, segmentId: string) => Promise<void>
   handleDeleteTrack: (trackId: string) => Promise<void>
+  handleAddTrackSegment: (trackId: string, start: number, end: number) => Promise<void>
+  handleClearTrackSegments: (trackId: string) => Promise<void>
   handleTranscribe: () => Promise<void>
   // -- edit ------------------------------------------------------------------
   handleToggleEditStatus: (segment: Segment, nextStatus?: string) => Promise<void>
@@ -484,6 +486,36 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
         "error",
         8000,
       )
+    }
+  }
+
+  // Smoke fix 3rd round: clear a track in ONE backend operation (the
+  // per-segment loop churned N patches and looked broken).
+  async function handleClearTrackSegments(trackId: string) {
+    try {
+      const res = await call<ProjectResponse>("clear_track_segments", trackId)
+      if (res.success && res.data) {
+        emit("project-updated", res.data)
+        showToast("副轨已清空", "success", 3000)
+      } else {
+        showToast(res.error ?? "清空副轨失败", "error", 6000)
+      }
+    } catch (e) {
+      showToast(`清空副轨失败：${e instanceof Error ? e.message : String(e)}（请完全退出并重启应用）`, "error", 8000)
+    }
+  }
+
+  async function handleAddTrackSegment(trackId: string, start: number, end: number) {
+    try {
+      const res = await call<ProjectResponse>("add_track_segment", trackId, start, end)
+      if (res.success && res.data) {
+        emit("project-updated", res.data)
+        showToast("已在副轨新建字幕", "success", 2000)
+      } else {
+        showToast(res.error ?? "新建副轨字幕失败", "error", 6000)
+      }
+    } catch (e) {
+      showToast(`新建副轨字幕失败：${e instanceof Error ? e.message : String(e)}（请完全退出并重启应用）`, "error", 8000)
     }
   }
 
@@ -962,6 +994,8 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
     handleImportSrt, handleImportSrtAsTrack, handleDetectSilence, handleClearSubtitles, handleTranscribe,
   handleDeleteTrackSegment,
   handleDeleteTrack,
+  handleAddTrackSegment,
+  handleClearTrackSegments,
     // edit
     handleToggleEditStatus, handleSegmentClickInSelection, handleToggleSelectionMode,
     handleMergeSelected, handleSplitSegment, handleUpdateText, handleUpdateTime,
