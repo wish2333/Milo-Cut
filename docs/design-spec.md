@@ -178,3 +178,21 @@ Stacking context 陷阱：`position: fixed` 弹层若被封印在带 `transform`
 - **跟随三分**：播放跟随换行才判定（舒适区只动播放头，否则 FOLLOW_BIAS 0.35）；手动滚动 3s 冷却（程序回声经 autoScrollTarget 匹配豁免）；revealTime 跳转 = REVEAL_BIAS + 免滚 + 冷却置位，字幕列表导航统一走此入口。
 - **持久化**：`milocut:timeline-rows:v1` = `{ mode, secondsPerRow, rowHeight, scrollTopTime, editorHeightPx }`；档位/高度变更即写，滚动位置 300ms 防抖 + 卸载兜底；白名单校验损坏回退；重开恢复按行边界量化。
 - **副轨行内组合**：每行 = 主 lane（blocks）+ 副轨 lanes（32/48/72/折叠 24，与聚焦模式共享折叠态）；有副轨时默认行高自动 168（用户自选值尊重）；副轨 trim 组合态可用。
+
+## 12. 列表轨交互规范（v3.0.3）
+
+- **轨选择器**：字幕列表头部 segmented 切换（主轨 / 各副轨，含段数徽标）；选择态 = `activeListTrackId`（null = 主轨）会话视图态——不产生 patch、不入 undo、不持久化，刷新/删轨/切时间线回退主轨（回退兜底单一真源在 `useListTrackSelector`）。
+- **副轨行多态**：与主轨同一行组件 variant 分支——文本 / 时间戳 / 时长 chip / 绑定标记；空轨渲染空态卡 +「新建字幕」（播放时间锚点 2s cue，媒体上界钳制）；副轨行不参与选中模式与 globalEditMode 全局扫描。
+- **编辑通路**：双击行 / 菜单「编辑」进文本编辑（draft 虚拟滚动恢复沿用主轨机制）；时间戳点击进数值编辑（±0.1s 箭头微调）；与波形 trim 共用 `useTrackEdit` 防抖乐观内核（300ms 合并、失败回滚 + toast 错误原文）；切轨前 flush 未决防抖（flush-on-switch）。
+- **撤销捕获层谓词表**（唯一真源，PRD R1.5）：
+
+| 列表操作 | 谓词 | 捕获层 |
+|---|---|---|
+| 文本编辑（text） | 恒真 | `["tracks"]` |
+| 时间编辑（start/end，有绑定） | 绑定谓词命中 | `["tracks","bindings"]` |
+| 时间编辑（无绑定） | 绑定谓词未中 | `["tracks"]` |
+| 删除此条字幕 | 恒真 | `["tracks","bindings"]` |
+
+  undo 时 tracks/bindings（含偏移）原子还原，redo 对称；删除无确认框（undo 兜底）。
+- **kbd 角标**：行右键菜单配置驱动（`kbd?` 字段），角标只标注快捷键登记表（ShortcutsSettingsTab）中的真实快捷键（现仅主轨「标记删除」= Del）；无登记项不渲染空节点（延续 R9.4「不发明快捷键」）。
+- **跟随平滑（opt-in）**：导航跳转可 140ms ease-out 动画（`milocut:timeline-follow-smooth:v1`，默认关）；播放时钟消费路径恒瞬时（永不启动动画）；时间窗回环抑制（动画驱动期 trusted scroll 按回声处理）；滚轮哨兵动画期取消（手动优先）。波形行几何/回环分类内核零改动（仅写入方式扩展）。
