@@ -108,7 +108,7 @@ P3: M4 终检 + 文档 + 真机清单
 - 播放时钟回调（`PLAYBACK_CLOCK_KEY` 消费路径）期间**不启动**新动画（守卫旗标）——3.0.2 空白嫌疑的直接防御；
 - 动画每帧经既有 `writeScrollTop` 通道写入（echo 分类/持久化通路不变，仅写入节奏变化）。
 
-**设置开关（R2.3）**：localStorage `milocut:timeline-follow-smooth:v1`；读取容错（损坏 JSON / 非法值 → 默认）；**默认值 = `false`（瞬时）**，beta.1 真机 A/B 后由用户裁决改默认并回写本 spec。
+**设置开关（R2.3）**：localStorage `milocut:timeline-follow-smooth:v1`；读取容错（损坏 JSON / 非法值 → 默认）；**默认值 = `false`（瞬时，最终裁决）**——原计划 beta.1 真机 A/B 后由用户裁决改默认；2026-09 用户指示跳过冒烟，默认值即维持 `false` 为最终裁决（开关保留，可随时自行开启体验）。
 
 **常量**：`FOLLOW_SMOOTH_DURATION_MS = 140`、`FOLLOW_SMOOTH_EASING = "easeOutCubic"`（模块导出）。
 
