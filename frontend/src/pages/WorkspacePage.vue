@@ -864,34 +864,15 @@ function handleWaveformSelectSegments(ids: string[]) {
   selectedSegmentIds.value = next
 }
 
-// v3.0.2 smoke fix: PyWebView does NOT implement window.confirm (silently
-// false) -- destructive lane operations use an in-app confirm dialog.
-const pendingConfirm = ref<{ message: string; run: () => Promise<void> } | null>(null)
-function requestConfirm(message: string, run: () => Promise<void>) {
-  pendingConfirm.value = { message, run }
-}
-async function settleConfirm() {
-  const p = pendingConfirm.value
-  pendingConfirm.value = null
-  if (p) await p.run()
-}
-
 // v3.0.2 smoke fix: whole-track deletion from the lane menu (确认后删除轨道及其全部字幕)。
 async function handleDeleteTrackWaveform(trackId: string) {
-  const track = activeTracks.value.find(t => t.id === trackId)
-  const label = track?.name || trackId
-  requestConfirm(`确定删除副轨「${label}」（含 ${track?.segments.length ?? 0} 条字幕）？此操作不可撤销。`, async () => {
-    await handleDeleteTrack(trackId)
-  })
+  // 撤销可恢复（M5-1 快照），无需确认弹窗。
+  await handleDeleteTrack(trackId)
 }
 
 // v3.0.2 smoke fix 3rd round: clear a track = ONE backend call.
-function handleClearTrack(trackId: string) {
-  const track = activeTracks.value.find(t => t.id === trackId)
-  if (!track || track.segments.length === 0) return
-  requestConfirm(`确定清空副轨「${track.name || track.id}」的全部 ${track.segments.length} 条字幕？此操作不可撤销。`, async () => {
-    await handleClearTrackSegments(trackId)
-  })
+async function handleClearTrack(trackId: string) {
+  await handleClearTrackSegments(trackId)
 }
 
 // v3.0.2 smoke fix 3rd round: 建段模式 + lane click/drag -> add to that track.
@@ -1440,36 +1421,6 @@ onUnmounted(() => {
       @track-create="handleTrackCreate"
       @scrubbing="waveformScrubbing = $event"
     />
-
-    <!-- v3.0.2 smoke fix: generic in-app confirm (PyWebView lacks window.confirm) -->
-    <Teleport to="body">
-      <div
-        v-if="pendingConfirm"
-        class="fixed inset-0 z-modal flex items-center justify-center bg-black/40"
-        data-test="app-confirm"
-        @click.self="pendingConfirm = null"
-      >
-        <div class="rounded-lg bg-white p-5 shadow-xl max-w-sm w-full mx-4">
-          <p class="text-sm text-gray-900">{{ pendingConfirm.message }}</p>
-          <div class="mt-4 flex justify-end gap-2">
-            <button
-              class="rounded px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-100 transition-colors"
-              data-test="app-confirm-cancel"
-              @click="pendingConfirm = null"
-            >
-              取消
-            </button>
-            <button
-              class="rounded bg-red-600 px-3 py-1.5 text-xs text-white hover:bg-red-700 transition-colors"
-              data-test="app-confirm-ok"
-              @click="settleConfirm"
-            >
-              确认
-            </button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
 
     <!-- Delete silence confirmation dialog -->
     <Teleport to="body">

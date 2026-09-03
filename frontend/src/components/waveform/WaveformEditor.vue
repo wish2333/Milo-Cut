@@ -327,30 +327,15 @@ const scrollScheduler = createRafScheduler(() => {
 // the last programmatic write is our own echo (no cooldown); any other
 // trusted event is the user's hand -> pause playback-follow for the 3s
 // cooldown. Untrusted events skip classification entirely (test/programmatic).
-// Smooth-follow echo window: while a smooth programmatic scroll animates,
-// intermediate trusted events are neither classified as manual nor synced
-// into state (state already holds the target).
-const SMOOTH_ECHO_WINDOW_MS = 800
-let programmaticUntil = 0
-
 function writeScrollTop(top: number): void {
   if (!Number.isFinite(top)) return // blank-guard: NaN scrollTop blanks the surface
+  // Instant write (smooth experiment REVERTED: animation intermediate
+  // positions show unmounted virtual-window regions = blank surface).
   rowLayout.scrollTop.value = top
-  programmaticUntil = Date.now() + SMOOTH_ECHO_WINDOW_MS
-  const el = scrollEl
-  if (!el) return
-  try {
-    el.scrollTo({ top, behavior: "smooth" })
-  } catch {
-    el.scrollTop = top // happy-dom / older engines
-  }
 }
 
 function handleScroll(e: Event) {
   const source = e.target as HTMLElement | null
-  if (Date.now() < programmaticUntil) {
-    return // smooth animation in flight: state is already the target
-  }
   if (source && (e as Event & { isTrusted?: boolean }).isTrusted === true) {
     if (!rowLayout.consumeAutoScroll(source.scrollTop)) {
       rowLayout.markManualScroll()

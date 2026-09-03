@@ -83,3 +83,8 @@ pytest 711 ✓ / vitest 660 ✓ / build ✓ / lint 0 ✓ / ruff 0 ✓
 | 副轨清空/删除/删段后撤销不可恢复 | 新增的 lane 操作处理器直调后端，**没有推撤销快照**（对比 handleImportSrtAsTrack 的 S3 先例） | 四个处理器（删段/删轨/清空/建段）统一先 `pushSnapshot(projectRef, ["tracks","bindings"], label)` |
 | 拖动 trim 记录太多撤销点，覆盖历史 | useSegmentEdit / useTrackEdit 的 undo 捕获在**每次 mousemove** 都触发（后端推送有防抖、捕获没有） | 捕获按 `段:边` 键合并（1.2s 空闲窗）：首次移动捕获拖前状态，窗口内跳过；暂停 >1.2s 开新点 |
 | 控制台 ResizeObserver loop 报错 | ResizeObserver 回调无条件写 viewportHeight → 重渲染 → 再触发 | 变化守卫（值不同才写） |
+
+## 追加（六轮：空白根因收敛 + 移除确认弹窗）
+
+- **空白（仍复现，手动滚动恢复）**：现象 = state 与 DOM 滚动位不一致（虚拟窗按 state 挂行、DOM 停在别处 → 视口落空；手动滚动触发 state 同步即恢复）。smooth 动画实验是主要嫌疑（动画期中间位区域无挂载行 + 动画可被状态写取消产生不一致）——**按用户许可回退为瞬时写入**（P3-1..P4-3 已验证形态），handleScroll 恢复恒调度。若瞬时写入后仍复现：需要录屏 + 复现工程，届时在 handleScroll 挂 state/DOM 差值日志定位。
+- **确认弹窗移除**：撤销已可恢复（快照齐全），删除整轨/清空此轨改为直接执行（PyWebView 无 window.confirm，自绘弹窗也不必要）。
