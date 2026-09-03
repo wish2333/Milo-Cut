@@ -415,12 +415,21 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
     )
     if (importRes.success && importRes.data) {
       emit("project-updated", importRes.data)
-      const data = importRes.data as {
-        tracks?: Array<{ segments?: unknown[] }>
-        bindings?: unknown[]
-      }
-      const segCount = data.tracks?.[0]?.segments?.length ?? 0
-      showToast(`已导入副轨：${segCount} 条字幕，${data.bindings?.length ?? 0} 条绑定`, "success", 3000)
+      // Smoke fix: counts read from the ACTIVE TIMELINE of the returned
+      // project (the top level has no tracks/bindings -- the old code
+      // always reported "0 条字幕，0 条绑定").
+      const proj = importRes.data as Project
+      const tl =
+        proj.timelines?.find(t => t.id === proj.active_timeline_id) ??
+        proj.timelines?.[0]
+      const tracksList = tl?.transcript?.tracks ?? []
+      const imported = tracksList[tracksList.length - 1]
+      const segCount = imported?.segments?.length ?? 0
+      showToast(
+        `已导入副轨「${imported?.name ?? "?"}」：${segCount} 条字幕`,
+        segCount > 0 ? "success" : "error",
+        4000,
+      )
       statusMessage.value = ""
     } else {
       errorMessage.value = importRes.error ?? "Failed to import track SRT"

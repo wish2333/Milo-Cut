@@ -939,6 +939,16 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
       >
         Regen
       </button>
+      <!-- M7-1 smoke feedback: 建段 toggle applies to BOTH modes (default off) -->
+      <button
+        class="shrink-0 rounded px-1.5 py-0.5 text-[11px] leading-none transition-colors"
+        :class="buildMode ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
+        data-test="build-mode-toggle"
+        title="建段模式：开启后点击时间轴空白区域直接新建字幕（关闭时点击为定位）"
+        @click="toggleBuildMode"
+      >
+        {{ buildMode ? "建段中" : "建段" }}
+      </button>
       <!-- v3.0.2 M4-1: mode switch (multi rows / basic focus) -->
       <div class="flex shrink-0 overflow-hidden rounded border border-gray-300" data-test="mode-switch">
         <button
@@ -982,15 +992,6 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
         >
           <option v-for="h in rowHeightPresets" :key="h" :value="h">{{ h }}px</option>
         </select>
-        <button
-          class="shrink-0 rounded px-1.5 py-0.5 text-[11px] leading-none transition-colors"
-          :class="buildMode ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
-          data-test="build-mode-toggle"
-          title="建段模式：开启后点击多行空白区域直接新建字幕（关闭时点击为定位/拖动刷选）"
-          @click="toggleBuildMode"
-        >
-          {{ buildMode ? "建段中" : "建段" }}
-        </button>
         <span class="flex-1 text-center" data-test="viewport-coverage">{{ viewportCoverageLabel }}</span>
       </div>
       <div v-else class="contents">
@@ -1113,6 +1114,7 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
           :current-time="currentTime"
           :duration="duration"
           :global-edit-mode="globalEditMode"
+          :empty-area-mode="buildMode ? 'add' : 'seek'"
           style="z-index: 2"
           @select-range="handleSelectRange"
           @add-segment="handleAddSegment"
