@@ -52,3 +52,8 @@ pytest 711 ✓ / vitest 660 ✓ / build ✓ / lint 0 ✓ / ruff 0 ✓
 - **「删除此轨/清空此轨点了没用」真根因**：PyWebView **不实现 window.confirm**（静默返回假值）→ 确认流程直接跳过。改用应用内确认对话框（`app-confirm`，与既有删除静音确认框同款交互），删除整轨/清空此轨全部走新对话框。
 - **空轨删除入口**：lane 根节点挂 `@contextmenu`——右键 lane 任意位置（含空白/标题条）出菜单（清空此轨/删除此轨）；块上右键仍为三项（含删除此条字幕）。空轨（0 段）从此可删。
 - 测试 +1：空轨右键菜单（无「删除此条字幕」、有清空/删除、删除此轨 emit）。
+
+## 追加（五轮：删除失败可见化 + 启动能力探测）
+
+- handleDeleteTrack / handleDeleteTrackSegment 全路径可见化：成功绿色 toast / 业务失败红色 toast（含后端 error 文本）/ 桥接异常红色 toast（含「请完全退出并重启应用」指引）。
+- WorkspacePage onMounted 探测 `window.pywebview.api.delete_track`：缺失即红色长时 toast「后端进程为旧版本」，把「忘了重启」这类状态在打开工作区 3 秒内直接告知用户。

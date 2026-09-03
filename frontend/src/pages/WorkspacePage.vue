@@ -900,6 +900,18 @@ function handleClearTrack(trackId: string) {
 // semantics (REVEAL_BIAS + comfort skip + follow cooldown) so the playing
 // row is actually in view after a list click. No-op in basic mode.
 const waveformEditorRef = ref<InstanceType<typeof WaveformEditor> | null>(null)
+
+// v3.0.2 smoke fix: surface a stale Python process EARLY -- the track
+// deletion methods only exist after a full app restart (pywebview freezes
+// the API surface at launch; the frontend hot-reloads, the backend does not).
+onMounted(() => {
+  window.setTimeout(() => {
+    const api = (window as { pywebview?: { api?: Record<string, unknown> } }).pywebview?.api
+    if (api && typeof api.delete_track !== "function") {
+      showToast("检测到后端进程为旧版本（无轨道删除能力）：请完全退出 Milo-Cut 后重新运行 dev.py", "error", 10000)
+    }
+  }, 3000)
+})
 /** M5-3: true while the waveform playhead is scrubbed (list follow skips). */
 const waveformScrubbing = ref(false)
 function handleListSeek(time: number) {

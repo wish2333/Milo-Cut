@@ -456,22 +456,34 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
       const res = await call<ProjectResponse>("delete_track_segment", trackId, segmentId)
       if (res.success && res.data) {
         emit("project-updated", res.data)
+        showToast("字幕已删除", "success", 2000)
       } else {
-        showToast(res.error ?? "删除副轨字幕失败", "error", 5000)
+        showToast(res.error ?? "删除副轨字幕失败", "error", 6000)
       }
     } catch (e) {
-      // Backend missing the method = the Python process predates this fix
-      // (restart dev.py). Surface it instead of dying silently.
-      showToast(`删除副轨字幕失败：${e instanceof Error ? e.message : String(e)}（请重启应用后端）`, "error", 6000)
+      showToast(
+        `删除副轨字幕失败：${e instanceof Error ? e.message : String(e)}（后端未含 delete_track_segment？请完全退出并重启应用）`,
+        "error",
+        8000,
+      )
     }
   }
 
   async function handleDeleteTrack(trackId: string) {
-    const res = await call<ProjectResponse>("delete_track", trackId)
-    if (res.success && res.data) {
-      emit("project-updated", res.data)
-    } else {
-      showToast(res.error ?? "删除副轨失败", "error", 5000)
+    try {
+      const res = await call<ProjectResponse>("delete_track", trackId)
+      if (res.success && res.data) {
+        emit("project-updated", res.data)
+        showToast("副轨已删除", "success", 3000)
+      } else {
+        showToast(res.error ?? "删除副轨失败", "error", 6000)
+      }
+    } catch (e) {
+      showToast(
+        `删除副轨失败：${e instanceof Error ? e.message : String(e)}（后端未含 delete_track？请完全退出并重启应用）`,
+        "error",
+        8000,
+      )
     }
   }
 
