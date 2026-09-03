@@ -173,12 +173,12 @@ function handleEmptyDoubleClick() {
 function handleBlockContextMenu(segmentId: string, e: MouseEvent) {
   e.preventDefault()
   e.stopPropagation()
+  // Mutex FIRST: the previous menu's close fn nulls this SAME ref -- if we
+  // set the new state before registering, the close wiped it (reported:
+  // right-click-close then the next right-click opened nothing).
+  openContextMenu(() => { contextMenu.value = null })
   selectedBlockId.value = segmentId
   contextMenu.value = { x: e.clientX, y: e.clientY, segmentId }
-  // v3.0.0 M9-1: single-instance mutex via the shared manager -- opening
-  // here closes any other open menu (e.g. the Timeline row menu); the
-  // former `closeallcontextmenus` broadcast is retired.
-  openContextMenu(() => { contextMenu.value = null })
 }
 
 function handleBlockClick(seg: Segment) {

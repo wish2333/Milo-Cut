@@ -1280,3 +1280,52 @@ describe("WaveformEditor per-row track lanes (M7-2)", () => {
     wrapper.unmount()
   })
 })
+
+describe("WaveformEditor multi 建段模式 (smoke feedback #4)", () => {
+  function mountBuild() {
+    localStorage.clear()
+    localStorage.setItem(
+      ROW_LAYOUT_STORAGE_KEY,
+      JSON.stringify({ mode: "multi", secondsPerRow: 10, rowHeight: 120 }),
+    )
+    const wrapper = mount(WaveformEditor, {
+      props: { segments: [], edits: [], duration: 100, currentTime: 5 },
+      global: {
+        stubs: {
+          WaveformCanvas: true,
+          TimeMarksLayer: true,
+          SegmentBlocksLayer: {
+            name: "SegmentBlocksLayer",
+            props: { emptyAreaMode: { type: String, default: "add" } },
+            emits: ["add-segment"],
+            template: `<div data-test="seg-layer-stub" class="absolute inset-0" @mousedown.self="$emit('add-segment', 1, 1.5)"></div>`,
+          },
+          ScrollbarStrip: true,
+          PlayheadOverlay: true,
+        },
+      },
+    })
+    return wrapper
+  }
+
+  afterEach(() => localStorage.clear())
+
+  it("default (off): rows receive seek mode", async () => {
+    const wrapper = mountBuild()
+    await wrapper.vm.$nextTick()
+    const stub = wrapper.findComponent({ name: "SegmentBlocksLayer" })
+    expect(stub.props("emptyAreaMode")).toBe("seek")
+    wrapper.unmount()
+  })
+
+  it("toggle ON: rows receive add mode (empty click creates); off restores", async () => {
+    const wrapper = mountBuild()
+    await wrapper.vm.$nextTick()
+    const stub = () => wrapper.findComponent({ name: "SegmentBlocksLayer" })
+    await wrapper.find('[data-test="build-mode-toggle"]').trigger("click")
+    expect(stub().props("emptyAreaMode")).toBe("add")
+    await wrapper.find('[data-test="build-mode-toggle"]').trigger("click")
+    expect(stub().props("emptyAreaMode")).toBe("seek")
+    wrapper.unmount()
+  })
+})

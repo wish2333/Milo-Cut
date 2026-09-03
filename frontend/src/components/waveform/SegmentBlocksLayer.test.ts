@@ -315,3 +315,20 @@ describe("SegmentBlocksLayer fillContainer (smoke fix)", () => {
     wrapper.unmount()
   })
 })
+
+describe("SegmentBlocksLayer menu re-open (smoke fix #3)", () => {
+  it("right-clicking another block swaps to the NEW menu (no shared-ref wipe)", async () => {
+    const { wrapper } = mountLayer([
+      seg({ id: "s1", start: 0.5, end: 2.0 }),
+      seg({ id: "s2", start: 6.0, end: 8.0 }),
+    ])
+    const blocks = wrapper.findAll(".rounded.border")
+    await blocks[0].trigger("contextmenu")
+    expect(document.body.querySelector(".fixed.z-dropdown")).not.toBeNull()
+    // Right-click closes menu #1 AND must open menu #2 for the new block.
+    await blocks[1].trigger("contextmenu")
+    const menu = document.body.querySelector(".fixed.z-dropdown")
+    expect(menu).not.toBeNull()
+    wrapper.unmount()
+  })
+})

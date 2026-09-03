@@ -18,3 +18,13 @@ pytest 711（+3 后端删除用例）✓ / vitest 657（+4：fillContainer/主�
 
 - 反馈 2 的「点了没用」如出现在最新代码上：`delete_track_segment` 是新增后端方法，**需重启 dev.py 的 Python 进程**才会进入 pywebview API 面（前端热更新不含后端）。
 - 反馈 2a「字幕时间线切换到副字幕」（列表切换显示/编辑副轨）为独立功能，记入下一批次（列表当前仅主轨）。
+
+## 追加（二轮反馈澄清：3/4/5 未解决的处理）
+
+| # | 二轮反馈 | 处理 |
+|---|---|---|
+| 3 | 右键关闭后打不开新菜单 | **真根因**：互斥锁关闭回调与开启新菜单共享同一 `contextMenu` ref——开新菜单先 set 状态、后调旧 close（把 ref 置 null）→ 新菜单被自身注册流程抹除。修复：先 `openContextMenu`（旧 close 先跑）再 set 新状态；SegmentBlocksLayer 与 TrackLane 同步修复。回归测试：连开两块菜单持续可见（旧代码此测试必红） |
+| 4 | 建段 toggle 无效 | 实证测试证明管线正常（toggle → 行层收到 'add'/'seek' 切换，+2 例）。请确认：①控件栏「建段」按钮是否变高亮「建段中」；②点击的是行内空白（块上不放段）。若仍无效请描述点击位置 |
+| 5 | 跟随无动画 + 列表不滚动 | 波形 smooth 已合入（需 WebView 支持 scrollTo options；WKWebView/WebView2 均支持）；列表跟随已恢复（playheadSegmentId watcher + scrubbing 抑制接线）。请重验；若列表仍不滚，告知播放时右侧列表是否有蓝色播放指示条移动 |
+
+另：反馈 2 需**重启 dev.py 的 Python 进程**（新增后端方法），若已重启仍失败请 F12 控制台截图报错。

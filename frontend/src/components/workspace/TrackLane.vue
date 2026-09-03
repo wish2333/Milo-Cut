@@ -45,10 +45,11 @@ function closeMenu() {
 function openBlockMenu(segmentId: string, e: MouseEvent) {
   e.preventDefault()
   e.stopPropagation()
-  contextMenu.value = { x: e.clientX, y: e.clientY, segmentId }
+  // Mutex first (see SegmentBlocksLayer -- shared-ref wipe ordering).
   openContextMenu(() => {
     contextMenu.value = null
   })
+  contextMenu.value = { x: e.clientX, y: e.clientY, segmentId }
 }
 
 const metrics = inject<TimelineMetrics>(TIMELINE_METRICS_KEY)!
