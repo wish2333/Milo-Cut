@@ -137,8 +137,8 @@ R3 增补 4 条顺序约束的落点：① golden 先行 → **P3-1**（本版�
 
 ### P1-1 任务类型与事件常量双侧（core/models.py · core/events.py · events.ts）
 
-- [ ] `core/models.py` TaskType 追加 `LLM_TRANSLATION = "llm_translation"`（LLM 区块末尾，1 行 + 注释）
-- [ ] `core/events.py` + `frontend/src/utils/events.ts` 双侧各新增 1 常量（`LLM_TRANSLATION_COMPLETED` / `EVENT_LLM_TRANSLATION_COMPLETED` = `"llm:translation_completed"`，**同一 commit**，R0-2）
+- [x] `core/models.py` TaskType 追加 `LLM_TRANSLATION = "llm_translation"`（LLM 区块末尾，1 行 + 注释）
+- [x] `core/events.py` + `frontend/src/utils/events.ts` 双侧各新增 1 常量（`LLM_TRANSLATION_COMPLETED` / `EVENT_LLM_TRANSLATION_COMPLETED` = `"llm:translation_completed"`，**同一 commit**，R0-2）
 
 **验收方式**: M5 组 = M1 expose/事件（事件双侧登记项）；R0-4 专项 `git diff v3.0.3 -- core/models.py` 仅含该行；R0-2 两条 grep 恰好各命中 1 行。
 **验收标准**: 全套门禁全绿（红线命令自此步起按期望输出核对）。

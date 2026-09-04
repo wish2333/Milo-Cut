@@ -43,6 +43,8 @@ class TaskType(StrEnum):
     LLM_SUBTITLE_CORRECTION = "llm_subtitle_correction"
     LLM_HIGHLIGHT = "llm_highlight"
     LLM_SEMANTIC_SEARCH = "llm_semantic_search"
+    # v3.0.4 M1: AI translation to a bound secondary subtitle track
+    LLM_TRANSLATION = "llm_translation"
 
 
 class EditStatus(StrEnum):
