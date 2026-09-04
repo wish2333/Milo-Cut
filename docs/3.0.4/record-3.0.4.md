@@ -17,7 +17,7 @@
 | P0-1 | [record-3.0.4-P0-1.md](./record-3.0.4-P0-1.md) | 已完成 | 文档入库 `83a61d6`；基线全绿 |
 | P0-2 | [record-3.0.4-P0-2.md](./record-3.0.4-P0-2.md) | 已完成 | 门禁脚本三段 dry-run exit 0 |
 | P1-1 | [record-3.0.4-P1-1.md](./record-3.0.4-P1-1.md) | 已完成 | 合入 `b4d71a6`（本行由 P1-2 补登记） |
-| P1-2 | [record-3.0.4-P1-2.md](./record-3.0.4-P1-2.md) | 已完成（待负责人审查合并） | 分支 `dev-3.0.4-p1-2`；门禁 exit 0 / pytest 729 |
+| P1-2 | [record-3.0.4-P1-2.md](./record-3.0.4-P1-2.md) | 已完成（负责人已审查合并，EXPECTED_KEYS 增行已追认，见 §4） | 合入 `6925bae` |
 | P1-3 ~ P1-6 | （待建） | 未开始 | |
 | P2-1 ~ P2-6 | （待建） | 未开始 | |
 | P3-1 ~ P3-9 | （待建） | 未开始 | |
@@ -58,7 +58,13 @@
 |---|---|---|---|
 | （待 P3-2 执行后登记：TranscriptRow.test.ts:270-275「never enters text edit under globalEditMode」→「enters text edit under globalEditMode (track variant)」） | | R3.1 裁决反转（T1 方案 A） | P3-2 |
 
-后端 `tests/` 断言零删改（白名单为空）。
+后端 `tests/` 断言零删改（反转白名单为空）。
+
+### 4.1 既有测试文件受控增行登记（R0-3 门禁 grep 之外，负责人追认制）
+
+| 文件:位置 | 增行内容 | 性质与理由 | 追认 | 登记步 |
+|---|---|---|---|---|
+| tests/test_llm_prompts.py EXPECTED_KEYS 集合 | `+ "translation",`（1 行，集合字面量） | 非断言删改（`^-` grep 恒 0）；既有 `test_all_expected_keys_present` 为注册表键集**精确等值**断言，translation 注册后不增该键必红；增行后断言严格性保持且覆盖扩为 6 键，符合「只增不改」精神 | 架构师已追认（P1-2 合并审查） | P1-2 |
 
 ## 5. 超期决策树触发留痕（立项会授权，四要素：日期/触发信号/裁决与影响面/回写文档处）
 
