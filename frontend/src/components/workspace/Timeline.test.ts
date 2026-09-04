@@ -206,7 +206,7 @@ describe("Timeline list track selector (M1-1)", () => {
     wrapper.unmount()
   })
 
-  it("renders main + one entry per track with a live count badge", () => {
+  it("renders main + first track as buttons; further tracks live in the dropdown", () => {
     const wrapper = mountTimeline(longSegments(3), {
       tracks: trackOptions,
       activeTrackId: null,
@@ -214,9 +214,47 @@ describe("Timeline list track selector (M1-1)", () => {
     const selector = wrapper.find('[data-test="list-track-selector"]')
     expect(selector.exists()).toBe(true)
     expect(wrapper.find('[data-test="select-main-track"]').exists()).toBe(true)
+    // first track keeps its segmented button + live count badge
     expect(wrapper.find('[data-test="select-track-t_en"]').text()).toContain("English")
     expect(wrapper.find('[data-test="track-count-t_en"]').text()).toBe("2")
-    // empty track still shows its (zero) count badge
+    // second track is NOT a button anymore -- it lives in the dropdown menu
+    expect(wrapper.find('[data-test="select-track-t_zh"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="track-more"]').exists()).toBe(true)
+    const menuZh = wrapper.find('[data-test="select-track-menu-t_zh"]')
+    expect(menuZh.text()).toContain("中文翻译")
+    expect(menuZh.text()).toContain("0")
+    wrapper.unmount()
+  })
+
+  it("single-track projects keep the plain segmented selector (no dropdown)", () => {
+    const wrapper = mountTimeline(longSegments(3), {
+      tracks: [trackOptions[0]],
+      activeTrackId: null,
+    })
+    expect(wrapper.find('[data-test="select-track-t_en"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="track-more"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it("picking from the dropdown emits select-track and closes the menu", async () => {
+    const wrapper = mountTimeline(longSegments(3), {
+      tracks: trackOptions,
+      activeTrackId: null,
+    })
+    await wrapper.find('[data-test="select-track-menu-t_zh"]').trigger("click")
+    expect(wrapper.emitted("select-track")?.[0]).toEqual(["t_zh"])
+    expect(wrapper.find('[data-test="track-more"]').attributes("open")).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it("an active overflow track shows its name in the dropdown trigger", () => {
+    const wrapper = mountTimeline(longSegments(3), {
+      tracks: trackOptions,
+      activeTrackId: "t_zh",
+    })
+    const toggle = wrapper.find('[data-test="track-more-toggle"]')
+    expect(toggle.text()).toContain("中文翻译")
+    expect(toggle.classes()).toContain("bg-gray-700")
     expect(wrapper.find('[data-test="track-count-t_zh"]').text()).toBe("0")
     wrapper.unmount()
   })
