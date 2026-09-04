@@ -346,6 +346,26 @@ const subtitleSegments = computed(() => buildSubtitleIndex(props.segments))
 // gets its own empty-state card with the create entry.
 // ---------------------------------------------------------------------------
 const isTrackMode = computed(() => (props.activeTrackId ?? null) !== null)
+
+// -- v3.0.3 用户反馈: 选择器防挤占 ------------------------------------------
+// 主轨 + 第一条副轨保持分段按钮; 第二条起收进箭头下拉（TimelineSwitcher
+// 同款 details.dropdown 模式）。激活轨若在下拉范围内, 触发器显示其名称。
+const primaryTrack = computed(() => props.tracks?.[0] ?? null)
+const trackMenuOpen = ref(false)
+function onTrackMenuToggle(e: ToggleEvent) {
+  trackMenuOpen.value = (e.target as HTMLDetailsElement).open
+}
+const overflowActiveTrack = computed(() => {
+  const active = props.activeTrackId
+  if (!active) return null
+  const idx = props.tracks?.findIndex(t => t.id === active) ?? -1
+  return idx >= 1 ? (props.tracks ?? [])[idx] : null
+})
+function pickTrack(id: string) {
+  trackMenuOpen.value = false
+  emit("select-track", id)
+}
+
 const boundExtensionIds = computed(
   () => new Set((props.bindings ?? []).map(b => b.extension_segment_id)),
 )
@@ -435,38 +455,78 @@ watch(playheadSegmentId, (id) => {
       <!-- LEFT: Timeline title + tools -->
       <div class="flex items-center gap-2 flex-1 min-w-0">
         <span class="text-sm font-semibold">字幕时间线</span>
-        <!-- v3.0.3 M1-1: list track selector (segmented, 3.0.2 control-bar
-             style). Rendered only when extension tracks exist; null option
-             = main track. Pure view state -- selecting never patches. -->
-        <div
-          v-if="tracks && tracks.length > 0"
-          data-test="list-track-selector"
-          class="flex shrink-0 items-center overflow-hidden rounded border border-gray-300"
-        >
-          <button
-            data-test="select-main-track"
-            class="px-1.5 py-0.5 text-[11px] leading-none transition-colors"
-            :class="!activeTrackId ? 'bg-gray-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
-            title="主轨字幕列表"
-            @click="emit('select-track', null)"
+        <!-- v3.0.3 M1-1: list track selector. 主轨 + 第一条副轨 = 分段按钮;
+             更多副轨收进箭头下拉（用户反馈: 横向铺开会挤占头部空间）。
+             Rendered only when extension tracks exist; null option = main
+             track. Pure view state -- selecting never patches. -->
+        <div v-if="tracks && tracks.length > 0" data-test="list-track-selector" class="flex shrink-0 items-center">
+          <div class="flex items-center overflow-hidden rounded border border-gray-300">
+            <button
+              data-test="select-main-track"
+              class="px-1.5 py-0.5 text-[11px] leading-none transition-colors"
+              :class="!activeTrackId ? 'bg-gray-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
+              title="主轨字幕列表"
+              @click="emit('select-track', null)"
+            >
+              主轨
+            </button>
+            <button
+              v-if="primaryTrack"
+              :data-test="`select-track-${primaryTrack.id}`"
+              class="flex items-center gap-1 px-1.5 py-0.5 text-[11px] leading-none transition-colors"
+              :class="activeTrackId === primaryTrack.id ? 'bg-gray-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
+              :title="`切换到副轨 ${primaryTrack.name}`"
+              @click="emit('select-track', primaryTrack.id)"
+            >
+              <span class="max-w-[80px] truncate">{{ primaryTrack.name }}</span>
+              <span
+                class="rounded bg-black/10 px-1 text-[10px]"
+                :data-test="`track-count-${primaryTrack.id}`"
+              >{{ primaryTrack.segmentCount }}</span>
+            </button>
+          </div>
+          <details
+            v-if="tracks.length > 1"
+            data-test="track-more"
+            class="dropdown dropdown-end ml-1"
+            :open="trackMenuOpen"
+            @toggle="onTrackMenuToggle"
           >
-            主轨
-          </button>
-          <button
-            v-for="t in tracks"
-            :key="t.id"
-            :data-test="`select-track-${t.id}`"
-            class="flex items-center gap-1 px-1.5 py-0.5 text-[11px] leading-none transition-colors"
-            :class="activeTrackId === t.id ? 'bg-gray-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
-            :title="`切换到副轨 ${t.name}`"
-            @click="emit('select-track', t.id)"
-          >
-            <span class="max-w-[80px] truncate">{{ t.name }}</span>
-            <span
-              class="rounded bg-black/10 px-1 text-[10px]"
-              :data-test="`track-count-${t.id}`"
-            >{{ t.segmentCount }}</span>
-          </button>
+            <summary
+              data-test="track-more-toggle"
+              class="flex cursor-pointer list-none items-center gap-1 rounded border border-gray-300 px-1.5 py-0.5 text-[11px] leading-none transition-colors"
+              :class="overflowActiveTrack ? 'bg-gray-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
+              title="更多副轨"
+            >
+              <template v-if="overflowActiveTrack">
+                <span class="max-w-[80px] truncate">{{ overflowActiveTrack.name }}</span>
+                <span
+                  class="rounded bg-white/20 px-1 text-[10px]"
+                  :data-test="`track-count-${overflowActiveTrack.id}`"
+                >{{ overflowActiveTrack.segmentCount }}</span>
+              </template>
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+              </svg>
+            </summary>
+            <ul class="dropdown-content z-dropdown menu w-52 rounded-box border border-base-300 bg-base-100 p-1 shadow-lg">
+              <li v-for="t in tracks" :key="t.id">
+                <a
+                  :data-test="`select-track-menu-${t.id}`"
+                  class="flex items-center justify-between text-sm"
+                  @click="pickTrack(t.id)"
+                >
+                  <span class="flex min-w-0 items-center gap-1">
+                    <span class="truncate">{{ t.name }}</span>
+                    <span class="rounded bg-black/10 px-1 text-[10px]">{{ t.segmentCount }}</span>
+                  </span>
+                  <svg v-if="t.id === activeTrackId" xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                  </svg>
+                </a>
+              </li>
+            </ul>
+          </details>
         </div>
         <!-- v2.1.1 M4-1: selection mode toggle -->
         <button
