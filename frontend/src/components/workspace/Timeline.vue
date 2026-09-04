@@ -509,18 +509,20 @@ watch(playheadSegmentId, (id) => {
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
               </svg>
             </summary>
-            <ul class="dropdown-content z-dropdown menu w-52 rounded-box border border-base-300 bg-base-100 p-1 shadow-lg">
+            <!-- hand-styled rows: DaisyUI `menu` forces a grid layout on
+                 li > a that lets rows exceed the fixed panel width (count
+                 badge / check rendered OUTSIDE the background). flex-1
+                 truncate keeps every row inside the panel. -->
+            <ul class="dropdown-content z-dropdown w-52 rounded-box border border-base-300 bg-base-100 p-1 shadow-lg">
               <li v-for="t in tracks" :key="t.id">
                 <a
                   :data-test="`select-track-menu-${t.id}`"
-                  class="flex items-center justify-between text-sm"
+                  class="flex w-full min-w-0 cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm text-gray-700 hover:bg-gray-100"
                   @click="pickTrack(t.id)"
                 >
-                  <span class="flex min-w-0 items-center gap-1">
-                    <span class="truncate">{{ t.name }}</span>
-                    <span class="rounded bg-black/10 px-1 text-[10px]">{{ t.segmentCount }}</span>
-                  </span>
-                  <svg v-if="t.id === activeTrackId" xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <span class="min-w-0 flex-1 truncate">{{ t.name }}</span>
+                  <span class="shrink-0 rounded bg-black/10 px-1 text-[10px] text-gray-600">{{ t.segmentCount }}</span>
+                  <svg v-if="t.id === activeTrackId" xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 shrink-0 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
                   </svg>
                 </a>
