@@ -124,9 +124,9 @@ R3 增补 4 条顺序约束的落点：① golden 先行 → **P3-1**（本版�
 
 ### P0-2 红线门禁脚本化（PM 裁决：脚本固化，非手动命令块）
 
-- [ ] 新建 `scripts/gates-v3.0.4.sh`（仓库已有 scripts/ 惯例）：后端门禁 / 前端门禁 / 红线检查三段，**命令与期望输出原样封装 SPEC M5，零改写**（仅加段落标题与汇总 exit code）
-- [ ] 双环境 dry-run（macOS bash / Windows Git Bash）输出与手动逐条执行一致；P0 时点红线段全部空/零
-- [ ] 固化执行约定：每 phase 合入前执行一次、stdout 全文贴当步 record；**SPEC 与脚本冲突以 SPEC 为准当场修脚本**；shell 环境受限时回落命令块手动执行 + record 登记（不得因脚本问题阻塞合入）
+- [x] 新建 `scripts/gates-v3.0.4.sh`（仓库已有 scripts/ 惯例）：后端门禁 / 前端门禁 / 红线检查三段，**命令与期望输出原样封装 SPEC M5，零改写**（仅加段落标题与汇总 exit code）
+- [x] 双环境 dry-run（macOS bash / Windows Git Bash）输出与手动逐条执行一致；P0 时点红线段全部空/零（**本执行环境仅 Linux bash 可用，双环境 dry-run 顺延 beta.1 真机补验，已登记 record-3.0.4-P0-2.md §4**；P0 时点红线段全部空/零已验证）
+- [x] 固化执行约定：每 phase 合入前执行一次、stdout 全文贴当步 record；**SPEC 与脚本冲突以 SPEC 为准当场修脚本**；shell 环境受限时回落命令块手动执行 + record 登记（不得因脚本问题阻塞合入）
 
 **裁决理由**: 红线命令从 3.0.3 的 1 条扩为 9+ 条判等式，人工逐条执行易漏且不可复核；脚本化后回到「一条命令」成本，输出可直接归档。脚本落 scripts/（新增文件，不在 `core/ main.py` diff 白名单审查范围，R0-5 不受影响），commit 用 `chore(gates): ...`。
 **验收方式**: 脚本在基线工作区跑通且三段汇总 exit 0（红线段空/零）。
