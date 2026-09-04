@@ -42,6 +42,9 @@ LLM_HIGHLIGHT_COMPLETED = "llm:highlight_completed"
 # P3: Semantic search
 LLM_SEMANTIC_SEARCH_COMPLETED = "llm:semantic_search_completed"
 
+# v3.0.4 M1: AI translation track completed
+LLM_TRANSLATION_COMPLETED = "llm:translation_completed"
+
 # Workflow (v2.1.0 Phase 3)
 WORKFLOW_STARTED = "workflow:started"
 WORKFLOW_STEP_STARTED = "workflow:step_started"

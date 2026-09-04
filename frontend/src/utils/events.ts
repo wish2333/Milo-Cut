@@ -32,6 +32,9 @@ export const EVENT_LLM_HIGHLIGHT_COMPLETED = "llm:highlight_completed"
 // P3: Semantic search
 export const EVENT_LLM_SEMANTIC_SEARCH_COMPLETED = "llm:semantic_search_completed"
 
+// v3.0.4 M1: AI translation track completed
+export const EVENT_LLM_TRANSLATION_COMPLETED = "llm:translation_completed"
+
 // Workflow (v2.1.0 Phase 3)
 export const EVENT_WORKFLOW_STARTED = "workflow:started"
 export const EVENT_WORKFLOW_STEP_STARTED = "workflow:step_started"
