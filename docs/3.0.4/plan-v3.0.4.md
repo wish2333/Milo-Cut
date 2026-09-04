@@ -154,10 +154,10 @@ R3 增补 4 条顺序约束的落点：① golden 先行 → **P3-1**（本版�
 
 ### P1-3 翻译批处理管线（core/llm_service.py）
 
-- [ ] 新增 `analyze_subtitle_translation(...)` 及私有辅助（复刻纠错骨架 :935-1218：批窗 30 / 字符预算 4000 / 并发 5 / opaque id / 4 层 JSON 解析 / BatchLedger / 每批一次重试 / 连续 429 转串行 / cancel 逐批检查 / progress 批粒度）
-- [ ] **coverage 反向校验**：全量输出守恒——输出 id 集 ≠ 目标 id 集（漏译或多译）的批重试后仍失败 → 记 ledger 失败、任务失败零落盘
-- [ ] 上下文 = **源文** ±ctx 窗口（并发 5 保留，「定稿译文滑动窗」登记版本池，SPEC M1-2 裁决）
-- [ ] 用例：批窗+字符预算收缩；漏译批/多译批进 ledger；429 转串行；非 json_mode 4 层解析 ×3（坏 JSON / 围栏 / 前后缀噪声）；取消中途退出已完成批不写；opaque id 回映射
+- [x] 新增 `analyze_subtitle_translation(...)` 及私有辅助（复刻纠错骨架 :935-1218：批窗 30 / 字符预算 4000 / 并发 5 / opaque id / 4 层 JSON 解析 / BatchLedger / 每批一次重试 / 连续 429 转串行 / cancel 逐批检查 / progress 批粒度）
+- [x] **coverage 反向校验**：全量输出守恒——输出 id 集 ≠ 目标 id 集（漏译或多译）的批重试后仍失败 → 记 ledger 失败、任务失败零落盘
+- [x] 上下文 = **源文** ±ctx 窗口（并发 5 保留，「定稿译文滑动窗」登记版本池，SPEC M1-2 裁决）
+- [x] 用例：批窗+字符预算收缩；漏译批/多译批进 ledger；429 转串行；非 json_mode 4 层解析 ×3（坏 JSON / 围栏 / 前后缀噪声）；取消中途退出已完成批不写；opaque id 回映射（tests/test_llm_translation.py 20 例，详见 record-3.0.4-P1-3.md §6）
 
 **验收方式**: M5 组 = M1 管线 ≥12。
 **验收标准**: 门禁全绿；`core/llm_service.py` diff 仅含新增函数（白名单 R1.2）。

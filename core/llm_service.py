@@ -1588,3 +1588,387 @@ def semantic_search(
             },
         },
     }
+
+
+# ------------------------------------------------------------------
+# v3.0.4 M1-2: AI translation pipeline (P1-3)
+# ------------------------------------------------------------------
+
+
+def _translation_segment_id(seg: dict) -> str:
+    """Real segment id from a translation source segment dict.
+
+    The translation handler passes source segments as ``{"segment_id",
+    "start", "end", "text"}`` (SPEC M1-2); the shared correction-skeleton
+    helpers read ``id`` first, so translation normalizes every input to the
+    internal ``{"id", "text"}`` shape via this extractor (``segment_id``
+    wins, ``id`` is the fallback for direct service-level callers).
+    """
+    return str(seg.get("segment_id", seg.get("id", "")))
+
+
+def _validate_translation_coverage(
+    parsed_items: list[dict] | None,
+    target_ids: set[str],
+    id_map: dict[str, str],
+) -> tuple[list[dict], str | None]:
+    """Reverse coverage check: the output must conserve the target id set.
+
+    Unlike correction (subset semantics -- segments needing no fix are
+    simply omitted), translation requires a full-output conservation: every
+    target id must come back exactly once. Missing ids mean untranslated
+    segments; unknown or duplicated ids mean hallucinated output. Either
+    violation fails the batch (and, after its retry, the whole task).
+
+    Returns:
+        (translations, None) on conservation, ([], error message) otherwise.
+    """
+    if not parsed_items:
+        return [], "Empty translation output"
+
+    reverse_map = {v: k for k, v in id_map.items()}
+    translations: list[dict] = []
+    seen_ids: set[str] = set()
+    unknown_ids: list[str] = []
+    duplicate_ids: list[str] = []
+    for item in parsed_items:
+        if not isinstance(item, dict):
+            continue
+        raw_id = str(item.get("segment_id", ""))
+        # M3-5 pattern: translate opaque id back to the real segment id
+        seg_id = reverse_map.get(raw_id, raw_id)
+        if seg_id not in target_ids:
+            if seg_id not in unknown_ids:
+                unknown_ids.append(seg_id)
+            continue
+        if seg_id in seen_ids:
+            if seg_id not in duplicate_ids:
+                duplicate_ids.append(seg_id)
+            continue
+        seen_ids.add(seg_id)
+        translations.append(
+            {
+                "segment_id": seg_id,
+                "translated_text": str(item.get("translated_text", "")).strip(),
+            }
+        )
+
+    missing_ids = sorted(target_ids - seen_ids)
+    problems: list[str] = []
+    if missing_ids:
+        problems.append(f"missing ids: {missing_ids}")
+    if unknown_ids:
+        problems.append(f"unknown ids: {unknown_ids}")
+    if duplicate_ids:
+        problems.append(f"duplicate ids: {duplicate_ids}")
+    if problems:
+        return [], "Translation coverage violation (" + "; ".join(problems) + ")"
+    return translations, None
+
+
+def analyze_subtitle_translation(
+    segments: list[dict],
+    target_language: str,
+    *,
+    config: LlmConfig | None = None,
+    cancel_event: threading.Event | None = None,
+    progress_cb: Callable[[float, str], None] | None = None,
+    system_prompt: str | None = None,
+) -> dict[str, Any]:
+    """LLM-powered subtitle translation into a target language (v3.0.4 M1-2).
+
+    Replicates the ``analyze_subtitle_correction`` batch skeleton (batch
+    windows of ``llm_correction_batch_size`` shrunk by the
+    ``llm_max_batch_chars`` budget, ``llm_concurrency`` pool, opaque ids,
+    4-layer JSON parsing, BatchLedger, one retry per batch, sustained-429
+    serial fallback, per-batch cancel checks and batch-granularity
+    progress) with the translation-specific differences:
+
+    - Context is SOURCE text only (+/- ``llm_correction_context_window``
+      adjacent segments pre-built into each payload). Concurrent dispatch
+      cannot see finalized translations of other batches, so the
+      "finalized-translation sliding window" is out of scope by design.
+    - Reverse coverage validation: every batch output must conserve the
+      target id set exactly (missing / unknown / duplicated ids all fail).
+      Any batch failing after its single retry fails the WHOLE task --
+      the caller must persist nothing.
+
+    Args:
+        segments: Source segment dicts ``{"segment_id", "start", "end",
+            "text"}``. No track/deletion filtering happens here -- the
+            handler owns segment selection (SPEC M1-2 boundary).
+        target_language: Target language (display name; injected into the
+            system prompt by the handler's ``{{target_language}}``
+            replacement, not by this function).
+        config: LLM config (loads from settings if None).
+        cancel_event: Thread-safe cancellation signal.
+        progress_cb: Optional progress callback (percent, message).
+        system_prompt: Caller-resolved system prompt override; falls back
+            to the layered ``translation`` default (which still carries the
+            raw ``{{target_language}}`` placeholder -- the handler replaces
+            it, SPEC M1-3).
+
+    Returns:
+        {"success": True, "data": {"translations": [...], "token_usage":
+         {...}, "ledger": {...}}} with translations ordered like the input
+        segments (full conservation).
+        {"success": False, "error": str, "data": {"ledger", "token_usage"}}
+        when any batch failed after its retry (coverage violation, parse
+        failure, or API error) -- "data" is attached for observability
+        only; cancelled runs return a bare error envelope like correction.
+    """
+    if config is None:
+        config = get_llm_config()
+
+    if not config.is_configured():
+        return {"success": False, "error": "LLM not configured"}
+
+    if not segments:
+        return {"success": False, "error": "No segments to translate"}
+
+    if not target_language or not str(target_language).strip():
+        return {"success": False, "error": "Empty target language"}
+
+    # Resolve effective system prompt (caller override > layered default).
+    system = system_prompt or get_effective_prompt("translation")
+
+    # Same settings knobs as the correction skeleton (no new config keys).
+    settings = load_settings()
+    batch_size = max(1, int(settings.get("llm_correction_batch_size", 30)))
+    effective_ctx = max(0, int(settings.get("llm_correction_context_window", 5)))
+    concurrency = max(1, int(settings.get("llm_concurrency", 5)))
+    max_chars = int(settings.get("llm_max_batch_chars", 4000) or 0) or None
+
+    # Normalize handler input ({"segment_id", ...}) to the internal
+    # {"id", "text"} shape the shared correction-skeleton helpers expect.
+    source_segments: list[dict] = [
+        {"id": _translation_segment_id(s), "text": str(s.get("text", ""))}
+        for s in segments
+    ]
+
+    # M3-2 pattern: apply character budget by shrinking target windows first.
+    target_windows: list[tuple[int, int]] = []
+    start_i = 0
+    while start_i < len(source_segments):
+        end_i = min(start_i + batch_size, len(source_segments))
+        if max_chars:
+            acc = 0
+            probe = start_i
+            while probe < end_i:
+                seg_len = len(str(source_segments[probe].get("text", "")))
+                if probe > start_i and acc + seg_len > max_chars:
+                    break
+                acc += seg_len
+                probe += 1
+            end_i = probe if probe > start_i else start_i + 1
+        target_windows.append((start_i, end_i))
+        start_i = end_i
+
+    total_batches = len(target_windows)
+    ledger = BatchLedger(total=total_batches)
+
+    # Pre-compute each batch's payload (context = SOURCE text +/- ctx only:
+    # batches dispatch concurrently, so finalized translations of sibling
+    # batches are unavailable by construction -- SPEC M1-2 ruling).
+    batch_payloads: list[tuple[set[str], str, dict[str, str]]] = []
+    for _batch_idx, (start_i, end_i) in enumerate(target_windows):
+        ctx_start = max(0, start_i - effective_ctx)
+        ctx_end = min(len(source_segments), end_i + effective_ctx)
+        batch_with_context = source_segments[ctx_start:ctx_end]
+        target_ids = {str(source_segments[i].get("id", "")) for i in range(start_i, end_i)}
+        id_map = _build_opaque_id_mapping(batch_with_context)  # M3-5
+        extra_ctx: dict[str, Any] = {
+            "target_segment_ids": [id_map[i] for i in sorted(target_ids)],
+        }
+        prompt = _build_structured_user_message(
+            batch_with_context, extra_context=extra_ctx, opaque_ids=id_map
+        )
+        batch_payloads.append((target_ids, prompt, id_map))
+
+    def _call_batch(batch_idx: int) -> tuple[int, list[dict], dict, str | None]:
+        """Single translation attempt (no retry)."""
+        if cancel_event and cancel_event.is_set():
+            return (batch_idx, [], {}, "Cancelled")
+        target_ids, prompt, id_map = batch_payloads[batch_idx]
+        result = call_llm(
+            prompt,
+            system=system,
+            json_mode=True,
+            config=config,
+            cancel_event=cancel_event,
+        )
+        if not result.get("success"):
+            error = result.get("error", "LLM call failed")
+            logger.warning(f"Translation batch {batch_idx + 1} failed: {error}")
+            return (batch_idx, [], {}, error)
+        content = result["data"]["content"]
+        usage = result["data"].get("usage", {})
+        parsed = _parse_json_response_layers(content)
+        if not parsed:
+            logger.warning(f"Translation batch {batch_idx + 1}: parse returned None")
+            return (batch_idx, [], usage, "Unparseable LLM translation response")
+        translations, coverage_error = _validate_translation_coverage(
+            parsed, target_ids, id_map
+        )
+        if coverage_error:
+            logger.warning(
+                f"Translation batch {batch_idx + 1} coverage check failed: {coverage_error}"
+            )
+            return (batch_idx, [], usage, coverage_error)
+        return (batch_idx, translations, usage, None)
+
+    def _process_batch(batch_idx: int) -> tuple[int, list[dict], dict, str | None, bool]:
+        """Process one translation batch with one automatic retry (M1-2)."""
+        idx_, translations, usage, error = _call_batch(batch_idx)
+        retried = False
+        if error != "Cancelled" and (error is not None or not translations):
+            logger.info(f"Translation batch {batch_idx + 1} failed, retrying once...")
+            retried = True
+            idx_, translations, usage, error = _call_batch(batch_idx)
+        return (idx_, translations, usage, error, retried)
+
+    translations_by_index: dict[int, list[dict]] = {}
+    total_usage: dict[str, int] = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+    }
+
+    # AR-2 pattern: sustained 429 -> finish remaining batches serially.
+    consecutive_429 = 0
+    _MAX_CONSECUTIVE_429 = 3
+    serial_fallback = False
+    pending: set[int] = set(range(total_batches))
+    completed = 0
+
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = {
+            executor.submit(_process_batch, batch_idx): batch_idx
+            for batch_idx in range(total_batches)
+        }
+        try:
+            for future in as_completed(futures):
+                if cancel_event and cancel_event.is_set():
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    return {"success": False, "error": "Cancelled"}
+
+                batch_idx, translations, usage, error, retried = future.result()
+                completed += 1
+                pending.discard(batch_idx)
+
+                for key in total_usage:
+                    total_usage[key] += usage.get(key, 0)
+
+                # M3-1 pattern: ledger bookkeeping
+                if error is None:
+                    if retried:
+                        ledger.retried_ok += 1
+                    else:
+                        ledger.succeeded += 1
+                elif error != "Cancelled":
+                    if batch_idx not in ledger.failed:
+                        ledger.failed.append(batch_idx)
+
+                if error == "Cancelled":
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    return {"success": False, "error": "Cancelled"}
+
+                if error and "Rate limited" in error:
+                    consecutive_429 += 1
+                    if consecutive_429 >= _MAX_CONSECUTIVE_429 and not serial_fallback and pending:
+                        logger.warning(
+                            f"Rate limited {consecutive_429}x, switching remaining "
+                            f"{len(pending)} batches to serial"
+                        )
+                        serial_fallback = True
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        break
+                else:
+                    consecutive_429 = 0
+
+                if translations:
+                    translations_by_index[batch_idx] = translations
+
+                if progress_cb:
+                    pct = (completed / total_batches) * 100 if total_batches > 0 else 0
+                    progress_cb(pct, f"Translation batch {completed}/{total_batches}...")
+        except Exception:
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise
+
+    if serial_fallback:
+        for batch_idx in sorted(pending):
+            if cancel_event and cancel_event.is_set():
+                return {"success": False, "error": "Cancelled"}
+            if progress_cb:
+                pct = (completed / total_batches) * 100 if total_batches > 0 else 0
+                progress_cb(pct, f"Translation batch {completed}/{total_batches} (serial)...")
+            _, translations, usage, error, retried = _process_batch(batch_idx)
+            completed += 1
+            for key in total_usage:
+                total_usage[key] += usage.get(key, 0)
+            if error is None:
+                if retried:
+                    ledger.retried_ok += 1
+                else:
+                    ledger.succeeded += 1
+            elif error != "Cancelled" and batch_idx not in ledger.failed:
+                ledger.failed.append(batch_idx)
+            if translations:
+                translations_by_index[batch_idx] = translations
+
+    # M3-1 pattern: uncovered = target segments of failed batches.
+    uncovered: list[str] = []
+    for batch_idx in ledger.failed:
+        if batch_idx < len(batch_payloads):
+            uncovered.extend(sorted(batch_payloads[batch_idx][0]))
+    ledger.uncovered_segment_ids = sorted(set(uncovered))
+
+    # M1-2 key difference vs correction: full-output conservation -- a batch
+    # that still fails after its retry fails the WHOLE task (zero persistence
+    # upstream), instead of returning partial results.
+    if ledger.failed:
+        if ledger.uncovered_segment_ids:
+            logger.warning(
+                f"Translation coverage gap: {len(ledger.uncovered_segment_ids)} segment(s) "
+                f"in failed batches {sorted(ledger.failed)}"
+            )
+        error = (
+            f"Translation incomplete: {len(ledger.failed)}/{total_batches} batch(es) "
+            f"failed after retry (batches {sorted(ledger.failed)}), "
+            f"{len(ledger.uncovered_segment_ids)} segment(s) uncovered"
+        )
+        return {
+            "success": False,
+            "error": error,
+            "data": {"ledger": ledger.to_dict(), "token_usage": total_usage},
+        }
+
+    # Merge in original segment order (conservation guarantees each target
+    # id appears exactly once, so the index sort is total and stable).
+    order_by_id = {
+        str(s.get("id", "")): i for i, s in enumerate(source_segments)
+    }
+    all_translations: list[dict] = []
+    for batch_idx in range(total_batches):
+        if batch_idx in translations_by_index:
+            all_translations.extend(translations_by_index[batch_idx])
+    all_translations.sort(key=lambda t: order_by_id.get(t["segment_id"], len(order_by_id)))
+
+    if progress_cb:
+        progress_cb(100.0, f"Completed: {len(all_translations)} translations")
+
+    logger.info(
+        f"Translation done: {len(all_translations)} results, "
+        f"tokens={total_usage.get('total_tokens', 0)}, target={target_language}, "
+        f"ledger={ledger.total}b/{ledger.succeeded}+{ledger.retried_ok}ok/{len(ledger.failed)}fail"
+    )
+
+    return {
+        "success": True,
+        "data": {
+            "translations": all_translations,
+            "token_usage": total_usage,
+            "ledger": ledger.to_dict(),
+        },
+    }
