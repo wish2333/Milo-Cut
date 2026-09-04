@@ -113,11 +113,11 @@ R3 增补 4 条顺序约束的落点：① golden 先行 → **P3-1**（本版�
 ### P0-1 分支、tag 与基线快照（含四文档入库）
 
 - [x] ★ 立项会：确认 12-15 天日历 / Q10 keep 完整闭环 + R4.4 首砍授权（触发留痕）/ 副轨删除确认默认值 / 里程碑不强制绝对日期——**已裁决（2026-09），四项结论登记于「立项会裁决登记」表**
-- [ ] 从 tag `v3.0.3` 拉出 `dev-3.0.4`；打 tag `v3.0.4-base`（**打在拉出点 = `v3.0.3` 所指 commit**，先于文档入库——锚点是纯代码回滚点，门禁 diff 基准恒为 `v3.0.3` 不受影响）
-- [ ] **四文档入库**：`docs/3.0.4/` 探索报告 / PRD / SPEC / PLAN（当前 untracked，执行者 Round 3 核实）以 `docs(3.0.4): ...` 两段式提交
-- [ ] 建 `docs/3.0.4/record-3.0.4.md` 总记录骨架（含后端改动登记表总表，SPEC 附录 A 模板；每 phase 追加，P4 终检即归档处）
-- [ ] 门禁基线首跑登记：pytest 716 全绿 / vitest 756 collected·755 passed（唯一失败 = `useRowLayout.perf.test.ts` 已登记环境例）/ build / lint / ruff 全绿；红线命令输出全部为空/零
-- [ ] ★ 通知用户计划启动
+- [x] 从 tag `v3.0.3` 拉出 `dev-3.0.4`；打 tag `v3.0.4-base`（**打在拉出点 = `v3.0.3` 所指 commit**，先于文档入库——锚点是纯代码回滚点，门禁 diff 基准恒为 `v3.0.3` 不受影响）
+- [x] **四文档入库**：`docs/3.0.4/` 探索报告 / PRD / SPEC / PLAN（当前 untracked，执行者 Round 3 核实）以 `docs(3.0.4): ...` 两段式提交（commit `83a61d6`，review-log 随同入库）
+- [x] 建 `docs/3.0.4/record-3.0.4.md` 总记录骨架（含后端改动登记表总表，SPEC 附录 A 模板；每 phase 追加，P4 终检即归档处）
+- [x] 门禁基线首跑登记：pytest 716 全绿 / vitest 756 collected·755 passed（唯一失败 = `useRowLayout.perf.test.ts` 已登记环境例）/ build / lint / ruff 全绿；红线命令输出全部为空/零（详见 record-3.0.4-P0-1.md；注：本执行环境 `bun run` 不可用已按 P0-2 回落条款以 node 直跑等价命令并登记）
+- [x] ★ 通知用户计划启动
 
 **验收方式**: `git tag` 存在 `v3.0.4-base`；`git status --short docs/3.0.4/` 干净；基线数字与红线空输出记录于 record-3.0.4-P0-1.md。
 **验收标准**: 门禁命令首跑全绿（零改动的干净起点）。
