@@ -16,8 +16,9 @@
 |---|---|---|---|
 | P0-1 | [record-3.0.4-P0-1.md](./record-3.0.4-P0-1.md) | 已完成 | 文档入库 `83a61d6`；基线全绿 |
 | P0-2 | [record-3.0.4-P0-2.md](./record-3.0.4-P0-2.md) | 已完成 | 门禁脚本三段 dry-run exit 0 |
-| P0-2 | （待建） | 未开始 | |
-| P1-1 ~ P1-6 | （待建） | 未开始 | |
+| P1-1 | [record-3.0.4-P1-1.md](./record-3.0.4-P1-1.md) | 已完成 | 合入 `b4d71a6`（本行由 P1-2 补登记） |
+| P1-2 | [record-3.0.4-P1-2.md](./record-3.0.4-P1-2.md) | 已完成（待负责人审查合并） | 分支 `dev-3.0.4-p1-2`；门禁 exit 0 / pytest 729 |
+| P1-3 ~ P1-6 | （待建） | 未开始 | |
 | P2-1 ~ P2-6 | （待建） | 未开始 | |
 | P3-1 ~ P3-9 | （待建） | 未开始 | |
 | P4-1 ~ P4-5 | （待建） | 未开始 | |
@@ -46,6 +47,10 @@
 | phase | 文件 | hunk 摘要 | R 编号 | 红线类别（只增/受控改点①/受控改点②/登记改点） |
 |---|---|---|---|---|
 | P0 | （无——零改动基线） | | | |
+| P1-1 | core/models.py | TaskType 追加 LLM_TRANSLATION（LLM 区块末尾，1 行+注释） | R1.2 | 只增 |
+| P1-1 | core/events.py | 新增 LLM_TRANSLATION_COMPLETED 常量 | R1.4 | 只增 |
+| P1-1 | frontend/src/utils/events.ts | 同 commit 新增 EVENT_LLM_TRANSLATION_COMPLETED（R0-2 双侧） | R1.4 | 只增 |
+| P1-2 | core/llm_prompts.py | 新增 _TRANSLATION_SYSTEM 常量与 DEFAULT_PROMPTS["translation"] 注册项（params={} 空注册——SPEC M1-3 关键裁决：{{target_language}} 由 handler 终替换，不走 params 注入） | R1.2 | 只增 |
 
 ## 4. 断言反转白名单登记（R0-3 唯一例外）
 

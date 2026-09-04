@@ -20,6 +20,7 @@ class TestDefaultPrompts:
         "subtitle_correction_b",
         "highlight",
         "search",
+        "translation",  # v3.0.4 M1-3: translation prompt 注册
     }
 
     def test_all_expected_keys_present(self):

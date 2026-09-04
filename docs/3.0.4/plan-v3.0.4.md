@@ -145,9 +145,9 @@ R3 增补 4 条顺序约束的落点：① golden 先行 → **P3-1**（本版�
 
 ### P1-2 translation prompt 注册（core/llm_prompts.py）
 
-- [ ] 新增 `_TRANSLATION_SYSTEM`（逐条 JSON 数组 / id 原样回传 / `{{target_language}}` 占位 / 不得增删条目）+ `DEFAULT_PROMPTS["translation"]`，**`params` 必须为 `{}`**（占位符穿透三层的前提）
-- [ ] 用例：`{{target_language}}` 穿透三层各一路（硬编码默认 / settings / 项目覆盖）+ override 路径替换正确
-- [ ] 终替换与残留 `{{` fail-fast 用例的落点登记：替换逻辑在 handler（P1-5 步骤 2），用例随 P1-5 挂 M1 管线组（PLAN 微裁决，SPEC M1-3 未定测试宿主）
+- [x] 新增 `_TRANSLATION_SYSTEM`（逐条 JSON 数组 / id 原样回传 / `{{target_language}}` 占位 / 不得增删条目）+ `DEFAULT_PROMPTS["translation"]`，**`params` 必须为 `{}`**（占位符穿透三层的前提）
+- [x] 用例：`{{target_language}}` 穿透三层各一路（硬编码默认 / settings / 项目覆盖）+ override 路径替换正确（tests/test_translation_prompt.py 13 用例；override 路径本步断言「原文返回、占位符不动」，终替换断言随 P1-5）
+- [x] 终替换与残留 `{{` fail-fast 用例的落点登记：替换逻辑在 handler（P1-5 步骤 2），用例随 P1-5 挂 M1 管线组（PLAN 微裁决，SPEC M1-3 未定测试宿主）——已落地：本步仅登记，用例随 P1-5
 
 **验收方式**: M5 组 = M1 管线（占位符项）。
 **验收标准**: 门禁全绿；`core/llm_prompts.py` diff 仅含注册项（白名单 R1.2）。
