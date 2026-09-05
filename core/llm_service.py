@@ -551,6 +551,10 @@ def _build_structured_user_message(
         edit_hint = s.get("edit_hint")
         if edit_hint:
             item["edit_hint"] = str(edit_hint)
+        # v3.0.4 M2-5/R2.5: forward optional aligned main-track text.
+        aligned_main_text = s.get("aligned_main_text")
+        if aligned_main_text:
+            item["aligned_main_text"] = str(aligned_main_text)
         seg_list.append(item)
     payload: dict[str, Any] = {"segments": seg_list}
     if extra_context:
