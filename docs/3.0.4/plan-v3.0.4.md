@@ -291,8 +291,10 @@ R3 增补 4 条顺序约束的落点：① golden 先行 → **P3-1**（本版�
 
 ### P3-3 lane 建段接线（WaveformEditor.vue · WaveformRow.vue，R3.2/X1）
 
-- [ ] 三处接线：① multi 路径 WaveformRow 追加 `:build-mode` + `@create-at-in-track` 桥（0.5s 默认宽）；② WaveformRow 的 TrackLane 追加 `:build-mode`；③ basic 路径 TrackLane 追加 `:build-mode` + `@create-at` 桥
-- [ ] 用例：建段模式 lane 点击 → `track-create` 上抛 `(trackId, t, t+0.5)`（multi / basic 各 1）；OFF 时 lane 点击无动作（零回退断言）
+- [x] 三处接线：① multi 路径 WaveformRow 追加 `:build-mode` + `@create-at-in-track` 桥（0.5s 默认宽）；② WaveformRow 的 TrackLane 追加 `:build-mode`；③ basic 路径 TrackLane 追加 `:build-mode` + `@create-at` 桥
+- [x] 用例：建段模式 lane 点击 → `track-create` 上抛 `(trackId, t, t+0.5)`（multi / basic 各 1）；OFF 时 lane 点击无动作（零回退断言）
+
+> 已完成（登记：[record-3.0.4-P3-3.md](./record-3.0.4-P3-3.md)；分支 `dev-3.0.4-p3-3`，vitest 798-797【+3 例，挂既有 WaveformEditor 宿主】；TrackLane 经核实 buildMode prop 声明已存在，零改动；WaveformRow buildMode prop 亦既有，②仅补透传一行）。
 
 **验收方式**: M5 组 = M3 前端（X1 项 ≥3）。
 **验收标准**: 不改 TrackLane.onLaneClick 与 handleTrackCreate 既有逻辑；本步先于 M4-2 手势合入（同文件防冲突，M0-3）。
