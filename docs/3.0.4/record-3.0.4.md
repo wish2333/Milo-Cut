@@ -116,9 +116,17 @@
 
 （无触发则本节记「未触发」）
 
-## 6. 性能对账（P4-2 回填口径：千段单 patch revision+1 / accept 无全量刷新 / beta.1 真机耗时与 token 观测）
+## 6. 性能对账（P4-2，本版不新建后端 perf 基线——PRD/SPEC 均未立项）
 
-（待回填）
+对账口径 = PLAN P4-2 三项：
+
+| # | 对账项 | 判据 | 状态 |
+|---|---|---|---|
+| ① | M1-4 千段单 patch | `tests/test_translation_track.py::test_revision_exactly_plus_one[1000]`：1000 段一次 create_translation_track，revision 恰好 +1（内存计数与 patch envelope 双证），undo 一次回退整轨 | ✅ 测试固化 |
+| ② | M2-3 accept 无 O(project) 全量刷新 | 后端：accept 返回 patch envelope（revision 单调 +1，`tests/test_correction_accept_patch.py`）；前端：`useWorkspaceActions.test.ts` 断言 switch_timeline 零调用、走 applyProjectPatch（switch_timeline workaround 已删除） | ✅ 测试固化 |
+| ③ | beta.1 真机千段翻译耗时与 token 观测 | 真机项：入口预估批数（约 N 批）+ `llm:token_usage` 事件复用；**待用户双平台冒烟执行后回填观测值**（清单见 §0 beta.1 节） | ⏳ 待用户冒烟 |
+
+`useRowLayout.perf.test.ts` 环境例维持豁免口径（record-3.0.3 §5 #5），不新设基线；根修登记清债池（3.0.5 候选，维持既有登记）。
 
 ## 7. 版本池回写（P4-3：新增 6 项 + 出池 1 项，见 PRD §10.2）
 
