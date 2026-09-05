@@ -226,11 +226,11 @@ R3 增补 4 条顺序约束的落点：① golden 先行 → **P3-1**（本版�
 
 ### P2-4 accept/reject 超集 patch 化（core/correction_service.py + useWorkspaceActions.ts）
 
-- [ ] accept 主轨路径逻辑不变，返回值超集：保留 `segment_id` 键（:157 断言零改动兼容）+ 新增 `patch` 键（层 = **segments + analysis**）
-- [ ] accept 副轨路径：定位轨与轨内段 → 复用 `_assert_timestamps_unchanged` + `reattach_words`（空输入跳过 reattach）→ `track.model_copy` 整体替换 → 返回 patch（层 = **tracks + analysis**，不动 bindings）
-- [ ] reject 同步超集（层 = analysis）；**accept/reject 时间轴钉扎**：detail.timeline_id 非空且 ≠ active → 明确报错零写入
-- [ ] 前端消费：`handleAcceptCorrection` / `handleRejectCorrection` 调用前按 scope `pushSnapshot`（捕获层主轨 `["segments","analysis"]` / 副轨 `["tracks","analysis"]`）；响应含 patch → 走 `applyProjectPatch`，**移除 `switch_timeline` 全量刷新 workaround**；时间轴切换后 pendingCorrections 重取
-- [ ] 用例：accept 主轨超集 / 副轨写轨文本且 bindings 不变 / reject 超集 / reattach 空输入 / revision 单调 +1 不再 switch_timeline（**新建宿主 `useWorkspaceActions.test.ts`**）/ undo 一次回退 accept + redo 对称
+- [x] accept 主轨路径逻辑不变，返回值超集：保留 `segment_id` 键（:157 断言零改动兼容）+ 新增 `patch` 键（层 = **segments + analysis**）
+- [x] accept 副轨路径：定位轨与轨内段 → 复用 `_assert_timestamps_unchanged` + `reattach_words`（空输入跳过 reattach）→ `track.model_copy` 整体替换 → 返回 patch（层 = **tracks + analysis**，不动 bindings）
+- [x] reject 同步超集（层 = analysis）；**accept/reject 时间轴钉扎**：detail.timeline_id 非空且 ≠ active → 明确报错零写入
+- [x] 前端消费：`handleAcceptCorrection` / `handleRejectCorrection` 调用前按 scope `pushSnapshot`（捕获层主轨 `["segments","analysis"]` / 副轨 `["tracks","analysis"]`）；响应含 patch → 走 `applyProjectPatch`，**移除 `switch_timeline` 全量刷新 workaround**；时间轴切换后 pendingCorrections 重取
+- [x] 用例：accept 主轨超集 / 副轨写轨文本且 bindings 不变 / reject 超集 / reattach 空输入 / revision 单调 +1 不再 switch_timeline（**新建宿主 `useWorkspaceActions.test.ts`**）/ undo 一次回退 accept + redo 对称
 
 **验收方式**: M5 组 = M2 段源/accept 余项 + M1/M2 前端（applyProjectPatch 项）。
 **验收标准**: 门禁全绿；`test_subtitle_correction_review.py` 既有断言全绿。

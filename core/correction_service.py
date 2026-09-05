@@ -38,6 +38,24 @@ def _detail_track_scope(detail: str) -> str | None:
     return str(payload.get("track_id", ""))
 
 
+def _detail_timeline_scope(detail: str) -> str | None:
+    """Extract the owning timeline id from a correction detail JSON (M2-3).
+
+    Companion of :func:`_detail_track_scope`. Returns "" for details
+    written before the ``timeline_id`` key existed (v3.0.4 M2-2 legacy
+    rule: no key = no pinning, review proceeds). Returns None when the
+    detail cannot be parsed as a JSON object; callers must then skip the
+    pinning check instead of guessing an owner.
+    """
+    try:
+        payload = json.loads(detail) if detail else {}
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return str(payload.get("timeline_id", ""))
+
+
 class CorrectionService:
     """LLM subtitle correction storage / review / apply workflows."""
 
@@ -223,12 +241,21 @@ class CorrectionService:
     def accept_subtitle_correction(self, result_id: str) -> dict:
         """Accept one correction: apply to segment.text + remove AnalysisResult.
 
+        v3.0.4 M2-3 (P2-4): the success payload is a superset -- it keeps
+        the ``segment_id`` key (legacy compat, review UI reads it) and
+        adds a ``patch`` key carrying a ProjectPatch envelope (main track
+        = segments + analysis layers, extension track = tracks + analysis
+        layers) so the frontend applies the write through applyProjectPatch
+        instead of an O(project) full refresh.
+
         Args:
             result_id: The AnalysisResult id (``corr-<seg>-<hex>``).
 
         Returns:
-            {"success": True, "data": {"segment_id": str}}
-            {"success": False, "error": str} if not found.
+            {"success": True, "data": {"segment_id": str,
+             "track_id": str (extension track only), "patch": ProjectPatch}}
+            {"success": False, "error": str} if not found / pinned to
+            another timeline.
         """
         if self._project._current is None:
             return {"success": False, "error": "No project is open"}
@@ -250,7 +277,89 @@ class CorrectionService:
         if payload is None:
             return {"success": False, "error": "Malformed correction detail"}
 
+        # v3.0.4 M2-3 (R3): timeline pinning. The detail records the
+        # timeline that owned the correction at store time; a non-empty id
+        # differing from the active timeline means the user switched
+        # timelines during review (e.g. a fork shares result ids) -- refuse
+        # with zero writes instead of writing a foreign timeline's segment.
+        # Legacy details without the key parse as "" and pass (compat).
+        pinned_timeline = _detail_timeline_scope(target.detail)
+        if pinned_timeline and pinned_timeline != self._project._current.active_timeline_id:
+            return {"success": False, "error": "该结果属于其他时间轴，请切换后审阅"}
+
         seg_id = target.segment_ids[0] if target.segment_ids else ""
+        scope_track_id = str(payload.get("track_id", ""))
+        new_analysis = tl.analysis.model_copy(
+            update={"results": [r for r in tl.analysis.results if r.id != result_id]}
+        )
+
+        if scope_track_id:
+            # v3.0.4 M2-3: extension-track path. The correction targets a
+            # segment inside transcript.tracks; write the corrected text
+            # back via whole-track replacement. Bindings are untouched --
+            # text has no geometry semantics (patch-layer ruling).
+            track = next(
+                (t for t in tl.transcript.tracks if t.id == scope_track_id), None
+            )
+            if track is None:
+                return {"success": False, "error": f"Track {scope_track_id} not found"}
+            seg = next((s for s in track.segments if s.id == seg_id), None)
+            if seg is None:
+                return {"success": False, "error": f"Segment {seg_id} not found"}
+
+            corrected_text = str(payload.get("corrected_text", seg.text))
+            conf = _check_correction_confidence(seg.text, corrected_text)
+            new_flags = {**seg.dirty_flags, "llm_corrected": True}
+            if conf["low_confidence"]:
+                new_flags["llm_low_confidence"] = True
+
+            # Track segments usually come from SRT import / translation
+            # with words=[] -- reattach_words returns [] unchanged then
+            # (defensive, never raises TimestampCorruptionError).
+            new_words = reattach_words(
+                seg.words, corrected_text, seg_start=seg.start, seg_end=seg.end
+            )
+            corrected_seg = seg.model_copy(
+                update={"text": corrected_text, "dirty_flags": new_flags, "words": new_words}
+            )
+            try:
+                _assert_timestamps_unchanged(
+                    seg.start, seg.end, corrected_seg.start, corrected_seg.end,
+                    segment_id=seg.id,
+                )
+                new_track_segments = [
+                    corrected_seg if s.id == seg_id else s
+                    for s in track.segments
+                ]
+            except TimestampCorruptionError:
+                logger.warning("Timestamp corruption on accept, rollback segment %s", seg_id)
+                new_track_segments = list(track.segments)
+
+            new_tracks = [
+                track.model_copy(update={"segments": new_track_segments})
+                if t.id == scope_track_id else t
+                for t in tl.transcript.tracks
+            ]
+            self._project._update_active_timeline(
+                transcript=tl.transcript.model_copy(update={"tracks": new_tracks}),
+                analysis=new_analysis,
+            )
+            logger.info(
+                "Accepted subtitle correction {} (seg {} on track {})",
+                result_id, seg_id, scope_track_id,
+            )
+            patch = self._project._success_patch(
+                tracks=new_tracks, analysis=new_analysis
+            )["data"]
+            return {
+                "success": True,
+                "data": {
+                    "segment_id": seg_id,
+                    "track_id": scope_track_id,
+                    "patch": patch,
+                },
+            }
+
         seg = next((s for s in tl.transcript.segments if s.id == seg_id), None)
         if seg is None:
             return {"success": False, "error": f"Segment {seg_id} not found"}
@@ -284,24 +393,29 @@ class CorrectionService:
             logger.warning("Timestamp corruption on accept, rollback segment %s", seg_id)
             new_segments = list(tl.transcript.segments)
 
-        # Remove the accepted correction from analysis results.
-        new_results = [r for r in tl.analysis.results if r.id != result_id]
-
         self._project._update_active_timeline(
             transcript=tl.transcript.model_copy(update={"segments": new_segments}),
-            analysis=tl.analysis.model_copy(update={"results": new_results}),
+            analysis=new_analysis,
         )
         logger.info("Accepted subtitle correction {} (seg {})", result_id, seg_id)
-        return {"success": True, "data": {"segment_id": seg_id}}
+        patch = self._project._success_patch(
+            segments=new_segments, analysis=new_analysis
+        )["data"]
+        return {"success": True, "data": {"segment_id": seg_id, "patch": patch}}
 
     def reject_subtitle_correction(self, result_id: str) -> dict:
         """Reject one correction: remove AnalysisResult without touching text.
+
+        v3.0.4 M2-3 (P2-4): success payload is a superset -- keeps
+        ``segment_id`` and adds ``patch`` (analysis layer only; reject
+        never writes text). The frontend consumes the patch so the review
+        list and undo history stay revision-consistent.
 
         Args:
             result_id: The AnalysisResult id.
 
         Returns:
-            {"success": True, "data": {"segment_id": str}}
+            {"success": True, "data": {"segment_id": str, "patch": ProjectPatch}}
         """
         if self._project._current is None:
             return {"success": False, "error": "No project is open"}
@@ -313,13 +427,21 @@ class CorrectionService:
         if target is None or target.type != "llm_subtitle_correction":
             return {"success": False, "error": f"Correction {result_id} not found"}
 
+        # v3.0.4 M2-3 (R3): same timeline-pinning guard as accept. A
+        # malformed detail (None) skips the check -- reject never writes
+        # text, so the v3.0.3 removal behavior is preserved.
+        pinned_timeline = _detail_timeline_scope(target.detail)
+        if pinned_timeline and pinned_timeline != self._project._current.active_timeline_id:
+            return {"success": False, "error": "该结果属于其他时间轴，请切换后审阅"}
+
         seg_id = target.segment_ids[0] if target.segment_ids else ""
-        new_results = [r for r in tl.analysis.results if r.id != result_id]
-        self._project._update_active_timeline(
-            analysis=tl.analysis.model_copy(update={"results": new_results}),
+        new_analysis = tl.analysis.model_copy(
+            update={"results": [r for r in tl.analysis.results if r.id != result_id]}
         )
+        self._project._update_active_timeline(analysis=new_analysis)
         logger.info("Rejected subtitle correction {} (seg {})", result_id, seg_id)
-        return {"success": True, "data": {"segment_id": seg_id}}
+        patch = self._project._success_patch(analysis=new_analysis)["data"]
+        return {"success": True, "data": {"segment_id": seg_id, "patch": patch}}
 
     def accept_high_confidence_corrections(
         self, timeline_id: str, threshold: float = 0.8
