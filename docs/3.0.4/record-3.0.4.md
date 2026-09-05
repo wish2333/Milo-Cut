@@ -105,6 +105,7 @@
 | tests/test_llm_prompts.py EXPECTED_KEYS 集合 | `+ "translation",`（1 行，集合字面量） | 非断言删改（`^-` grep 恒 0）；既有 `test_all_expected_keys_present` 为注册表键集**精确等值**断言，translation 注册后不增该键必红；增行后断言严格性保持且覆盖扩为 6 键，符合「只增不改」精神 | 架构师已追认（P1-2 合并审查） | P1-2 |
 | core/llm_service.py:554-557 `_build_structured_user_message` | `+4`：`aligned_main_text` 段级转发（注释 1 + `s.get` 存在则 `item[...] = str(...)`，与 edit_hint 转发同款模式） | 既有函数受控增行（非测试文件，同属门禁 grep 之外的受控改面）：SPEC M0-1 llm_service.py 行写「仅新增 analyze_subtitle_translation 及其私有辅助」，而 SPEC M2-5（R2.5）明文点名 `_build_structured_user_message` 的上下文通路——M0-1 表先于 M2-5 定稿的行级滞后；文件级红线（白名单文件集）不受影响；不复用 edit_hint 通道（系统 prompt 已锚定其语义为「句内口误/重复」，复用会误导模型） | 架构师预裁决（P2-6 委派时） | P2-6 |
 | frontend/src/components/waveform/WaveformEditor.vue basic 路径 extension TrackLane `:build-mode` 门控 | `buildMode && !rangeMode` 外延至副轨 lane（产品代码，非测试） | 范围模式 ON 时建段全局暂停（含副轨 lane），消除双 toggle 同 ON 的手势歧义；「副轨 lane 不参与范围标记」语义不变（lane 仍不产生 range，仅建段暂停） | 架构师已追认（P3-6 合并审查） | P3-6 |
+| SuggestionPanel→WorkspacePage 时间码接线（P3-7，产品代码选型） | provide/inject 字符串键 `"suggestion:add-range-decision"` 替代 emit 经 Timeline 中转 | SuggestionPanel 实际挂载于 Timeline.vue:775，P3-7 红线禁改 Timeline；provide/inject 使两入口（气泡/时间码）共用同一 handleRangeDecision，SPEC「共用 add_range_decision」字面达成 | 架构师已追认（P3-7 合并审查；类型化 InjectionKey 登记 3.0.5 候选） | P3-7 |
 
 ## 5. 超期决策树触发留痕（立项会授权，四要素：日期/触发信号/裁决与影响面/回写文档处）
 
