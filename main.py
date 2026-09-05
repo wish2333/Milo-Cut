@@ -926,19 +926,51 @@ class MiloCutApi(Bridge):
 
         # Audit #8: filter out confirmed-deleted segments before LLM correction
         deleted_seg_ids = collect_confirmed_deleted_seg_ids(timeline)
-        # v2.2.0: collect partial_delete hints from prior smart-delete analysis
-        # so the subtitle correction LLM can leverage them (e.g. intra-sentence
-        # errors that cannot be wholesale deleted but should be textually fixed).
-        partial_hints = collect_partial_delete_hints(timeline)
-        segments = []
-        for s in timeline.transcript.segments:
-            if s.type != SegmentType.SUBTITLE or s.id in deleted_seg_ids:
-                continue
-            seg_dict = s.model_dump()
-            hint = partial_hints.get(s.id)
-            if hint:
-                seg_dict["edit_hint"] = hint
-            segments.append(seg_dict)
+
+        # v3.0.4 M2-1 (P2-2): non-empty track_id -> the correction source is
+        # the extension track itself. Track resolution stays timeline-scoped
+        # in the handler (_get_target_timeline is untouched); a missing track
+        # fails the task.
+        track_id = task.payload.get("track_id", "")
+        if track_id:
+            track = next(
+                (t for t in timeline.transcript.tracks if t.id == track_id),
+                None,
+            )
+            if track is None:
+                raise RuntimeError(f"Track not found: {track_id}")
+            # Confirmed-deletion mapping aligned with the track-aware export:
+            # reverse-map this track's bindings (ext_id -> main_id) and skip
+            # bound track segments whose MAIN partner is confirmed-deleted;
+            # unbound track segments ride through (a main-track deletion
+            # never touched them). Partial hints are skipped on purpose --
+            # they are a main-track EditDecision concept (SPEC M2-1 ruling).
+            ext_to_main = {
+                b.extension_segment_id: b.main_segment_id
+                for b in timeline.transcript.bindings
+                if b.track_id == track_id
+            }
+            segments = []
+            for s in track.segments:
+                main_id = ext_to_main.get(s.id)
+                if main_id is not None and main_id in deleted_seg_ids:
+                    continue
+                segments.append(s.model_dump())
+        else:
+            # v2.2.0: collect partial_delete hints from prior smart-delete
+            # analysis so the subtitle correction LLM can leverage them
+            # (e.g. intra-sentence errors that cannot be wholesale deleted
+            # but should be textually fixed).
+            partial_hints = collect_partial_delete_hints(timeline)
+            segments = []
+            for s in timeline.transcript.segments:
+                if s.type != SegmentType.SUBTITLE or s.id in deleted_seg_ids:
+                    continue
+                seg_dict = s.model_dump()
+                hint = partial_hints.get(s.id)
+                if hint:
+                    seg_dict["edit_hint"] = hint
+                segments.append(seg_dict)
         if not segments:
             raise ValueError("No subtitle segments to correct")
 
@@ -986,8 +1018,11 @@ class MiloCutApi(Bridge):
             }
 
         # v2.1.0 Phase 2: store corrections for review instead of auto-applying.
+        # v3.0.4 M2-1: track_id rides along (empty = main track scope).
         store_result = self._mark_dirty(
-            self._project.correction.store_subtitle_corrections(corrections, timeline_id)
+            self._project.correction.store_subtitle_corrections(
+                corrections, timeline_id, track_id=track_id
+            )
         )
 
         if not store_result["success"]:
