@@ -216,10 +216,10 @@ R3 增补 4 条顺序约束的落点：① golden 先行 → **P3-1**（本版�
 
 ### P2-3 pending 作用域化（core/correction_service.py，本模块最高风险）
 
-- [ ] `store_subtitle_corrections` 增形参 `track_id`：seg_map 按 scope 构建；detail JSON 增键 `track_id` 与 `timeline_id`（后者供 P2-4 钉扎）；互清精确到「detail.track_id == 本次 track_id」
-- [ ] 兼容规则：存量 detail 无 track_id / timeline_id 键缺省按主轨作用域 / 放行（`test_store_clears_previous_corrections` 既有断言零改动通过）
-- [ ] `get_subtitle_corrections`：输出逐条附 track_id / track_name；**悬空过滤**（detail.track_id 非空且轨已删除 → 跳过不出现在列表）
-- [ ] 用例：双轨 pending 互不干扰（双向，**序列化调用编排**）；重跑同轨只清同轨；存量兼容；主轨两次 store 计数不翻倍复跑；悬空过滤；输出附轨（M2 作用域化 ≥6）
+- [x] `store_subtitle_corrections` 增形参 `track_id`：seg_map 按 scope 构建；detail JSON 增键 `track_id` 与 `timeline_id`（后者供 P2-4 钉扎）；互清精确到「detail.track_id == 本次 track_id」
+- [x] 兼容规则：存量 detail 无 track_id / timeline_id 键缺省按主轨作用域 / 放行（`test_store_clears_previous_corrections` 既有断言零改动通过）
+- [x] `get_subtitle_corrections`：输出逐条附 track_id / track_name；**悬空过滤**（detail.track_id 非空且轨已删除 → 跳过不出现在列表）
+- [x] 用例：双轨 pending 互不干扰（双向，**序列化调用编排**）；重跑同轨只清同轨；存量兼容；主轨两次 store 计数不翻倍复跑；悬空过滤；输出附轨（M2 作用域化 ≥6）
 
 **验收方式**: M5 组 = M2 作用域化 ≥6。
 **验收标准**: 门禁全绿；`accept_high_confidence_corrections` / `clear_subtitle_corrections` 保持 timeline 级零改动。

@@ -20,6 +20,24 @@ from core.timeline_utils import reattach_words
 logger = logging.getLogger(__name__)
 
 
+def _detail_track_scope(detail: str) -> str | None:
+    """Extract the track scope recorded in a correction detail JSON (M2-2).
+
+    Returns "" for main-track scope -- including legacy v3.0.3 details
+    written before the ``track_id`` key existed (compat rule: no key =
+    main track). Returns None when the detail cannot be parsed as a
+    JSON object; callers must then act conservatively (skip the result
+    during mutual-clearing) instead of guessing a scope.
+    """
+    try:
+        payload = json.loads(detail) if detail else {}
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return str(payload.get("track_id", ""))
+
+
 class CorrectionService:
     """LLM subtitle correction storage / review / apply workflows."""
 
@@ -36,18 +54,20 @@ class CorrectionService:
         llm_subtitle_correction and its structured payload JSON-encoded in
         ``detail``. The frontend reviews them and calls accept/reject per item.
 
-        Existing unreviewed corrections of the same type are cleared first so
-        re-running P1 replaces the pending review set.
+        Existing unreviewed corrections of the same type AND the same
+        track scope are cleared first so re-running the correction
+        replaces only that scope's pending review set (v3.0.4 M2-2).
 
         Args:
             corrections: LLM output list (segment_id, corrected_text, changes,
                 category, confidence).
             timeline_id: Target timeline.
-            track_id: v3.0.4 M2-1/M2-2 -- scope marker. Empty string = main
-                track (v3.0.3 behavior); a non-empty id marks corrections
-                belonging to that extension track. Only recorded in the
-                detail JSON here -- scope-aware seg_map / mutual-clearing is
-                M2-2 (P2-3) work.
+            track_id: v3.0.4 M2-2 -- scope marker. Empty string = main
+                track (v3.0.3 behavior); a non-empty id scopes both the
+                segment source map and the mutual-clearing to that
+                extension track. A non-empty id matching no track fails
+                defensively (the main.py handler already blocks this
+                earlier -- "Track not found").
 
         Returns:
             {"success": True, "data": {"stored_count": int}}
@@ -61,12 +81,30 @@ class CorrectionService:
         if tl is None:
             return {"success": False, "error": f"Timeline {timeline_id} not found"}
 
-        seg_map = {s.id: s for s in tl.transcript.segments}
+        # v3.0.4 M2-2: build the segment source map per scope. Empty
+        # track_id keeps the v3.0.3 main-track path verbatim.
+        if track_id:
+            track = next(
+                (t for t in tl.transcript.tracks if t.id == track_id), None
+            )
+            if track is None:
+                return {"success": False, "error": f"Track {track_id} not found"}
+            seg_map = {s.id: s for s in track.segments}
+        else:
+            seg_map = {s.id: s for s in tl.transcript.segments}
 
-        # Clear previously-pending corrections (avoid duplicates on re-run).
+        # Clear previously-pending corrections of the SAME scope only
+        # (avoid duplicates on re-run; other scopes' pending sets and the
+        # main track's are untouched). Legacy details without a track_id
+        # key parse as "" = main-track scope (compat rule); unparseable
+        # details never match and are conservatively kept.
+        def _same_scope(result: AnalysisResult) -> bool:
+            scope = _detail_track_scope(result.detail)
+            return scope is not None and scope == track_id
+
         kept_results = [
             r for r in tl.analysis.results
-            if r.type != "llm_subtitle_correction"
+            if r.type != "llm_subtitle_correction" or not _same_scope(r)
         ]
 
         stored: list[AnalysisResult] = []
@@ -91,8 +129,10 @@ class CorrectionService:
                         "changes": corr.get("changes", []),
                         "category": corr.get("category", "none"),
                         # v3.0.4 M2-1 (P2-2): scope marker ("" = main track).
-                        # Mutual-clearing stays timeline-wide until M2-2.
+                        # v3.0.4 M2-2 (P2-3): owning timeline id, consumed by
+                        # the accept/reject timeline-pinning guard (M2-3).
                         "track_id": track_id,
+                        "timeline_id": timeline_id,
                     },
                     ensure_ascii=False,
                 ),
@@ -113,10 +153,17 @@ class CorrectionService:
     def get_subtitle_corrections(self, timeline_id: str) -> dict:
         """Read pending P1 corrections for a timeline (parsed detail JSON).
 
+        v3.0.4 M2-2: entries are scope-aware -- each carries ``track_id``
+        and ``track_name`` ("" = main track, the frontend treats an empty
+        name as main), segment times resolve against the owning scope,
+        and entries whose extension track no longer exists (deleted via
+        delete_track) are skipped: they died with the track.
+
         Returns:
             {"success": True, "data": [correction_dict, ...]} where each dict
             has id, segment_id, confidence, original_text, corrected_text,
-            changes, category, start, end (for time-link rendering).
+            changes, category, start, end (for time-link rendering),
+            track_id, track_name.
         """
         if self._project._current is None:
             return {"success": False, "error": "No project is open"}
@@ -126,7 +173,9 @@ class CorrectionService:
         if tl is None:
             return {"success": False, "error": f"Timeline {timeline_id} not found"}
 
-        seg_map = {s.id: s for s in tl.transcript.segments}
+        main_map = {s.id: s for s in tl.transcript.segments}
+        tracks = {t.id: t for t in tl.transcript.tracks}
+        track_maps = {t.id: {s.id: s for s in t.segments} for t in tl.transcript.tracks}
         out: list[dict] = []
         for r in tl.analysis.results:
             if r.type != "llm_subtitle_correction":
@@ -135,6 +184,16 @@ class CorrectionService:
                 payload = json.loads(r.detail) if r.detail else {}
             except (ValueError, TypeError):
                 payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            # Compat rule: legacy details without the key are main-scoped.
+            res_track_id = str(payload.get("track_id", ""))
+            track = tracks.get(res_track_id) if res_track_id else None
+            if res_track_id and track is None:
+                # Dangling scope: the extension track is gone, so the
+                # pending entry died with it -- never surface it.
+                continue
+            seg_map = track_maps[res_track_id] if track is not None else main_map
             seg_id = r.segment_ids[0] if r.segment_ids else ""
             seg = seg_map.get(seg_id)
             out.append({
@@ -147,6 +206,8 @@ class CorrectionService:
                 "category": payload.get("category", "none"),
                 "start": seg.start if seg else 0.0,
                 "end": seg.end if seg else 0.0,
+                "track_id": res_track_id,
+                "track_name": track.name if track is not None else "",
             })
         return {"success": True, "data": out}
 
