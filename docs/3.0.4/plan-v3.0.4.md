@@ -266,10 +266,12 @@ R3 增补 4 条顺序约束的落点：① golden 先行 → **P3-1**（本版�
 
 ### P3-1 golden 基线采集（tests/ golden 数据文件，M4-4 前置 = M0-3 约束 1）
 
-- [ ] `git worktree` 检出 tag `v3.0.3` 干净基线工作区，以固定段集 + padding 扫描运行 `generate_subtitle_keep_ranges`，输出 dump 固化为 tests/ 下 golden 数据文件
-- [ ] 采集生成脚本随 fixture 一并入库（SPEC 未定形态——PLAN 裁决：入库保可复跑，采集环境登记 record）
-- [ ] 对拍用例骨架：无用户 keep 的工程 → 输出与 golden **逐字节一致**（P3-9 改造后该用例即零回退判据）
-- [ ] 随 **P3 首个 commit** 入库（本步即 P3 第一短分支，先于 P3-2 合入）
+- [x] `git worktree` 检出 tag `v3.0.3` 干净基线工作区，以固定段集 + padding 扫描运行 `generate_subtitle_keep_ranges`，输出 dump 固化为 tests/ 下 golden 数据文件
+- [x] 采集生成脚本随 fixture 一并入库（SPEC 未定形态——PLAN 裁决：入库保可复跑，采集环境登记 record）
+- [x] 对拍用例骨架：无用户 keep 的工程 → 输出与 golden **逐字节一致**（P3-9 改造后该用例即零回退判据）
+- [x] 随 **P3 首个 commit** 入库（本步即 P3 第一短分支，先于 P3-2 合入）
+
+> 已完成（登记：[record-3.0.4-P3-1.md](./record-3.0.4-P3-1.md)；分支 `dev-3.0.4-p3-1`，golden = `tests/fixtures/golden_keep_ranges_v3.0.3.json` 26509 字节 + 采集脚本 + 对拍用例 2 例，零产品代码改动）。
 
 **验收方式**: golden 文件 + 对拍用例在本步合入；`git diff v3.0.3 -- core/` 此时不包含 `:2560-2661` 任何改动。
 **验收标准**: 先改后采 = 基线自带改动、对拍失义——本步是硬前置。
