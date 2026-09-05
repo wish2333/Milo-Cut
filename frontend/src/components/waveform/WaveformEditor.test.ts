@@ -1532,3 +1532,172 @@ describe("WaveformEditor continuous playback (smoke feedback #2)", () => {
     wrapper.unmount()
   })
 })
+
+// ------------------------------------------------------------------
+// v3.0.4 M3-2 (P3-3): lane 建段接线 -- the three-point wiring that
+// 41a1ac4 declared but never delivered (TrackLane.onLaneClick gated on
+// buildMode that no ancestor passed; the @create-at bridge + the
+// track-create emit had no producer). Geometry: lane-blocks is mocked
+// 600px wide, so clientX 300 -> ratio 0.5.
+// ------------------------------------------------------------------
+
+describe("WaveformEditor lane 建段接线 (M3-2)", () => {
+  let clientHeightDescriptor: PropertyDescriptor | undefined
+  let rectDescriptor: PropertyDescriptor | undefined
+
+  beforeAll(() => {
+    clientHeightDescriptor = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "clientHeight",
+    )
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.getAttribute?.("data-test") === "multi-scroll") return 320
+        return clientHeightDescriptor?.get?.call(this) ?? 0
+      },
+    })
+    rectDescriptor = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "getBoundingClientRect",
+    )
+    Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", {
+      configurable: true,
+      value(this: HTMLElement) {
+        if (this.getAttribute?.("data-test") === "lane-blocks") {
+          return {
+            left: 0,
+            top: 0,
+            width: 600,
+            height: 48,
+            right: 600,
+            bottom: 48,
+            x: 0,
+            y: 0,
+            toJSON: () => ({}),
+          } as DOMRect
+        }
+        return rectDescriptor?.value?.call(this) ?? {
+          left: 0,
+          top: 0,
+          width: 0,
+          height: 0,
+          right: 0,
+          bottom: 0,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        } as DOMRect
+      },
+    })
+  })
+
+  afterAll(() => {
+    if (clientHeightDescriptor) {
+      Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeightDescriptor)
+    }
+    if (rectDescriptor) {
+      Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", rectDescriptor)
+    }
+  })
+
+  beforeEach(() => {
+    localStorage.clear()
+  })
+  afterEach(() => {
+    localStorage.clear()
+  })
+
+  /** Multi mount: row 0's lane sits on the row-scoped 0..10s window. */
+  function mountLaneMulti() {
+    localStorage.setItem(
+      ROW_LAYOUT_STORAGE_KEY,
+      JSON.stringify({ mode: "multi", secondsPerRow: 10, rowHeight: 120 }),
+    )
+    return mount(WaveformEditor, {
+      props: {
+        segments: [],
+        edits: [],
+        duration: 100,
+        currentTime: 5,
+        tracks: [makeStackTrack("en")],
+      },
+      global: {
+        stubs: {
+          WaveformCanvas: true,
+          TimeMarksLayer: true,
+          SegmentBlocksLayer: true,
+          ScrollbarStrip: true,
+          PlayheadOverlay: true,
+        },
+      },
+    })
+  }
+
+  /** Basic mount: lanes sit on the editor-scoped default 0..30s window. */
+  function mountLaneBasic() {
+    localStorage.removeItem(ROW_LAYOUT_STORAGE_KEY) // default = basic
+    return mount(WaveformEditor, {
+      props: {
+        segments: [],
+        edits: [],
+        duration: 100,
+        currentTime: 0,
+        tracks: [makeStackTrack("en")],
+      },
+      global: {
+        provide: { [PLAYBACK_CLOCK_KEY as symbol]: makeClock() },
+        stubs: {
+          WaveformCanvas: true,
+          TimeMarksLayer: true,
+          SegmentBlocksLayer: true,
+          ScrollbarStrip: true,
+          PlayheadOverlay: true,
+        },
+      },
+    })
+  }
+
+  it("multi: build-mode lane click raises track-create (trackId, t, t+0.5)", async () => {
+    const wrapper = mountLaneMulti()
+    await wrapper.vm.$nextTick()
+    await wrapper.find('[data-test="build-mode-toggle"]').trigger("click")
+    // Row 0 lane window is 0..10s; ratio 0.5 -> t = 5, end = 5.5.
+    const laneBlocks = wrapper.findAll('[data-test="lane-blocks"]')
+    expect(laneBlocks.length).toBeGreaterThan(0)
+    await laneBlocks[0].trigger("click", { clientX: 300 })
+    expect(wrapper.emitted("track-create")).toEqual([["en", 5, 5.5]])
+    wrapper.unmount()
+  })
+
+  it("basic: build-mode lane click raises track-create via the @create-at bridge", async () => {
+    const wrapper = mountLaneBasic()
+    await wrapper.vm.$nextTick()
+    await wrapper.find('[data-test="build-mode-toggle"]').trigger("click")
+    // Basic lane window defaults to viewDuration 30s (useTimelineMetrics);
+    // ratio 0.5 -> t = 15, end = 15.5.
+    const laneBlocks = wrapper.findAll('[data-test="lane-blocks"]')
+    expect(laneBlocks.length).toBe(1)
+    await laneBlocks[0].trigger("click", { clientX: 300 })
+    expect(wrapper.emitted("track-create")).toEqual([["en", 15, 15.5]])
+    wrapper.unmount()
+  })
+
+  it("build-mode OFF: lane clicks are inert (zero regression)", async () => {
+    const multi = mountLaneMulti()
+    await multi.vm.$nextTick()
+    const multiLanes = multi.findAll('[data-test="lane-blocks"]')
+    expect(multiLanes.length).toBeGreaterThan(0)
+    await multiLanes[0].trigger("click", { clientX: 300 })
+    expect(multi.emitted("track-create")).toBeFalsy()
+    multi.unmount()
+
+    const basic = mountLaneBasic()
+    await basic.vm.$nextTick()
+    const basicLanes = basic.findAll('[data-test="lane-blocks"]')
+    expect(basicLanes.length).toBe(1)
+    await basicLanes[0].trigger("click", { clientX: 300 })
+    expect(basic.emitted("track-create")).toBeFalsy()
+    basic.unmount()
+  })
+})
