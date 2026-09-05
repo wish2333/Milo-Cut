@@ -692,6 +692,161 @@ class ProjectService:
             bindings=transcript.bindings,
         )
 
+    def create_translation_track(
+        self,
+        timeline_id: str,
+        name: str,
+        language: str,
+        items: list[dict],
+        bind: bool = True,
+    ) -> dict:
+        """Batch-write a bound translation track in ONE patch (v3.0.4 M1-4).
+
+        Called by the LLM translation handler with the pipeline output:
+        ``items = [{"segment_id", "start", "end", "text"}, ...]`` where
+        ``segment_id`` references a main-track subtitle segment and
+        ``text`` is its translation. This method does NO LLM work -- it
+        only reconciles the items against the CURRENT main track and
+        persists what still exists.
+
+        Contract (SPEC M1-4, R1.3):
+
+        1. Timeline pinning (entry check): ``timeline_id`` must equal
+           the active timeline -- both ``_update_active_timeline`` and
+           the patch envelope's ``timeline_id`` target the active
+           timeline, so a mismatch is rejected with zero writes.
+        2. Duplicate-language rejection: the write-side twin of the
+           start_translation guard (the user may have created a same
+           language track while the 1-3 minute task was running).
+        3. Idempotent reconciliation: every item is checked against the
+           current main-track subtitle segments. Survivors become track
+           segments whose start/end are copied VERBATIM from the main
+           segment (ids live in the ``track_{track_id}_seg_{start:.3f}``
+           namespace so merge / edit-decision systems can never match
+           them); vanished ids are reported in ``uncovered_ids`` (never
+           silently dropped). Nothing surviving (or empty items) ->
+           reject with zero writes.
+        4. ``bind=True`` builds exact 1:1 bindings with zero offsets
+           (times are copied, so extension - main == 0); ``bind=False``
+           writes track segments only.
+        5. Single-patch persistence via the ``import_srt_as_track``
+           whole-replace pattern -- ONE ``_success_patch(tracks=...,
+           bindings=...)`` envelope (revision +1, one undo step reverts
+           the whole track). NEVER loop ``add_track_segment``: a
+           per-segment patch means 1000 bridge round-trips, revision
+           +1000, and a thousand-entry undo history for a thousand
+           segment project (3.0.2 smoke already proved that trap).
+
+        The write report (``track_id`` / ``written_count`` /
+        ``target_count`` / ``uncovered_ids``) rides the patch ``meta``
+        side-channel -- the sanctioned extra-data slot of a ProjectPatch
+        envelope (old frontends ignore it).
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        from uuid import uuid4
+
+        # Contract 6: timeline pinning, entry check, zero writes.
+        if timeline_id != self._current.active_timeline_id:
+            return {
+                "success": False,
+                "error": "Timeline no longer active: 翻译期间已切换时间轴",
+            }
+
+        tl = self.active_timeline
+        # Contract 1: duplicate-language rejection, write-side twin of the
+        # start_translation guard (M1-1 step 5).
+        if any(
+            t.role == "translation" and t.language == language
+            for t in tl.transcript.tracks
+        ):
+            return {
+                "success": False,
+                "error": f"同语言翻译轨已存在（{language}），可清空或删除该轨后重试",
+            }
+
+        # Contract 2: reconcile against the CURRENT main-track subtitle
+        # segments -- the task ran for minutes and segments may be gone.
+        main_subs = {
+            s.id: s for s in tl.transcript.segments if s.type == SegmentType.SUBTITLE
+        }
+        track_id = f"trk_{uuid4().hex[:8]}"
+        track_segments: list[Segment] = []
+        main_ids: list[str] = []
+        uncovered_ids: list[str] = []
+        for item in items:
+            seg_id = item["segment_id"]
+            main = main_subs.get(seg_id)
+            if main is None:
+                uncovered_ids.append(seg_id)
+                continue
+            track_segments.append(
+                Segment(
+                    id=f"track_{track_id}_seg_{main.start:.3f}",
+                    type=SegmentType.SUBTITLE,
+                    start=main.start,
+                    end=main.end,
+                    text=item["text"],
+                )
+            )
+            main_ids.append(seg_id)
+
+        if not track_segments:
+            return {"success": False, "error": "所有目标段已被删除"}
+
+        track = SubtitleTrack(
+            id=track_id,
+            role="translation",
+            name=name,
+            language=language,
+            segments=track_segments,
+        )
+        # Contract 3: exact 1:1 bindings, offsets are zero because the
+        # track segment times are verbatim copies of the main segment's.
+        bindings: list[TrackBinding] = []
+        if bind:
+            bindings = [
+                TrackBinding(
+                    id=f"bind_{uuid4().hex[:8]}",
+                    track_id=track_id,
+                    main_segment_id=main_id,
+                    extension_segment_id=seg.id,
+                    start_offset=0.0,
+                    end_offset=0.0,
+                )
+                for main_id, seg in zip(main_ids, track_segments, strict=True)
+            ]
+
+        # Contract 4: single whole-replace write (import_srt_as_track
+        # pattern) -- one revision bump, one undo step for the track.
+        transcript = tl.transcript.model_copy(
+            update={
+                "tracks": [*tl.transcript.tracks, track],
+                "bindings": [*tl.transcript.bindings, *bindings],
+            }
+        )
+        self._update_active_timeline(transcript=transcript)
+        logger.info(
+            "Created translation track {} ({} segments, {} bindings, "
+            "language={}, uncovered={})",
+            track_id, len(track_segments), len(bindings), language or "-",
+            len(uncovered_ids),
+        )
+        # Contract 5: report rides the meta side-channel.
+        return self._success_patch(
+            tracks=transcript.tracks,
+            bindings=transcript.bindings,
+            meta={
+                "translation": {
+                    "track_id": track_id,
+                    "written_count": len(track_segments),
+                    "target_count": len(items),
+                    "uncovered_ids": uncovered_ids,
+                }
+            },
+        )
+
     def update_media_info(self, media_info: dict) -> dict:
         """Update media info in the current project."""
         if self._current is None:

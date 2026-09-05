@@ -19,7 +19,8 @@
 | P1-1 | [record-3.0.4-P1-1.md](./record-3.0.4-P1-1.md) | 已完成 | 合入 `b4d71a6`（本行由 P1-2 补登记） |
 | P1-2 | [record-3.0.4-P1-2.md](./record-3.0.4-P1-2.md) | 已完成（负责人已审查合并，EXPECTED_KEYS 增行已追认，见 §4） | 合入 `6925bae` |
 | P1-3 | [record-3.0.4-P1-3.md](./record-3.0.4-P1-3.md) | 已完成（负责人已审查合并，llm_service.py +384 纯新增零删改，门禁复跑 exit 0） | 合入（merge P1-3，pytest 749 全绿） |
-| P1-4 ~ P1-6 | （待建） | 未开始 | |
+| P1-4 | [record-3.0.4-P1-4.md](./record-3.0.4-P1-4.md) | 已完成（待负责人审查合并；project_service.py +155 单一方法纯新增，pytest 760 全绿，门禁 exit 0） | |
+| P1-5 ~ P1-6 | （待建） | 未开始 | |
 | P2-1 ~ P2-6 | （待建） | 未开始 | |
 | P3-1 ~ P3-9 | （待建） | 未开始 | |
 | P4-1 ~ P4-5 | （待建） | 未开始 | |
@@ -53,6 +54,7 @@
 | P1-1 | frontend/src/utils/events.ts | 同 commit 新增 EVENT_LLM_TRANSLATION_COMPLETED（R0-2 双侧） | R1.4 | 只增 |
 | P1-2 | core/llm_prompts.py | 新增 _TRANSLATION_SYSTEM 常量与 DEFAULT_PROMPTS["translation"] 注册项（params={} 空注册——SPEC M1-3 关键裁决：{{target_language}} 由 handler 终替换，不走 params 注入） | R1.2 | 只增 |
 | P1-3 | core/llm_service.py | 文件末尾纯追加 384 行：新增 analyze_subtitle_translation 及模块级私有辅助 _translation_segment_id / _validate_translation_coverage（复刻纠错批处理骨架：批窗 30+字符预算 4000 / 并发 5 / opaque id / 4 层解析 / BatchLedger / 每批一次重试 / 连续 429 转串行 / cancel 逐批 / progress 批粒度；关键差异 = coverage 反向校验全量输出守恒，任一批重试后仍失败整任务 fail 零落盘；上下文 = 源文 ±ctx 窗口） | R1.2 | 只增 |
+| P1-4 | core/project_service.py | 仅新增 create_translation_track 一个方法（import_srt_as_track 之后插入，单一 hunk +155 零删改）：入口时间轴钉扎 + 写侧重复语言双保险 + items 幂等对账当下主轨（落空进 uncovered_ids 不静默、全部落空含空 items 拒绝零写入）+ start/end 逐字段复制当下主轨段时间 + track_{track_id}_seg_{start:.3f} 命名空间 + bind=True 精确 1:1 建 offset=0 bindings + 单 _success_patch(tracks/bindings) 整体替换落盘（报告经 meta side-channel 携带 track_id/written_count/target_count/uncovered_ids）；generate_subtitle_keep_ranges 零触碰 | R1.3 | 只增 |
 
 ## 4. 断言反转白名单登记（R0-3 唯一例外）
 
