@@ -950,12 +950,21 @@ class MiloCutApi(Bridge):
                 for b in timeline.transcript.bindings
                 if b.track_id == track_id
             }
+            # v3.0.4 M2-5 (P2-6, R2.5): bound track segments carry the
+            # aligned main-track text as a reference row; unbound segments
+            # ride through with no context (auto-degradation).
+            main_text_by_id = {s.id: s.text for s in timeline.transcript.segments}
             segments = []
             for s in track.segments:
                 main_id = ext_to_main.get(s.id)
                 if main_id is not None and main_id in deleted_seg_ids:
                     continue
-                segments.append(s.model_dump())
+                seg_dict = s.model_dump()
+                if main_id is not None:
+                    main_text = main_text_by_id.get(main_id)
+                    if main_text:
+                        seg_dict["aligned_main_text"] = main_text
+                segments.append(seg_dict)
         else:
             # v2.2.0: collect partial_delete hints from prior smart-delete
             # analysis so the subtitle correction LLM can leverage them
