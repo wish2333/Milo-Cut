@@ -364,6 +364,33 @@ const subtitleSegments = computed(() => buildSubtitleIndex(props.segments))
 // ---------------------------------------------------------------------------
 const isTrackMode = computed(() => (props.activeTrackId ?? null) !== null)
 
+// ---------------------------------------------------------------------------
+// v3.0.4 M2-4 B: the highlight entry (this third tab, NOT an AIAssistantPanel
+// card) is main-track-only. In track mode it is greyed out -- disabled +
+// title「仅主轨可用」-- rather than hidden (keeps the three-tab layout
+// stable across track switches). The suggestion tab stays open (read-only
+// main-track display is harmless, same ruling as the search card).
+// ---------------------------------------------------------------------------
+const HIGHLIGHT_TAB: RightPanelTab = "highlight"
+
+function isTabTrackGated(key: RightPanelTab): boolean {
+  return isTrackMode.value && key === HIGHLIGHT_TAB
+}
+
+// Guarded switch: a gated tab click never lands (guard, not just styling).
+function selectTab(key: RightPanelTab) {
+  if (isTabTrackGated(key)) return
+  activeTab.value = key
+}
+
+// Entering track mode while resting on the highlight tab falls back to the
+// ungated suggestion tab (never rest on a disabled view, R3 must-fix #2).
+watch(isTrackMode, (on) => {
+  if (on && activeTab.value === HIGHLIGHT_TAB) {
+    activeTab.value = "suggestion"
+  }
+})
+
 // -- v3.0.3 用户反馈: 选择器防挤占 ------------------------------------------
 // 主轨 + 第一条副轨保持分段按钮; 第二条起收进箭头下拉（TimelineSwitcher
 // 同款 details.dropdown 模式）。激活轨若在下拉范围内, 触发器显示其名称。
@@ -590,16 +617,23 @@ watch(playheadSegmentId, (id) => {
         </button>
         <span class="text-xs text-ink-muted">{{ subtitleCount }} 条字幕 · {{ silenceCount }} 段静音</span>
       </div>
-      <!-- RIGHT: sidebar tabs + collapse arrow -->
+      <!-- RIGHT: sidebar tabs + collapse arrow. v3.0.4 M2-4 B: highlight tab
+           greyed out (disabled + title) in track mode; layout stays stable. -->
       <div class="flex items-center gap-1 flex-shrink-0">
         <template v-for="tab in tabs" :key="tab.key">
           <button
             v-if="sidebarOpen"
+            :data-test="`sidebar-tab-${tab.key}`"
             class="rounded px-2 py-1 text-xs font-semibold transition-colors"
-            :class="activeTab === tab.key
-              ? 'bg-primary-soft text-primary'
-              : 'text-ink-muted hover:bg-parchment hover:text-ink'"
-            @click="activeTab = tab.key"
+            :class="[
+              activeTab === tab.key
+                ? 'bg-primary-soft text-primary'
+                : 'text-ink-muted hover:bg-parchment hover:text-ink',
+              isTabTrackGated(tab.key) ? 'cursor-not-allowed opacity-50' : '',
+            ]"
+            :disabled="isTabTrackGated(tab.key)"
+            :title="isTabTrackGated(tab.key) ? '仅主轨可用' : undefined"
+            @click="selectTab(tab.key)"
           >{{ tab.label }}</button>
         </template>
         <button
