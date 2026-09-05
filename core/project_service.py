@@ -10,6 +10,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 from loguru import logger
 
@@ -1252,6 +1253,107 @@ class ProjectService:
             cleaned_count,
         )
         return {"success": True, "data": self._current.model_dump()}
+
+    def add_range_decision(
+        self, start: float, end: float, action: str = "delete", source: str = "manual"
+    ) -> dict:
+        """Add a manual range EditDecision (v3.0.4 M4-1, R4.1).
+
+        Creates a ``target_type="range"`` edit covering ``[start, end]``.
+        Unlike subtitle_trim (deterministic, regenerable, CONFIRMED at
+        creation), manual ranges are PENDING at creation -- they need
+        human review before export/preview consumers pick them up.
+
+        Contract (SPEC M4-1, validation order per PLAN P3-5):
+
+        1. clamp: ``start = max(0, start)``; ``end = min(upper, end)``
+           where upper = media.duration, or -- media missing -- the max
+           end of main-track subtitle segments (same bound caliber as
+           generate_subtitle_keep_ranges). No media AND no subtitle
+           segments -> reject first (empty-max() guard, mirrors the
+           "No subtitle segments found" early rejection). ``end <= start``
+           after clamp -> reject.
+        2. action must be "delete" or "keep" (entry-level check ahead of
+           the model Literal).
+        3. dedup (same threshold/criteria as the subtitle_trim generation
+           side): an existing edit (any status) with the same action and
+           ``|e.start - start| < 0.05 and |e.end - end| < 0.05`` ->
+           idempotent return of that edit's id (no patch, zero writes).
+           Cross-action overlap passes (keep exists to punch through
+           delete, M4-4); arbitrarily-overlapping non-near-equal ranges
+           pass (range overlap is a legal state).
+        4. new edit: id ``edit-manual-{uuid4().hex[:8]}`` (uuid guards
+           against id collision after historical deletions; the
+           sequential subtitle_trim ids rely on wholesale regeneration
+           and do not fit incremental manual adds).
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        # 1. clamp to a defensible upper bound
+        if self._current.media is not None:
+            upper_bound = self._current.media.duration
+        else:
+            subtitle_ends = [
+                s.end for s in self.active_timeline.transcript.segments
+                if s.type == SegmentType.SUBTITLE
+            ]
+            if not subtitle_ends:
+                return {
+                    "success": False,
+                    "error": "无媒体时长且无字幕段，无法确定范围上界",
+                }
+            upper_bound = max(subtitle_ends)
+
+        clamped_start = max(0.0, start)
+        clamped_end = min(upper_bound, end)
+        if clamped_end <= clamped_start:
+            return {
+                "success": False,
+                "error": (
+                    f"Invalid range: end ({clamped_end}) must be greater "
+                    f"than start ({clamped_start})"
+                ),
+            }
+
+        # 2. action validation
+        if action not in ("delete", "keep"):
+            return {
+                "success": False,
+                "error": f"Invalid action: {action} (must be 'delete' or 'keep')",
+            }
+
+        # 3. idempotent dedup: same action + near-equal bounds (any status)
+        for edit in self.active_timeline.edits:
+            if (
+                edit.action == action
+                and abs(edit.start - clamped_start) < 0.05
+                and abs(edit.end - clamped_end) < 0.05
+            ):
+                return {
+                    "success": True,
+                    "data": {"edit_id": edit.id, "duplicate": True},
+                }
+
+        # 4. create the pending manual range edit
+        new_edit = EditDecision(
+            id=f"edit-manual-{uuid4().hex[:8]}",
+            start=clamped_start,
+            end=clamped_end,
+            action=action,
+            source=source,
+            status=EditStatus.PENDING,
+            priority=100,
+            target_type="range",
+            target_id=None,
+        )
+        updated_edits = [*self.active_timeline.edits, new_edit]
+        self._update_active_timeline(edits=updated_edits)
+        logger.info(
+            "Added manual range decision [{:.3f}s, {:.3f}s] action={} ({})",
+            clamped_start, clamped_end, action, new_edit.id,
+        )
+        return self._success_patch(edits=updated_edits)
 
     def _apply_main_linkage(
         self,
