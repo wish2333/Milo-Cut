@@ -347,12 +347,14 @@ R3 增补 4 条顺序约束的落点：① golden 先行 → **P3-1**（本版�
 
 ### P3-8 覆层三态（SegmentBlocksLayer.vue，R4.3b）
 
-- [ ] `visibleEditRanges` computed 增输出 `edit.action` / `edit.status`，模板三态：confirmed delete = 现状红色斜纹**逐字节不变**；pending = 同款半透明降档；keep（任意 status）= 蓝色系斜纹/描边
-- [ ] `deleteRanges` 不含 pending 手动范围：现状过滤零改动，补 1 条快照锁定用例（跳播/进度条红罩/导出预览不受 pending 影响）
-- [ ] 用例：覆层三态样式 + confirmed delete 样式与 v3.0.3 一致（M4 前端覆层部分）
+- [x] `visibleEditRanges` computed 增输出 `edit.action` / `edit.status`，模板三态：confirmed delete = 现状红色斜纹**逐字节不变**；pending = 同款半透明降档；keep（任意 status）= 蓝色系斜纹/描边
+- [x] `deleteRanges` 不含 pending 手动范围：现状过滤零改动，补 1 条快照锁定用例（跳播/进度条红罩/导出预览不受 pending 影响）
+- [x] 用例：覆层三态样式 + confirmed delete 样式与 v3.0.3 一致（M4 前端覆层部分）
 
 **验收方式**: M5 组 = M4 前端（覆层项）。
 **验收标准**: 门禁全绿。
+
+> 已完成（登记：[record-3.0.4-P3-8.md](./record-3.0.4-P3-8.md)；分支 `dev-3.0.4-p3-8`，vitest 827-826【+7 例：SegmentBlocksLayer 三态 6（confirmed delete class 快照全等 / pending delete 降档 / pending keep 半透明蓝 / keep confirmed 蓝系 / rejected 仍渲染 / 无 range 零渲染）+ 新宿主 WorkspacePage.deleteRanges 1（pending manual delete/keep 不入 + confirmed manual 与 subtitle_trim bypass 在场全等锁定）】；三态排布裁决 = 双轴正交【color 轴 = action、opacity 轴 = status，pending keep 取半透明蓝（任务书预留定夺）】；confirmed delete 渲染逐字节 = v3.0.3（class token 序列全等断言；jsdom CSSOM 丢渐变值限制已登记，断言面 = class token）；rejected 维持现状不过滤；WorkspacePage.vue 产品代码零触碰，门禁 exit 0，pytest 819）。
 
 ### P3-9 keep 闭环（core/project_service.py 受控改点 ①，R4.4）——**S4 首砍项**
 
