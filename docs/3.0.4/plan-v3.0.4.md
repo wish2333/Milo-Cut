@@ -311,10 +311,12 @@ R3 增补 4 条顺序约束的落点：① golden 先行 → **P3-1**（本版�
 
 ### P3-5 add_range_decision expose（core/project_service.py · main.py，R4.1）
 
-- [ ] `ProjectService.add_range_decision(start, end, action, source="manual")`：clamp 到媒体时长（media 缺失取主轨段 end 上界，**空序列先拒**）→ clamp 后 end≤start 拒 → action 校验 → **±0.05s 同 action 幂等返回既有 edit（`duplicate: True`）/ 跨 action 放行 / 非近似重叠放行** → uuid id + 默认 pending + `_success_patch(edits=…)`
-- [ ] main.py `@expose add_range_decision`；前端调用前 `pushSnapshot(["edits"], "手动范围")`
-- [ ] 用例：全生命周期闭环（建 → 审 → 确认 → 导出预览包含该区间与 subtitle_trim 并列去重 → 单条删除 → 再建同参幂等）；clamp 越界；倒序拒绝；跨 action 放行（M4 expose ≥6）
-- [ ] M4-3 面板/覆层可与本步**并行开发**（M0-3 约束 3），生命周期验收在本步合入后串行执行
+- [x] `ProjectService.add_range_decision(start, end, action, source="manual")`：clamp 到媒体时长（media 缺失取主轨段 end 上界，**空序列先拒**）→ clamp 后 end≤start 拒 → action 校验 → **±0.05s 同 action 幂等返回既有 edit（`duplicate: True`）/ 跨 action 放行 / 非近似重叠放行** → uuid id + 默认 pending + `_success_patch(edits=…)`
+- [x] main.py `@expose add_range_decision`；前端调用前 `pushSnapshot(["edits"], "手动范围")`（pushSnapshot 属前端活，P3-6/P3-7 落地，SPEC M4-1 契约 5）
+- [x] 用例：全生命周期闭环（建 → 审 → 确认 → 导出预览包含该区间与 subtitle_trim 并列去重 → 单条删除 → 再建同参幂等）；clamp 越界；倒序拒绝；跨 action 放行（M4 expose ≥6）
+- [x] M4-3 面板/覆层可与本步**并行开发**（M0-3 约束 3），生命周期验收在本步合入后串行执行
+
+> 已完成（登记：[record-3.0.4-P3-5.md](./record-3.0.4-P3-5.md)；分支 `dev-3.0.4-p3-5`，pytest 819【+9 例，新建宿主 test_add_range_decision.py：生命周期闭环 / clamp 三态 / 倒序 / action 校验 / 跨 action / ±0.05 幂等 / expose 透传】；expose 形态 = `_mark_dirty` 包裹薄透传）。
 
 **验收方式**: M5 组 = M4 expose ≥6（即探索报告 §5.4 测试缺口 #4 补测）。
 **验收标准**: 门禁全绿；模型/patch/导出零改动。
