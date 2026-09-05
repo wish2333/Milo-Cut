@@ -358,12 +358,14 @@ R3 增补 4 条顺序约束的落点：① golden 先行 → **P3-1**（本版�
 
 ### P3-9 keep 闭环（core/project_service.py 受控改点 ①，R4.4）——**S4 首砍项**
 
-- [ ] keep 集合感知：收集 confirmed keep range（不限 source）→ 与自动 keep_ranges 排序合并 → keep 区间从删除区间补集中自然扣除
-- [ ] **陈旧 trim 剔除**：既有 `source="subtitle_trim"` delete edit 与任一 confirmed keep 相交 → 从 edits 移除，计数入返回 data `invalidated_count` + log
-- [ ] golden 对拍启用：无用户 keep 的工程输出与 v3.0.3 **逐字节一致**（P3-1 基线）；keep 与手动 delete 并存时导出服从 delete（优先级用例）
-- [ ] **首砍项标注（超期第二缓冲阀）**：触发即整体移除——气泡「保留」选项 + P3-8 keep 样式 + 本节全部，**不降级为「可标不消费」半吊子**
-- [ ] 用例：keep 打穿删除区间；陈旧剔除 + invalidated_count；golden 对拍；导出优先级（M4 keep ≥4）
-- [ ] ★ beta.3 冒烟（用户协助表）+ 打 tag `v3.0.4-beta.3` + record（含断言反转白名单登记汇总）
+- [x] keep 集合感知：收集 confirmed keep range（不限 source）→ 与自动 keep_ranges 排序合并 → keep 区间从删除区间补集中自然扣除
+- [x] **陈旧 trim 剔除**：既有 `source="subtitle_trim"` delete edit 与任一 confirmed keep 相交 → 从 edits 移除，计数入返回 data `invalidated_count` + log
+- [x] golden 对拍启用：无用户 keep 的工程输出与 v3.0.3 **逐字节一致**（P3-1 基线）；keep 与手动 delete 并存时导出服从 delete（优先级用例）
+- [x] **首砍项标注（超期第二缓冲阀）**：触发即整体移除——气泡「保留」选项 + P3-8 keep 样式 + 本节全部，**不降级为「可标不消费」半吊子**
+- [x] 用例：keep 打穿删除区间；陈旧剔除 + invalidated_count；golden 对拍；导出优先级（M4 keep ≥4）
+- [ ] ★ beta.3 冒烟（用户协助表）+ 打 tag `v3.0.4-beta.3` + record（含断言反转白名单登记汇总）（**登记 2026-09：代码闭环与全门禁已交付（pytest 829 / vitest 827-826，唯一失败 = useRowLayout.perf 环境例），新 10 例覆盖用例栏全量 + golden 2 例零改动全绿；tag `v3.0.4-beta.3` 由负责人打在 P3-9 合入 commit（执行者不打 tag）；真机 keep 重跑冒烟待用户执行，继承 beta.1/beta.2 后置先例，异常走 smoke-fix**）
+
+> 已完成（登记：[record-3.0.4-P3-9.md](./record-3.0.4-P3-9.md)；分支 `dev-3.0.4-p3-9`，core/project_service.py 5 hunk +78/-7【模块级抽出 `_merge_time_ranges` + keep 集合感知 + 陈旧 trim 剔除 + invalidated_count，空 keep 守卫式零回退】，新建宿主 test_keep_ranges_user_keep.py 10 例；golden 基线未重采、对拍 2 例零改动全绿）。
 
 **验收方式**: M5 组 = M4 keep ≥4；pytest ≥762 / vitest collected ≥779。
 **验收标准**: `generate_subtitle_keep_ranges` 是本版唯一「改」点之一——diff 审查制重点审查项。
