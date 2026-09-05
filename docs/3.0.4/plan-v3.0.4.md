@@ -335,13 +335,15 @@ R3 增补 4 条顺序约束的落点：① golden 先行 → **P3-1**（本版�
 
 ### P3-7 建议面板手动范围分组 + 时间码 popover（SuggestionPanel.vue，R4.3a）
 
-- [ ] 新增第三源分组「手动范围」（`source === "manual"` 过滤，与静音/智能删除并列）：条目 label `删除/保留 {时长}s` + status 徽；逐条确认/拒绝复用 `update_edit_decision`、删除复用 `delete_edit_decisions_batch`（**后端零新增**）；确认文案显式「**确认 = 参与裁剪计算**」
-- [ ] 时间码 popover：面板**常驻头部条**（:190-199）「+ 时间码」按钮 + 起止两输入（不放分组头——push 空组守卫会连入口一起隐藏）；非法输入 end≤start 拒；与气泡共用 `add_range_decision`
-- [ ] `SUGGESTION_SOURCES` 与计数器并入 manual；全链 `pushSnapshot(["edits"])`
-- [ ] 用例：面板分组生命周期闭环（建→审→确认→删除）+ 时间码入口（**新建宿主 `SuggestionPanel.test.ts`**）
+- [x] 新增第三源分组「手动范围」（`source === "manual"` 过滤，与静音/智能删除并列）：条目 label `删除/保留 {时长}s` + status 徽；逐条确认/拒绝复用 `update_edit_decision`、删除复用 `delete_edit_decisions_batch`（**后端零新增**）；确认文案显式「**确认 = 参与裁剪计算**」
+- [x] 时间码 popover：面板**常驻头部条**（:190-199）「+ 时间码」按钮 + 起止两输入（不放分组头——push 空组守卫会连入口一起隐藏）；非法输入 end≤start 拒；与气泡共用 `add_range_decision`
+- [x] `SUGGESTION_SOURCES` 与计数器并入 manual；全链 `pushSnapshot(["edits"])`
+- [x] 用例：面板分组生命周期闭环（建→审→确认→删除）+ 时间码入口（**新建宿主 `SuggestionPanel.test.ts`**）
 
 **验收方式**: M5 组 = M4 前端（面板项）。
 **验收标准**: 既有静音/智能删除两分组断言全绿。
+
+> 已完成（登记：[record-3.0.4-P3-7.md](./record-3.0.4-P3-7.md)；分支 `dev-3.0.4-p3-7`，vitest 820-819【+6 例，新建宿主 SuggestionPanel.test.ts：生命周期含 update_edit_decision 断言 / 确认文案两变体 / 组删除 pushSnapshot 先行顺序 / 时间码常驻 + 非法零桥调 / 合法提交链 patch 流出 / keep 二选 + 计数并入】；三裁决登记：popover action 二选取「删除/保留二选默认删除」（与气泡同款）、keep/delete 区分取「label 前缀不设小节」、时间码提交经 provide/inject 共用 handleRangeDecision（SuggestionPanel 实挂 Timeline.vue:775，红线禁改 Timeline；WorkspacePage 仅 +8 行 provide）；既有两分组行为零变化，门禁 exit 0，pytest 819）。
 
 ### P3-8 覆层三态（SegmentBlocksLayer.vue，R4.3b）
 
