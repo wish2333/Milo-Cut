@@ -30,7 +30,7 @@
 | P2-3 | [record-3.0.4-P2-3.md](./record-3.0.4-P2-3.md) | 已完成（pending 作用域化：seg_map/互清/get 按 scope；防御行为二选一取「显式失败返回」；主轨 track_name="" 约定；accept/reject/accept_high/clear 四函数零触碰） | （待合入） |
 | P2-4 | [record-3.0.4-P2-4.md](./record-3.0.4-P2-4.md) | 已完成（accept/reject 超集 patch 化：patch 层三裁决落实【主轨 segments+analysis / 副轨 tracks+analysis / reject analysis】+ undo 捕获层双层 + 时间轴钉扎 fail-fast；清债 #14 = switch_timeline 全量刷新 workaround 删除；useLlmTasks/main.py/WorkspacePage/App.vue 零改动） | 合入（merge P2-4，pytest 804 / vitest 778-777 全绿；执行中子代理中断由负责人接手收尾验证） |
 | P2-5 | [record-3.0.4-P2-5.md](./record-3.0.4-P2-5.md) | 已完成（前端门控与审阅：AIAssistantPanel prop 门控【智能删除/工作流入口置灰 + 纠错轨徽锁定当前轨 + 搜索不置灰】+ Timeline 精华 tab 置灰与停留回落【R3 must-fix #2】+ startSubtitleCorrection 轨透传【deps 字面量包装，useWorkspaceActions 零改动】+ 审阅 modal 来源轨徽；后端零改动；工作流入口存在性核查 = 存在且已置灰） | （待合入） |
-| P2-6 | （待建） | 未开始 | |
+| P2-6 | [record-3.0.4-P2-6.md](./record-3.0.4-P2-6.md) | 已完成（可选尾项·对齐主轨上下文：handler 注入自描述字段 `aligned_main_text` + `_build_structured_user_message` 同款转发 +4 受控增行【架构师预裁决 1/2/3 落实，llm_prompts.py 零改动，§4.1 追认】；无绑定段自动退化；主轨路径零改动；P3 开工前完成，让位线未触发） | （待合入） |
 | P3-1 ~ P3-9 | （待建） | 未开始 | |
 | P4-1 ~ P4-5 | （待建） | 未开始 | |
 
@@ -76,6 +76,8 @@
 | P2-5 | frontend/src/pages/WorkspacePage.vue | ① deps 字面量（纠错调用点）startSubtitleCorrection 包装追加 activeListTrackId.value ?? ""（useWorkspaceActions 冻结零改动，轨 id 在本页注入）；② 审阅 modal：correctionTrackName 窄类型 helper（track_name 运行时在场、经本地交叉类型读取）+ 高/低置信度区块来源轨徽「来源轨：{track_name}」（非空显示空不显示）；renderDiff 与时间/文本渲染零改动 | R2.4 | 登记改点 |
 | P1-5 | core/config.py | DEFAULTS LLM 区块追加 1 行 `"llm_translation_target_language": "en",`（+注释共 +4）：前端「记忆上次语言」持久化键（R1.1，P1-6 消费） | R1.1 | 只增 |
 | P1-5 | main.py | 四 hunk 纯新增 +245 零删改：① 模块级 `_TRANSLATION_LANGUAGES` 常量（9 语言 BCP-47 → 英文显示名，expose 校验与 handler 终替换共用单一事实来源）；② 注册块追加 `register_handler(TaskType.LLM_TRANSLATION, self._handle_translation)`（R1.2）；③ `_handle_translation` 五步流程（R1.2/R1.3）：主轨段源排除 confirmed-deleted → get_effective_prompt("translation") + `{{target_language}}` 英文显示名终替换（残留 `{{` fail-fast）→ analyze_subtitle_translation（失败 raise 零落盘；target_language 传 code，已核实不进 prompt）→ 完成时时间轴钉扎校验（不一致 failed 零落盘带回到原时间轴指引）→ create_translation_track 单 patch 写入 + emit LLM_TRANSLATION_COMPLETED（payload 含 track_id/track_name/language/written_count/target_count/uncovered_ids/ledger，取自 meta.translation 与管线 ledger）+ emit llm:token_usage + 返回含 project dump；④ `@expose start_translation` 六步校验序（R1.5）：LLM configured → project open → 语言合法 → 主轨有 subtitle 段 → 同语言 translation 轨拒绝（文案含「可清空或删除该轨后重试」）→ create_task("llm_translation", {...})；既有函数零触碰 | R1.2/R1.5 | 只增 |
+| P2-6 | core/llm_service.py | `_build_structured_user_message` edit_hint 转发块后新增 `aligned_main_text` 段级转发受控增行 +4（注释 1 + 代码 3，s.get 存在则 item["aligned_main_text"]=str(...)，与 edit_hint 同款模式）；analyze_subtitle_correction 签名/批处理管线/其余 builder 逻辑零改动；llm_prompts.py 零改动（字段名自描述，prompt 增强登记 3.0.5 候选） | R2.5 | 只增（受控增行，§4.1 追认——SPEC M0-1 llm_service.py 行「仅新增 analyze_subtitle_translation」为行级滞后，M2-5 明文点名本通路） |
+| P2-6 | main.py | `_handle_subtitle_correction` track 分支注入对齐主轨上下文 +10/-1：`main_text_by_id` 主轨文本反查表 + 循环内对有绑定主伙伴（未 confirmed-deleted，被删者上游已 continue）且查得非空文本的副轨段 seg_dict 注入 `aligned_main_text = <主轨段 text>`；无绑定段不注入（自动退化）；主轨 else 分支逐字节不动 | R2.5 | 登记改点（M2-1 track 分支内顺带增强） |
 
 ## 4. 断言反转白名单登记（R0-3 唯一例外）
 
@@ -90,6 +92,7 @@
 | 文件:位置 | 增行内容 | 性质与理由 | 追认 | 登记步 |
 |---|---|---|---|---|
 | tests/test_llm_prompts.py EXPECTED_KEYS 集合 | `+ "translation",`（1 行，集合字面量） | 非断言删改（`^-` grep 恒 0）；既有 `test_all_expected_keys_present` 为注册表键集**精确等值**断言，translation 注册后不增该键必红；增行后断言严格性保持且覆盖扩为 6 键，符合「只增不改」精神 | 架构师已追认（P1-2 合并审查） | P1-2 |
+| core/llm_service.py:554-557 `_build_structured_user_message` | `+4`：`aligned_main_text` 段级转发（注释 1 + `s.get` 存在则 `item[...] = str(...)`，与 edit_hint 转发同款模式） | 既有函数受控增行（非测试文件，同属门禁 grep 之外的受控改面）：SPEC M0-1 llm_service.py 行写「仅新增 analyze_subtitle_translation 及其私有辅助」，而 SPEC M2-5（R2.5）明文点名 `_build_structured_user_message` 的上下文通路——M0-1 表先于 M2-5 定稿的行级滞后；文件级红线（白名单文件集）不受影响；不复用 edit_hint 通道（系统 prompt 已锚定其语义为「句内口误/重复」，复用会误导模型） | 架构师预裁决（P2-6 委派时） | P2-6 |
 
 ## 5. 超期决策树触发留痕（立项会授权，四要素：日期/触发信号/裁决与影响面/回写文档处）
 
