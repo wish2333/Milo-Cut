@@ -26,8 +26,9 @@
 | P1-5 | [record-3.0.4-P1-5.md](./record-3.0.4-P1-5.md) | 已完成（负责人已审查合并；main.py +245 四 hunk 纯新增、config.py +1 键，五情形失败语义对照齐备） | 合入（merge P1-5，pytest 774 全绿） |
 | P1-6 | [record-3.0.4-P1-6.md](./record-3.0.4-P1-6.md) | 已完成（负责人已审查合并；props 链三级接通，App.vue 零改动） | 合入（merge P1-6，pytest 774 / vitest 771-770 全绿） |
 | P2-1 | [record-3.0.4-P2-1.md](./record-3.0.4-P2-1.md) | 已完成 | 合入（merge P2-1，pytest 776 全绿） |
-| P2-2 | [record-3.0.4-P2-2.md](./record-3.0.4-P2-2.md) | 已完成（store 形参二选一取 B：correction_service 仅签名 + detail JSON 键，互清/seg_map 零触碰，裁决见 record §2） | （待合入） |
-| P2-3 ~ P2-6 | （待建） | 未开始 | |
+| P2-2 | [record-3.0.4-P2-2.md](./record-3.0.4-P2-2.md) | 已完成（store 形参二选一取 B：correction_service 仅签名 + detail JSON 键，互清/seg_map 零触碰，裁决见 record §2） | 合入（merge P2-2 `d28568a`，pytest 782 全绿） |
+| P2-3 | [record-3.0.4-P2-3.md](./record-3.0.4-P2-3.md) | 已完成（pending 作用域化：seg_map/互清/get 按 scope；防御行为二选一取「显式失败返回」；主轨 track_name="" 约定；accept/reject/accept_high/clear 四函数零触碰） | （待合入） |
+| P2-4 ~ P2-6 | （待建） | 未开始 | |
 | P3-1 ~ P3-9 | （待建） | 未开始 | |
 | P4-1 ~ P4-5 | （待建） | 未开始 | |
 
@@ -64,6 +65,7 @@
 | P2-1 | main.py | start_subtitle_correction 增可选形参 track_id: str = "" 并入 payload（默认空 = 主轨，既有调用零影响） | R2.1 | 登记改点 |
 | P2-2 | main.py | `_handle_subtitle_correction` 新增 track_id 非空分支（R2.1，SPEC M2-1）：轨定位（缺失 raise "Track not found: {track_id}" 任务 failed）→ 段源 = 轨内 segments（全 subtitle 型）→ bindings 反查表（b.track_id 过滤，ext_id→main_id）跳过主轨 confirmed-deleted 的绑定副轨段（无绑定保留，语义对齐导出映射）→ partial hints 不收集不透传（主轨 else 分支原逻辑逐字节不动，仅缩进）；store 调用点透传 track_id=track_id（二选一取 B，见 record-P2-2 §2）；其余流程共用零改动 | R2.1 | 登记改点 |
 | P2-2 | core/correction_service.py | store_subtitle_corrections 签名追加 track_id: str = "" + detail JSON 增键 "track_id"（空串 = 主轨）+ docstring；互清（kept_results）与 seg_map 构建零触碰（作用域化 = P2-3） | R2.1 | 受控改点② |
+| P2-3 | core/correction_service.py | store / get 两函数 track 作用域化（受控改点② 收口，R2.2，SPEC M2-2）：新增模块级 `_detail_track_scope`（存量无键 → "" 主轨作用域；非 JSON/非 dict → None 保守不清）；store seg_map 按 scope（空 = 主轨原路径；非空 = 轨内 segments，轨缺失防御性显式失败）+ 互清精确到「detail.track_id == 本次 track_id」同类型结果 + detail JSON 增键 "timeline_id"（供 P2-4 钉扎）；get 输出逐条附 track_id/track_name（主轨 ""/""，前端据空串判主轨）+ 悬空过滤（轨已删 → 跳过）+ 段解析按 scope（回退 0.0 保留）；accept/reject/accept_high_confidence/clear 四函数零触碰 | R2.2 | 受控改点② |
 | P1-5 | core/config.py | DEFAULTS LLM 区块追加 1 行 `"llm_translation_target_language": "en",`（+注释共 +4）：前端「记忆上次语言」持久化键（R1.1，P1-6 消费） | R1.1 | 只增 |
 | P1-5 | main.py | 四 hunk 纯新增 +245 零删改：① 模块级 `_TRANSLATION_LANGUAGES` 常量（9 语言 BCP-47 → 英文显示名，expose 校验与 handler 终替换共用单一事实来源）；② 注册块追加 `register_handler(TaskType.LLM_TRANSLATION, self._handle_translation)`（R1.2）；③ `_handle_translation` 五步流程（R1.2/R1.3）：主轨段源排除 confirmed-deleted → get_effective_prompt("translation") + `{{target_language}}` 英文显示名终替换（残留 `{{` fail-fast）→ analyze_subtitle_translation（失败 raise 零落盘；target_language 传 code，已核实不进 prompt）→ 完成时时间轴钉扎校验（不一致 failed 零落盘带回到原时间轴指引）→ create_translation_track 单 patch 写入 + emit LLM_TRANSLATION_COMPLETED（payload 含 track_id/track_name/language/written_count/target_count/uncovered_ids/ledger，取自 meta.translation 与管线 ledger）+ emit llm:token_usage + 返回含 project dump；④ `@expose start_translation` 六步校验序（R1.5）：LLM configured → project open → 语言合法 → 主轨有 subtitle 段 → 同语言 translation 轨拒绝（文案含「可清空或删除该轨后重试」）→ create_task("llm_translation", {...})；既有函数零触碰 | R1.2/R1.5 | 只增 |
 
