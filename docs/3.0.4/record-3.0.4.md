@@ -28,7 +28,7 @@
 | P2-1 | [record-3.0.4-P2-1.md](./record-3.0.4-P2-1.md) | 已完成 | 合入（merge P2-1，pytest 776 全绿） |
 | P2-2 | [record-3.0.4-P2-2.md](./record-3.0.4-P2-2.md) | 已完成（store 形参二选一取 B：correction_service 仅签名 + detail JSON 键，互清/seg_map 零触碰，裁决见 record §2） | 合入（merge P2-2 `d28568a`，pytest 782 全绿） |
 | P2-3 | [record-3.0.4-P2-3.md](./record-3.0.4-P2-3.md) | 已完成（pending 作用域化：seg_map/互清/get 按 scope；防御行为二选一取「显式失败返回」；主轨 track_name="" 约定；accept/reject/accept_high/clear 四函数零触碰） | （待合入） |
-| P2-4 | [record-3.0.4-P2-4.md](./record-3.0.4-P2-4.md) | 已完成（accept/reject 超集 patch 化：patch 层三裁决落实【主轨 segments+analysis / 副轨 tracks+analysis / reject analysis】+ undo 捕获层双层 + 时间轴钉扎 fail-fast；清债 #14 = switch_timeline 全量刷新 workaround 删除；useLlmTasks/main.py/WorkspacePage/App.vue 零改动） | （待合入） |
+| P2-4 | [record-3.0.4-P2-4.md](./record-3.0.4-P2-4.md) | 已完成（accept/reject 超集 patch 化：patch 层三裁决落实【主轨 segments+analysis / 副轨 tracks+analysis / reject analysis】+ undo 捕获层双层 + 时间轴钉扎 fail-fast；清债 #14 = switch_timeline 全量刷新 workaround 删除；useLlmTasks/main.py/WorkspacePage/App.vue 零改动） | 合入（merge P2-4，pytest 804 / vitest 778-777 全绿；执行中子代理中断由负责人接手收尾验证） |
 | P2-5 ~ P2-6 | （待建） | 未开始 | |
 | P3-1 ~ P3-9 | （待建） | 未开始 | |
 | P4-1 ~ P4-5 | （待建） | 未开始 | |
