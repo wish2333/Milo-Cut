@@ -11,7 +11,9 @@
 - **P0 完成**：分支/tag/基线/门禁脚本（P0-1、P0-2）。
 - **P1 完成（2026-09）**：S1 翻译副轨全链交付——P1-1 任务类型与事件双侧 / P1-2 prompt 注册（params={} 裁决）/ P1-3 批处理管线（coverage 反向守恒）/ P1-4 批量落盘单 patch / P1-5 handler 与 expose（五情形失败语义）/ P1-6 前端闭环与 props 链三级接通。P1 末门禁：pytest 774（期望 ≥739）/ vitest 771 collected·770 passed（期望 ≥760·759）/ build / lint / ruff / 红线全过。
 - **tag `v3.0.4-beta.1`** 已打在 P1-6 合入 commit（代码闭环 + 全门禁绿）。★ beta.1 双平台真机冒烟**待用户执行**（继承 3.0.3「冒烟后置裁决」先例，record-3.0.3 已有先例登记）：清单 = 翻译全链路（入口语言记忆 / 进度 / 完成自动切轨 / undo 整轨回退 / 千段耗时与 token 观测）+ 双语导出 + 播放双语第二行，建议覆盖至少一家非 json_mode provider（Qwen/GLM/Ollama）；异常项走 smoke-fix 流程（合入 dev-3.0.4，tag 不动）。
-- P2 起各 phase 完成态 / tag 链 / 规模对照实际值：P4 归档时汇总。
+- **P2 完成（2026-09）**：S2 纠错感知当前轨全链交付——P2-1 track_id 形参 / P2-2 handler 副轨分支（绑定已删段跳过·hints 跳过·Track not found）/ P2-3 pending 作用域化（互清精确到轨·悬空过滤·存量兼容）/ P2-4 accept/reject 超集 patch 化（patch 层三裁决 + undo 双层捕获 + 时间轴钉扎 + 消灭 switch_timeline 全量刷新 workaround）/ P2-5 前端门控与审阅（置灰 + 轨徽 + 精华 tab 回落）/ P2-6 对齐主轨上下文（R2.5 提前完成，让位线未触发）。P2 末门禁：pytest 808（期望 ≥752）/ vitest 790 collected·789 passed（期望 ≥763·762）/ build / lint / ruff / 红线全过。
+- **tag `v3.0.4-beta.2`** 已打在 P2-6 合入 commit。★ beta.2 双平台真机冒烟**待用户执行**（同 beta.1 后置先例）：清单 = 纠错双轨（轨徽门控 / 主轨待审集不丢 / 审阅来源轨标注 / accept patch 无全量刷新 / undo）+ 主轨纠错回归；异常走 smoke-fix。
+- P3 起各 phase 完成态 / tag 链 / 规模对照实际值：P4 归档时汇总。
 
 ## 1. 分步记录索引
 
@@ -27,10 +29,10 @@
 | P1-6 | [record-3.0.4-P1-6.md](./record-3.0.4-P1-6.md) | 已完成（负责人已审查合并；props 链三级接通，App.vue 零改动） | 合入（merge P1-6，pytest 774 / vitest 771-770 全绿） |
 | P2-1 | [record-3.0.4-P2-1.md](./record-3.0.4-P2-1.md) | 已完成 | 合入（merge P2-1，pytest 776 全绿） |
 | P2-2 | [record-3.0.4-P2-2.md](./record-3.0.4-P2-2.md) | 已完成（store 形参二选一取 B：correction_service 仅签名 + detail JSON 键，互清/seg_map 零触碰，裁决见 record §2） | 合入（merge P2-2 `d28568a`，pytest 782 全绿） |
-| P2-3 | [record-3.0.4-P2-3.md](./record-3.0.4-P2-3.md) | 已完成（pending 作用域化：seg_map/互清/get 按 scope；防御行为二选一取「显式失败返回」；主轨 track_name="" 约定；accept/reject/accept_high/clear 四函数零触碰） | （待合入） |
+| P2-3 | [record-3.0.4-P2-3.md](./record-3.0.4-P2-3.md) | 已完成（pending 作用域化：seg_map/互清/get 按 scope；防御行为二选一取「显式失败返回」；主轨 track_name="" 约定；accept/reject/accept_high/clear 四函数零触碰） | 合入（merge P2-3，pytest 794 全绿） |
 | P2-4 | [record-3.0.4-P2-4.md](./record-3.0.4-P2-4.md) | 已完成（accept/reject 超集 patch 化：patch 层三裁决落实【主轨 segments+analysis / 副轨 tracks+analysis / reject analysis】+ undo 捕获层双层 + 时间轴钉扎 fail-fast；清债 #14 = switch_timeline 全量刷新 workaround 删除；useLlmTasks/main.py/WorkspacePage/App.vue 零改动） | 合入（merge P2-4，pytest 804 / vitest 778-777 全绿；执行中子代理中断由负责人接手收尾验证） |
-| P2-5 | [record-3.0.4-P2-5.md](./record-3.0.4-P2-5.md) | 已完成（前端门控与审阅：AIAssistantPanel prop 门控【智能删除/工作流入口置灰 + 纠错轨徽锁定当前轨 + 搜索不置灰】+ Timeline 精华 tab 置灰与停留回落【R3 must-fix #2】+ startSubtitleCorrection 轨透传【deps 字面量包装，useWorkspaceActions 零改动】+ 审阅 modal 来源轨徽；后端零改动；工作流入口存在性核查 = 存在且已置灰） | （待合入） |
-| P2-6 | [record-3.0.4-P2-6.md](./record-3.0.4-P2-6.md) | 已完成（可选尾项·对齐主轨上下文：handler 注入自描述字段 `aligned_main_text` + `_build_structured_user_message` 同款转发 +4 受控增行【架构师预裁决 1/2/3 落实，llm_prompts.py 零改动，§4.1 追认】；无绑定段自动退化；主轨路径零改动；P3 开工前完成，让位线未触发） | （待合入） |
+| P2-5 | [record-3.0.4-P2-5.md](./record-3.0.4-P2-5.md) | 已完成（前端门控与审阅：AIAssistantPanel prop 门控【智能删除/工作流入口置灰 + 纠错轨徽锁定当前轨 + 搜索不置灰】+ Timeline 精华 tab 置灰与停留回落【R3 must-fix #2】+ startSubtitleCorrection 轨透传【deps 字面量包装，useWorkspaceActions 零改动】+ 审阅 modal 来源轨徽；后端零改动；工作流入口存在性核查 = 存在且已置灰；工作流视图不强制回落单轨视图——负责人追认） | 合入（merge P2-5，vitest 790-789 全绿） |
+| P2-6 | [record-3.0.4-P2-6.md](./record-3.0.4-P2-6.md) | 已完成（可选尾项·对齐主轨上下文：handler 注入自描述字段 `aligned_main_text` + `_build_structured_user_message` 同款转发 +4 受控增行【架构师预裁决 1/2/3 落实，llm_prompts.py 零改动，§4.1 追认】；无绑定段自动退化；主轨路径零改动；P3 开工前完成，让位线未触发） | 合入（merge P2-6，pytest 808 全绿） |
 | P3-1 ~ P3-9 | （待建） | 未开始 | |
 | P4-1 ~ P4-5 | （待建） | 未开始 | |
 
