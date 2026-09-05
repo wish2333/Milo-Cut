@@ -1767,6 +1767,22 @@ class MiloCutApi(Bridge):
         return self._mark_dirty(self._project.delete_edit_decisions_batch(edit_ids))
 
     @expose
+    def add_range_decision(
+        self, start: float, end: float, action: str = "delete", source: str = "manual"
+    ) -> dict:
+        """Add a manual range edit decision (v3.0.4 M4-1, R4.1).
+
+        Thin passthrough: the service owns clamping / action validation /
+        +-0.05s idempotent dedup and returns the ProjectPatch envelope
+        (or the duplicate idempotent payload). Wrapped in _mark_dirty per
+        the mutating-expose convention (same cluster as
+        delete_edit_decisions_batch / add_analysis_results).
+        """
+        return self._mark_dirty(
+            self._project.add_range_decision(start, end, action, source)
+        )
+
+    @expose
     def add_analysis_results(self, results: list, source: str = "manual") -> dict:
         """Add analysis results and generate EditDecisions from them.
 
