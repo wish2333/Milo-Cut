@@ -97,6 +97,11 @@ interface Block {
 
 interface EditRangeBlock {
   edit: EditDecision
+  /** v3.0.4 M4-3 (P3-8): three-state inputs -- action drives the stripe
+   * color axis (red delete / blue keep), status drives the opacity axis
+   * (pending dims). Rejected is NOT filtered here (status quo kept). */
+  action: EditDecision["action"]
+  status: EditDecision["status"]
   leftPercent: number
   widthPercent: number
 }
@@ -146,11 +151,37 @@ const visibleEditRanges = computed<EditRangeBlock[]>(() => {
       const clampEnd = Math.min(e.end, ve)
       return {
         edit: e,
+        action: e.action,
+        status: e.status,
         leftPercent: ((clampStart - vs) / vd) * 100,
         widthPercent: ((clampEnd - clampStart) / vd) * 100,
       }
     })
 })
+
+// v3.0.4 M4-3 (P3-8): overlay three-state styling. Two orthogonal axes:
+// color = action (red delete / blue keep), opacity = status (pending dims
+// to 50%). The confirmed-delete string below is BYTE-IDENTICAL to the
+// v3.0.3 stripe -- it must stay that way (SPEC M4-3 hard requirement).
+const EDIT_RANGE_RED_BOX = "border border-red-400/60 bg-red-300/30"
+const EDIT_RANGE_BLUE_BOX = "border border-blue-400/60 bg-blue-300/30"
+const EDIT_RANGE_RED_HATCH = "rgba(239,68,68,0.15)"
+const EDIT_RANGE_BLUE_HATCH = "rgba(59,130,246,0.15)"
+
+function editRangeClasses(block: EditRangeBlock): string {
+  const box = block.action === "keep" ? EDIT_RANGE_BLUE_BOX : EDIT_RANGE_RED_BOX
+  return block.status === "pending"
+    ? `absolute top-0 bottom-0 ${box} pointer-events-none opacity-50`
+    : `absolute top-0 bottom-0 ${box} pointer-events-none`
+}
+
+function editRangeHatchStyle(block: EditRangeBlock): { backgroundImage: string } {
+  const hatch = block.action === "keep" ? EDIT_RANGE_BLUE_HATCH : EDIT_RANGE_RED_HATCH
+  return {
+    backgroundImage:
+      `repeating-linear-gradient(45deg, transparent, transparent 3px, ${hatch} 3px, ${hatch} 6px)`,
+  }
+}
 
 function handleEmptyClick(e: MouseEvent) {
   // v3.0.2 M5-3: dual empty-area semantics. "seek" (multi) clears the
@@ -343,18 +374,22 @@ onUnmounted(() => {
       @toast="emit('toast', $event)"
     />
 
-    <!-- Edit range overlays (e.g., subtitle trim delete ranges) -->
+    <!-- Edit range overlays (e.g., subtitle trim delete ranges).
+         v3.0.4 M4-3 (P3-8): three-state -- color axis = action (red
+         delete / blue keep), opacity axis = status (pending dims to
+         opacity-50). confirmed delete renders the v3.0.3 red stripe
+         byte-for-byte; rejected is NOT filtered (status quo kept). -->
     <div
       v-for="rangeBlock in visibleEditRanges"
       :key="rangeBlock.edit.id"
-      class="absolute top-0 bottom-0 border border-red-400/60 bg-red-300/30 pointer-events-none"
+      :class="editRangeClasses(rangeBlock)"
       :style="{
         left: rangeBlock.leftPercent + '%',
         width: rangeBlock.widthPercent + '%',
       }"
       :title="`Delete range: ${rangeBlock.edit.start.toFixed(1)}s - ${rangeBlock.edit.end.toFixed(1)}s`"
     >
-      <div class="h-full w-full" style="background-image: repeating-linear-gradient(45deg, transparent, transparent 3px, rgba(239,68,68,0.15) 3px, rgba(239,68,68,0.15) 6px);" />
+      <div class="h-full w-full" :style="editRangeHatchStyle(rangeBlock)" />
     </div>
 
     <!-- Context Menu (R9.4: kbd badges turn the menu into a cheat sheet --

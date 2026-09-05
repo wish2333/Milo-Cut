@@ -277,6 +277,110 @@ describe("SegmentBlocksLayer emptyAreaMode (M5-3)", () => {
   })
 })
 
+// ------------------------------------------------------------------
+// v3.0.4 M4-3 (P3-8): edit range overlay three-state.
+// Axes: color = action (red delete / blue keep), opacity = status
+// (pending dims to opacity-50). confirmed delete must stay
+// byte-identical to the v3.0.3 red stripe (snapshot lock below).
+// ------------------------------------------------------------------
+
+describe("SegmentBlocksLayer edit range overlay three-state (M4-3 / P3-8)", () => {
+  // Byte-for-byte v3.0.3 confirmed-delete stripe (class snapshot lock).
+  const V303_CONFIRMED_DELETE_CLASS =
+    "absolute top-0 bottom-0 border border-red-400/60 bg-red-300/30 pointer-events-none"
+
+  function findOverlays(wrapper: ReturnType<typeof mountLayer>["wrapper"]) {
+    return wrapper.findAll('[title^="Delete range"]')
+  }
+
+  // NOTE: the inner hatch gradient (repeating-linear-gradient with rgba
+  // stops) is DROPPED by jsdom's CSSOM on every Vue :style path, so the
+  // hatch color cannot be asserted through the DOM here. The outer box
+  // class fully encodes both axes (action -> color, status -> opacity)
+  // and the hatch reads the same action check, so class tokens are the
+  // assertion surface (same convention as the bg-red-200/bg-green-200
+  // block-style tests above).
+
+  it("confirmed delete keeps the v3.0.3 red stripe byte-for-byte", () => {
+    const { wrapper } = mountLayer([], [
+      edit({ id: "ed-cd", start: 1, end: 4, action: "delete", status: "confirmed", source: "manual" }),
+    ])
+    const overlays = findOverlays(wrapper)
+    expect(overlays).toHaveLength(1)
+    // Snapshot-style: the FULL class string equals the v3.0.3 stripe.
+    expect(overlays[0].classes().join(" ")).toBe(V303_CONFIRMED_DELETE_CLASS)
+    expect(overlays[0].classes()).not.toContain("opacity-50")
+    // The hatch carrier div is still rendered inside the box.
+    expect(overlays[0].find("div.h-full").exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it("pending delete = same red stripe dimmed (opacity downgrade)", () => {
+    const { wrapper } = mountLayer([], [
+      edit({ id: "ed-pd", start: 1, end: 4, action: "delete", status: "pending", source: "manual" }),
+    ])
+    const overlay = findOverlays(wrapper)[0]
+    const classes = overlay.classes()
+    expect(classes).toContain("border-red-400/60")
+    expect(classes).toContain("bg-red-300/30")
+    expect(classes).toContain("opacity-50")
+    expect(classes.join(" ")).not.toContain("blue")
+    wrapper.unmount()
+  })
+
+  it("pending keep = dimmed BLUE stripe (color=action, opacity=status)", () => {
+    const { wrapper } = mountLayer([], [
+      edit({ id: "ed-pk", start: 1, end: 4, action: "keep", status: "pending", source: "manual" }),
+    ])
+    const overlay = findOverlays(wrapper)[0]
+    const classes = overlay.classes()
+    expect(classes).toContain("border-blue-400/60")
+    expect(classes).toContain("bg-blue-300/30")
+    expect(classes).toContain("opacity-50")
+    expect(classes.join(" ")).not.toContain("red")
+    // Hatch carrier present (its blue gradient is jsdom-invisible, see NOTE).
+    expect(overlay.find("div.h-full").exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it("keep confirmed = full-opacity blue system, never red", () => {
+    const { wrapper } = mountLayer([], [
+      edit({ id: "ed-kc", start: 1, end: 4, action: "keep", status: "confirmed", source: "manual" }),
+    ])
+    const overlay = findOverlays(wrapper)[0]
+    const classes = overlay.classes()
+    expect(classes).toContain("border-blue-400/60")
+    expect(classes).toContain("bg-blue-300/30")
+    expect(classes).not.toContain("opacity-50")
+    expect(classes.join(" ")).not.toContain("red")
+    wrapper.unmount()
+  })
+
+  it("rejected ranges are still rendered, unfiltered (status quo kept)", () => {
+    const { wrapper } = mountLayer([], [
+      edit({ id: "ed-rd", start: 1, end: 4, action: "delete", status: "rejected", source: "manual" }),
+    ])
+    const overlays = findOverlays(wrapper)
+    expect(overlays).toHaveLength(1)
+    // Rejected delete keeps the full-opacity red visual (no new state).
+    expect(overlays[0].classes().join(" ")).toBe(V303_CONFIRMED_DELETE_CLASS)
+    wrapper.unmount()
+  })
+
+  it("renders zero overlays without range-type edits (status quo regression)", () => {
+    const noEdits = mountLayer([seg()])
+    expect(findOverlays(noEdits.wrapper)).toHaveLength(0)
+    noEdits.wrapper.unmount()
+
+    // Segment-target edits drive block styling, never range overlays.
+    const segmentOnly = mountLayer([seg()], [
+      edit({ id: "ed-seg", target_type: "segment", target_id: "seg-1", status: "confirmed" }),
+    ])
+    expect(findOverlays(segmentOnly.wrapper)).toHaveLength(0)
+    segmentOnly.wrapper.unmount()
+  })
+})
+
 describe("SegmentBlocksLayer context menu kbd badges (R9.4)", () => {
   it("renders a Del badge on the delete item and none on split items", async () => {
     const { wrapper } = mountLayer([seg()])
