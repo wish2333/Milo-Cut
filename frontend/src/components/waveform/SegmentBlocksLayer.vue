@@ -30,8 +30,12 @@ const props = defineProps<{
    * the v3.0.1 add-segment behavior EXACTLY; "seek" (multi, injected by
    * WaveformRow) clears selection and hands the press to the orchestrator
    * (scrub / Ctrl-create / Shift-marquee via empty-press). Undefined = "add".
+   *
+   * v3.0.4 M4-2 (P3-6): "range" (basic direct-child path) hands the press
+   * to the orchestrator as `range-press` -- the editor runs the range
+   * marquee + confirmation bubble. Payload shape = empty-press.
    */
-  emptyAreaMode?: "add" | "seek"
+  emptyAreaMode?: "add" | "seek" | "range"
   /**
    * v3.0.2 smoke fix: when the PARENT already owns the badge clearance
    * (multi-row main-area wrapper sits at top-6), the layer fills its
@@ -60,6 +64,10 @@ const emit = defineEmits<{
   ]
   /** v3.0.2 M5-3: seek-mode empty double click (play/pause). */
   "empty-double-click": []
+  /** v3.0.4 M4-2 (P3-6): range-mode empty press (payload shape = empty-press). */
+  "range-press": [
+    payload: { clientX: number; clientY: number; ctrlKey: boolean; shiftKey: boolean; time: number },
+  ]
 }>()
 
 const metrics = inject<TimelineMetrics>(TIMELINE_METRICS_KEY)!
@@ -149,6 +157,21 @@ function handleEmptyClick(e: MouseEvent) {
   // row-local selection and forwards the press (modifiers included) so the
   // orchestrator can route scrub / Ctrl-create / Shift-marquee; "add"
   // (default/basic) is the untouched v3.0.1 path.
+  // v3.0.4 M4-2 (P3-6): "range" (basic direct-child) forwards the press the
+  // same way as "seek" but as `range-press` -- the editor owns the range
+  // marquee + bubble. Branch sits BEFORE "seek" (SPEC wiring point 2).
+  if (props.emptyAreaMode === "range") {
+    selectedBlockId.value = null
+    closeContextMenu()
+    emit("range-press", {
+      clientX: e.clientX,
+      clientY: e.clientY,
+      ctrlKey: e.ctrlKey,
+      shiftKey: e.shiftKey,
+      time: metrics.getTimeFromX(e.clientX),
+    })
+    return
+  }
   if (props.emptyAreaMode === "seek") {
     selectedBlockId.value = null
     closeContextMenu()

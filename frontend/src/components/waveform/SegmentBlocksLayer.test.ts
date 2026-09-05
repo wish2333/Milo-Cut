@@ -332,3 +332,40 @@ describe("SegmentBlocksLayer menu re-open (smoke fix #3)", () => {
     wrapper.unmount()
   })
 })
+
+// ------------------------------------------------------------------
+// v3.0.4 M4-2 (P3-6): emptyAreaMode "range" -- the basic direct-child
+// press channel (payload shape = empty-press; branch BEFORE "seek").
+// ------------------------------------------------------------------
+
+describe("SegmentBlocksLayer range mode (M4-2)", () => {
+  it("range mode: empty press forwards range-press (bounded time + modifiers), never add-segment/empty-press; dblclick stays silent", async () => {
+    const metrics = createMetrics()
+    metrics.getTimeFromX = x => (x / 600) * 10
+    const wrapper = mount(SegmentBlocksLayer, {
+      props: { segments: [], edits: [], emptyAreaMode: "range" },
+      global: { provide: { [TIMELINE_METRICS_KEY as symbol]: metrics } },
+    })
+    const empty = wrapper.find("div[tabindex='0']")
+    await empty.trigger("mousedown", { clientX: 300, clientY: 20, shiftKey: true })
+    expect(wrapper.emitted("add-segment")).toBeFalsy()
+    expect(wrapper.emitted("empty-press")).toBeFalsy()
+    const presses = wrapper.emitted("range-press") ?? []
+    expect(presses.length).toBe(1)
+    expect(presses[0][0]).toEqual({
+      clientX: 300,
+      clientY: 20,
+      ctrlKey: false,
+      shiftKey: true,
+      time: 5, // bounded row time (300/600 * 10)
+    })
+    // Ctrl passes through too (editor-side routing keeps modifiers).
+    await empty.trigger("mousedown", { clientX: 120, clientY: 20, ctrlKey: true })
+    expect(((wrapper.emitted("range-press") ?? [])[1]?.[0] as { ctrlKey: boolean; time: number }).ctrlKey).toBe(true)
+    expect(((wrapper.emitted("range-press") ?? [])[1]?.[0] as { ctrlKey: boolean; time: number }).time).toBe(2)
+    // Double click stays a play/pause SEEK-mode affordance only.
+    await empty.trigger("dblclick")
+    expect(wrapper.emitted("empty-double-click")).toBeFalsy()
+    wrapper.unmount()
+  })
+})

@@ -1701,3 +1701,417 @@ describe("WaveformEditor lane 建段接线 (M3-2)", () => {
     basic.unmount()
   })
 })
+
+// ------------------------------------------------------------------
+// v3.0.4 M4-2 (P3-6): 范围标记 toggle + 确认气泡 -- multi matrix cells
+// ------------------------------------------------------------------
+
+import { ref, type Ref } from "vue"
+import SegmentBlocksLayer from "./SegmentBlocksLayer.vue"
+
+describe("WaveformEditor 范围标记手势 (M4-2, multi)", () => {
+  // Same geometry model as the M5-3 gesture suite: rows 600px wide,
+  // stride 130 (rowHeight 120 + gap), content origin (0,0);
+  // x -> time inside a row: (x/600)*spr (spr = 10).
+  let clientHeightDescriptor: PropertyDescriptor | undefined
+  let rectDescriptor: PropertyDescriptor | undefined
+
+  beforeAll(() => {
+    clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight")
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.getAttribute?.("data-test") === "multi-scroll") return 320
+        return clientHeightDescriptor?.get?.call(this) ?? 0
+      },
+    })
+    rectDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "getBoundingClientRect")
+    Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", {
+      configurable: true,
+      value(this: HTMLElement) {
+        if (this.classList?.contains("waveform-row")) {
+          const idx = Number(this.getAttribute("data-row-index") ?? 0)
+          return rect(0, idx * 130, 600, 120)
+        }
+        if (this.getAttribute?.("data-test") === "multi-content") {
+          return rect(0, 0, 600, 1290)
+        }
+        return rect(0, 0, 0, 0)
+      },
+    })
+  })
+
+  afterAll(() => {
+    if (clientHeightDescriptor) {
+      Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeightDescriptor)
+    }
+    if (rectDescriptor) {
+      Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", rectDescriptor)
+    }
+  })
+
+  function rect(left: number, top: number, width: number, height: number): DOMRect {
+    return { left, top, width, height, right: left + width, bottom: top + height, x: left, y: top, toJSON: () => ({}) } as DOMRect
+  }
+
+  function makeMouse(type: string, x: number, y: number, modifiers: { ctrlKey?: boolean; shiftKey?: boolean } = {}) {
+    const ev = new MouseEvent(type, { bubbles: true, cancelable: true })
+    Object.defineProperty(ev, "clientX", { value: x })
+    Object.defineProperty(ev, "clientY", { value: y })
+    Object.defineProperty(ev, "ctrlKey", { value: modifiers.ctrlKey ?? false })
+    Object.defineProperty(ev, "shiftKey", { value: modifiers.shiftKey ?? false })
+    return ev
+  }
+
+  function mountRange(segments: Array<{ id: string; start: number; end: number }> = [], rangeSelection?: Ref<{ start: number; end: number } | null>) {
+    return mount(WaveformEditor, {
+      props: {
+        segments: segments.map(s => ({
+          id: s.id,
+          version: 1,
+          type: "subtitle" as const,
+          start: s.start,
+          end: s.end,
+          text: `t-${s.id}`,
+          speaker: "",
+        })),
+        edits: [],
+        duration: 100,
+        currentTime: -1,
+        ...(rangeSelection ? { rangeSelection } : {}),
+      },
+      // attachTo: happy-dom's focus() is a no-op on detached trees, and the
+      // bubble's 删除-focused default (Q9) is asserted via activeElement.
+      attachTo: document.body,
+      global: {
+        stubs: {
+          WaveformCanvas: true,
+          TimeMarksLayer: true,
+          SegmentBlocksLayer: EmptyAreaLayerStub,
+          ScrollbarStrip: true,
+          PlayheadOverlay: true,
+        },
+      },
+    })
+  }
+
+  beforeEach(() => {
+    localStorage.clear()
+    localStorage.setItem(
+      ROW_LAYOUT_STORAGE_KEY,
+      JSON.stringify({ mode: "multi", secondsPerRow: 10, rowHeight: 120 }),
+    )
+  })
+  afterEach(() => {
+    localStorage.clear()
+  })
+
+  it("ON: plain press-drag sweeps the range marquee; release opens the bubble (删除 focused) and 删除 emits range-decision", async () => {
+    const wrapper = mountRange()
+    await wrapper.find('[data-test="range-mode-toggle"]').trigger("click")
+    const stub = wrapper.find('[data-test="seg-layer-stub"]').element
+    stub.dispatchEvent(makeMouse("mousedown", 120, 60)) // anchor 2s (row 0)
+    document.dispatchEvent(makeMouse("mousemove", 360, 60)) // sweep to 6s
+    await wrapper.vm.$nextTick()
+    const marquee = wrapper.find('[data-test="range-marquee"]')
+    expect(marquee.exists()).toBe(true)
+    expect((marquee.element as HTMLElement).style.left).toBe("20%")
+    expect((marquee.element as HTMLElement).style.width).toBe("40%")
+    // No scrub / no selection / no creation leaks into the range gesture.
+    expect(wrapper.emitted("set-time")).toBeFalsy()
+    expect(wrapper.emitted("clear-selection")).toBeFalsy()
+    expect(wrapper.emitted("add-segment")).toBeFalsy()
+    document.dispatchEvent(makeMouse("mouseup", 360, 60))
+    await wrapper.vm.$nextTick()
+    // The sweep preview dies with the gesture; the bubble takes over.
+    expect(wrapper.find('[data-test="range-marquee"]').exists()).toBe(false)
+    const bubble = wrapper.find('[data-test="range-bubble"]')
+    expect(bubble.exists()).toBe(true)
+    expect(bubble.text()).toContain("4.0s")
+    // Q9: the destructive default owns the keyboard.
+    expect(document.activeElement?.getAttribute("data-test")).toBe("range-delete")
+    await bubble.find('[data-test="range-delete"]').trigger("click")
+    expect(wrapper.emitted("range-decision")).toEqual([[{ start: 2, end: 6, action: "delete" }]])
+    expect(wrapper.find('[data-test="range-bubble"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it("ON: 保留 emits action keep; a degenerate click (sweep < 0.05s) never opens the bubble", async () => {
+    const wrapper = mountRange()
+    await wrapper.find('[data-test="range-mode-toggle"]').trigger("click")
+    const stub = wrapper.find('[data-test="seg-layer-stub"]').element
+    stub.dispatchEvent(makeMouse("mousedown", 120, 60))
+    document.dispatchEvent(makeMouse("mousemove", 360, 60))
+    document.dispatchEvent(makeMouse("mouseup", 360, 60))
+    await wrapper.vm.$nextTick()
+    await wrapper.find('[data-test="range-keep"]').trigger("click")
+    expect(wrapper.emitted("range-decision")).toEqual([[{ start: 2, end: 6, action: "keep" }]])
+    wrapper.unmount()
+
+    // Plain click without a sweep: degenerate guard mirrors the marquee no-op.
+    const wrapper2 = mountRange()
+    await wrapper2.find('[data-test="range-mode-toggle"]').trigger("click")
+    const stub2 = wrapper2.find('[data-test="seg-layer-stub"]').element
+    stub2.dispatchEvent(makeMouse("mousedown", 300, 60))
+    document.dispatchEvent(makeMouse("mouseup", 302, 60)) // 0.033s sweep
+    await wrapper2.vm.$nextTick()
+    expect(wrapper2.find('[data-test="range-bubble"]').exists()).toBe(false)
+    expect(wrapper2.emitted("range-decision")).toBeFalsy()
+    wrapper2.unmount()
+  })
+
+  it("ON: 取消 emits nothing and clears the staged selectedRange (activated dead ref is the bubble sink)", async () => {
+    const sink: Ref<{ start: number; end: number } | null> = ref(null)
+    const wrapper = mountRange([], sink)
+    await wrapper.find('[data-test="range-mode-toggle"]').trigger("click")
+    const stub = wrapper.find('[data-test="seg-layer-stub"]').element
+    stub.dispatchEvent(makeMouse("mousedown", 120, 60))
+    document.dispatchEvent(makeMouse("mousemove", 360, 60))
+    document.dispatchEvent(makeMouse("mouseup", 360, 60))
+    await wrapper.vm.$nextTick()
+    // The injected selectedRange ref is the staging store (written in place).
+    expect(sink.value).toEqual({ start: 2, end: 6 })
+    await wrapper.find('[data-test="range-cancel"]').trigger("click")
+    expect(wrapper.emitted("range-decision")).toBeFalsy()
+    expect(sink.value).toBeNull()
+    expect(wrapper.find('[data-test="range-bubble"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it("ON + Ctrl-drag stays Ctrl-create: add-segment commit byte-identical, never the range chain", async () => {
+    const wrapper = mountRange()
+    await wrapper.find('[data-test="range-mode-toggle"]').trigger("click")
+    const stub = wrapper.find('[data-test="seg-layer-stub"]').element
+    stub.dispatchEvent(makeMouse("mousedown", 120, 60, { ctrlKey: true })) // 2s
+    document.dispatchEvent(makeMouse("mousemove", 300, 60)) // 5s
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="create-preview"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="range-marquee"]').exists()).toBe(false)
+    document.dispatchEvent(makeMouse("mouseup", 300, 60))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.emitted("add-segment")).toEqual([[2, 5]])
+    expect(wrapper.emitted("range-decision")).toBeFalsy()
+    expect(wrapper.find('[data-test="range-bubble"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it("ON + Shift-drag stays the segment marquee (select-segments), never the range chain", async () => {
+    const wrapper = mountRange([
+      { id: "a", start: 1, end: 3 }, // row 0
+      { id: "b", start: 12, end: 14 }, // row 1
+    ])
+    await wrapper.find('[data-test="range-mode-toggle"]').trigger("click")
+    const stub = wrapper.find('[data-test="seg-layer-stub"]').element
+    stub.dispatchEvent(makeMouse("mousedown", 60, 60, { shiftKey: true }))
+    document.dispatchEvent(makeMouse("mousemove", 480, 190))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="marquee-rect"]').exists()).toBe(true)
+    document.dispatchEvent(makeMouse("mouseup", 480, 190))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.emitted("select-segments")).toEqual([[["a", "b"]]])
+    expect(wrapper.emitted("range-decision")).toBeFalsy()
+    expect(wrapper.find('[data-test="range-bubble"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it("OFF (default and after a toggle cycle): the v3.0.3 plain-press scrub path is untouched", async () => {
+    // Default OFF: the toggle reads 范围标记 and a plain press scrubs (the
+    // M5-3 suite above covers the untouched default; here the toggle cycle).
+    const wrapper = mountRange()
+    expect(wrapper.find('[data-test="range-mode-toggle"]').text()).toBe("范围标记")
+    await wrapper.find('[data-test="range-mode-toggle"]').trigger("click") // ON
+    expect(wrapper.find('[data-test="range-mode-toggle"]').text()).toBe("标记中")
+    await wrapper.find('[data-test="range-mode-toggle"]').trigger("click") // OFF
+    const stub = wrapper.find('[data-test="seg-layer-stub"]').element
+    stub.dispatchEvent(makeMouse("mousedown", 300, 60))
+    for (let i = 0; i < 3; i++) document.dispatchEvent(makeMouse("mousemove", 360, 60)) // 6s
+    document.dispatchEvent(makeMouse("mouseup", 480, 60)) // 8s
+    await wrapper.vm.$nextTick()
+    expect(wrapper.emitted("set-time")).toEqual([[6], [8]])
+    expect(wrapper.emitted("clear-selection")?.length).toBe(1)
+    expect(wrapper.find('[data-test="range-marquee"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="range-bubble"]').exists()).toBe(false)
+    expect(wrapper.emitted("range-decision")).toBeFalsy()
+    wrapper.unmount()
+  })
+
+  it("wiring: rows keep the seek channel in range mode and buildMode is gated (matrix-equivalent adaptation)", async () => {
+    // multi routes "seek" while rangeMode is ON (WaveformRow only forwards
+    // the empty-press chain, P3-3 frozen); the range branch lives in
+    // handleRowEmptyGesture. buildMode && !rangeMode stops the row's own
+    // ternary from resurrecting "add" while both toggles are on.
+    const probe = mount(WaveformEditor, {
+      props: { segments: [], edits: [], duration: 100, currentTime: -1 },
+      global: {
+        stubs: {
+          WaveformCanvas: true,
+          TimeMarksLayer: true,
+          SegmentBlocksLayer: {
+            name: "SegmentBlocksLayer",
+            props: {
+              emptyAreaMode: { type: String, default: "add" },
+              buildMode: { type: Boolean, default: false },
+            },
+            template: `<div data-test="seg-layer-probe"></div>`,
+          },
+          ScrollbarStrip: true,
+          PlayheadOverlay: true,
+        },
+      },
+    })
+    const rowLayer = () => probe.findComponent({ name: "SegmentBlocksLayer" })
+    const row = () => probe.findComponent(WaveformRow)
+    expect(rowLayer().props("emptyAreaMode")).toBe("seek") // default OFF
+    await probe.find('[data-test="build-mode-toggle"]').trigger("click")
+    expect(rowLayer().props("emptyAreaMode")).toBe("add") // build ON only
+    expect(row().props("buildMode")).toBe(true)
+    await probe.find('[data-test="range-mode-toggle"]').trigger("click")
+    // Both toggles ON: range wins -- seek channel + gated buildMode.
+    expect(rowLayer().props("emptyAreaMode")).toBe("seek")
+    expect(row().props("buildMode")).toBe(false)
+    await probe.find('[data-test="range-mode-toggle"]').trigger("click")
+    expect(rowLayer().props("emptyAreaMode")).toBe("add") // range off restores build
+    expect(row().props("buildMode")).toBe(true)
+    probe.unmount()
+  })
+})
+
+describe("WaveformEditor basic 范围标记 (M4-2)", () => {
+  // Basic geometry model: waveform-layer 600px wide at origin, duration 30
+  // (viewStart 0, viewDuration 30): x -> time = (x/600)*30.
+  let rectDescriptor: PropertyDescriptor | undefined
+
+  beforeAll(() => {
+    rectDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "getBoundingClientRect")
+    Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", {
+      configurable: true,
+      value(this: HTMLElement) {
+        if (this.getAttribute?.("data-test") === "waveform-layer") {
+          return {
+            left: 0,
+            top: 0,
+            width: 600,
+            height: 112,
+            right: 600,
+            bottom: 112,
+            x: 0,
+            y: 0,
+            toJSON: () => ({}),
+          } as DOMRect
+        }
+        const fallback = rectDescriptor?.value?.call(this) ?? {
+          left: 0,
+          top: 0,
+          width: 0,
+          height: 0,
+          right: 0,
+          bottom: 0,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        }
+        return fallback as DOMRect
+      },
+    })
+  })
+
+  afterAll(() => {
+    if (rectDescriptor) {
+      Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", rectDescriptor)
+    }
+  })
+
+  function makeMouse(type: string, x: number, y: number) {
+    const ev = new MouseEvent(type, { bubbles: true, cancelable: true })
+    Object.defineProperty(ev, "clientX", { value: x })
+    Object.defineProperty(ev, "clientY", { value: y })
+    return ev
+  }
+
+  // SegmentBlocksLayer stays REAL: the "range" routing under test lives in
+  // its handleEmptyClick branch (the basic direct-child path).
+  function mountBasic() {
+    localStorage.removeItem(ROW_LAYOUT_STORAGE_KEY) // default = basic
+    return mount(WaveformEditor, {
+      props: { segments: [], edits: [], duration: 30, currentTime: 0 },
+      // attachTo: happy-dom's focus() is a no-op on detached trees (Q9
+      // 删除-focused default asserted via activeElement).
+      attachTo: document.body,
+      global: {
+        stubs: {
+          WaveformCanvas: true,
+          TimeMarksLayer: true,
+          ScrollbarStrip: true,
+          PlayheadOverlay: true,
+        },
+      },
+    })
+  }
+
+  function emptyRoot(wrapper: ReturnType<typeof mountBasic>) {
+    return wrapper.findComponent(SegmentBlocksLayer).find("div[tabindex='0']")
+  }
+
+  beforeEach(() => {
+    localStorage.clear()
+  })
+  afterEach(() => {
+    localStorage.clear()
+  })
+
+  it("OFF: the direct-child layer keeps the v3.0.3 seek semantics (no range-press listener path)", async () => {
+    const wrapper = mountBasic()
+    await wrapper.vm.$nextTick()
+    const layer = wrapper.findComponent(SegmentBlocksLayer)
+    expect(layer.props("emptyAreaMode")).toBe("seek")
+    await emptyRoot(wrapper).trigger("mousedown", { clientX: 100, clientY: 40 })
+    await document.dispatchEvent(makeMouse("mouseup", 100, 40))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="range-marquee"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="range-bubble"]').exists()).toBe(false)
+    expect(wrapper.emitted("range-decision")).toBeFalsy()
+    expect(wrapper.emitted("add-segment")).toBeFalsy()
+    wrapper.unmount()
+  })
+
+  it("ON: plain press-drag routes range-press -> marquee -> bubble -> 删除 (never add-segment)", async () => {
+    const wrapper = mountBasic()
+    await wrapper.vm.$nextTick()
+    await wrapper.find('[data-test="range-mode-toggle"]').trigger("click")
+    expect(wrapper.findComponent(SegmentBlocksLayer).props("emptyAreaMode")).toBe("range")
+    await emptyRoot(wrapper).trigger("mousedown", { clientX: 100, clientY: 40 }) // 5s
+    document.dispatchEvent(makeMouse("mousemove", 300, 40)) // 15s
+    await wrapper.vm.$nextTick()
+    const marquee = wrapper.find('[data-test="range-marquee"]')
+    expect(marquee.exists()).toBe(true)
+    expect((marquee.element as HTMLElement).style.left).toContain("16.66")
+    expect((marquee.element as HTMLElement).style.width).toContain("33.33")
+    document.dispatchEvent(makeMouse("mouseup", 300, 40))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="range-bubble"]').exists()).toBe(true)
+    expect(document.activeElement?.getAttribute("data-test")).toBe("range-delete")
+    await wrapper.find('[data-test="range-delete"]').trigger("click")
+    expect(wrapper.emitted("range-decision")).toEqual([[{ start: 5, end: 15, action: "delete" }]])
+    expect(wrapper.emitted("add-segment")).toBeFalsy()
+    expect(wrapper.emitted("set-time")).toBeFalsy()
+    expect(wrapper.emitted("seek")).toBeFalsy()
+    wrapper.unmount()
+  })
+
+  it("ON + buildMode ON: the range mode wins (SPEC nested ternary, no add-segment)", async () => {
+    const wrapper = mountBasic()
+    await wrapper.vm.$nextTick()
+    await wrapper.find('[data-test="build-mode-toggle"]').trigger("click")
+    await wrapper.find('[data-test="range-mode-toggle"]').trigger("click")
+    expect(wrapper.findComponent(SegmentBlocksLayer).props("emptyAreaMode")).toBe("range")
+    await emptyRoot(wrapper).trigger("mousedown", { clientX: 100, clientY: 40 })
+    document.dispatchEvent(makeMouse("mousemove", 300, 40))
+    document.dispatchEvent(makeMouse("mouseup", 300, 40))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="range-bubble"]').exists()).toBe(true)
+    await wrapper.find('[data-test="range-keep"]').trigger("click")
+    expect(wrapper.emitted("range-decision")).toEqual([[{ start: 5, end: 15, action: "keep" }]])
+    expect(wrapper.emitted("add-segment")).toBeFalsy()
+    wrapper.unmount()
+  })
+})
