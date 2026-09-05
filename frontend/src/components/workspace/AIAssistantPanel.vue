@@ -972,6 +972,7 @@ function handleSearchSeek(time: number) {
       <div v-if="selectedFeature === 'search'" class="flex flex-col gap-2">
         <SemanticSearchBar
           :segments="segments"
+          :main-segments="mainSegments"
           :llm-configured="llmConfigured"
           @seek="handleSearchSeek"
         />
