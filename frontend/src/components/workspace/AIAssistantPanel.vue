@@ -7,6 +7,9 @@
  *     SuggestionPanel as the "llm_smart" group (D-15).
  *   - 字幕纠错 (字幕修正 P1): launches analysis, then shows a "view
  *     results" button that opens the fullscreen diff view (D-16).
+ *   - 翻译为新副轨 (AI 翻译, v3.0.4 M1-6): inline language dialog,
+ *     emits start-translation; completion auto-switches the list to the
+ *     new track (closed loop wired in WorkspacePage).
  *   - 内容搜索 (语义搜索 P3): inline SemanticSearchBar (D-02).
  *
  * Feature cards show 场景名 (primary) + 功能名 (subtitle) per D-14.
@@ -18,8 +21,17 @@ import { useWorkflow } from "@/composables/useWorkflow"
 import type { WorkflowStep } from "@/composables/useWorkflow"
 import type { Segment } from "@/types/project"
 import { useLlmSettings } from "@/composables/useLlmSettings"
+import { call } from "@/bridge"
+import {
+  DEFAULT_TRANSLATION_LANGUAGE,
+  TRANSLATION_LANGUAGES,
+  isTranslationLanguage,
+  type TranslationNotice,
+} from "@/utils/translationLanguages"
 
-type FeatureKey = "smart_delete" | "subtitle_correction" | "search"
+const translationLanguages = TRANSLATION_LANGUAGES
+
+type FeatureKey = "smart_delete" | "subtitle_correction" | "translation" | "search"
 type PanelMode = "single" | "workflow"
 
 const props = defineProps<{
@@ -31,6 +43,16 @@ const props = defineProps<{
   errorMsg: string | null
   // P1 subtitle correction result count (null = not run yet)
   subtitleCorrectionCount: number | null
+  // v3.0.4 M1-6: main-track segments. In track mode `segments` is the
+  // extension track's list, so the translation card (and P3 search X2)
+  // must judge/estimate against the MAIN track via this prop.
+  mainSegments?: Segment[]
+  // v3.0.4 M1-6 (M0-3 constraint 2): track context, consumed by M2-4
+  // gating only -- wired through WorkspacePage -> Timeline -> here in P1.
+  activeTrackId?: string | null
+  activeTrackName?: string | null
+  // v3.0.4 M1-6: translation completion notice (uncovered id list).
+  translationNotice?: TranslationNotice | null
 }>()
 
 const emit = defineEmits<{
@@ -41,6 +63,8 @@ const emit = defineEmits<{
   "go-to-settings": []
   seek: [time: number]
   "cancel-single": []
+  // v3.0.4 M1-6: translate the main track into a new secondary track.
+  "start-translation": [payload: { targetLanguage: string }]
 }>()
 
 // v2.1.0 Phase 3: workflow composable
@@ -138,6 +162,13 @@ const features: FeatureCard[] = [
     icon: "M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z",
   },
   {
+    key: "translation",
+    title: "翻译为新副轨",
+    subtitle: "AI 翻译",
+    description: "将主轨字幕整体翻译，生成一条新的译文副轨",
+    icon: "M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129",
+  },
+  {
     key: "search",
     title: "内容搜索",
     subtitle: "语义搜索",
@@ -148,6 +179,55 @@ const features: FeatureCard[] = [
 
 const hasCorrectionResults = computed(
   () => props.subtitleCorrectionCount !== null && props.subtitleCorrectionCount > 0,
+)
+
+// ---------------------------------------------------------------------------
+// v3.0.4 M1-6: translation card state.
+// ---------------------------------------------------------------------------
+// Judgment source is the MAIN track (mainSegments prop): in track mode
+// `segments` is the extension track's list and must not gate the card.
+const translationSourceSegments = computed(() => props.mainSegments ?? props.segments)
+const translationDisabled = computed(
+  () => !translationSourceSegments.value.some((s) => s.type === "subtitle"),
+)
+// "约 N 批": batch estimate only -- the char-budget split runs on the
+// backend, so the exact count is unknowable here (SPEC M1-6 ruling).
+const estimatedTranslationBatches = computed(() =>
+  Math.ceil(translationSourceSegments.value.length / 30),
+)
+const translationLanguage = ref<string>(DEFAULT_TRANSLATION_LANGUAGE)
+
+// Dialog default = remembered language (settings key written back by
+// WorkspacePage after a successful start; read via the existing
+// get_settings channel -- same pattern as EncodingSettings).
+async function loadRememberedTranslationLanguage() {
+  const res = await call<{ llm_translation_target_language?: string }>("get_settings")
+  const remembered = res.success ? res.data?.llm_translation_target_language : undefined
+  translationLanguage.value = isTranslationLanguage(remembered)
+    ? remembered
+    : DEFAULT_TRANSLATION_LANGUAGE
+}
+
+function selectTranslationFeature() {
+  if (translationDisabled.value) return
+  selectedFeature.value = selectedFeature.value === "translation" ? null : "translation"
+  if (selectedFeature.value === "translation") {
+    void loadRememberedTranslationLanguage()
+  }
+}
+
+function handleStartTranslation() {
+  emit("start-translation", { targetLanguage: translationLanguage.value })
+}
+
+// Uncovered-id notice dismissal is panel-local: a fresh notice (new prop
+// object) re-shows the box without another emit chain level.
+const translationNoticeDismissed = ref(false)
+watch(
+  () => props.translationNotice,
+  () => {
+    translationNoticeDismissed.value = false
+  },
 )
 
 function selectFeature(key: FeatureKey) {
@@ -307,6 +387,28 @@ function handleSearchSeek(time: number) {
     <!-- Error message -->
     <div v-if="errorMsg" class="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">
       {{ errorMsg }}
+    </div>
+
+    <!-- v3.0.4 M1-6: translation completion notice (uncovered ids are never
+         silently dropped) -->
+    <div
+      v-if="translationNotice && !translationNoticeDismissed"
+      data-test="translation-notice"
+      class="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700"
+    >
+      <div class="flex items-start justify-between gap-2">
+        <span>
+          译文轨「{{ translationNotice.trackName }}」有
+          {{ translationNotice.uncoveredIds.length }} 段未覆盖（主轨已变更）
+        </span>
+        <button
+          class="shrink-0 text-amber-500 hover:text-amber-700"
+          @click="translationNoticeDismissed = true"
+        >关闭</button>
+      </div>
+      <p class="mt-1 break-all text-amber-600">
+        {{ translationNotice.uncoveredIds.join("、") }}
+      </p>
     </div>
 
     <!-- Workflow error message -->
@@ -601,6 +703,57 @@ function handleSearchSeek(time: number) {
         <span class="text-xs text-gray-400">({{ feat.subtitle }})</span>
       </button>
     </div>
+    <!-- v3.0.4 M1-6: translation card (full-width under grid). Greyed out
+         when the MAIN track has no subtitle segments (mainSegments prop is
+         the judgment source -- `segments` may be a secondary track here). -->
+    <button
+      data-test="translation-card"
+      class="relative flex w-full items-start rounded-lg border p-2 text-left transition-colors"
+      :class="[
+        llmConfigured && !translationDisabled
+          ? selectedFeature === 'translation'
+            ? 'border-blue-400 bg-blue-50'
+            : 'border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50'
+          : 'cursor-not-allowed border-gray-200 bg-gray-100 opacity-50',
+      ]"
+      :disabled="!llmConfigured || translationDisabled"
+      @click="selectTranslationFeature"
+    >
+      <svg
+        v-if="!llmConfigured"
+        class="absolute right-1 top-1 h-3 w-3 text-gray-400"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
+        stroke-width="2"
+      >
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+      </svg>
+      <span v-if="!llmConfigured" class="absolute right-1 top-1 text-[10px] text-gray-400">未配置</span>
+      <div class="flex items-center gap-1.5">
+        <svg
+          class="h-4 w-4 shrink-0 text-gray-500"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          stroke-width="2"
+        >
+          <path stroke-linecap="round" stroke-linejoin="round" :d="features[2].icon" />
+        </svg>
+        <div class="flex flex-col">
+          <span class="text-sm font-medium text-gray-800">翻译为新副轨</span>
+          <span class="text-xs text-gray-400">AI 翻译</span>
+        </div>
+      </div>
+      <span
+        v-if="llmConfigured"
+        data-test="translation-batches"
+        class="ml-auto self-center text-[10px] text-gray-400"
+      >
+        {{ translationDisabled ? "主轨无字幕" : `约 ${estimatedTranslationBatches} 批` }}
+      </span>
+    </button>
+
     <!-- Search card (full-width under grid) -->
     <button
       class="relative flex items-start rounded-lg border p-2 text-left transition-colors"
@@ -633,7 +786,7 @@ function handleSearchSeek(time: number) {
           stroke="currentColor"
           stroke-width="2"
         >
-          <path stroke-linecap="round" stroke-linejoin="round" :d="features[2].icon" />
+          <path stroke-linecap="round" stroke-linejoin="round" :d="features[3].icon" />
         </svg>
         <div class="flex flex-col">
           <span class="text-sm font-medium text-gray-800">内容搜索</span>
@@ -709,6 +862,42 @@ function handleSearchSeek(time: number) {
         >
           查看修正结果 ({{ subtitleCorrectionCount }} 条)
         </button>
+      </div>
+
+      <!-- Translation (v3.0.4 M1-6): inline language dialog -->
+      <div
+        v-if="selectedFeature === 'translation'"
+        data-test="translation-dialog"
+        class="flex flex-col gap-2 rounded-lg border border-gray-200 p-2"
+      >
+        <p class="text-xs text-gray-600">{{ features[2].description }}</p>
+        <p class="text-xs text-gray-400">
+          主轨字幕约 {{ estimatedTranslationBatches }} 批，完成后自动切换到新译文轨
+        </p>
+        <select
+          v-model="translationLanguage"
+          data-test="translation-language"
+          class="w-full rounded border border-gray-200 px-1.5 py-1 text-xs text-gray-600"
+          :disabled="isRunning"
+        >
+          <option
+            v-for="lang in translationLanguages"
+            :key="lang.code"
+            :value="lang.code"
+          >
+            {{ lang.name }} ({{ lang.code }})
+          </option>
+        </select>
+        <button
+          class="rounded-md bg-blue-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600 disabled:opacity-50"
+          :disabled="isRunning"
+          @click="handleStartTranslation"
+        >
+          开始翻译
+        </button>
+        <p class="text-xs text-gray-400">
+          结果写入一条新副轨；同语言轨已存在时会提示先清空或删除
+        </p>
       </div>
 
       <!-- Semantic search (P3) -->

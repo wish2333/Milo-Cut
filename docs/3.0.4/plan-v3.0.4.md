@@ -183,12 +183,12 @@ R3 增补 4 条顺序约束的落点：① golden 先行 → **P3-1**（本版�
 
 ### P1-6 前端闭环与 props 链一次接通（AIAssistantPanel · Timeline · WorkspacePage · useLlmTasks）
 
-- [ ] AIAssistantPanel 第 4 卡「翻译为新副轨」+ `FeatureKey` 联合类型追加 `"translation"`（:22）+ 内联语言对话框（清单 9 项 BCP-47 / 记忆上次写 config 键 / 「约 N 批」= ceil(主轨段数/30) 标注「约」）+ 主轨无 subtitle 段置灰（判定源 = mainSegments）
-- [ ] **props 链一次改动全部接通（M0-3 约束 2）**：WorkspacePage → Timeline → AIAssistantPanel 透传 `mainSegments`，同链同 commit 接通 `active-track-id` / `active-track-name`（Timeline 已收 activeTrackId，缺的仅 Timeline→面板一级）——P2 的 M2-4 只消费不再动 props 链
-- [ ] useLlmTasks：`startTranslation(targetLanguage)` + 单例消费完成事件存 `lastTranslationCompletion`；WorkspacePage `watch` → `handleSelectListTrack`（自带 flush 前置）→ `selectTrack` 完成自动切轨
-- [ ] 任务 start 前 `pushSnapshot(["tracks","bindings"], "AI翻译副轨")`；完成后刷新走 task:completed 剥离 → `get_project`（同纠错模式）；uncovered 非空 toast + 结果面板明示清单
+- [x] AIAssistantPanel 第 4 卡「翻译为新副轨」+ `FeatureKey` 联合类型追加 `"translation"`（:22）+ 内联语言对话框（清单 9 项 BCP-47 / 记忆上次写 config 键 / 「约 N 批」= ceil(主轨段数/30) 标注「约」）+ 主轨无 subtitle 段置灰（判定源 = mainSegments）
+- [x] **props 链一次改动全部接通（M0-3 约束 2）**：WorkspacePage → Timeline → AIAssistantPanel 透传 `mainSegments`，同链同 commit 接通 `active-track-id` / `active-track-name`（Timeline 已收 activeTrackId，缺的仅 Timeline→面板一级）——P2 的 M2-4 只消费不再动 props 链
+- [x] useLlmTasks：`startTranslation(targetLanguage)` + 单例消费完成事件存 `lastTranslationCompletion`；WorkspacePage `watch` → `handleSelectListTrack`（自带 flush 前置）→ `selectTrack` 完成自动切轨
+- [x] 任务 start 前 `pushSnapshot(["tracks","bindings"], "AI翻译副轨")`；完成后刷新走 task:completed 剥离 → `get_project`（同纠错模式）；uncovered 非空 toast + 结果面板明示清单
 - [ ] 用例：翻译卡置灰 / 语言记忆跨会话 / 完成切轨（watch → handleSelectListTrack）/ undo 三层一致（M1/M2 前端组 P1 份额 ≥4）
-- [ ] ★ beta.1 冒烟（用户协助表）+ 打 tag `v3.0.4-beta.1` + record
+- [ ] ★ beta.1 冒烟（用户协助表）+ 打 tag `v3.0.4-beta.1` + record（代码闭环完成；真机冒烟待用户执行，tag 已按后文登记先行）
 
 **验收方式**: M5 组 = M1/M2 前端（P1 份额）；vitest collected ≥760。
 **验收标准**: 翻译全链路冒烟合并 beta.1 ★ 节点。

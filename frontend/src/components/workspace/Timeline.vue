@@ -19,6 +19,7 @@ import SuggestionPanel from "@/components/workspace/SuggestionPanel.vue"
 import AIAssistantPanel from "@/components/workspace/AIAssistantPanel.vue"
 import HighlightModeView from "@/components/workspace/HighlightModeView.vue"
 import type { ListTrackOption } from "@/composables/useListTrackSelector"
+import type { TranslationNotice } from "@/utils/translationLanguages"
 
 const props = defineProps<{
   segments: Segment[]
@@ -33,6 +34,20 @@ const props = defineProps<{
   tracks?: ListTrackOption[]
   /** v3.0.3 M1-1: current list source; null = main track. */
   activeTrackId?: string | null
+  /**
+   * v3.0.4 M1-6 (M0-3 constraint 2): active track display name, one more
+   * hop down the same pass-through chain (null = main track). Consumed by
+   * M2-4 gating in AIAssistantPanel; wired here in P1 so P2 only reads it.
+   */
+  activeTrackName?: string | null
+  /**
+   * v3.0.4 M1-6: MAIN-track segments for panel judgments that must not
+   * follow the list source (translation card gating / batch estimate; P3
+   * search X2 reuses this chain).
+   */
+  mainSegments?: Segment[]
+  /** v3.0.4 M1-6: translation completion notice (uncovered id list). */
+  translationNotice?: TranslationNotice | null
   /** v3.0.3 M1-2: main<->track bindings for the extension-binding mark. */
   bindings?: TrackBinding[]
   selectedSegmentId?: string | null
@@ -99,6 +114,8 @@ const emit = defineEmits<{
   // Phase 2: LLM events
   "start-smart-delete": []
   "start-subtitle-correction": [referenceText: string]
+  /** v3.0.4 M1-6: translate the main track into a new secondary track. */
+  "start-translation": [payload: { targetLanguage: string }]
   "open-subtitle-fullscreen": []
   "start-highlight": [targetMinutes: number]
   "go-to-settings": []
@@ -727,6 +744,10 @@ watch(playheadSegmentId, (id) => {
             <AIAssistantPanel
               v-show="activeTab === 'ai'"
               :segments="segments"
+              :main-segments="mainSegments ?? segments"
+              :active-track-id="activeTrackId ?? null"
+              :active-track-name="activeTrackName ?? null"
+              :translation-notice="translationNotice ?? null"
               :llm-configured="llmConfigured ?? false"
               :llm-model="llmModel ?? ''"
               :is-running="llmIsRunning ?? false"
@@ -736,6 +757,7 @@ watch(playheadSegmentId, (id) => {
               @start-smart-delete="emit('start-smart-delete')"
               @switch-to-suggestion="activeTab = 'suggestion'"
               @start-subtitle-correction="(text) => emit('start-subtitle-correction', text)"
+              @start-translation="(payload) => emit('start-translation', payload)"
               @open-subtitle-fullscreen="emit('open-subtitle-fullscreen')"
               @go-to-settings="emit('go-to-settings')"
               @seek="handleSuggestionSeek"

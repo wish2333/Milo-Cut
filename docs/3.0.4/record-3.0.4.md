@@ -21,7 +21,7 @@
 | P1-3 | [record-3.0.4-P1-3.md](./record-3.0.4-P1-3.md) | 已完成（负责人已审查合并，llm_service.py +384 纯新增零删改，门禁复跑 exit 0） | 合入（merge P1-3，pytest 749 全绿） |
 | P1-4 | [record-3.0.4-P1-4.md](./record-3.0.4-P1-4.md) | 已完成（负责人已审查合并；project_service.py +155 单一方法纯新增，报告经 patch meta side-channel 携带已登记） | 合入（merge P1-4，pytest 760 全绿） |
 | P1-5 | [record-3.0.4-P1-5.md](./record-3.0.4-P1-5.md) | 已完成（负责人已审查合并；main.py +245 四 hunk 纯新增、config.py +1 键，五情形失败语义对照齐备） | 合入（merge P1-5，pytest 774 全绿） |
-| P1-6 | （待建） | 未开始 | |
+| P1-6 | [record-3.0.4-P1-6.md](./record-3.0.4-P1-6.md) | 已完成（前端闭环与 props 链一次接通：mainSegments/activeTrackId/activeTrackName 同 commit 三级接通 + 翻译第 4 卡 + 完成自动切轨；纯前端步骤 backend 零 diff；vitest 771 collected / 770 passed，门禁 exit 0） | 待合入（merge P1-6） |
 | P2-1 ~ P2-6 | （待建） | 未开始 | |
 | P3-1 ~ P3-9 | （待建） | 未开始 | |
 | P4-1 ~ P4-5 | （待建） | 未开始 | |

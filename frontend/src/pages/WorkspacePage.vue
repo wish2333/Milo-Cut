@@ -44,6 +44,7 @@ import SubtitleTrimSettingsPopover from "@/components/workspace/popovers/Subtitl
 import DemoPreviewSurface from "@/components/demo/DemoPreviewSurface.vue"
 import DemoResponsiveWorkspace from "@/components/demo/DemoResponsiveWorkspace.vue"
 import { useDemoPlayback } from "@/composables/useDemoPlayback"
+import type { TranslationNotice } from "@/utils/translationLanguages"
 
 interface Props {
   project: Project
@@ -88,6 +89,9 @@ const {
   startSmartDelete,
   startSubtitleCorrection,
   startHighlight,
+  // v3.0.4 M1-6: translation closed loop
+  startTranslation,
+  lastTranslationCompletion,
   hydrateHighlightsFromProject,
   coverageGap,
 } = useLlmTasks()
@@ -453,6 +457,16 @@ const {
   listSegments,
 } = useListTrackSelector(activeTracks, mergedSegments)
 
+// v3.0.4 M1-6 (M0-3 constraint 2): display name of the selected list track
+// (null = main track). Source = the SAME selector state that drives the
+// list; this is the WorkspacePage hop of the active-track-name chain that
+// M2-4 consumes in AIAssistantPanel.
+const activeListTrackName = computed(() => {
+  const id = activeListTrackId.value
+  if (id === null) return null
+  return activeTracks.value.find(t => t.id === id)?.name ?? null
+})
+
 const silenceCount = computed(() => segments.value.filter(s => s.type === "silence").length)
 const subtitleCount = computed(() => segments.value.filter(s => s.type === "subtitle").length)
 const isTranscribing = computed(() => {
@@ -540,7 +554,10 @@ onEvent<{ task_id: string; task_type?: string; result?: { project?: Project }; r
     if (
       data.task_type === "llm_smart_delete" ||
       data.task_type === "llm_subtitle_correction" ||
-      data.task_type === "llm_highlight"
+      data.task_type === "llm_highlight" ||
+      // v3.0.4 M1-6: translation writes the new track on the background
+      // thread; same stripped-payload -> get_project refresh as correction.
+      data.task_type === "llm_translation"
     ) {
       if (data.result?.project) {
         emit("project-updated", data.result.project)
@@ -955,6 +972,58 @@ async function handleSelectListTrack(trackId: string | null) {
   await flushPendingTrackUpdates()
   selectListTrack(trackId)
 }
+
+// ---------------------------------------------------------------------------
+// v3.0.4 M1-6: "translate to a new secondary track" closed loop.
+//
+// Snapshot BEFORE the task starts (PRD R1.4): the writes land on the
+// background thread at completion, so this is the only place the pre-state
+// can be captured. A failed/cancelled task leaves one no-op snapshot entry
+// (SPEC ruling: accepted, no extra complexity).
+// ---------------------------------------------------------------------------
+async function handleStartTranslation(payload: { targetLanguage: string }) {
+  if (!llmConfig.value.configured) {
+    showToast("请先配置 LLM", "error", 3000)
+    return
+  }
+  pushSnapshot(projectRef.value, ["tracks", "bindings"], "AI翻译副轨")
+  const started = await startTranslation(payload.targetLanguage)
+  if (!started) return
+  // Remember the last successfully STARTED language (dialog default; same
+  // update_settings channel as the settings modal, key outside AppSettings
+  // typing follows the ExportPage partial-write precedent).
+  await call("update_settings", {
+    llm_translation_target_language: payload.targetLanguage,
+  })
+  showToast("翻译已启动", "info", 2000)
+}
+
+// Completion switch-track watcher: useLlmTasks is a module-level singleton
+// while activeListTrackId lives in the page's selector instance, so the
+// completion travels via lastTranslationCompletion and is consumed here.
+// handleSelectListTrack flushes pending track edits before switching; the
+// uncovered id list is surfaced via toast + the panel notice prop.
+const translationNotice = ref<TranslationNotice | null>(null)
+watch(lastTranslationCompletion, (completion) => {
+  if (!completion) return
+  void handleSelectListTrack(completion.track_id)
+  if (completion.uncovered_ids.length > 0) {
+    translationNotice.value = {
+      trackName: completion.track_name,
+      language: completion.language,
+      uncoveredIds: completion.uncovered_ids,
+    }
+    showToast(
+      `翻译完成：${completion.uncovered_ids.length} 段未覆盖（主轨已变更），详见 AI 助手面板`,
+      "error",
+      5000,
+    )
+  } else {
+    showToast(`翻译完成，已切换到译文轨「${completion.track_name}」`, "success", 3000)
+  }
+  // Clear so a consecutive identical completion re-triggers this watch.
+  lastTranslationCompletion.value = null
+})
 
 const {
   handleRegenerateWaveform, handleRequestProxy, handleSeek, handleSetTime,
@@ -1389,6 +1458,9 @@ onUnmounted(() => {
             :silence-count="silenceCount"
             :tracks="listTrackOptions"
             :active-track-id="activeListTrackId"
+            :active-track-name="activeListTrackName"
+            :main-segments="segments"
+            :translation-notice="translationNotice"
             :bindings="activeBindings"
             @select-track="handleSelectListTrack"
             @create-track-segment="handleListCreateTrackSegment"
@@ -1430,6 +1502,7 @@ onUnmounted(() => {
             @toggle-edit-mode="globalEditMode = !globalEditMode"
             @start-smart-delete="handleStartSmartDelete"
             @start-subtitle-correction="handleStartSubtitleCorrection"
+            @start-translation="handleStartTranslation"
             @open-subtitle-fullscreen="handleOpenSubtitleFullscreen"
             @start-highlight="handleStartHighlight"
             @go-to-settings="handleGoToSettings"
