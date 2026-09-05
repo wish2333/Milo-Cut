@@ -2472,6 +2472,12 @@ class MiloCutApi(Bridge):
 
         config = _get_cfg()
         data = config.model_dump()
+        # v3.0.4 smoke-fix 1a: expose provider-resolved base_url/model so the
+        # frontend "configured" judgment matches backend is_configured()
+        # (empty fields legitimately fall back to provider defaults -- the
+        # settings-page test button always worked on this path).
+        data["resolved_base_url"] = config.resolved_base_url()
+        data["resolved_model"] = config.resolved_model()
         if data.get("api_key"):
             key = data["api_key"]
             data["api_key_masked"] = (

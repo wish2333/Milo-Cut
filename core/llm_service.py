@@ -14,7 +14,7 @@ import socket
 import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -1845,60 +1845,93 @@ def analyze_subtitle_translation(
     pending: set[int] = set(range(total_batches))
     completed = 0
 
-    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+    # v3.0.4 smoke-fix 1c: poll with a bounded timeout instead of
+    # as_completed (which stays blocked until the next in-flight batch
+    # finishes -- tens of seconds on big translation batches), and never
+    # block on running HTTP calls when a cancel arrives: the explicit
+    # finally-shutdown(wait=False) replaces the ``with``-block exit, whose
+    # shutdown(wait=True) used to wait out the in-flight batches even after
+    # the cancel had been observed. Cancel latency drops from
+    # "next batch completion" to the poll interval.
+    _CANCEL_POLL_SECONDS = 1.0
+    executor = ThreadPoolExecutor(max_workers=concurrency)
+    try:
         futures = {
             executor.submit(_process_batch, batch_idx): batch_idx
             for batch_idx in range(total_batches)
         }
         try:
-            for future in as_completed(futures):
+            outstanding = set(futures)
+            while outstanding:
+                done, outstanding = wait(
+                    outstanding, timeout=_CANCEL_POLL_SECONDS, return_when=FIRST_COMPLETED
+                )
                 if cancel_event and cancel_event.is_set():
                     executor.shutdown(wait=False, cancel_futures=True)
                     return {"success": False, "error": "Cancelled"}
 
-                batch_idx, translations, usage, error, retried = future.result()
-                completed += 1
-                pending.discard(batch_idx)
+                # v3.0.4 smoke-fix 1c: the 429 downgrade must leave BOTH loops
+                # (the original single ``for as_completed`` needed one break);
+                # cancelled queued futures would otherwise surface as
+                # CancelledError in the next poll's ``future.result()``.
+                stop_polling = False
+                # Deterministic processing order (by batch index): wait()
+                # returns an unordered set, while as_completed yielded
+                # completions in finish order -- sorting keeps ledger
+                # appends and progress callbacks order-stable for the
+                # common all-done-in-one-poll case (smoke-fix 1c).
+                for future in sorted(done, key=lambda f: futures[f]):
+                    batch_idx, translations, usage, error, retried = future.result()
+                    completed += 1
+                    pending.discard(batch_idx)
 
-                for key in total_usage:
-                    total_usage[key] += usage.get(key, 0)
+                    for key in total_usage:
+                        total_usage[key] += usage.get(key, 0)
 
-                # M3-1 pattern: ledger bookkeeping
-                if error is None:
-                    if retried:
-                        ledger.retried_ok += 1
-                    else:
-                        ledger.succeeded += 1
-                elif error != "Cancelled":
-                    if batch_idx not in ledger.failed:
-                        ledger.failed.append(batch_idx)
+                    # M3-1 pattern: ledger bookkeeping
+                    if error is None:
+                        if retried:
+                            ledger.retried_ok += 1
+                        else:
+                            ledger.succeeded += 1
+                    elif error != "Cancelled":
+                        if batch_idx not in ledger.failed:
+                            ledger.failed.append(batch_idx)
 
-                if error == "Cancelled":
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    return {"success": False, "error": "Cancelled"}
-
-                if error and "Rate limited" in error:
-                    consecutive_429 += 1
-                    if consecutive_429 >= _MAX_CONSECUTIVE_429 and not serial_fallback and pending:
-                        logger.warning(
-                            f"Rate limited {consecutive_429}x, switching remaining "
-                            f"{len(pending)} batches to serial"
-                        )
-                        serial_fallback = True
+                    if error == "Cancelled":
                         executor.shutdown(wait=False, cancel_futures=True)
-                        break
-                else:
-                    consecutive_429 = 0
+                        return {"success": False, "error": "Cancelled"}
 
-                if translations:
-                    translations_by_index[batch_idx] = translations
+                    if error and "Rate limited" in error:
+                        consecutive_429 += 1
+                        if consecutive_429 >= _MAX_CONSECUTIVE_429 and not serial_fallback and pending:
+                            logger.warning(
+                                f"Rate limited {consecutive_429}x, switching remaining "
+                                f"{len(pending)} batches to serial"
+                            )
+                            serial_fallback = True
+                            executor.shutdown(wait=False, cancel_futures=True)
+                            stop_polling = True
+                            break
+                    else:
+                        consecutive_429 = 0
 
-                if progress_cb:
-                    pct = (completed / total_batches) * 100 if total_batches > 0 else 0
-                    progress_cb(pct, f"Translation batch {completed}/{total_batches}...")
+                    if translations:
+                        translations_by_index[batch_idx] = translations
+
+                    if progress_cb:
+                        pct = (completed / total_batches) * 100 if total_batches > 0 else 0
+                        progress_cb(pct, f"Translation batch {completed}/{total_batches}...")
+                if stop_polling:
+                    break
         except Exception:
             executor.shutdown(wait=False, cancel_futures=True)
             raise
+    finally:
+        # Non-blocking in every path: on normal completion all workers are
+        # done (immediate return); on cancel/429 the in-flight HTTP calls are
+        # abandoned instead of being waited out.
+        executor.shutdown(wait=False, cancel_futures=True)
 
     if serial_fallback:
         for batch_idx in sorted(pending):

@@ -17,6 +17,7 @@ import {
   EVENT_LLM_HIGHLIGHT_PROGRESS,
   EVENT_LLM_HIGHLIGHT_COMPLETED,
   EVENT_TASK_CANCELLED,
+  EVENT_TASK_PROGRESS,
   EVENT_DEMO_RESET,
 } from "@/utils/events"
 
@@ -245,6 +246,22 @@ function ensureListeners() {
     isRunning.value = false
     progress.value = 0
   })
+
+  // v3.0.4 smoke-fix 1b: the panel progress bar (llmProgress) was never
+  // wired to the generic task:progress stream -- only per-feature result
+  // streams had listeners, so translation ran at 0% until completion.
+  // UI single-flight (SPEC M1-5: at most one LLM task at a time) makes
+  // "any progress event while isRunning" unambiguous, so no task-id
+  // bookkeeping is needed.
+  onEvent<{ task_id?: string; percent?: number; message?: string }>(
+    EVENT_TASK_PROGRESS,
+    (detail) => {
+      if (!isRunning.value) return
+      if (typeof detail?.percent === "number") {
+        progress.value = detail.percent
+      }
+    },
+  )
 }
 
 export function useLlmTasks() {
@@ -261,14 +278,19 @@ export function useLlmTasks() {
       model?: string
       base_url?: string
       api_key_masked?: string
+      resolved_model?: string
+      resolved_base_url?: string
     }>("get_llm_config")
     if (res.success && res.data) {
-      const model = res.data.model ?? ""
-      const baseUrl = res.data.base_url ?? ""
-      // is_configured requires base_url + api_key + model all non-empty.
-      // api_key is masked out by backend, so we treat non-empty model +
-      // non-empty base_url as "configured" (api_key presence is implied --
-      // the backend masks but doesn't blank base_url/model).
+      // v3.0.4 smoke-fix 1a: judge "configured" on the PROVIDER-RESOLVED
+      // base_url/model (backend is_configured() semantics). Empty fields
+      // legitimately fall back to provider defaults -- judging on the raw
+      // values flagged default-configured setups as 未配置 even though the
+      // settings-page test button worked.
+      const model = res.data.resolved_model ?? res.data.model ?? ""
+      const baseUrl = res.data.resolved_base_url ?? res.data.base_url ?? ""
+      // api_key is masked out by backend (masked value non-empty = a key is
+      // set, matching is_configured()'s truthiness requirement).
       llmConfig.value = {
         configured: Boolean(model && baseUrl && (res.data.api_key_masked ?? "")),
         model,

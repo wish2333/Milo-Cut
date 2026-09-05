@@ -42,6 +42,18 @@ const emit = defineEmits<{
 const contextMenu = ref<{ x: number; y: number; segmentId?: string } | null>(null)
 const menuMaxY = typeof window !== "undefined" ? window.innerHeight - 180 : 0
 
+/**
+ * v3.0.4 smoke-fix 3: the block area's top gap used to be a fixed top-4
+ * (16px) -- 33-67% of a 24-48px lane, nearly hiding the subtitle blocks at
+ * small heights (smoke finding: scaled-down rows showed almost no blocks).
+ * The time ruler does not live on sub-lanes, so only a small VISUAL gap is
+ * needed: 15% of the lane height, clamped to [3, 10]px, scaling with the
+ * lane (lg 72 -> 10px, md 48 -> 7px, sm 32 -> 5px).
+ */
+const blocksTop = computed(() =>
+  Math.min(10, Math.max(3, Math.round(props.lane.height * 0.15))),
+)
+
 function closeMenu() {
   contextMenu.value = null
 }
@@ -132,10 +144,12 @@ const visibleSegments = computed(() => {
       <span v-if="lane.collapsed" class="text-ink-muted/60">已折叠</span>
     </div>
 
-    <!-- Block area (hidden while collapsed) -->
+    <!-- Block area (hidden while collapsed). Top gap scales with the lane
+         height (smoke-fix 3) instead of a fixed 16px. -->
     <div
       v-if="!lane.collapsed"
-      class="absolute inset-x-0 bottom-0 top-4"
+      class="absolute inset-x-0 bottom-0"
+      :style="{ top: blocksTop + 'px' }"
       :class="buildMode ? 'cursor-copy' : ''"
       data-test="lane-blocks"
       @click.stop="onLaneClick"

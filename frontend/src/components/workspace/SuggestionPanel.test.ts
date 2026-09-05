@@ -318,3 +318,128 @@ describe("SuggestionPanel timecode popover (M4-3 / SPEC M4-2 entry)", () => {
     wrapper.unmount()
   })
 })
+
+// ---------------------------------------------------------------------------
+// v3.0.4 smoke-fix 2 (P4-4 first real-device pass): delete affordances for
+// manual ranges -- per-item "删除此项" in the item context menu + a visible
+// "清除" button on the manual group header. Legacy groups keep their
+// group-level delete only (zero regression).
+// ---------------------------------------------------------------------------
+
+describe("SuggestionPanel manual-range delete affordances (smoke-fix 2)", () => {
+  it("item context menu offers 删除此项 for manual entries; confirm=true emits delete-edit-batch [editId] and hits delete_edit_decisions_batch", async () => {
+    const confirmSpy = vi.fn(() => true)
+    vi.stubGlobal("confirm", confirmSpy)
+    const wrapper = mountPanel([
+      manualEdit({ id: "edit-manual-del5", start: 2, end: 5 }),
+      manualEdit({ id: "edit-manual-del6", start: 8, end: 9 }),
+    ])
+    const panel = wrapper.getComponent(SuggestionPanel)
+
+    // Right-click the first manual entry (删除 3.0s) -> teleported item menu.
+    const row = findItemRow(wrapper, "删除 3.0s")
+    await row.trigger("contextmenu")
+    await nextTick()
+    const menuDelete = [...document.body.querySelectorAll("button")]
+      .find(b => b.textContent?.includes("删除此项"))
+    expect(menuDelete).toBeTruthy()
+    expect(menuDelete!.textContent).toContain("永久")
+
+    menuDelete!.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    await flushPromises()
+
+    // Guarded by window.confirm, then a SINGLE-id batch delete.
+    expect(confirmSpy).toHaveBeenCalledTimes(1)
+    expect(String((confirmSpy.mock.calls[0] as unknown[])[0])).toContain("删除 3.0s")
+    expect(panel.emitted("delete-edit-batch")).toEqual([[["edit-manual-del5"]]])
+    expect(callMock).toHaveBeenCalledTimes(1)
+    expect(callMock).toHaveBeenCalledWith("delete_edit_decisions_batch", ["edit-manual-del5"])
+    // Irreversible delete snapshots first (useAnalysis.deleteEdits ordering).
+    expect(pushSnapshotMock.mock.invocationCallOrder[0]).toBeLessThan(
+      callMock.mock.invocationCallOrder[0],
+    )
+    wrapper.unmount()
+  })
+
+  it("confirm=false keeps the edit: no delete-edit-batch emit, no bridge call, menu closes", async () => {
+    const confirmSpy = vi.fn(() => false)
+    vi.stubGlobal("confirm", confirmSpy)
+    const wrapper = mountPanel([manualEdit({ id: "edit-manual-del5", start: 2, end: 5 })])
+    const panel = wrapper.getComponent(SuggestionPanel)
+
+    const row = findItemRow(wrapper, "删除 3.0s")
+    await row.trigger("contextmenu")
+    await nextTick()
+    const menuDelete = [...document.body.querySelectorAll("button")]
+      .find(b => b.textContent?.includes("删除此项"))!
+    menuDelete.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    await flushPromises()
+    await nextTick()
+
+    expect(confirmSpy).toHaveBeenCalledTimes(1)
+    expect(panel.emitted("delete-edit-batch")).toBeUndefined()
+    expect(callMock).not.toHaveBeenCalled()
+    expect(pushSnapshotMock).not.toHaveBeenCalled()
+    // Declined confirm still closes the menu.
+    expect([...document.body.querySelectorAll("button")]
+      .some(b => b.textContent?.includes("删除此项"))).toBe(false)
+    wrapper.unmount()
+  })
+
+  it("manual group header renders a 清除 button that batch-deletes the whole group without folding it (@click.stop)", async () => {
+    const confirmSpy = vi.fn(() => true)
+    vi.stubGlobal("confirm", confirmSpy)
+    const wrapper = mountPanel([
+      manualEdit({ id: "edit-manual-c1", start: 2, end: 5 }),
+      manualEdit({ id: "edit-manual-c2", start: 8, end: 9, status: "confirmed" }),
+    ])
+    const panel = wrapper.getComponent(SuggestionPanel)
+
+    const clear = wrapper.find('[data-test="manual-group-clear"]')
+    expect(clear.exists()).toBe(true)
+    expect(clear.text()).toBe("清除")
+    expect(clear.attributes("title")).toContain("永久删除")
+    // Manual group is expanded by default before the click.
+    expect(findItemRow(wrapper, "删除 3.0s").exists()).toBe(true)
+
+    await clear.trigger("click")
+    await flushPromises()
+
+    // Same guarded chain as the group right-click delete: ALL manual ids
+    // (confirmed included) in one delete-edit-batch.
+    expect(confirmSpy).toHaveBeenCalledTimes(1)
+    expect(panel.emitted("delete-edit-batch")).toEqual([[["edit-manual-c1", "edit-manual-c2"]]])
+    expect(callMock).toHaveBeenCalledWith(
+      "delete_edit_decisions_batch",
+      ["edit-manual-c1", "edit-manual-c2"],
+    )
+    // The stop modifier keeps the header toggle out of the click: the
+    // group must still be expanded (a fold would hide the item rows).
+    expect(findItemRow(wrapper, "删除 3.0s").exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it("zero regression: legacy silence group has no per-item delete and no 清除 button", async () => {
+    vi.stubGlobal("confirm", vi.fn(() => true))
+    const wrapper = mountPanel([
+      mockEditDecision({ id: "ed-sil-1", start: 0, end: 1.5, source: "silence_detection" }),
+    ])
+
+    // No manual group -> no clear button anywhere.
+    expect(wrapper.find('[data-test="manual-group-clear"]').exists()).toBe(false)
+
+    // Silence group is collapsed by default; expand, then right-click the item.
+    const silenceHeader = wrapper.findAll("button").find(b => b.text().includes("静音检测"))!
+    await silenceHeader.trigger("click")
+    const row = findItemRow(wrapper, "静音 1.5s")
+    await row.trigger("contextmenu")
+    await nextTick()
+
+    const menu = document.body.querySelector(".fixed.z-dropdown")
+    expect(menu).not.toBeNull()
+    expect(menu!.textContent).toContain("确认此项")
+    expect(menu!.textContent).toContain("忽略此项")
+    expect(menu!.textContent).not.toContain("删除此项")
+    wrapper.unmount()
+  })
+})

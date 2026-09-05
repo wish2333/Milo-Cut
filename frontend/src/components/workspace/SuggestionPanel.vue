@@ -260,6 +260,21 @@ function runItemActionFromMenu(action: "confirm" | "reject") {
   closeContextMenu()
 }
 
+// v3.0.4 smoke-fix 2: per-item permanent delete for manual ranges -- the
+// item context menu only offered 确认/忽略, so a single unwanted range had
+// no delete affordance (smoke finding). Reuses the existing batch channel
+// with a single id; downstream (delete_edit_decisions_batch) is unchanged.
+function runItemDeleteFromMenu() {
+  const item = contextMenu.value?.item
+  if (!item?.editId) { closeContextMenu(); return }
+  if (!confirm(`确认永久删除该${item.label}范围？此操作不可撤销。`)) {
+    closeContextMenu()
+    return
+  }
+  emit("delete-edit-batch", [item.editId])
+  closeContextMenu()
+}
+
 function onWindowClick() {
   if (contextMenu.value) closeContextMenu()
   // The toggle button and the popover itself stop propagation, so any
@@ -415,6 +430,19 @@ onBeforeUnmount(() => {
           <span v-if="group.confirmedCount > 0" class="text-green-700">已确认{{ group.confirmedCount }}</span>
           <span v-if="group.rejectedCount > 0" class="text-gray-400">已忽略{{ group.rejectedCount }}</span>
           <span class="text-gray-400">共{{ group.items.length }}</span>
+          <!-- v3.0.4 smoke-fix 2: visible one-click clear for manual ranges
+               (the group right-click menu existed but was undiscoverable).
+               Left-click = same guarded batch delete; stop propagation so
+               the header toggle does not fold the group. -->
+          <button
+            v-if="group.type === 'manual'"
+            class="rounded bg-red-50 px-1.5 py-0.5 text-[11px] leading-none text-red-600 transition-colors hover:bg-red-100"
+            data-test="manual-group-clear"
+            title="一键清除本组全部手动范围（含已确认/已忽略，永久删除）"
+            @click.stop="runGroupAction(group, 'delete')"
+          >
+            清除
+          </button>
         </span>
       </button>
 
@@ -504,6 +532,15 @@ onBeforeUnmount(() => {
             @click="runItemActionFromMenu('reject')"
           >
             忽略此项
+          </button>
+          <!-- v3.0.4 smoke-fix 2: manual ranges get a permanent per-item
+               delete (legacy groups keep their group-level delete only). -->
+          <button
+            v-if="contextMenu.item?.type === 'manual'"
+            class="block w-full text-left px-3 py-1.5 hover:bg-red-50 text-red-600"
+            @click="runItemDeleteFromMenu"
+          >
+            删除此项（永久，含已确认）
           </button>
         </template>
         <template v-else-if="contextMenu.scope === 'group' && contextMenu.group">

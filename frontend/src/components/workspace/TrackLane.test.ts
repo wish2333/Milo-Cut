@@ -231,3 +231,34 @@ describe("TrackLane context menu (smoke fix)", () => {
     wrapper.unmount()
   })
 })
+
+// ------------------------------------------------------------------
+// v3.0.4 smoke fix 3: proportional block-area top gap. The fixed top-4
+// (16px) ate 33-67% of 24-48px scaled-down lanes; the gap is now 15% of
+// the lane height clamped to [3, 10]px (lg 72 -> 10 / md 48 -> 7 /
+// sm 32 -> 5), and the block area stays hidden while collapsed.
+// ------------------------------------------------------------------
+
+describe("TrackLane block-area top gap (smoke fix: proportional)", () => {
+  it("scales lane-blocks top with the lane height (48 -> 7px, 32 -> 5px, 72 -> 10px cap)", () => {
+    const md = mountLane(makeTrack(), makeLane({ height: 48 }))
+    expect((md.find('[data-test="lane-blocks"]').element as HTMLElement).style.top).toBe("7px")
+    md.unmount()
+
+    const sm = mountLane(makeTrack(), makeLane({ height: 32 }))
+    expect((sm.find('[data-test="lane-blocks"]').element as HTMLElement).style.top).toBe("5px")
+    sm.unmount()
+
+    // 72 * 0.15 = 10.8 -> rounds to 11, clamped down to the 10px cap.
+    const lg = mountLane(makeTrack(), makeLane({ height: 72 }))
+    expect((lg.find('[data-test="lane-blocks"]').element as HTMLElement).style.top).toBe("10px")
+    lg.unmount()
+  })
+
+  it("keeps the block area unrendered while collapsed (height 24)", () => {
+    const wrapper = mountLane(makeTrack(), makeLane({ collapsed: true, height: 24 }))
+    expect(wrapper.find('[data-test="lane-blocks"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain("已折叠")
+    wrapper.unmount()
+  })
+})
