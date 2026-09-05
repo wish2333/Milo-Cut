@@ -188,7 +188,7 @@ R3 增补 4 条顺序约束的落点：① golden 先行 → **P3-1**（本版�
 - [x] useLlmTasks：`startTranslation(targetLanguage)` + 单例消费完成事件存 `lastTranslationCompletion`；WorkspacePage `watch` → `handleSelectListTrack`（自带 flush 前置）→ `selectTrack` 完成自动切轨
 - [x] 任务 start 前 `pushSnapshot(["tracks","bindings"], "AI翻译副轨")`；完成后刷新走 task:completed 剥离 → `get_project`（同纠错模式）；uncovered 非空 toast + 结果面板明示清单
 - [ ] 用例：翻译卡置灰 / 语言记忆跨会话 / 完成切轨（watch → handleSelectListTrack）/ undo 三层一致（M1/M2 前端组 P1 份额 ≥4）
-- [ ] ★ beta.1 冒烟（用户协助表）+ 打 tag `v3.0.4-beta.1` + record（代码闭环完成；真机冒烟待用户执行，tag 已按后文登记先行）
+- [ ] ★ beta.1 冒烟（用户协助表）+ 打 tag `v3.0.4-beta.1` + record（**登记 2026-09：代码闭环与全门禁已交付，tag `v3.0.4-beta.1` 已打在 P1-6 合入 commit；真机冒烟待用户执行，继承 3.0.3 冒烟后置先例，异常走 smoke-fix**）（代码闭环完成；真机冒烟待用户执行，tag 已按后文登记先行）
 
 **验收方式**: M5 组 = M1/M2 前端（P1 份额）；vitest collected ≥760。
 **验收标准**: 翻译全链路冒烟合并 beta.1 ★ 节点。

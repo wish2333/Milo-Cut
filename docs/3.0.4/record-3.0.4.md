@@ -8,7 +8,10 @@
 
 ## 0. 交付概览
 
-（P4 归档时回填：各 phase 完成态 / tag 链 / 规模对照实际值）
+- **P0 完成**：分支/tag/基线/门禁脚本（P0-1、P0-2）。
+- **P1 完成（2026-09）**：S1 翻译副轨全链交付——P1-1 任务类型与事件双侧 / P1-2 prompt 注册（params={} 裁决）/ P1-3 批处理管线（coverage 反向守恒）/ P1-4 批量落盘单 patch / P1-5 handler 与 expose（五情形失败语义）/ P1-6 前端闭环与 props 链三级接通。P1 末门禁：pytest 774（期望 ≥739）/ vitest 771 collected·770 passed（期望 ≥760·759）/ build / lint / ruff / 红线全过。
+- **tag `v3.0.4-beta.1`** 已打在 P1-6 合入 commit（代码闭环 + 全门禁绿）。★ beta.1 双平台真机冒烟**待用户执行**（继承 3.0.3「冒烟后置裁决」先例，record-3.0.3 已有先例登记）：清单 = 翻译全链路（入口语言记忆 / 进度 / 完成自动切轨 / undo 整轨回退 / 千段耗时与 token 观测）+ 双语导出 + 播放双语第二行，建议覆盖至少一家非 json_mode provider（Qwen/GLM/Ollama）；异常项走 smoke-fix 流程（合入 dev-3.0.4，tag 不动）。
+- P2 起各 phase 完成态 / tag 链 / 规模对照实际值：P4 归档时汇总。
 
 ## 1. 分步记录索引
 
@@ -21,7 +24,7 @@
 | P1-3 | [record-3.0.4-P1-3.md](./record-3.0.4-P1-3.md) | 已完成（负责人已审查合并，llm_service.py +384 纯新增零删改，门禁复跑 exit 0） | 合入（merge P1-3，pytest 749 全绿） |
 | P1-4 | [record-3.0.4-P1-4.md](./record-3.0.4-P1-4.md) | 已完成（负责人已审查合并；project_service.py +155 单一方法纯新增，报告经 patch meta side-channel 携带已登记） | 合入（merge P1-4，pytest 760 全绿） |
 | P1-5 | [record-3.0.4-P1-5.md](./record-3.0.4-P1-5.md) | 已完成（负责人已审查合并；main.py +245 四 hunk 纯新增、config.py +1 键，五情形失败语义对照齐备） | 合入（merge P1-5，pytest 774 全绿） |
-| P1-6 | [record-3.0.4-P1-6.md](./record-3.0.4-P1-6.md) | 已完成（前端闭环与 props 链一次接通：mainSegments/activeTrackId/activeTrackName 同 commit 三级接通 + 翻译第 4 卡 + 完成自动切轨；纯前端步骤 backend 零 diff；vitest 771 collected / 770 passed，门禁 exit 0） | 待合入（merge P1-6） |
+| P1-6 | [record-3.0.4-P1-6.md](./record-3.0.4-P1-6.md) | 已完成（负责人已审查合并；props 链三级接通，App.vue 零改动） | 合入（merge P1-6，pytest 774 / vitest 771-770 全绿） |
 | P2-1 ~ P2-6 | （待建） | 未开始 | |
 | P3-1 ~ P3-9 | （待建） | 未开始 | |
 | P4-1 ~ P4-5 | （待建） | 未开始 | |
