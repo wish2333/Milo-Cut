@@ -27,7 +27,7 @@ class CorrectionService:
         self._project = project_service
 
     def store_subtitle_corrections(
-        self, corrections: list[dict], timeline_id: str
+        self, corrections: list[dict], timeline_id: str, track_id: str = ""
     ) -> dict:
         """Persist LLM subtitle corrections as AnalysisResult records (D-54).
 
@@ -43,6 +43,11 @@ class CorrectionService:
             corrections: LLM output list (segment_id, corrected_text, changes,
                 category, confidence).
             timeline_id: Target timeline.
+            track_id: v3.0.4 M2-1/M2-2 -- scope marker. Empty string = main
+                track (v3.0.3 behavior); a non-empty id marks corrections
+                belonging to that extension track. Only recorded in the
+                detail JSON here -- scope-aware seg_map / mutual-clearing is
+                M2-2 (P2-3) work.
 
         Returns:
             {"success": True, "data": {"stored_count": int}}
@@ -85,6 +90,9 @@ class CorrectionService:
                         "corrected_text": corrected_text,
                         "changes": corr.get("changes", []),
                         "category": corr.get("category", "none"),
+                        # v3.0.4 M2-1 (P2-2): scope marker ("" = main track).
+                        # Mutual-clearing stays timeline-wide until M2-2.
+                        "track_id": track_id,
                     },
                     ensure_ascii=False,
                 ),

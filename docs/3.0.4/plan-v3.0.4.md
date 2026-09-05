@@ -207,9 +207,9 @@ R3 增补 4 条顺序约束的落点：① golden 先行 → **P3-1**（本版�
 
 ### P2-2 handler 副轨分支（main.py）
 
-- [ ] `_handle_subtitle_correction`：track_id 非空时段源取对应轨 segments；bindings 反查表跳过 confirmed-deleted 主轨段的绑定副轨段（无绑定段保留）；partial hints 跳过（裁决：主轨 EditDecision 概念不改造）；store 透传 `track_id`
-- [ ] 轨不存在 → 任务 failed「Track not found」
-- [ ] 用例：删除主轨段 + 绑定副轨段被跳过；无绑定段保留；轨不存在失败
+- [x] `_handle_subtitle_correction`：track_id 非空时段源取对应轨 segments；bindings 反查表跳过 confirmed-deleted 主轨段的绑定副轨段（无绑定段保留）；partial hints 跳过（裁决：主轨 EditDecision 概念不改造）；store 透传 `track_id`
+- [x] 轨不存在 → 任务 failed「Track not found」
+- [x] 用例：删除主轨段 + 绑定副轨段被跳过；无绑定段保留；轨不存在失败（tests/test_correction_track_source.py 6 例，另含 hints 不透传 / 缺省主轨快照 / store detail 键）
 
 **验收方式**: M5 组 = M2 段源/accept（段源三项）。
 **验收标准**: 门禁全绿。
