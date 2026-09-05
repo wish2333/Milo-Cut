@@ -303,13 +303,24 @@ export function useLlmTasks() {
     }
   }
 
-  async function startSubtitleCorrection(referenceText = ""): Promise<void> {
+  // v3.0.4 M2-4 C: trackId rides through to the backend as the 4th
+  // positional arg (P2-2 signature start_subtitle_correction(reference_text,
+  // timeline_id, context_window, track_id); "" / omitted = main track,
+  // v3.0.3 behavior unchanged). The middle two keep the backend defaults
+  // (timeline "" = active, context window 3).
+  async function startSubtitleCorrection(referenceText = "", trackId = ""): Promise<void> {
     isRunning.value = true
     progress.value = 0
     errorMsg.value = null
     resetSubtitleCorrection()
 
-    const res = await call<MiloTask>("start_subtitle_correction", referenceText)
+    const res = await call<MiloTask>(
+      "start_subtitle_correction",
+      referenceText,
+      "",
+      3,
+      trackId,
+    )
     if (!res.success) {
       isRunning.value = false
       errorMsg.value = res.error ?? "Failed to start subtitle correction"

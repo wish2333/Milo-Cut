@@ -237,12 +237,12 @@ R3 增补 4 条顺序约束的落点：① golden 先行 → **P3-1**（本版�
 
 ### P2-5 前端门控与审阅（AIAssistantPanel · Timeline · WorkspacePage · useLlmTasks）
 
-- [ ] AIAssistantPanel prop 门控：轨模式下智能删除/精华/工作流置灰 + 「仅主轨可用」文案；纠错卡可用 + 显式轨徽（「当前轨：{track_name}」，锁定不弹选择）；搜索卡不置灰
-- [ ] Timeline tabs 精华门控：轨模式下「精华」tab 置灰（disabled + title）；`isTrackMode` 变 true 且停留在精华 → 自动回落 suggestion tab
-- [ ] useLlmTasks `startSubtitleCorrection(referenceText, trackId?)` 透传；WorkspacePage 调用点传 `activeListTrackId ?? ""`
-- [ ] 审阅 modal：条目按 track_id 解析显示段与时间 + 来源轨徽；renderDiff 纯文本渲染不变
+- [x] AIAssistantPanel prop 门控：轨模式下智能删除/精华/工作流置灰 + 「仅主轨可用」文案；纠错卡可用 + 显式轨徽（「当前轨：{track_name}」，锁定不弹选择）；搜索卡不置灰（注：精华入口经 R3 勘误在 Timeline 第三 tab，非本面板，见下一项）
+- [x] Timeline tabs 精华门控：轨模式下「精华」tab 置灰（disabled + title）；`isTrackMode` 变 true 且停留在精华 → 自动回落 suggestion tab
+- [x] useLlmTasks `startSubtitleCorrection(referenceText, trackId?)` 透传；WorkspacePage 调用点传 `activeListTrackId ?? ""`
+- [x] 审阅 modal：条目按 track_id 解析显示段与时间 + 来源轨徽；renderDiff 纯文本渲染不变
 - [ ] 用例：置灰态点击不 emit start；轨徽名称；精华 tab 置灰 + 停留回落；主轨视图零回退（M1/M2 前端组收齐 ≥7）
-- [ ] ★ beta.2 冒烟（用户协助表）+ 打 tag `v3.0.4-beta.2` + record
+- [ ] ★ beta.2 冒烟（用户协助表）+ 打 tag `v3.0.4-beta.2` + record（**登记 2026-09：代码闭环与全门禁已交付（pytest 804 / vitest 790-789，唯一失败 = useRowLayout.perf 环境例），12 新例覆盖用例栏 7 项全量；tag `v3.0.4-beta.2` 由负责人打在 P2-5 合入 commit（执行者不打 tag）；真机冒烟待用户执行，继承 beta.1 冒烟后置先例，异常走 smoke-fix**）
 
 **验收方式**: M5 组 = M1/M2 前端（门控项）；vitest collected ≥763。
 **验收标准**: 纠错双轨冒烟合并 beta.2 ★ 节点。

@@ -140,6 +140,24 @@ const lowConfidenceCorrections = computed(() =>
   pendingCorrections.value.filter((c) => c.confidence < 0.8),
 )
 
+// v3.0.4 M2-4 D: source-track badge for one review entry. The backend get
+// (P2-3) already resolves text/times against the entry's own scope
+// (track_id), so the render side just consumes the returned values; the
+// badge names the source track when the entry is track-scoped. "" / absent
+// = main track -> no badge (empty means main, no noise). The local
+// SubtitleCorrection type in useLlmTasks predates the scope fields (this
+// step's red line keeps useLlmTasks to the start-formal-param change), so
+// the runtime-present track_name is read through this narrow extension --
+// same pattern as useWorkspaceActions' CorrectionReviewEntry.
+type CorrectionEntryWithTrack = (typeof pendingCorrections.value)[number] & {
+  track_name?: string
+}
+function correctionTrackName(
+  corr: (typeof pendingCorrections.value)[number],
+): string {
+  return (corr as CorrectionEntryWithTrack).track_name ?? ""
+}
+
 const projectRef = computed({
   get: () => props.project,
   set: (val) => emit("project-updated", val),
@@ -901,7 +919,15 @@ const workspaceActions = createWorkspaceActions({
   toggleSelectionMode, clearMultiSelection, handleSegmentClick,
   pushSnapshot, projectRef, flushPendingUpdates,
   llmConfig, loadLlmConfig,
-  startSmartDelete, startSubtitleCorrection, startHighlight,
+  // v3.0.4 M2-4 C: correction in track mode targets the VIEWED track. The
+  // injection point is this deps literal (the page's call site) so P2-4's
+  // useWorkspaceActions stays byte-identical (red line): the hub keeps
+  // calling startSubtitleCorrection(referenceText), and the wrapper appends
+  // activeListTrackId ?? "" ("" = main track, v3.0.3 path unchanged).
+  startSmartDelete,
+  startSubtitleCorrection: (referenceText: string) =>
+    startSubtitleCorrection(referenceText, activeListTrackId.value ?? ""),
+  startHighlight,
   highlightResults, hydrateHighlightsFromProject,
   pendingCorrections, loadCorrections, computeDiff,
   acceptCorrection, rejectCorrection, acceptHighConfidenceCorrections, clearCorrections,
@@ -1654,6 +1680,13 @@ onUnmounted(() => {
                   <div class="mb-1 flex items-center gap-2 text-xs text-gray-500">
                     <span>{{ formatTimeShort(corr.start) }}</span>
                     <span class="rounded bg-blue-50 px-1.5 py-0.5 text-blue-700">{{ categoryLabel(corr.category) }}</span>
+                    <!-- v3.0.4 M2-4 D: source-track badge (track-scoped
+                         entries only; main track adds no noise). -->
+                    <span
+                      v-if="correctionTrackName(corr)"
+                      data-test="correction-track-badge"
+                      class="rounded bg-gray-100 px-1.5 py-0.5 text-gray-600"
+                    >来源轨：{{ correctionTrackName(corr) }}</span>
                     <span>置信度 {{ corr.confidence.toFixed(2) }}</span>
                   </div>
                   <!-- Inline diff -->
@@ -1688,6 +1721,13 @@ onUnmounted(() => {
                   <div class="mb-1 flex items-center gap-2 text-xs text-gray-500">
                     <span>{{ formatTimeShort(corr.start) }}</span>
                     <span class="rounded bg-blue-50 px-1.5 py-0.5 text-blue-700">{{ categoryLabel(corr.category) }}</span>
+                    <!-- v3.0.4 M2-4 D: source-track badge (low-confidence
+                         section, same rendering as the high section). -->
+                    <span
+                      v-if="correctionTrackName(corr)"
+                      data-test="correction-track-badge"
+                      class="rounded bg-gray-100 px-1.5 py-0.5 text-gray-600"
+                    >来源轨：{{ correctionTrackName(corr) }}</span>
                     <span>置信度 {{ corr.confidence.toFixed(2) }}</span>
                   </div>
                   <!-- M9-3: content is built by renderDiff() which escapes all text via

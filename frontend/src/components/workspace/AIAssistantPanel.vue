@@ -182,6 +182,36 @@ const hasCorrectionResults = computed(
 )
 
 // ---------------------------------------------------------------------------
+// v3.0.4 M2-4 A: track-view gating (prop-driven, component-self-contained).
+//
+// Track mode = non-empty activeTrackId (null/""/absent = main-track view,
+// byte-identical to v3.0.3 -- superset rule: only the non-empty branch adds
+// gating). Rulings (SPEC M2-4):
+//   - smart delete is main-track-only -> greyed out + 「仅主轨可用」;
+//   - the workflow mode entry is main-track-only -> same treatment;
+//   - subtitle correction stays usable and targets the VIEWED track
+//     (locked -- no track picker, the badge just names it);
+//   - search stays usable (read-only over the main track is harmless, X2
+//     fixes the display side in P3);
+//   - translation keeps its M1-6 state (main-track domain, not listed).
+// ---------------------------------------------------------------------------
+const isTrackMode = computed(() => Boolean(props.activeTrackId))
+const MAIN_TRACK_ONLY_HINT = "仅主轨可用"
+
+/** True when a feature card must be greyed out in track mode. */
+function isFeatureTrackGated(key: FeatureKey): boolean {
+  return isTrackMode.value && key === "smart_delete"
+}
+
+// Leaving the main-track view closes any gated feature's open detail (same
+// fallback ruling as the Timeline highlight tab: never rest on a disabled view).
+watch(isTrackMode, (on) => {
+  if (on && selectedFeature.value && isFeatureTrackGated(selectedFeature.value)) {
+    selectedFeature.value = null
+  }
+})
+
+// ---------------------------------------------------------------------------
 // v3.0.4 M1-6: translation card state.
 // ---------------------------------------------------------------------------
 // Judgment source is the MAIN track (mainSegments prop): in track mode
@@ -232,7 +262,17 @@ watch(
 
 function selectFeature(key: FeatureKey) {
   if (!props.llmConfigured) return
+  // v3.0.4 M2-4 A: a gated card never opens its detail (guard, not style).
+  if (isFeatureTrackGated(key)) return
   selectedFeature.value = selectedFeature.value === key ? null : key
+}
+
+// v3.0.4 M2-4 A: the workflow mode entry is main-track-only. Guarding the
+// switch (not just the disabled styling) keeps the click inert in tests and
+// in any environment where the disabled attr is bypassed.
+function switchPanelMode(mode: PanelMode) {
+  if (mode === "workflow" && isTrackMode.value) return
+  panelMode.value = mode
 }
 
 // Workflow helpers
@@ -339,6 +379,10 @@ watch(selectedWorkflowId, (id) => {
 })
 
 async function handleStartSmartDelete() {
+  // v3.0.4 M2-4 A: belt-and-suspenders with the card gating -- a smart
+  // delete start must never be emitted from a track view, even if the
+  // detail was opened while the main track was active.
+  if (isTrackMode.value) return
   emit("start-smart-delete")
 }
 
@@ -416,17 +460,24 @@ function handleSearchSeek(time: number) {
       {{ wf.errorMsg.value }}
     </div>
 
-    <!-- Mode switch (D-19) -->
+    <!-- Mode switch (D-19). v3.0.4 M2-4 A: the workflow entry is
+         main-track-only -- greyed out (disabled + title) in track mode. -->
     <div class="flex gap-1 rounded-lg bg-gray-100 p-0.5">
       <button
         class="flex-1 rounded-md px-3 py-1 text-xs font-medium transition-colors"
         :class="panelMode === 'single' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500'"
-        @click="panelMode = 'single'"
+        @click="switchPanelMode('single')"
       >单功能</button>
       <button
+        data-test="mode-switch-workflow"
         class="flex-1 rounded-md px-3 py-1 text-xs font-medium transition-colors"
-        :class="panelMode === 'workflow' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500'"
-        @click="panelMode = 'workflow'"
+        :class="[
+          panelMode === 'workflow' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500',
+          isTrackMode ? 'cursor-not-allowed opacity-50' : '',
+        ]"
+        :disabled="isTrackMode"
+        :title="isTrackMode ? MAIN_TRACK_ONLY_HINT : undefined"
+        @click="switchPanelMode('workflow')"
       >工作流</button>
     </div>
 
@@ -661,20 +712,24 @@ function handleSearchSeek(time: number) {
       >取消</button>
     </div>
 
-    <!-- Feature cards (D-14) -->
+    <!-- Feature cards (D-14). v3.0.4 M2-4 A: in track mode the smart delete
+         card is greyed out (disabled + 「仅主轨可用」) while the correction
+         card stays usable and shows the locked-track badge. -->
     <div class="grid grid-cols-2 gap-2">
       <button
         v-for="feat in features.slice(0, 2)"
         :key="feat.key"
+        :data-test="`feature-card-${feat.key}`"
         class="relative flex flex-col items-start rounded-lg border p-2 text-left transition-colors"
         :class="[
-          llmConfigured
+          llmConfigured && !isFeatureTrackGated(feat.key)
             ? selectedFeature === feat.key
               ? 'border-blue-400 bg-blue-50'
               : 'border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50'
             : 'cursor-not-allowed border-gray-200 bg-gray-100 opacity-50',
         ]"
-        :disabled="!llmConfigured"
+        :disabled="!llmConfigured || isFeatureTrackGated(feat.key)"
+        :title="isFeatureTrackGated(feat.key) ? MAIN_TRACK_ONLY_HINT : undefined"
         @click="selectFeature(feat.key)"
       >
         <svg
@@ -688,6 +743,11 @@ function handleSearchSeek(time: number) {
           <path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
         </svg>
         <span v-if="!llmConfigured" class="absolute right-1 top-1 text-[10px] text-gray-400">未配置</span>
+        <span
+          v-else-if="isFeatureTrackGated(feat.key)"
+          data-test="track-gated-label"
+          class="absolute right-1 top-1 text-[10px] text-gray-400"
+        >{{ MAIN_TRACK_ONLY_HINT }}</span>
         <div class="flex items-center gap-1.5">
           <svg
             class="h-4 w-4 text-gray-500"
@@ -701,6 +761,14 @@ function handleSearchSeek(time: number) {
           <span class="text-sm font-medium text-gray-800">{{ feat.title }}</span>
         </div>
         <span class="text-xs text-gray-400">({{ feat.subtitle }})</span>
+        <!-- v3.0.4 M2-4 A: correction card -- explicit locked-track badge
+             (track views only; the main-track view adds no noise). -->
+        <span
+          v-if="feat.key === 'subtitle_correction' && isTrackMode"
+          data-test="correction-track-badge"
+          class="mt-1 inline-flex max-w-full items-center truncate rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-700"
+          :title="`当前轨：${activeTrackName || activeTrackId}`"
+        >当前轨：{{ activeTrackName || activeTrackId }}</span>
       </button>
     </div>
     <!-- v3.0.4 M1-6: translation card (full-width under grid). Greyed out

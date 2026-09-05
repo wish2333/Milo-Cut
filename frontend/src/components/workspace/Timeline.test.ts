@@ -431,3 +431,56 @@ describe("Timeline empty-track create backfill (M1-2: patch tracks 层回填)", 
     wrapper.unmount()
   })
 })
+
+// ---------------------------------------------------------------------------
+// v3.0.4 M2-4 B: highlight tab gating (R3 must-fix #2). The highlight entry
+// is THIS third tab (not an AIAssistantPanel card): in track mode it is
+// greyed out -- disabled + title「仅主轨可用」-- never hidden (three-tab
+// layout stays stable), and resting on it when track mode turns on falls
+// back to the ungated suggestion tab.
+// ---------------------------------------------------------------------------
+describe("Timeline highlight tab gating (M2-4)", () => {
+  const trackProps = {
+    tracks: [{ id: "t_en", name: "English", segmentCount: 3 }],
+  }
+
+  it("greys out the highlight tab in track mode (disabled + title) and blocks the switch", async () => {
+    const wrapper = mountTimeline(longSegments(3), { ...trackProps, activeTrackId: "t_en" })
+    const highlight = wrapper.find('[data-test="sidebar-tab-highlight"]')
+    expect(highlight.attributes("disabled")).toBeDefined()
+    expect(highlight.attributes("title")).toBe("仅主轨可用")
+    expect(highlight.classes()).toContain("opacity-50")
+    // trigger bypasses the disabled attr in happy-dom -- the guarded switch
+    // must not land on the gated tab
+    await highlight.trigger("click")
+    expect(highlight.classes()).not.toContain("bg-primary-soft")
+    // suggestion tab stays open and ungated in track mode
+    const suggestion = wrapper.find('[data-test="sidebar-tab-suggestion"]')
+    expect(suggestion.attributes("disabled")).toBeUndefined()
+    expect(suggestion.classes()).toContain("bg-primary-soft")
+    wrapper.unmount()
+  })
+
+  it("falls back to suggestion when track mode turns on while highlight is open", async () => {
+    const wrapper = mountTimeline(longSegments(3), trackProps)
+    await wrapper.find('[data-test="sidebar-tab-highlight"]').trigger("click")
+    expect(wrapper.find('[data-test="sidebar-tab-highlight"]').classes()).toContain("bg-primary-soft")
+
+    await wrapper.setProps({ activeTrackId: "t_en" })
+    await nextTick()
+    // never rest on the disabled view: activeTab falls back automatically
+    expect(wrapper.find('[data-test="sidebar-tab-suggestion"]').classes()).toContain("bg-primary-soft")
+    expect(wrapper.find('[data-test="sidebar-tab-highlight"]').classes()).not.toContain("bg-primary-soft")
+    wrapper.unmount()
+  })
+
+  it("keeps the highlight tab fully enabled in main-track view (zero regression)", async () => {
+    const wrapper = mountTimeline(longSegments(3), trackProps)
+    const highlight = wrapper.find('[data-test="sidebar-tab-highlight"]')
+    expect(highlight.attributes("disabled")).toBeUndefined()
+    expect(highlight.classes()).not.toContain("opacity-50")
+    await highlight.trigger("click")
+    expect(highlight.classes()).toContain("bg-primary-soft")
+    wrapper.unmount()
+  })
+})

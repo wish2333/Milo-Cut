@@ -316,3 +316,102 @@ describe("AIAssistantPanel -- translation card (v3.0.4 M1-6)", () => {
     expect(notice.text()).toContain("seg-1、seg-7")
   })
 })
+
+// ---------------------------------------------------------------------------
+// v3.0.4 M2-4 A: track-view gating. Track mode = non-empty activeTrackId;
+// smart delete + the workflow entry are main-track-only (greyed out +
+// 「仅主轨可用」), the correction card stays usable with the locked-track
+// badge, search stays usable. Main-track view must stay byte-identical.
+// ---------------------------------------------------------------------------
+describe("AIAssistantPanel -- track-view gating (v3.0.4 M2-4)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(call).mockResolvedValue({ success: false, error: "no settings" })
+  })
+
+  function mountTrackPanel(extraProps: Record<string, unknown> = {}) {
+    return mountTranslationPanel({
+      activeTrackId: "t_en",
+      activeTrackName: "English",
+      ...extraProps,
+    })
+  }
+
+  it("greys out the smart delete card in track mode and never emits start on click", async () => {
+    const wrapper = mountTrackPanel()
+    const card = wrapper.find('[data-test="feature-card-smart_delete"]')
+    expect(card.exists()).toBe(true)
+    expect(card.attributes("disabled")).toBeDefined()
+    expect(card.classes()).toContain("opacity-50")
+    expect(card.attributes("title")).toBe("仅主轨可用")
+    expect(card.find('[data-test="track-gated-label"]').text()).toBe("仅主轨可用")
+
+    // trigger bypasses the disabled attr in happy-dom -- the guard, not the
+    // styling, is what must keep the start path silent (SPEC M2-4 验收).
+    await card.trigger("click")
+    expect(wrapper.text()).not.toContain("开始智能分析")
+    expect(wrapper.emitted("start-smart-delete")).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it("shows the locked-track badge 「当前轨：{track_name}」 on the correction card", async () => {
+    const wrapper = mountTrackPanel()
+    const card = wrapper.find('[data-test="feature-card-subtitle_correction"]')
+    // correction stays usable in track mode (it targets the viewed track)
+    expect(card.attributes("disabled")).toBeUndefined()
+    expect(card.classes()).not.toContain("opacity-50")
+    const badge = card.find('[data-test="correction-track-badge"]')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toBe("当前轨：English")
+
+    await card.trigger("click")
+    expect(wrapper.text()).toContain("开始字幕修正")
+    wrapper.unmount()
+  })
+
+  it("greys out the workflow mode entry in track mode and blocks the switch", async () => {
+    const wrapper = mountTrackPanel()
+    const workflowTab = wrapper.find('[data-test="mode-switch-workflow"]')
+    expect(workflowTab.attributes("disabled")).toBeDefined()
+    expect(workflowTab.attributes("title")).toBe("仅主轨可用")
+    await workflowTab.trigger("click")
+    expect(wrapper.text()).not.toContain("选择已保存工作流")
+    wrapper.unmount()
+  })
+
+  it("keeps the search card enabled in track mode (read-only, not gated)", () => {
+    const wrapper = mountTrackPanel()
+    const searchCard = wrapper
+      .findAll("button")
+      .find((b) => b.text().includes("内容搜索"))
+    expect(searchCard).toBeDefined()
+    expect(searchCard!.attributes("disabled")).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it("main-track view shows no gating artifacts (explicit zero-regression)", () => {
+    const wrapper = mountTranslationPanel()
+    expect(
+      wrapper.find('[data-test="feature-card-smart_delete"]').attributes("disabled"),
+    ).toBeUndefined()
+    // 空即主轨：no track badge, no gating label, workflow entry enabled
+    expect(wrapper.find('[data-test="correction-track-badge"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="track-gated-label"]').exists()).toBe(false)
+    expect(
+      wrapper.find('[data-test="mode-switch-workflow"]').attributes("disabled"),
+    ).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it("closes an open smart-delete detail when the view switches to a track", async () => {
+    // Open the detail on the main track, then switch the list to a track:
+    // the gated feature's detail must fall back closed (never rest on a
+    // disabled view), and no start can be emitted from it afterwards.
+    const wrapper = mountTranslationPanel()
+    await wrapper.find('[data-test="feature-card-smart_delete"]').trigger("click")
+    expect(wrapper.text()).toContain("开始智能分析")
+    await wrapper.setProps({ activeTrackId: "t_en", activeTrackName: "English" })
+    expect(wrapper.text()).not.toContain("开始智能分析")
+    wrapper.unmount()
+  })
+})
