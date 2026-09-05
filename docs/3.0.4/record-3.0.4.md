@@ -33,7 +33,8 @@
 | P2-4 | [record-3.0.4-P2-4.md](./record-3.0.4-P2-4.md) | 已完成（accept/reject 超集 patch 化：patch 层三裁决落实【主轨 segments+analysis / 副轨 tracks+analysis / reject analysis】+ undo 捕获层双层 + 时间轴钉扎 fail-fast；清债 #14 = switch_timeline 全量刷新 workaround 删除；useLlmTasks/main.py/WorkspacePage/App.vue 零改动） | 合入（merge P2-4，pytest 804 / vitest 778-777 全绿；执行中子代理中断由负责人接手收尾验证） |
 | P2-5 | [record-3.0.4-P2-5.md](./record-3.0.4-P2-5.md) | 已完成（前端门控与审阅：AIAssistantPanel prop 门控【智能删除/工作流入口置灰 + 纠错轨徽锁定当前轨 + 搜索不置灰】+ Timeline 精华 tab 置灰与停留回落【R3 must-fix #2】+ startSubtitleCorrection 轨透传【deps 字面量包装，useWorkspaceActions 零改动】+ 审阅 modal 来源轨徽；后端零改动；工作流入口存在性核查 = 存在且已置灰；工作流视图不强制回落单轨视图——负责人追认） | 合入（merge P2-5，vitest 790-789 全绿） |
 | P2-6 | [record-3.0.4-P2-6.md](./record-3.0.4-P2-6.md) | 已完成（可选尾项·对齐主轨上下文：handler 注入自描述字段 `aligned_main_text` + `_build_structured_user_message` 同款转发 +4 受控增行【架构师预裁决 1/2/3 落实，llm_prompts.py 零改动，§4.1 追认】；无绑定段自动退化；主轨路径零改动；P3 开工前完成，让位线未触发） | 合入（merge P2-6，pytest 808 全绿） |
-| P3-1 ~ P3-9 | （待建） | 未开始 | |
+| P3-1 | [record-3.0.4-P3-1.md](./record-3.0.4-P3-1.md) | 已完成（golden 基线采集：v3.0.3 只读 worktree 采集【实际采用 fallback 方式：PYTHONPATH=worktree + 主仓 venv，双重采源断言】+ 固定 30 段四档 padding + 对拍用例 2 例，golden 26509 字节随本 commit 入库；零产品代码改动；M4-4 硬前置 = M0-3 约束 1 落实） | 分支 `dev-3.0.4-p3-1` 待合入（P3 首个 commit，先于 P3-2） |
+| P3-2 ~ P3-9 | （待建） | 未开始 | |
 | P4-1 ~ P4-5 | （待建） | 未开始 | |
 
 ## 2. 门禁基线（P0 首跑登记，零改动干净起点）
