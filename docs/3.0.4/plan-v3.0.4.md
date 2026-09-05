@@ -164,9 +164,9 @@ R3 增补 4 条顺序约束的落点：① golden 先行 → **P3-1**（本版�
 
 ### P1-4 批量落盘方法（core/project_service.py）
 
-- [ ] 新增 `create_translation_track(timeline_id, name, language, items, bind=True)`：写侧重复语言再查（双保险）→ 幂等对账（segment_id 逐个对照当下主轨，落空进 `uncovered_ids` 不静默，全部落空拒绝）→ 同 start/end 复制主轨时间 + 按 id 精确 1:1 建 offset=0 bindings → **单 `_success_patch(tracks=…, bindings=…)` 落盘**（禁止循环 `add_track_segment`）
-- [ ] 时间轴钉扎双保险：方法入口断言 `timeline_id == active_timeline_id`，不符零写入（M1-4 契约 6）
-- [ ] 用例：千段级（参数化 1000 段）单 patch revision 恰好 +1 / tracks+bindings 完整 / undo 一次回退整轨含 bindings；重复语言拒绝；部分落空落盘 + uncovered 上报；全部落空拒绝；bind=False 路径
+- [x] 新增 `create_translation_track(timeline_id, name, language, items, bind=True)`：写侧重复语言再查（双保险）→ 幂等对账（segment_id 逐个对照当下主轨，落空进 `uncovered_ids` 不静默，全部落空拒绝）→ 同 start/end 复制主轨时间 + 按 id 精确 1:1 建 offset=0 bindings → **单 `_success_patch(tracks=…, bindings=…)` 落盘**（禁止循环 `add_track_segment`）
+- [x] 时间轴钉扎双保险：方法入口断言 `timeline_id == active_timeline_id`，不符零写入（M1-4 契约 6）
+- [x] 用例：千段级（参数化 1000 段）单 patch revision 恰好 +1 / tracks+bindings 完整 / undo 一次回退整轨含 bindings；重复语言拒绝；部分落空落盘 + uncovered 上报；全部落空拒绝；bind=False 路径
 
 **验收方式**: M5 组 = M1 批量写 ≥6。
 **验收标准**: 门禁全绿；`core/project_service.py` diff 仅含本方法（`generate_subtitle_keep_ranges` 此时零触碰）。
