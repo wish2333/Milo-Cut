@@ -15,7 +15,8 @@
 - **tag `v3.0.4-beta.2`** 已打在 P2-6 合入 commit。★ beta.2 双平台真机冒烟**待用户执行**（同 beta.1 后置先例）：清单 = 纠错双轨（轨徽门控 / 主轨待审集不丢 / 审阅来源轨标注 / accept patch 无全量刷新 / undo）+ 主轨纠错回归；异常走 smoke-fix。
 - **P3 完成（2026-09）**：S3 前端顺带批 + S4 手动剪辑范围全链交付——P3-1 golden 基线（v3.0.3 worktree 采集，M0-3 约束 1）/ P3-2 编辑扫掠副轨（断言反转白名单唯一一处执行）/ P3-3 lane 建段接线 X1 / P3-4 语义搜索 X2 / P3-5 add_range_decision expose / P3-6 范围标记手势与气泡 / P3-7 面板手动范围分组 + 时间码 / P3-8 覆层三态 / P3-9 keep 闭环（受控改点①，golden 对拍逐字节一致）。P3 末门禁：pytest 829（期望 ≥762）/ vitest 827 collected·826 passed（期望 ≥779·778）/ build / lint / ruff / 红线全过。
 - **tag `v3.0.4-beta.3`** 已打在 P3-9 合入 commit。★ beta.3 双平台真机冒烟**待用户执行**（后置先例同前）：清单 = M5 清单 3-6（编辑扫掠副轨 / lane 建段 / 语义搜索 / 手动范围 toggle·气泡·面板·keep 重跑·时间码·Ctrl-create 回归）；异常走 smoke-fix。
-- P4 起各 phase 完成态 / tag 链 / 规模对照实际值：P4 归档时汇总。
+- **P4 进行中（2026-09）**：P4-1 门禁终检全绿 + R0-5 登记核对 8/8；P4-2 性能对账回填（两项测试固化、真机观测待用户）；P4-3 README_zh/README 回写 + 版本池 6+1+7 登记 + §10.1 结论落盘（record-3.0.3 §5 遗留 #2/#4 销账）；P4-5 前半版本 bump 3.0.4 完成（66f46fd，门禁复跑全绿）。剩余 = P4-4 ★ 双平台真机全量回归与 P4-5 ★ RC 签字（用户节点）。
+- **tag 链现状**：`v3.0.4-base`（55c68da）→ `v3.0.4-beta.1`（P1 末）→ `v3.0.4-beta.2`（P2 末）→ `v3.0.4-beta.3`（P3 末）→（待）`v3.0.4-rc.1` →（待）`v3.0.4`。
 
 ## 1. 分步记录索引
 
@@ -44,8 +45,11 @@
 | P3-7 | [record-3.0.4-P3-7.md](./record-3.0.4-P3-7.md) | 已完成（建议面板手动范围分组 + 时间码 popover：SuggestionPanel 第三源分组「手动范围」【label 前缀 删除/保留 {时长}s = action 徽，不设小节；pending 显式 [·] 徽仅 manual，confirmed/rejected 沿用 [Y]/[N]】+ 计数器并入 manual【keep 计数，两 legacy 源 delete-only 过滤逐字节不变】+ 确认 title「确认 = 参与裁剪计算」delete/keep 两变体 + 头部条常驻「+ 时间码」popover【起止数字输入 + 删除/保留二选默认删除 + 就地校验 end<=start/空/非数拒绝零桥调】+ 提交经 provide/inject 与气泡共用 handleRangeDecision【SuggestionPanel 实挂 Timeline.vue:775，红线禁改 Timeline，照 WORKSPACE_ACTIONS_KEY 先例 inject，字符串键裁决已登记】；WorkspacePage 仅 +8 行 provide 接线，useWorkspaceActions/Timeline/后端零改动；确认/拒绝/删除走既有 update_edit_decision/delete_edit_decisions_batch 链；**新建宿主 SuggestionPanel.test.ts** 6 例【harness 接真实 useAnalysis，桥调用与 pushSnapshot 先行顺序断言】；vitest 820-819【+6 例】；popover 二选一与 keep/delete 区分选型见 record §2） | 合入（merge P3-7，6080d1a；provide/inject 接线已追认 §4.1） |
 | P3-8 | [record-3.0.4-P3-8.md](./record-3.0.4-P3-8.md) | 已完成（覆层三态：SegmentBlocksLayer `visibleEditRanges` computed 增 `action`/`status` 输出 + `editRangeClasses`/`editRangeHatchStyle` 双纯函数 + 模板 `:class`/`:style` 三态绑定——**双轴正交排布**【color 轴 = action：红 delete/蓝 keep；opacity 轴 = status：pending `opacity-50` 降档；pending keep = 半透明蓝（任务书预留定夺，裁决登记 record §2.1）】；confirmed delete 渲染结果逐字节 = v3.0.3【class token 序列全等 + 渐变串同值，快照式全等断言】；rejected 维持现状不过滤零改动；`deleteRanges` 零改动 + **新建宿主 WorkspacePage.deleteRanges.test.ts** 1 例快照锁定【pending manual delete/keep 均不入，confirmed manual + subtitle_trim bypass 在场，VideoControls prop 观测，三消费端共锁】；jsdom CSSOM 丢渐变值限制登记（断言面 = class token）；+7 例【SegmentBlocksLayer 6 + 新宿主 1】；WorkspacePage.vue 产品代码零触碰；vitest 827-826【+7】） | 合入（merge P3-8，6bcf1a6） |
 | P3-9 | [record-3.0.4-P3-9.md](./record-3.0.4-P3-9.md) | 已完成（keep 闭环【受控改点 ①，diff 审查制重点项】：generate_subtitle_keep_ranges 函数体 5 hunk +78/-7——① 模块级抽出 `_merge_time_ranges`（原内联相邻合并折逐字抽出，相触 `<=` 判据不变）；② keep 集合感知 `user_keeps`【confirmed keep range，**不限 source**】排序并入 keep 集 → 从删除补集自然扣除；③ 陈旧 trim 剔除【相交的既有 subtitle_trim delete 移除，`invalidated_count` 入返回 data + log】；④ 空守卫式结构保零回退【无 keep 一行新代码不执行】；**golden 对拍 2 例零改动全绿（基线未重采）**；新建宿主 test_keep_ranges_user_keep.py 10 例【打穿 3（部分/整段/跨段桥接）+ 陈旧剔除 invalidated_count==1 非 2 + 导出优先级 delete 胜出 + pending/rejected 不参与 + 抽函数 4】；pytest 829【+10】；导出链零触碰） | 合入（merge P3-9；负责人逐 hunk 审查通过；真机 keep 重跑归 beta.3 ★） |
-| P4-3 | （总记录 §7/§7.1 即本步落盘处，无独立分步文件） | 已完成（README_zh 3.0.x 特性段集中回填 + 3.0.4 新特性段与 Q8 级联删除说明 / README.md 增 v3.0.4 英文段【对齐 3.0.3 先例位置】/ 版本池 6 新增 + 7 维持 + 1 出池登记 / §10.1 副轨删除确认策略结论落盘；`gates-v3.0.4.sh redline` exit 0 零代码扰动；record-3.0.3 §5 遗留 #2/#4 销账） | 合入 `dev-3.0.4-p4-3`（docs(readme) + docs(record) 两笔，待负责人审查合并） |
-| P4-1 / P4-2 / P4-4 / P4-5 | （待建） | 未开始 | |
+| P4-3 | （总记录 §7/§7.1 即本步落盘处，无独立分步文件） | 已完成（README_zh 3.0.x 特性段集中回填 + 3.0.4 新特性段与 Q8 级联删除说明 / README.md 增 v3.0.4 英文段【对齐 3.0.3 先例位置】/ 版本池 6 新增 + 7 维持 + 1 出池登记 / §10.1 副轨删除确认策略结论落盘；`gates-v3.0.4.sh redline` exit 0 零代码扰动；record-3.0.3 §5 遗留 #2/#4 销账） | 已合入（merge P4-3） |
+| P4-1 | （本表 + §3 核对记录 + record-3.0.4-P4-1 终检留痕见下） | 已完成 | 门禁终检 exit 0（pytest 829 / vitest 827 collected·826 passed / build / lint / ruff / 红线 R0-1~R0-5 全过）；后端 diff = 8 文件全在白名单、禁改面与 dev.py/build.py 零命中、登记表逐文件 8/8 有登记行 |
+| P4-2 | （§6 性能对账段） | 已完成 | 千段单 patch / accept patch 化两项测试固化；真机观测待用户冒烟 |
+| P4-4 | （★ 用户节点） | 待用户执行 | 双平台真机全量回归 M5 清单 1-7 + 3.0.3 顺延债 |
+| P4-5 | 版本 bump 已完成（66f46fd，门禁复跑全绿） | rc.1 / 主干合并 / v3.0.4 tag **待用户签字** | ★ tag 落地签字节点 |
 
 ## 2. 门禁基线（P0 首跑登记，零改动干净起点）
 
