@@ -278,11 +278,13 @@ R3 增补 4 条顺序约束的落点：① golden 先行 → **P3-1**（本版�
 
 ### P3-2 编辑扫掠覆盖副轨（TranscriptRow.vue · TranscriptRow.test.ts · Timeline.vue，R3.1）
 
-- [ ] 删除 `TranscriptRow.vue:324-337` 两处 track 早退（onMounted 条件 + watch 守卫）——副轨行随 `globalEditMode` 进入/退出行内编辑
-- [ ] **断言反转白名单执行**：`TranscriptRow.test.ts:270-275` 整体改写为「enters text edit under globalEditMode (track variant)」，record-P3 登记反转条目与理由（白名单唯一一处）
-- [ ] 新增断言：切换轨视图前未决防抖先 flush（挂 WorkspacePage `handleSelectListTrack`：flush 回调先于 selectListTrack 执行）；编辑态跨轨保持固化 1 例
-- [ ] Timeline 按钮文案感知轨道视图（副轨视图「编辑〈轨名〉」/「退出编辑」，主轨视图文案不变）
-- [ ] 用例：反转用例 + flush + 跨轨保持（M3 前端 R3.1 部分 ≥3）
+- [x] 删除 `TranscriptRow.vue:324-337` 两处 track 早退（onMounted 条件 + watch 守卫）——副轨行随 `globalEditMode` 进入/退出行内编辑
+- [x] **断言反转白名单执行**：`TranscriptRow.test.ts:270-275` 整体改写为「enters text edit under globalEditMode (track variant)」，record-P3 登记反转条目与理由（白名单唯一一处）
+- [x] 新增断言：切换轨视图前未决防抖先 flush（挂 WorkspacePage `handleSelectListTrack`：flush 回调先于 selectListTrack 执行）；编辑态跨轨保持固化 1 例
+- [x] Timeline 按钮文案感知轨道视图（副轨视图「编辑〈轨名〉」/「退出编辑」，主轨视图文案不变）
+- [x] 用例：反转用例 + flush + 跨轨保持（M3 前端 R3.1 部分 ≥3）
+
+> 已完成（登记：[record-3.0.4-P3-2.md](./record-3.0.4-P3-2.md)；分支 `dev-3.0.4-p3-2`，vitest 净增 5 例【Timeline 文案 3 + 新宿主 trackEdit 2】，反转用例数不变；附带 gates R0-3 前端 grep 白名单实现失效勘误，见该 record §6）。
 
 **验收方式**: M5 组 = M3 前端；前端断言 grep 白名单外命中 = 0。
 **验收标准**: 主轨既有断言全绿；撤销谓词表零新增（text 恒 `["tracks"]`）。
