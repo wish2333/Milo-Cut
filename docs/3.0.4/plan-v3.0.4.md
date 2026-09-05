@@ -323,13 +323,15 @@ R3 增补 4 条顺序约束的落点：① golden 先行 → **P3-1**（本版�
 
 ### P3-6 范围标记 toggle 与确认气泡（WaveformEditor.vue · SegmentBlocksLayer.vue，R4.2）
 
-- [ ] 波形工具栏新增「范围标记」toggle（对齐建段先例 :1012-1017），**默认 OFF**；ON 时主轨空白区 press-drag 框选 → 松手确认气泡（删除/保留二选 + 取消，内嵌 WaveformEditor 不建新组件，默认聚焦「删除」）→ `add_range_decision`；`selectedRange` 死代码激活为气泡数据源
-- [ ] `emptyAreaMode` 联合类型增 `"range"`；两处绑定改嵌套三元 `rangeMode ? "range" : buildMode ? "add" : "seek"`（**双 toggle 同 ON 时范围模式获胜** + UI 互斥提示）；SegmentBlocksLayer `handleEmptyClick` 增 `"range"` 分支 emit `range-press`
-- [ ] multi 侧路由置于 else 分支之前、ctrl/shift 判断之后（**Ctrl/Shift 优先级高于范围模式**）
-- [ ] 用例：手势矩阵逐格 vitest（ON 6 格 + OFF 3 格零回退断言）；Ctrl-create 建段与 v3.0.3 完全一致；气泡二选一落盘 + 取消（M4 前端手势部分）
+- [x] 波形工具栏新增「范围标记」toggle（对齐建段先例 :1012-1017），**默认 OFF**；ON 时主轨空白区 press-drag 框选 → 松手确认气泡（删除/保留二选 + 取消，内嵌 WaveformEditor 不建新组件，默认聚焦「删除」）→ `add_range_decision`；`selectedRange` 死代码激活为气泡数据源
+- [x] `emptyAreaMode` 联合类型增 `"range"`；两处绑定改嵌套三元 `rangeMode ? "range" : buildMode ? "add" : "seek"`（**双 toggle 同 ON 时范围模式获胜** + UI 互斥提示）；SegmentBlocksLayer `handleEmptyClick` 增 `"range"` 分支 emit `range-press`
+- [x] multi 侧路由置于 else 分支之前、ctrl/shift 判断之后（**Ctrl/Shift 优先级高于范围模式**）
+- [x] 用例：手势矩阵逐格 vitest（ON 6 格 + OFF 3 格零回退断言）；Ctrl-create 建段与 v3.0.3 完全一致；气泡二选一落盘 + 取消（M4 前端手势部分）
 
 **验收方式**: M5 组 = M4 前端（手势矩阵项）。
 **验收标准**: 既有 WaveformEditor 建段测试不改全绿；范围标记仅主轨域。
+
+> 已完成（登记：[record-3.0.4-P3-6.md](./record-3.0.4-P3-6.md)；分支 `dev-3.0.4-p3-6`，前执行者实现 + 本步验证补测（产品代码零修正），vitest 814-813【+13 例：WaveformEditor 10（multi 矩阵 ON 五格 + OFF toggle 循环 + wiring / basic 直挂链 3）/ SegmentBlocksLayer "range" 分支 1 / 新宿主 WorkspacePage.rangeDecision 2】；三选型登记：multi 空态值 `'seek'` 矩阵等价适配（P3-3 冻结链，SPEC 字面 `'range'` 仅 basic 直挂）、`buildMode && !rangeMode` 两处门控（multi 行 + basic lane 外延待追认）、selectedRange 经普通对象 sink 下传（useSegmentEdit 零改动）；门禁 exit 0，pytest 819）。
 
 ### P3-7 建议面板手动范围分组 + 时间码 popover（SuggestionPanel.vue，R4.3a）
 

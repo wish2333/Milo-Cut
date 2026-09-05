@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from "vue"
-import type { Project, Segment, EditDecision, Timeline as TimelineData, ProjectResponse } from "@/types/project"
+import type { Project, Segment, EditDecision, Timeline as TimelineData, ProjectResponse, ProjectPatch } from "@/types/project"
 import { formatTimeShort } from "@/utils/format"
 import { call, onEvent, isDemoMode } from "@/bridge"
 import { useAnalysis } from "@/composables/useAnalysis"
@@ -204,6 +204,9 @@ const { showToast } = useToast()
 const {
   selectedSegmentId: editSelectedSegmentId,
   selectRange: selectEditRange,
+  // v3.0.4 M4-2 (P3-6): the previously write-only dead ref is activated as
+  // the waveform range bubble's data source (框选区间暂存).
+  selectedRange: editSelectedRange,
   updateSegmentTime,
   updateSegmentText,
   toggleEditStatus,
@@ -228,6 +231,11 @@ const {
       4000,
     ),
 )
+
+// v3.0.4 M4-2 (P3-6): templates auto-unwrap top-level refs, so the
+// selectedRange REF travels inside a plain-object sink -- the waveform
+// bubble stages/clears the sweep by writing .value in place.
+const rangeSelectionSink = { ref: editSelectedRange }
 
 // v3.0.1 M5-2: extension-track editing (optimistic + debounced, separate
 // composable by design -- see SPEC M5-2 ruling).
@@ -962,6 +970,22 @@ function handleTrackCreate(trackId: string, start: number, end: number) {
   void handleAddTrackSegment(trackId, start, end)
 }
 
+// v3.0.4 M4-2 (P3-6): waveform range bubble confirm -> manual range edit.
+// Snapshot BEFORE the write (edits layer, useWorkspaceActions.ts:652
+// precedent), then the expose returns the edits ProjectPatch envelope which
+// flows through the standard project-updated patch path (App.vue
+// applyProjectPatch). Cancel never reaches here (editor-side cleanup).
+async function handleRangeDecision(payload: { start: number; end: number; action: "delete" | "keep" }) {
+  if (!projectRef.value) return
+  pushSnapshot(projectRef.value, ["edits"], "手动范围")
+  const res = await call<ProjectPatch>("add_range_decision", payload.start, payload.end, payload.action)
+  if (res.success && res.data) {
+    emit("project-updated", res.data)
+  } else {
+    showToast(`手动范围创建失败: ${res.error ?? "未知错误"}`, "error", 3000)
+  }
+}
+
 // v3.0.2 M6-1: subtitle-list navigation jumps share the waveform's reveal
 // semantics (REVEAL_BIAS + comfort skip + follow cooldown) so the playing
 // row is actually in view after a list click. No-op in basic mode.
@@ -1563,6 +1587,7 @@ onUnmounted(() => {
       :update-track-time="updateTrackSegmentTime"
       :global-edit-mode="globalEditMode"
       :selection-mode="selectionMode"
+      :range-selection="rangeSelectionSink.ref"
       @seek="handleSeek"
       @set-time="handleSetTime"
       @select-range="handleSelectRange"
@@ -1579,6 +1604,7 @@ onUnmounted(() => {
       @clear-track="handleClearTrack"
       @delete-track="handleDeleteTrackWaveform"
       @track-create="handleTrackCreate"
+      @range-decision="handleRangeDecision"
       @scrubbing="waveformScrubbing = $event"
     />
 

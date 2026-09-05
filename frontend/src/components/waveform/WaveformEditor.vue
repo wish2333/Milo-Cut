@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { toRef, provide, ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue"
+import { toRef, provide, ref, computed, watch, onMounted, onUnmounted, nextTick, type Ref } from "vue"
 import type { Segment, EditDecision, SubtitleTrack } from "@/types/project"
 import { useTimelineMetrics, type TimelineMetrics } from "@/composables/useTimelineMetrics"
 import {
@@ -65,6 +65,14 @@ const props = defineProps<{
   globalEditMode?: boolean
   /** v2.1.1 A-03: multi-select mode — move pointer without playing */
   selectionMode?: boolean
+  /**
+   * v3.0.4 M4-2 (P3-6): staged manual-range selection. WorkspacePage hands
+   * the useSegmentEdit `selectedRange` ref (previously write-only dead
+   * code) down here -- the confirmation bubble READS it as its data source
+   * (框选区间暂存). Optional: standalone/demo mounts fall back to a local
+   * ref with identical semantics.
+   */
+  rangeSelection?: Ref<{ start: number; end: number } | null>
 }>()
 
 const emit = defineEmits<{
@@ -91,6 +99,12 @@ const emit = defineEmits<{
   "track-create": [trackId: string, start: number, end: number]
   /** v3.0.2 M5-3: scrubbing flag for list-follow suppression. */
   scrubbing: [active: boolean]
+  /**
+   * v3.0.4 M4-2 (P3-6): manual range decision confirmed in the bubble.
+   * Consumed by WorkspacePage: pushSnapshot(["edits"]) then
+   * call("add_range_decision", ...) (patch envelope via project-updated).
+   */
+  "range-decision": [payload: { start: number; end: number; action: "delete" | "keep" }]
 }>()
 
 const durationRef = toRef(props, "duration")
@@ -280,6 +294,20 @@ const isMulti = computed(() => rowLayout.state.value.mode === "multi")
 const buildMode = ref(false)
 function toggleBuildMode() {
   buildMode.value = !buildMode.value
+}
+
+// -- v3.0.4 M4-2 (P3-6): 范围标记 mode -------------------------------------
+//
+// Toolbar toggle aligned with the 建段 precedent above, default OFF (zero
+// regression). ON turns a plain press-drag on the MAIN track's empty area
+// into a range marquee -> release opens the confirmation bubble (删除/保留
+// + 取消, 删除 focused). Ctrl-create and Shift-marquee keep priority over
+// the range mode (matrix: modifier gestures are byte-identical). While
+// rangeMode is ON it WINS over buildMode (双 toggle 同 ON = 范围获胜).
+const rangeMode = ref(false)
+function toggleRangeMode() {
+  rangeMode.value = !rangeMode.value
+  if (!rangeMode.value) closeRangeBubble()
 }
 
 // M7-2 行高联动: when extension tracks exist, the untouched default row
@@ -588,6 +616,7 @@ function beginDocumentGesture(
     waveformScrubbing.value = false
     createPreview.value = null
     marquee.value = null
+    rangeDraft.value = null // v3.0.4 M4-2: the in-drag sweep dies with the gesture
   }
   gestureCleanup = cleanup
   document.addEventListener("mousemove", onMove)
@@ -743,11 +772,211 @@ function handleRowEmptyGesture(g: RowEmptyGesture): void {
   if (!isMulti.value) return
   if (g.ctrlKey) startCreateGesture(g)
   else if (g.shiftKey) startMarqueeGesture(g)
+  // v3.0.4 M4-2: range marking routes AFTER the modifier checks and BEFORE
+  // the plain else -- Ctrl-create / Shift-marquee keep their priority (their
+  // gestures are byte-identical with the range mode on or off).
+  else if (rangeMode.value) startRangeGesture(g)
   else {
     emit("clear-selection") // 清选上行 (M5-3)
     startScrubGesture()
   }
 }
+
+// -- v3.0.4 M4-2 (P3-6): range marquee + confirmation bubble ------------------
+//
+// Same layer as scrub/create/marquee: the editor owns the whole gesture.
+// plain press-drag in range mode sweeps a time interval (multi: row-bounded
+// via the frozen drag snapshot, exactly the Ctrl-create mapping; basic: the
+// single-window metrics). Release stages the interval into `selectedRange`
+// (activated dead code, the bubble's data source) and opens the inline
+// bubble near the sweep end -- 删除 / 保留 / 取消, 删除 focused (Q9).
+// Cancel clears the staging with NO write; confirm emits `range-decision`
+// and WorkspacePage does pushSnapshot + add_range_decision.
+
+/** Degenerate sweep guard (mirrors the marquee w/h > 2 no-op): a plain
+ *  click without a sweep never opens the bubble. 0.05s matches the backend
+ *  ±0.05 idempotence epsilon. */
+const RANGE_MIN_SECONDS = 0.05
+/** Bubble size estimate for the edge clamping (px). */
+const RANGE_BUBBLE_W = 178
+const RANGE_BUBBLE_H = 64
+
+interface RangeDraft {
+  mode: "multi" | "basic"
+  /** multi: anchor row (row-local preview mapping, like createPreview). */
+  rowIndex: number
+  start: number
+  end: number
+}
+
+const rangeDraft = ref<RangeDraft | null>(null)
+/** Bubble anchor (container-relative px; multi = multi-content, basic = waveform-layer). */
+const rangeBubble = ref<{ mode: "multi" | "basic"; x: number; y: number } | null>(null)
+
+const localRangeSelection = ref<{ start: number; end: number } | null>(null)
+
+/** The bubble's data source: the injected selectedRange ref when wired,
+ *  the local fallback otherwise (standalone/demo mounts). */
+const stagedRange = computed<{ start: number; end: number } | null>(
+  () => (props.rangeSelection ? props.rangeSelection.value : localRangeSelection.value),
+)
+
+/** Stage/clear the sweep interval. The injected ref is written in place
+ *  (rowDrag-style object prop) so WorkspacePage's selectedRange IS the
+ *  staging store. */
+function stageRange(next: { start: number; end: number } | null): void {
+  localRangeSelection.value = next
+  const sink = props.rangeSelection
+  if (sink) sink.value = next
+}
+
+function closeRangeBubble(): void {
+  rangeBubble.value = null
+  stageRange(null)
+}
+
+const rangeDeleteBtnRef = ref<HTMLButtonElement | null>(null)
+
+function clampRangeTime(t: number): number {
+  if (!Number.isFinite(t)) return 0
+  return Math.min(Math.max(0, t), props.duration)
+}
+
+async function openRangeBubble(draft: RangeDraft, x: number, y: number, w: number, h: number): Promise<void> {
+  stageRange({ start: draft.start, end: draft.end })
+  rangeBubble.value = {
+    mode: draft.mode,
+    x: Math.max(0, Math.min(x + 6, Math.max(0, w - RANGE_BUBBLE_W))),
+    y: Math.max(0, Math.min(y + 6, Math.max(0, h - RANGE_BUBBLE_H))),
+  }
+  await nextTick()
+  // Q9: the destructive default owns the keyboard (Enter = 删除).
+  rangeDeleteBtnRef.value?.focus()
+}
+
+function confirmRange(action: "delete" | "keep"): void {
+  const r = stagedRange.value
+  if (!r) {
+    closeRangeBubble()
+    return
+  }
+  const start = Math.round(r.start * 100) / 100
+  const end = Math.round(r.end * 100) / 100
+  if (end - start <= 0) {
+    closeRangeBubble()
+    return
+  }
+  emit("range-decision", { start, end, action })
+  closeRangeBubble()
+}
+
+/** multi path: range sweep on the frozen row snapshot (row-bounded, same
+ *  mapping as Ctrl-create). Routed from handleRowEmptyGesture. */
+function startRangeGesture(g: RowEmptyGesture): void {
+  const anchor = rowDrag.timeAt(g.clientX, { bounded: true })
+  if (anchor === null) return
+  closeRangeBubble() // a fresh sweep replaces any pending bubble
+  const update = (clientX: number): void => {
+    const t = rowDrag.timeAt(clientX, { bounded: true })
+    if (t === null) return
+    rangeDraft.value = {
+      mode: "multi",
+      rowIndex: g.rowIndex,
+      start: Math.min(anchor, t),
+      end: Math.max(anchor, t),
+    }
+  }
+  update(g.clientX)
+  beginDocumentGesture(
+    e => update(e.clientX),
+    e => {
+      const d = rangeDraft.value
+      if (!d || d.mode !== "multi" || d.end - d.start <= RANGE_MIN_SECONDS) return
+      const p = contentPoint(e)
+      const w = contentEl?.getBoundingClientRect().width ?? 0
+      const h = contentEl?.getBoundingClientRect().height ?? 0
+      if (p) void openRangeBubble(d, p.x, p.y, w, h)
+    },
+  )
+}
+
+/** basic path: the direct-child SegmentBlocksLayer emits `range-press` in
+ *  "range" mode (payload shape = empty-press); the editor runs the same
+ *  press-drag tracking on the single-window metrics. */
+function handleBasicRangePress(p: {
+  clientX: number
+  clientY: number
+  ctrlKey: boolean
+  shiftKey: boolean
+  time: number
+}): void {
+  if (isMulti.value) return // defensive: multi routes via handleRowEmptyGesture
+  const anchor = clampRangeTime(metrics.getTimeFromX(p.clientX))
+  const layerPoint = (clientX: number, clientY: number): { x: number; y: number; w: number; h: number } => {
+    const rect = containerRect ?? layerEl?.getBoundingClientRect() ?? null
+    if (!rect) return { x: 0, y: 0, w: 0, h: 0 }
+    return { x: clientX - rect.left, y: clientY - rect.top, w: rect.width, h: rect.height }
+  }
+  closeRangeBubble()
+  const update = (clientX: number): void => {
+    const t = clampRangeTime(metrics.getTimeFromX(clientX))
+    rangeDraft.value = {
+      mode: "basic",
+      rowIndex: -1,
+      start: Math.min(anchor, t),
+      end: Math.max(anchor, t),
+    }
+  }
+  update(p.clientX)
+  beginDocumentGesture(
+    e => update(e.clientX),
+    e => {
+      const d = rangeDraft.value
+      if (!d || d.mode !== "basic" || d.end - d.start <= RANGE_MIN_SECONDS) return
+      const pt = layerPoint(e.clientX, e.clientY)
+      void openRangeBubble(d, pt.x, pt.y, pt.w, pt.h)
+    },
+  )
+}
+
+/** Preview rectangle style inside multi-content (row-local time mapping). */
+const rangePreviewStyleMulti = computed(() => {
+  const d = rangeDraft.value
+  if (!d || d.mode !== "multi") return {}
+  const spr = rowLayout.state.value.secondsPerRow
+  const rowStartT = d.rowIndex * spr
+  return {
+    top: d.rowIndex * strideOf(rowLayout.state.value.rowHeight) + "px",
+    height: rowLayout.state.value.rowHeight + "px",
+    left: ((d.start - rowStartT) / spr) * 100 + "%",
+    width: ((d.end - d.start) / spr) * 100 + "%",
+  }
+})
+
+/** Preview rectangle style inside the basic waveform-layer (view %). */
+const rangePreviewStyleBasic = computed(() => {
+  const d = rangeDraft.value
+  if (!d || d.mode !== "basic") return {}
+  const vs = metrics.viewStart.value
+  const vd = metrics.viewDuration.value
+  if (!(vd > 0)) return {}
+  return {
+    left: ((d.start - vs) / vd) * 100 + "%",
+    width: ((d.end - d.start) / vd) * 100 + "%",
+  }
+})
+
+const rangeBubbleStyle = computed(() => {
+  const b = rangeBubble.value
+  if (!b) return {}
+  return { left: b.x + "px", top: b.y + "px" }
+})
+
+const rangeBubbleLabel = computed(() => {
+  const r = stagedRange.value
+  if (!r) return ""
+  return `${formatTimeShort(r.start)} - ${formatTimeShort(r.end)}（${(r.end - r.start).toFixed(1)}s）`
+})
 
 /** Preview rectangle style inside multi-content (row-local time mapping). */
 const createPreviewStyle = computed(() => {
@@ -929,6 +1158,10 @@ function rowWidthPercent(index: number): number {
 // of the multi viewport (scrollTopTime + spr/2, the v3.0.1 centering
 // semantics). Frozen gesture state never outlives its mode.
 watch(isMulti, async multi => {
+  // v3.0.4 M4-2: half-finished range sweeps (and their bubble) never
+  // outlive their mode either -- both directions tear the transient UI down.
+  gestureCleanup?.()
+  closeRangeBubble()
   if (multi) {
     lastFollowedRow = null // fresh follow semantics on each multi entry
     await nextTick()
@@ -938,7 +1171,6 @@ watch(isMulti, async multi => {
     )
   } else {
     resetWheelBursts() // half-finished ctrl+wheel bursts never outlive multi
-    gestureCleanup?.() // nor do half-finished scrub/create/marquee gestures
     lastFollowedRow = null
     metrics.scrollTo(
       rowLayout.scrollTopTime.value + rowLayout.state.value.secondsPerRow / 2,
@@ -971,6 +1203,7 @@ onUnmounted(() => {
   detachMultiWheel()
   resetWheelBursts()
   gestureCleanup?.()
+  closeRangeBubble() // v3.0.4 M4-2: staged selectedRange never outlives the editor
   rowLayout.flushScrollTopSave() // M6-3: unmount fallback write
 })
 
@@ -991,7 +1224,7 @@ function revealFromNavigation(time: number): void {
   revealWithSmooth(time)
 }
 
-defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
+defineExpose({ waveformScrubbing, revealTime: revealFromNavigation, rangeMode })
 
 </script>
 
@@ -1011,10 +1244,20 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
         class="shrink-0 rounded px-1.5 py-0.5 text-[11px] leading-none transition-colors"
         :class="buildMode ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
         data-test="build-mode-toggle"
-        title="建段模式：开启后点击时间轴空白区域直接新建字幕（关闭时点击为定位）"
+        title="建段模式：开启后点击时间轴空白区域直接新建字幕（关闭时点击为定位；与范围标记模式同开时以范围标记优先，建段暂停）"
         @click="toggleBuildMode"
       >
         {{ buildMode ? "建段中" : "建段" }}
+      </button>
+      <!-- v3.0.4 M4-2 (P3-6): 范围标记 toggle (default off; wins over 建段 when both on) -->
+      <button
+        class="shrink-0 rounded px-1.5 py-0.5 text-[11px] leading-none transition-colors"
+        :class="rangeMode ? 'bg-amber-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
+        data-test="range-mode-toggle"
+        title="范围标记模式：开启后在主轨空白区拖拽框选时间范围，松手选择删除或保留（Ctrl 建段与 Shift 多选手势不受影响；与建段模式同开时以范围标记优先，仅主轨生效）"
+        @click="toggleRangeMode"
+      >
+        {{ rangeMode ? "标记中" : "范围标记" }}
       </button>
       <!-- v3.0.2 M4-1: mode switch (multi rows / basic focus) -->
       <div class="flex shrink-0 overflow-hidden rounded border border-gray-300" data-test="mode-switch">
@@ -1092,6 +1335,14 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
         class="relative"
         :style="{ height: rowLayout.contentHeight.value + 'px' }"
       >
+        <!-- v3.0.4 M4-2: nested ternary per SPEC R3. multi routes "seek" in
+             range mode -- WaveformRow (frozen, P3-3) forwards only the
+             empty-press -> empty-gesture chain, so the press MUST keep the
+             seek channel; the range branch itself lives in
+             handleRowEmptyGesture (matrix placement). The "range" value is
+             consumed on the basic direct-child path only. buildMode is gated
+             so the row's own ternary cannot resurrect "add" while both
+             toggles are on (范围模式获胜). -->
         <WaveformRow
           v-for="row in renderedRows"
           :key="row.key"
@@ -1108,12 +1359,12 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
           :demo-mode="demoMode"
           :update-time="updateTime"
           :global-edit-mode="globalEditMode"
-          :empty-area-mode="buildMode ? 'add' : 'seek'"
+          :empty-area-mode="rangeMode ? 'seek' : buildMode ? 'add' : 'seek'"
           :row-drag="rowDrag"
           :tracks="tracks"
           :lane-state="laneCtl.state.value"
           :update-track-time="updateTrackTime"
-          :build-mode="buildMode"
+          :build-mode="buildMode && !rangeMode"
           :create-at-in-track="(tid: string, t: number) => emit('track-create', tid, t, Math.round((t + 0.5) * 100) / 100)"
           @seek="handleSeek"
           @toggle-collapse="laneCtl.toggleCollapse"
@@ -1145,6 +1396,42 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
           class="pointer-events-none absolute border border-blue-500 bg-blue-400/20"
           :style="marqueeStyle"
         ></div>
+        <!-- v3.0.4 M4-2: range sweep preview (row-local, like createPreview) -->
+        <div
+          v-if="rangeDraft && rangeDraft.mode === 'multi'"
+          data-test="range-marquee"
+          class="pointer-events-none absolute border border-amber-500 bg-amber-400/20"
+          :style="rangePreviewStyleMulti"
+        ></div>
+        <!-- v3.0.4 M4-2: range confirmation bubble (inline in the waveform
+             container, same coordinate system as the overlays; 删除 focused) -->
+        <div
+          v-if="rangeBubble && rangeBubble.mode === 'multi' && stagedRange"
+          data-test="range-bubble"
+          class="absolute flex flex-col gap-1 rounded border border-gray-300 bg-surface px-2 py-1.5 text-[11px] leading-none shadow-md"
+          style="z-index: 6"
+          :style="rangeBubbleStyle"
+        >
+          <span class="whitespace-nowrap font-mono text-ink-muted">{{ rangeBubbleLabel }}</span>
+          <div class="flex items-center gap-1">
+            <button
+              ref="rangeDeleteBtnRef"
+              data-test="range-delete"
+              class="rounded bg-red-500 px-2 py-1 text-white transition-colors hover:bg-red-600"
+              @click="confirmRange('delete')"
+            >删除</button>
+            <button
+              data-test="range-keep"
+              class="rounded bg-blue-600 px-2 py-1 text-white transition-colors hover:bg-blue-700"
+              @click="confirmRange('keep')"
+            >保留</button>
+            <button
+              data-test="range-cancel"
+              class="rounded bg-gray-200 px-2 py-1 text-gray-600 transition-colors hover:bg-gray-300"
+              @click="closeRangeBubble"
+            >取消</button>
+          </div>
+        </div>
         <!-- Mini-map placeholder (P4-3 implements the mini overview strip) -->
       </div>
     </div>
@@ -1177,6 +1464,9 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
           style="z-index: 1"
           @seek="handleSeek"
         />
+        <!-- v3.0.4 M4-2: the SPEC nested ternary on the basic direct-child
+             path -- "range" wins over "add" when both toggles are on; both
+             off degenerates to "seek" (v3.0.3 byte-identical). -->
         <SegmentBlocksLayer
           :segments="segments"
           :edits="edits"
@@ -1184,7 +1474,7 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
           :current-time="currentTime"
           :duration="duration"
           :global-edit-mode="globalEditMode"
-          :empty-area-mode="buildMode ? 'add' : 'seek'"
+          :empty-area-mode="rangeMode ? 'range' : buildMode ? 'add' : 'seek'"
           style="z-index: 2"
           @select-range="handleSelectRange"
           @add-segment="handleAddSegment"
@@ -1193,6 +1483,7 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
           @split-segment="handleSplitSegment"
           @set-time="emit('set-time', $event)"
           @toast="emit('toast', $event)"
+          @range-press="handleBasicRangePress"
         />
         <!-- M5-4: trim-end carries no editor action -- the REAL chain is the
              optimistic updateTime path (linkage happens there and is never
@@ -1210,6 +1501,44 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
             class="absolute left-1 top-6 whitespace-nowrap rounded bg-surface-tile-1 px-1 py-0.5 text-[10px] leading-none text-ink-muted shadow-sm"
           ></div>
         </div>
+        <!-- v3.0.4 M4-2: range sweep preview (view-% coordinates, same
+             system as the SegmentBlocksLayer edit-range overlays) -->
+        <div
+          v-if="rangeDraft && rangeDraft.mode === 'basic'"
+          data-test="range-marquee"
+          class="pointer-events-none absolute top-0 bottom-0 border border-amber-500 bg-amber-400/20"
+          style="z-index: 5"
+          :style="rangePreviewStyleBasic"
+        ></div>
+        <!-- v3.0.4 M4-2: range confirmation bubble (basic branch, inline in
+             the waveform layer; same markup as the multi bubble) -->
+        <div
+          v-if="rangeBubble && rangeBubble.mode === 'basic' && stagedRange"
+          data-test="range-bubble"
+          class="absolute flex flex-col gap-1 rounded border border-gray-300 bg-surface px-2 py-1.5 text-[11px] leading-none shadow-md"
+          style="z-index: 6"
+          :style="rangeBubbleStyle"
+        >
+          <span class="whitespace-nowrap font-mono text-ink-muted">{{ rangeBubbleLabel }}</span>
+          <div class="flex items-center gap-1">
+            <button
+              ref="rangeDeleteBtnRef"
+              data-test="range-delete"
+              class="rounded bg-red-500 px-2 py-1 text-white transition-colors hover:bg-red-600"
+              @click="confirmRange('delete')"
+            >删除</button>
+            <button
+              data-test="range-keep"
+              class="rounded bg-blue-600 px-2 py-1 text-white transition-colors hover:bg-blue-700"
+              @click="confirmRange('keep')"
+            >保留</button>
+            <button
+              data-test="range-cancel"
+              class="rounded bg-gray-200 px-2 py-1 text-gray-600 transition-colors hover:bg-gray-300"
+              @click="closeRangeBubble"
+            >取消</button>
+          </div>
+        </div>
       </div>
 
       <!-- Extension lanes (v3.0.1 M4-2/M4-4) -->
@@ -1223,7 +1552,7 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
               ? (sid, f, v) => updateTrackTime!(lane.trackId, sid, f, v)
               : undefined
           "
-          :build-mode="buildMode"
+          :build-mode="buildMode && !rangeMode"
           @seek="(t) => handleSeek(t)"
           @toggle-collapse="laneCtl.toggleCollapse"
           @delete-segment="(sid: string) => emit('delete-track-segment', lane.trackId, sid)"
