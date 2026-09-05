@@ -13,6 +13,7 @@ import {
   EVENT_LLM_SMART_DELETE_PROGRESS,
   EVENT_LLM_SMART_DELETE_COMPLETED,
   EVENT_LLM_SUBTITLE_CORRECTION_COMPLETED,
+  EVENT_LLM_TRANSLATION_COMPLETED,
   EVENT_LLM_HIGHLIGHT_PROGRESS,
   EVENT_LLM_HIGHLIGHT_COMPLETED,
   EVENT_TASK_CANCELLED,
@@ -50,6 +51,17 @@ interface SubtitleCorrection {
   end: number
 }
 
+// v3.0.4 M1-6: completion payload of "translate to a new secondary track".
+// Consumed by the WorkspacePage watcher (auto track switch + uncovered toast);
+// the ref is module-level singleton state because useLlmTasks is a singleton
+// while activeListTrackId lives in a per-call useListTrackSelector instance.
+export interface TranslationCompletion {
+  track_id: string
+  track_name: string
+  language: string
+  uncovered_ids: string[]
+}
+
 interface HighlightResult {
   segment_id: string
   highlight_reason: string
@@ -78,6 +90,10 @@ const progress = ref(0)
 const errorMsg = ref<string | null>(null)
 // v3.0.0 M3-1: batch-ledger coverage gap from the last LLM task
 const coverageGap = ref<number>(0)
+// v3.0.4 M1-6: last translation completion (null = none pending). Set by the
+// completion event, cleared by the WorkspacePage watcher after it switches
+// the list to the new track, so consecutive completions re-trigger the watch.
+const lastTranslationCompletion = ref<TranslationCompletion | null>(null)
 
 // LLM configuration status (Phase 2 D-04, D-12)
 interface LlmConfigStatus {
@@ -104,6 +120,7 @@ function ensureListeners() {
     isRunning.value = false
     progress.value = 0
     errorMsg.value = null
+    lastTranslationCompletion.value = null
   })
 
   // P0 smart-delete: live progress updates
@@ -150,6 +167,26 @@ function ensureListeners() {
       coverageGap.value = detail?.ledger?.uncovered_segment_ids?.length ?? 0
     },
   )
+
+  // v3.0.4 M1-6: translation completed -> expose the new track for the
+  // WorkspacePage watcher (switch list to the translation track; project
+  // refresh itself goes through the generic task:completed -> get_project
+  // path shared with correction).
+  onEvent<{
+    track_id?: string
+    track_name?: string
+    language?: string
+    uncovered_ids?: string[]
+  }>(EVENT_LLM_TRANSLATION_COMPLETED, (detail) => {
+    isRunning.value = false
+    if (!detail?.track_id) return
+    lastTranslationCompletion.value = {
+      track_id: detail.track_id,
+      track_name: detail.track_name ?? "",
+      language: detail.language ?? "",
+      uncovered_ids: detail.uncovered_ids ?? [],
+    }
+  })
 
   // P2 highlight: live progress updates
   onEvent<{ results?: HighlightResult[] }>(
@@ -277,6 +314,25 @@ export function useLlmTasks() {
       isRunning.value = false
       errorMsg.value = res.error ?? "Failed to start subtitle correction"
     }
+  }
+
+  // v3.0.4 M1-6: start "translate the main track into a new secondary track".
+  // Same lifecycle as startSubtitleCorrection; returns whether the backend
+  // accepted the task so the caller can write back the remembered language
+  // ONLY on a successful start (config key llm_translation_target_language).
+  async function startTranslation(targetLanguage: string): Promise<boolean> {
+    isRunning.value = true
+    progress.value = 0
+    errorMsg.value = null
+    lastTranslationCompletion.value = null
+
+    const res = await call<MiloTask>("start_translation", targetLanguage)
+    if (!res.success) {
+      isRunning.value = false
+      errorMsg.value = res.error ?? "Failed to start translation"
+      return false
+    }
+    return true
   }
 
   function resetHighlight() {
@@ -451,6 +507,9 @@ export function useLlmTasks() {
     rejectCorrection,
     acceptHighConfidenceCorrections,
     clearCorrections,
+    // v3.0.4 M1-6: translation to a new secondary track
+    startTranslation,
+    lastTranslationCompletion,
     // P2 highlight
     highlightResults,
     hasHighlightResults,

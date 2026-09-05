@@ -5,7 +5,8 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { mount } from "@vue/test-utils"
-import { ref } from "vue"
+import { nextTick, ref } from "vue"
+import { call } from "@/bridge"
 
 // Mock bridge
 vi.mock("@/bridge", () => ({
@@ -101,6 +102,31 @@ function mountPanel() {
     props: baseProps,
     global: { stubs: { Teleport: true, SemanticSearchBar: true } },
   })
+}
+
+function mountTranslationPanel(extraProps: Record<string, unknown> = {}) {
+  return mount(AIAssistantPanel, {
+    props: { ...baseProps, ...extraProps },
+    global: { stubs: { Teleport: true, SemanticSearchBar: true } },
+  })
+}
+
+function subtitleSegments(count: number) {
+  return Array.from({ length: count }, (_, i) => ({
+    id: `ms-${i + 1}`,
+    version: 1,
+    type: "subtitle" as const,
+    start: i * 5 + 1,
+    end: i * 5 + 5,
+    text: `main ${i + 1}`,
+    speaker: "",
+  }))
+}
+
+// settle microtasks + one render tick (settings read is async)
+async function nextTickSteadle() {
+  await Promise.resolve()
+  await nextTick()
 }
 
 describe("AIAssistantPanel -- workflow mode", () => {
@@ -202,5 +228,91 @@ describe("AIAssistantPanel -- workflow mode", () => {
     expect(text).toContain("返回配置")
     expect(text).not.toContain("应用结果到项目")
     expect(text).not.toContain("放弃")
+  })
+})
+
+describe("AIAssistantPanel -- translation card (v3.0.4 M1-6)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(call).mockResolvedValue({ success: false, error: "no settings" })
+  })
+
+  it("is greyed out and emits nothing when mainSegments has no subtitle segments", async () => {
+    // Track mode: `segments` (a secondary track WITH subtitles) must NOT
+    // un-grey the card -- the judgment source is mainSegments.
+    const wrapper = mountTranslationPanel({
+      mainSegments: [{ id: "gap", version: 1, type: "silence" as const, start: 0, end: 1, text: "", speaker: "" }],
+    })
+    const card = wrapper.find('[data-test="translation-card"]')
+    expect(card.exists()).toBe(true)
+    expect(card.attributes("disabled")).toBeDefined()
+    expect(card.classes()).toContain("opacity-50")
+    expect(wrapper.text()).toContain("主轨无字幕")
+
+    await card.trigger("click")
+    expect(wrapper.find('[data-test="translation-dialog"]').exists()).toBe(false)
+    expect(wrapper.emitted("start-translation")).toBeUndefined()
+  })
+
+  it("opens the dialog on card click and emits start-translation with the selected language", async () => {
+    const wrapper = mountTranslationPanel({ mainSegments: subtitleSegments(3) })
+    const card = wrapper.find('[data-test="translation-card"]')
+    expect(card.attributes("disabled")).toBeUndefined()
+
+    await card.trigger("click")
+    expect(wrapper.find('[data-test="translation-dialog"]').exists()).toBe(true)
+
+    const select = wrapper.find('[data-test="translation-language"]')
+    await select.setValue("ja")
+
+    await wrapper.find('[data-test="translation-dialog"] button.bg-blue-500').trigger("click")
+    const emitted = wrapper.emitted("start-translation")
+    expect(emitted).toHaveLength(1)
+    expect(emitted![0][0]).toEqual({ targetLanguage: "ja" })
+  })
+
+  it("defaults the dialog selection to the remembered settings language", async () => {
+    vi.mocked(call).mockResolvedValue({
+      success: true,
+      data: { llm_translation_target_language: "ru" },
+    })
+    const wrapper = mountTranslationPanel({ mainSegments: subtitleSegments(2) })
+    await wrapper.find('[data-test="translation-card"]').trigger("click")
+    // get_settings is read through the existing settings channel on open.
+    expect(call).toHaveBeenCalledWith("get_settings")
+    await Promise.resolve()
+    await nextTickSteadle()
+    const select = wrapper.find('[data-test="translation-language"]')
+    expect((select.element as HTMLSelectElement).value).toBe("ru")
+  })
+
+  it("falls back to the default language when settings carry no valid value", async () => {
+    vi.mocked(call).mockResolvedValue({ success: true, data: {} })
+    const wrapper = mountTranslationPanel({ mainSegments: subtitleSegments(2) })
+    await wrapper.find('[data-test="translation-card"]').trigger("click")
+    await Promise.resolve()
+    await nextTickSteadle()
+    const select = wrapper.find('[data-test="translation-language"]')
+    expect((select.element as HTMLSelectElement).value).toBe("en")
+  })
+
+  it("estimates the batch count as ceil(mainSegments / 30)", () => {
+    const wrapper = mountTranslationPanel({ mainSegments: subtitleSegments(1250) })
+    expect(wrapper.find('[data-test="translation-batches"]').text()).toBe("约 42 批")
+  })
+
+  it("lists uncovered ids from the translation notice prop", () => {
+    const wrapper = mountTranslationPanel({
+      mainSegments: subtitleSegments(2),
+      translationNotice: {
+        trackName: "English",
+        language: "en",
+        uncoveredIds: ["seg-1", "seg-7"],
+      },
+    })
+    const notice = wrapper.find('[data-test="translation-notice"]')
+    expect(notice.exists()).toBe(true)
+    expect(notice.text()).toContain("2 段未覆盖")
+    expect(notice.text()).toContain("seg-1、seg-7")
   })
 })
