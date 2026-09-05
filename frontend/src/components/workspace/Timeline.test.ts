@@ -484,3 +484,52 @@ describe("Timeline highlight tab gating (M2-4)", () => {
     wrapper.unmount()
   })
 })
+
+// ---------------------------------------------------------------------------
+// v3.0.4 M3-1 (R3.1, Q1 ruling): the edit-sweep button label is
+// track-aware -- the entry label names the viewed track (activeTrackName,
+// M1-6 chain); the main view keeps the v3.0.3 labels byte-identical; the
+// exit label is shared. Located by label text (no template anchors added).
+// ---------------------------------------------------------------------------
+describe("Timeline edit-sweep button label (M3-1)", () => {
+  const trackProps = {
+    tracks: [{ id: "t_en", name: "English", segmentCount: 3 }],
+  }
+
+  function sweepButton(wrapper: VueWrapper) {
+    const btn = wrapper
+      .findAll("button")
+      .find(b => b.text() === "退出编辑" || b.text().startsWith("编辑"))
+    expect(btn, "edit-sweep button rendered").toBeDefined()
+    return btn!
+  }
+
+  it("main view keeps the v3.0.3 labels in both states", async () => {
+    const wrapper = mountTimeline(longSegments(3), trackProps)
+    expect(sweepButton(wrapper).text()).toBe("编辑字幕")
+    await wrapper.setProps({ globalEditMode: true })
+    expect(sweepButton(wrapper).text()).toBe("退出编辑")
+    wrapper.unmount()
+  })
+
+  it("track view names the viewed track; exit label is shared", async () => {
+    const wrapper = mountTimeline(longSegments(3), {
+      ...trackProps,
+      activeTrackId: "t_en",
+      activeTrackName: "English",
+    })
+    expect(sweepButton(wrapper).text()).toBe("编辑English")
+    await wrapper.setProps({ globalEditMode: true })
+    expect(sweepButton(wrapper).text()).toBe("退出编辑")
+    wrapper.unmount()
+  })
+
+  it("track view without a track name falls back to the main label", () => {
+    const wrapper = mountTimeline(longSegments(3), {
+      ...trackProps,
+      activeTrackId: "t_en",
+    })
+    expect(sweepButton(wrapper).text()).toBe("编辑字幕")
+    wrapper.unmount()
+  })
+})

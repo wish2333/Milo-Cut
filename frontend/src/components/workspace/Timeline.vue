@@ -365,6 +365,18 @@ const subtitleSegments = computed(() => buildSubtitleIndex(props.segments))
 const isTrackMode = computed(() => (props.activeTrackId ?? null) !== null)
 
 // ---------------------------------------------------------------------------
+// v3.0.4 M3-1 (R3.1, Q1 ruling): the edit-sweep button is track-aware -- in
+// track view the entry label names the viewed track (activeTrackName, M1-6
+// chain); the main view keeps 编辑字幕 byte-identical; exit label shared.
+// ---------------------------------------------------------------------------
+const editSweepLabel = computed(() => {
+  if (props.globalEditMode) return "退出编辑"
+  return isTrackMode.value && props.activeTrackName
+    ? `编辑${props.activeTrackName}`
+    : "编辑字幕"
+})
+
+// ---------------------------------------------------------------------------
 // v3.0.4 M2-4 B: the highlight entry (this third tab, NOT an AIAssistantPanel
 // card) is main-track-only. In track mode it is greyed out -- disabled +
 // title「仅主轨可用」-- rather than hidden (keeps the three-tab layout
@@ -613,7 +625,7 @@ watch(playheadSegmentId, (id) => {
           :title="globalEditMode ? 'Exit edit mode' : 'Edit all subtitles'"
           @click="emit('toggle-edit-mode')"
         >
-          {{ globalEditMode ? '退出编辑' : '编辑字幕' }}
+          {{ editSweepLabel }}
         </button>
         <span class="text-xs text-ink-muted">{{ subtitleCount }} 条字幕 · {{ silenceCount }} 段静音</span>
       </div>
