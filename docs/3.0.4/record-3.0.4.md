@@ -44,7 +44,8 @@
 | P3-7 | [record-3.0.4-P3-7.md](./record-3.0.4-P3-7.md) | 已完成（建议面板手动范围分组 + 时间码 popover：SuggestionPanel 第三源分组「手动范围」【label 前缀 删除/保留 {时长}s = action 徽，不设小节；pending 显式 [·] 徽仅 manual，confirmed/rejected 沿用 [Y]/[N]】+ 计数器并入 manual【keep 计数，两 legacy 源 delete-only 过滤逐字节不变】+ 确认 title「确认 = 参与裁剪计算」delete/keep 两变体 + 头部条常驻「+ 时间码」popover【起止数字输入 + 删除/保留二选默认删除 + 就地校验 end<=start/空/非数拒绝零桥调】+ 提交经 provide/inject 与气泡共用 handleRangeDecision【SuggestionPanel 实挂 Timeline.vue:775，红线禁改 Timeline，照 WORKSPACE_ACTIONS_KEY 先例 inject，字符串键裁决已登记】；WorkspacePage 仅 +8 行 provide 接线，useWorkspaceActions/Timeline/后端零改动；确认/拒绝/删除走既有 update_edit_decision/delete_edit_decisions_batch 链；**新建宿主 SuggestionPanel.test.ts** 6 例【harness 接真实 useAnalysis，桥调用与 pushSnapshot 先行顺序断言】；vitest 820-819【+6 例】；popover 二选一与 keep/delete 区分选型见 record §2） | 合入（merge P3-7，6080d1a；provide/inject 接线已追认 §4.1） |
 | P3-8 | [record-3.0.4-P3-8.md](./record-3.0.4-P3-8.md) | 已完成（覆层三态：SegmentBlocksLayer `visibleEditRanges` computed 增 `action`/`status` 输出 + `editRangeClasses`/`editRangeHatchStyle` 双纯函数 + 模板 `:class`/`:style` 三态绑定——**双轴正交排布**【color 轴 = action：红 delete/蓝 keep；opacity 轴 = status：pending `opacity-50` 降档；pending keep = 半透明蓝（任务书预留定夺，裁决登记 record §2.1）】；confirmed delete 渲染结果逐字节 = v3.0.3【class token 序列全等 + 渐变串同值，快照式全等断言】；rejected 维持现状不过滤零改动；`deleteRanges` 零改动 + **新建宿主 WorkspacePage.deleteRanges.test.ts** 1 例快照锁定【pending manual delete/keep 均不入，confirmed manual + subtitle_trim bypass 在场，VideoControls prop 观测，三消费端共锁】；jsdom CSSOM 丢渐变值限制登记（断言面 = class token）；+7 例【SegmentBlocksLayer 6 + 新宿主 1】；WorkspacePage.vue 产品代码零触碰；vitest 827-826【+7】） | 合入（merge P3-8，6bcf1a6） |
 | P3-9 | [record-3.0.4-P3-9.md](./record-3.0.4-P3-9.md) | 已完成（keep 闭环【受控改点 ①，diff 审查制重点项】：generate_subtitle_keep_ranges 函数体 5 hunk +78/-7——① 模块级抽出 `_merge_time_ranges`（原内联相邻合并折逐字抽出，相触 `<=` 判据不变）；② keep 集合感知 `user_keeps`【confirmed keep range，**不限 source**】排序并入 keep 集 → 从删除补集自然扣除；③ 陈旧 trim 剔除【相交的既有 subtitle_trim delete 移除，`invalidated_count` 入返回 data + log】；④ 空守卫式结构保零回退【无 keep 一行新代码不执行】；**golden 对拍 2 例零改动全绿（基线未重采）**；新建宿主 test_keep_ranges_user_keep.py 10 例【打穿 3（部分/整段/跨段桥接）+ 陈旧剔除 invalidated_count==1 非 2 + 导出优先级 delete 胜出 + pending/rejected 不参与 + 抽函数 4】；pytest 829【+10】；导出链零触碰） | 合入（merge P3-9；负责人逐 hunk 审查通过；真机 keep 重跑归 beta.3 ★） |
-| P4-1 ~ P4-5 | （待建） | 未开始 | |
+| P4-3 | （总记录 §7/§7.1 即本步落盘处，无独立分步文件） | 已完成（README_zh 3.0.x 特性段集中回填 + 3.0.4 新特性段与 Q8 级联删除说明 / README.md 增 v3.0.4 英文段【对齐 3.0.3 先例位置】/ 版本池 6 新增 + 7 维持 + 1 出池登记 / §10.1 副轨删除确认策略结论落盘；`gates-v3.0.4.sh redline` exit 0 零代码扰动；record-3.0.3 §5 遗留 #2/#4 销账） | 合入 `dev-3.0.4-p4-3`（docs(readme) + docs(record) 两笔，待负责人审查合并） |
+| P4-1 / P4-2 / P4-4 / P4-5 | （待建） | 未开始 | |
 
 ## 2. 门禁基线（P0 首跑登记，零改动干净起点）
 
@@ -121,7 +122,26 @@
 
 ## 7. 版本池回写（P4-3：新增 6 项 + 出池 1 项，见 PRD §10.2）
 
-（待回填）
+2026-09 P4-3 回填，条目按 PRD §10.2 原文登记：
+
+**新增登记 6 项**：
+
+| # | 项 | 说明（PRD §10.2 原文） |
+|---|---|---|
+| 1 | T1 方案 B 波形侧编辑模式一致性收口 | 含 trim 冻结语义裁决，3.0.5 候选，与 X1 接线同文件族（Q2 改判不入版） |
+| 2 | 2.x 重叠段解交叠载入迁移 | 观察项，触发 = 真实旧工程受阻塞反馈 |
+| 3 | 翻译增量补译入口 | ledger.uncovered（M1-2 边界不做增量补译） |
+| 4 | `llm:translation_progress` 逐批流式预览 | M1-6 边界不入版（进度走通用 `task:progress` 批粒度） |
+| 5 | 定稿译文滑动窗 | 与并发 5 互斥，需串行模式/config 开关——R1.2 Round 2 改判随项；本版裁「并发 + 源文 ±ctx 窗口」，3.0.5 候选 |
+| 6 | `accept_high_confidence_corrections` / `clear_subtitle_corrections` 的 track 作用域化 | 本版维持 timeline 级语义——R2.3 边界，Round 2 suggest #13（副轨审阅用逐条 accept/reject） |
+
+**维持原样 7 项（照抄 PRD §10.2）**：桥断连警示 / 点击字幕三模式 / 撤销恢复选区+视图 / 工作区预设（布局随工程走）/ 行设置随工程走 / 二分切片 / 手工 DOM 行保留——其中「需 schema 演进」两项（工作区预设、行设置随工程）**不因红线重启入版**：「只增不改」仍冻结既有模型字段，schema 演进留 3.1.x 专门重启（PRD §6-Q14）。
+
+**出池 1 项**：翻译管线（3.0.1 PRD:54 暂缓项 → 本版 S1 交付，P1 全链）。
+
+### 7.1 §10.1 观察项结论落盘：副轨删除确认策略再评估
+
+结论 = **维持「无确认框 + undo 兜底」默认值**（立项会裁决 ③，2026-09；PLAN「立项会裁决登记」表 #3 / PRD §11 修订-2 ③ / §10.1 观察项同源）。beta.1 起观察误删证据，证据出现再议——本版真机冒烟尚未执行（beta.1/beta.2/beta.3 均登记后置待用户），观察期顺延至用户冒烟（P4-4 双平台真机清单）后起算。
 
 ## 8. 遗留清单（P4 归档：本版未尽事项 + 3.0.5 候选登记）
 
