@@ -173,10 +173,10 @@ R3 增补 4 条顺序约束的落点：① golden 先行 → **P3-1**（本版�
 
 ### P1-5 handler 与 expose 接线（main.py）
 
-- [ ] 注册块追加 `_handle_translation`（main.py:140-167 区）+ `@expose start_translation(target_language, timeline_id, track_name)`（六步校验序：LLM configured → project open → 语言合法 → 主轨有 subtitle 段 → **同语言 translation 轨拒绝**（文案含「可清空或删除该轨后重试」）→ create_task）
-- [ ] `_handle_translation` 五步流程：读主轨段排除 confirmed-deleted → resolve prompt + `{{target_language}}` 终替换（残留 `{{` 即 fail-fast）→ `analyze_subtitle_translation` → **完成时时间轴钉扎校验**（payload.timeline_id ≠ active → failed 零落盘，文案带回到原时间轴重试指引）→ `create_translation_track` + emit `llm:translation_completed`（payload 含 uncovered_ids/ledger）+ emit `llm:token_usage`
-- [ ] 失败/取消/部分失败五情形语义按 SPEC M1-5 表落齐；并发约束 = UI 单飞 + 测试序列化（不构造并发写断言；MiloCutApi 级锁登记 3.0.5）
-- [ ] 用例：start_translation 四分支校验；handler 注册与调度（mock LLM）；uncovered 随完成事件上报；**运行期切时间轴 → 钉扎校验 failed 零落盘（M0-3 约束 4 边界用例）**；终替换 + 残留 fail-fast
+- [x] 注册块追加 `_handle_translation`（main.py:140-167 区）+ `@expose start_translation(target_language, timeline_id, track_name)`（六步校验序：LLM configured → project open → 语言合法 → 主轨有 subtitle 段 → **同语言 translation 轨拒绝**（文案含「可清空或删除该轨后重试」）→ create_task）
+- [x] `_handle_translation` 五步流程：读主轨段排除 confirmed-deleted → resolve prompt + `{{target_language}}` 终替换（残留 `{{` 即 fail-fast）→ `analyze_subtitle_translation` → **完成时时间轴钉扎校验**（payload.timeline_id ≠ active → failed 零落盘，文案带回到原时间轴重试指引）→ `create_translation_track` + emit `llm:translation_completed`（payload 含 uncovered_ids/ledger）+ emit `llm:token_usage`
+- [x] 失败/取消/部分失败五情形语义按 SPEC M1-5 表落齐；并发约束 = UI 单飞 + 测试序列化（不构造并发写断言；MiloCutApi 级锁登记 3.0.5）
+- [x] 用例：start_translation 四分支校验；handler 注册与调度（mock LLM）；uncovered 随完成事件上报；**运行期切时间轴 → 钉扎校验 failed 零落盘（M0-3 约束 4 边界用例）**；终替换 + 残留 fail-fast
 
 **验收方式**: M5 组 = M1 expose/事件 ≥5。
 **验收标准**: 门禁全绿；`main.py` diff 对应 R1.2/R1.5（登记表逐 hunk 登记）。
