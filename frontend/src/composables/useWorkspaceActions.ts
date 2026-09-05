@@ -42,6 +42,36 @@ export interface ConfirmAction {
   (opts: { title: string; message: string; confirmText?: string; cancelText?: string; danger?: boolean }): Promise<boolean>
 }
 
+/** v3.0.4 M2-3: one pending review entry as returned by
+ * get_subtitle_corrections (P2-3 adds track_id/track_name; only the
+ * fields this hub consumes are declared). */
+export interface CorrectionReviewEntry {
+  id: string
+  original_text: string
+  corrected_text: string
+  /** "" / absent = main track; non-empty = extension-track scope. */
+  track_id?: string
+}
+
+/** v3.0.4 M2-3: superset accept/reject response data (core M2-3). */
+export interface CorrectionReviewResult {
+  segment_id: string
+  track_id?: string
+  patch?: ProjectPatch
+}
+
+/**
+ * v3.0.4 M2-3: undo capture layers for one review action (accept or
+ * reject). Both actions remove the AnalysisResult, so ``analysis``
+ * always joins the text layer -- main track ["segments","analysis"],
+ * extension track ["tracks","analysis"] (SPEC M2-3 undo ruling).
+ */
+export function correctionUndoLayers(
+  entry: Pick<CorrectionReviewEntry, "track_id"> | undefined,
+): UndoLayer[] {
+  return entry && entry.track_id ? ["tracks", "analysis"] : ["segments", "analysis"]
+}
+
 export interface WorkspaceActionsDeps {
   emit: WorkspaceEmit
   showToast: ReturnType<typeof useToast>["showToast"]
@@ -107,9 +137,15 @@ export interface WorkspaceActionsDeps {
   startHighlight: (targetMinutes: number) => Promise<unknown>
   highlightResults: { value: unknown[] }
   hydrateHighlightsFromProject: (p: Project) => Promise<void> | void
-  pendingCorrections: Ref<Array<{ id: string; original_text: string; corrected_text: string }>>
+  // v3.0.4 M2-3: review entries carry the P2-3 scope fields at runtime
+  // ("" / absent track_id = main track).
+  pendingCorrections: Ref<CorrectionReviewEntry[]>
   loadCorrections: (timelineId: string) => Promise<void>
   computeDiff: (o: string, c: string) => Promise<{ tokens: unknown[] } | null>
+  // v3.0.4 M2-3: accept/reject now call the bridge directly here so the
+  // superset patch in the response can be consumed (useLlmTasks keeps its
+  // boolean wrappers for other callers; kept in the interface so the page
+  // deps literal stays unchanged).
   acceptCorrection: (resultId: string) => Promise<boolean>
   rejectCorrection: (resultId: string) => Promise<boolean>
   acceptHighConfidenceCorrections: (timelineId: string, threshold: number) => Promise<{ accepted: number } | null>
@@ -209,7 +245,7 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
     startSmartDelete, startSubtitleCorrection, startHighlight,
     highlightResults, hydrateHighlightsFromProject,
     pendingCorrections, loadCorrections, computeDiff,
-    acceptCorrection, rejectCorrection, acceptHighConfidenceCorrections, clearCorrections,
+    acceptHighConfidenceCorrections, clearCorrections,
     asr, handleSaveAsrSettings, confirmAction,
   } = deps
 
@@ -343,6 +379,11 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
     const res = await call<Project>("switch_timeline", timelineId)
     if (res.success && res.data) {
       emit("project-updated", res.data)
+      // v3.0.4 M2-3 (R3): re-fetch the pending review list for the now
+      // active timeline -- entries pinned to the previous timeline must
+      // not linger as clickable stale items (pairs with the backend
+      // timeline-pinning guard). Fire-and-forget keeps the switch snappy.
+      void loadCorrections(timelineId)
     } else {
       showToast(res.error ?? "Failed to switch timeline", "error")
     }
@@ -893,19 +934,59 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
   }
 
   async function handleAcceptCorrection(resultId: string) {
-    const ok = await acceptCorrection(resultId)
-    if (ok) {
+    // v3.0.4 M2-3 (P2-4, debt #14): capture the undo snapshot BEFORE the
+    // write. Layer ruling (SPEC M2-3, overriding the PRD): accept also
+    // removes the AnalysisResult, so the capture MUST include analysis --
+    // missing it would roll back only the text and lose the review entry.
+    // Main track = ["segments","analysis"], extension track =
+    // ["tracks","analysis"] (scope from the entry's track_id, P2-3).
+    const entry = pendingCorrections.value.find(c => c.id === resultId)
+    pushSnapshot(
+      getProject(),
+      correctionUndoLayers(entry),
+      "接受字幕修正",
+    )
+    // Call the bridge directly (not the useLlmTasks boolean wrapper) so
+    // the superset patch in the response can be consumed here.
+    const res = await call<CorrectionReviewResult>("accept_correction", resultId)
+    if (res.success) {
       delete diffCache.value[resultId]
-      // Refresh project so transcript reflects the applied correction
-      const res = await call<Project>("switch_timeline", getProject().active_timeline_id)
-      if (res.success && res.data) emit("project-updated", res.data)
+      pendingCorrections.value = pendingCorrections.value.filter(
+        c => c.id !== resultId,
+      )
+      if (res.data?.patch) {
+        // Patch path: applyProjectPatch in App.vue auto-detects the patch
+        // shape -- the O(project) switch_timeline refresh workaround is
+        // gone (debt #14).
+        emit("project-updated", res.data.patch)
+      } else {
+        // Defensive fallback (backend always sends a patch since M2-3):
+        // legacy full refresh so the transcript still reflects the write.
+        const projRes = await call<Project>("switch_timeline", getProject().active_timeline_id)
+        if (projRes.success && projRes.data) emit("project-updated", projRes.data)
+      }
     }
   }
 
   async function handleRejectCorrection(resultId: string) {
-    const ok = await rejectCorrection(resultId)
-    if (ok) {
+    // v3.0.4 M2-3: same snapshot rule as accept. Reject only removes the
+    // AnalysisResult, but the two-layer capture keeps "undo once" able to
+    // restore the review entry symmetrically.
+    const entry = pendingCorrections.value.find(c => c.id === resultId)
+    pushSnapshot(
+      getProject(),
+      correctionUndoLayers(entry),
+      "拒绝字幕修正",
+    )
+    const res = await call<CorrectionReviewResult>("reject_correction", resultId)
+    if (res.success) {
       delete diffCache.value[resultId]
+      pendingCorrections.value = pendingCorrections.value.filter(
+        c => c.id !== resultId,
+      )
+      if (res.data?.patch) {
+        emit("project-updated", res.data.patch)
+      }
     }
   }
 
