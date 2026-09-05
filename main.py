@@ -2743,6 +2743,7 @@ class MiloCutApi(Bridge):
         reference_text: str = "",
         timeline_id: str = "",
         context_window: int = 3,
+        track_id: str = "",
     ) -> dict:
         """Start LLM subtitle correction as a background task.
 
@@ -2751,6 +2752,8 @@ class MiloCutApi(Bridge):
                 Empty string = mode A (LLM self-correction).
             timeline_id: Target timeline (defaults to active_timeline_id).
             context_window: Number of adjacent segments for context.
+            track_id: Optional secondary track id (v3.0.4 M2-1). Empty
+                string = main track (default, v3.0.3 behavior unchanged).
 
         Returns:
             {"success": True, "data": {"task_id": str}}
@@ -2771,6 +2774,7 @@ class MiloCutApi(Bridge):
                 "timeline_id": tl_id,
                 "reference_text": reference_text,
                 "context_window": context_window,
+                "track_id": track_id,
             },
         )
         return task

@@ -199,8 +199,8 @@ R3 增补 4 条顺序约束的落点：① golden 先行 → **P3-1**（本版�
 
 ### P2-1 expose 轨道形参（main.py）
 
-- [ ] `start_subtitle_correction` 增可选形参 `track_id: str = ""`，非空时入 task payload（默认空 = 主轨，既有调用零影响）
-- [ ] 用例：track_id 缺省时主轨行为与 v3.0.3 完全一致（既有断言零改动全绿）
+- [x] `start_subtitle_correction` 增可选形参 `track_id: str = ""`，非空时入 task payload（默认空 = 主轨，既有调用零影响）
+- [x] 用例：track_id 缺省时主轨行为与 v3.0.3 完全一致（既有断言零改动全绿；新增 tests/test_correction_track_payload.py 双证）
 
 **验收方式**: M5 组 = M2 段源/accept（缺省一致项）。
 **验收标准**: 门禁全绿；diff 属登记改点（R2.1）。
