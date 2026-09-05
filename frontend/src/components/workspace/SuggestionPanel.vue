@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue"
+import { computed, inject, onBeforeUnmount, onMounted, ref } from "vue"
 import type { AnalysisResult, EditDecision, Segment } from "@/types/project"
 import { formatTime } from "@/utils/format"
 
@@ -20,10 +20,13 @@ const emit = defineEmits<{
   "review-corrections": []
 }>()
 
-const expandedGroups = ref<Set<string>>(new Set(["llm_smart", "partial_delete"]))
+// v3.0.4 M4-3 (P3-7): the manual group stays expanded by default -- unlike
+// the analysis groups it only exists once the user has created ranges, so
+// the first created range should be visible immediately.
+const expandedGroups = ref<Set<string>>(new Set(["llm_smart", "partial_delete", "manual"]))
 
 type ItemStatus = "pending" | "confirmed" | "rejected"
-type ItemKind = "silence" | "llm_smart" | "partial_delete"
+type ItemKind = "silence" | "llm_smart" | "partial_delete" | "manual"
 
 interface SuggestionItem {
   id: string
@@ -33,6 +36,8 @@ interface SuggestionItem {
   label: string
   type: ItemKind
   status: ItemStatus
+  /** Manual ranges only: distinguishes 删除/保留 entries (SPEC M4-3). */
+  action?: "delete" | "keep"
 }
 
 interface GroupedResult {
@@ -93,17 +98,42 @@ const groups = computed<GroupedResult[]>(() => {
   push("llm_smart", "智能删除", normalItems)
   push("partial_delete", "部分删除（需手动处理）", partialItems)
 
+  // v3.0.4 M4-3 (P3-7): third source group -- manual ranges created via the
+  // waveform bubble or the header timecode popover. Label prefix 删除/保留
+  // is the per-entry action marker (SPEC M4-3 either/or ruling: no
+  // sub-sections inside the group). Same empty-group guard as the others:
+  // the whole group hides while no manual edit exists.
+  const manualItems: SuggestionItem[] = props.edits
+    .filter(e => e.source === "manual")
+    .map(e => ({
+      id: e.id,
+      editId: e.id,
+      start: e.start,
+      end: e.end,
+      label: `${e.action === "keep" ? "保留" : "删除"} ${(e.end - e.start).toFixed(1)}s`,
+      type: "manual" as const,
+      status: statusOf(e),
+      action: e.action,
+    }))
+  push("manual", "手动范围", manualItems)
+
   return result
 })
 
-const SUGGESTION_SOURCES = new Set(["silence_detection", "llm_smart"])
+const SUGGESTION_SOURCES = new Set(["silence_detection", "llm_smart", "manual"])
+
+// v3.0.4 M4-3 (P3-7): manual ranges join the header counters and BOTH
+// actions count (keep entries are review work too); the two legacy sources
+// keep their delete-only filter byte-for-byte (they never produce keep
+// edits, so their counts are unchanged in every existing scenario).
+function isCounted(e: EditDecision): boolean {
+  return SUGGESTION_SOURCES.has(e.source) && (e.source === "manual" || e.action === "delete")
+}
 
 const totalPending = computed(() => props.edits.filter(e =>
-  e.status === "pending" && e.action === "delete" && SUGGESTION_SOURCES.has(e.source)
+  e.status === "pending" && isCounted(e)
 ).length)
-const totalAll = computed(() => props.edits.filter(e =>
-  e.action === "delete" && SUGGESTION_SOURCES.has(e.source)
-).length)
+const totalAll = computed(() => props.edits.filter(e => isCounted(e)).length)
 
 function toggleGroup(type: string) {
   if (expandedGroups.value.has(type)) expandedGroups.value.delete(type)
@@ -115,6 +145,67 @@ function handleAction(item: SuggestionItem, action: "confirm" | "reject") {
   if (!item.editId) return
   if (action === "confirm") emit("confirm-edit", item.editId)
   else emit("reject-edit", item.editId)
+}
+
+// v3.0.4 M4-3 (P3-7): manual-range confirm wording -- confirm feeds the
+// trim computation, it is NOT an export action (keep entries especially:
+// the confirmed keep range is subtracted from the auto-trim deletions,
+// SPEC M4-4). Legacy groups keep no title (DOM unchanged).
+function confirmTitle(item: SuggestionItem): string | undefined {
+  if (item.type !== "manual") return undefined
+  return item.action === "keep"
+    ? "确认 = 参与裁剪计算（保留区间将从自动裁剪中扣除；非导出动作）"
+    : "确认 = 参与裁剪计算（非导出动作）"
+}
+
+// -- Timecode popover (v3.0.4 M4-3 / SPEC M4-2 timecode entry) -----------
+//
+// The panel lives inside Timeline's subtree, so a new emit would need a
+// Timeline relay (red line: untouched). The page instead hands its
+// handleRangeDecision (the SAME handler the M4-2 bubble uses: snapshot
+// ["edits"] -> add_range_decision -> project-updated patch) down via
+// injection -- the WORKSPACE_ACTIONS_KEY pattern for page -> deep-child
+// wiring. String key: the red line's file list leaves no shared symbol
+// module to host an InjectionKey.
+type AddRangeDecisionPayload = { start: number; end: number; action: "delete" | "keep" }
+const addRangeDecision = inject<((payload: AddRangeDecisionPayload) => Promise<void>) | null>(
+  "suggestion:add-range-decision",
+  null,
+)
+
+const timecodeOpen = ref(false)
+// v-model on type="number" inputs auto-casts to number (Vue behavior), so
+// the refs hold string | number; empty fields arrive as "".
+const timecodeStart = ref<string | number>("")
+const timecodeEnd = ref<string | number>("")
+// Default delete mirrors the bubble's default focus (SPEC M4-2 Q9).
+const timecodeAction = ref<"delete" | "keep">("delete")
+const timecodeError = ref("")
+
+function closeTimecode() {
+  timecodeOpen.value = false
+  timecodeError.value = ""
+}
+
+function submitTimecode() {
+  const startText = String(timecodeStart.value ?? "").trim()
+  const endText = String(timecodeEnd.value ?? "").trim()
+  const start = Number(startText)
+  const end = Number(endText)
+  // Empty / non-numeric input and end<=start are rejected in place -- the
+  // bridge is never called for invalid input.
+  if (startText === "" || endText === "" || !Number.isFinite(start) || !Number.isFinite(end)) {
+    timecodeError.value = "请输入有效的起止时间（秒，支持小数）"
+    return
+  }
+  if (end <= start) {
+    timecodeError.value = "结束时间必须大于开始时间"
+    return
+  }
+  timecodeError.value = ""
+  if (!addRangeDecision) return // unwired host (never in production)
+  void addRangeDecision({ start, end, action: timecodeAction.value })
+  closeTimecode()
 }
 
 // -- Context menu --------------------------------------------------------
@@ -171,10 +262,15 @@ function runItemActionFromMenu(action: "confirm" | "reject") {
 
 function onWindowClick() {
   if (contextMenu.value) closeContextMenu()
+  // The toggle button and the popover itself stop propagation, so any
+  // click that reaches here is outside -> close (v3.0.4 M4-3).
+  if (timecodeOpen.value) closeTimecode()
 }
 
 function onWindowKeydown(e: KeyboardEvent) {
-  if (e.key === "Escape" && contextMenu.value) closeContextMenu()
+  if (e.key !== "Escape") return
+  if (contextMenu.value) closeContextMenu()
+  else if (timecodeOpen.value) closeTimecode()
 }
 
 onMounted(() => {
@@ -188,14 +284,106 @@ onBeforeUnmount(() => {
 </script>
 <template>
   <div class="overflow-hidden border border-hairline bg-parchment">
-    <div class="border-b border-hairline px-3 py-2">
-      <span class="text-sm font-semibold text-ink">
-        共 {{ totalAll }} 处建议
-        <template v-if="totalPending > 0">
-          | {{ totalPending }} 处待处理
-        </template>
-      </span>
-      <span class="ml-2 text-xs text-ink-muted">右键单项/组可批量操作</span>
+    <!-- v3.0.4 M4-3 (P3-7): the header bar is ALWAYS rendered -- the
+         timecode entry lives here (SPEC M4-2 R3 ruling) so an empty
+         project can create its first manual range (the manual group is
+         hidden by the empty-group guard while unused). -->
+    <div class="relative border-b border-hairline px-3 py-2">
+      <div class="flex items-center justify-between gap-2">
+        <span class="min-w-0">
+          <span class="text-sm font-semibold text-ink">
+            共 {{ totalAll }} 处建议
+            <template v-if="totalPending > 0">
+              | {{ totalPending }} 处待处理
+            </template>
+          </span>
+          <span class="ml-2 text-xs text-ink-muted">右键单项/组可批量操作</span>
+        </span>
+        <button
+          type="button"
+          data-test="timecode-toggle"
+          class="mc-button mc-button-secondary min-h-7 shrink-0 px-2 py-0.5 text-xs"
+          @click.stop="timecodeOpen = !timecodeOpen"
+        >
+          + 时间码
+        </button>
+      </div>
+
+      <!-- Timecode popover: precise manual ranges for oral-delivery
+           editing. Same add_range_decision path as the waveform bubble. -->
+      <div
+        v-if="timecodeOpen"
+        data-test="timecode-popover"
+        class="absolute top-full right-0 z-dropdown mt-1 w-64 rounded-md border border-gray-200 bg-white p-3 text-left shadow-lg"
+        @click.stop
+      >
+        <div class="mb-2 text-xs font-semibold text-ink">添加手动范围（秒，支持小数）</div>
+        <div class="flex items-center gap-1.5">
+          <label class="shrink-0 text-xs text-gray-500" for="suggestion-timecode-start">起</label>
+          <input
+            id="suggestion-timecode-start"
+            v-model="timecodeStart"
+            data-test="timecode-start"
+            type="number"
+            step="0.1"
+            min="0"
+            placeholder="如 12.5"
+            class="w-full rounded border border-gray-300 px-2 py-1 text-sm outline-none focus:border-blue-400"
+          />
+          <label class="shrink-0 text-xs text-gray-500" for="suggestion-timecode-end">止</label>
+          <input
+            id="suggestion-timecode-end"
+            v-model="timecodeEnd"
+            data-test="timecode-end"
+            type="number"
+            step="0.1"
+            min="0"
+            placeholder="如 15.0"
+            class="w-full rounded border border-gray-300 px-2 py-1 text-sm outline-none focus:border-blue-400"
+          />
+        </div>
+        <div class="mt-2 flex items-center gap-1.5">
+          <span class="shrink-0 text-xs text-gray-500">类型</span>
+          <button
+            type="button"
+            data-test="timecode-action-delete"
+            class="mc-button min-h-7 px-2 py-0.5 text-xs"
+            :class="timecodeAction === 'delete' ? 'mc-button-primary' : 'mc-button-secondary'"
+            @click="timecodeAction = 'delete'"
+          >
+            删除
+          </button>
+          <button
+            type="button"
+            data-test="timecode-action-keep"
+            class="mc-button min-h-7 px-2 py-0.5 text-xs"
+            :class="timecodeAction === 'keep' ? 'mc-button-primary' : 'mc-button-secondary'"
+            @click="timecodeAction = 'keep'"
+          >
+            保留
+          </button>
+        </div>
+        <div v-if="timecodeError" data-test="timecode-error" class="mt-2 text-xs text-red-600">
+          {{ timecodeError }}
+        </div>
+        <div class="mt-2 flex justify-end gap-2">
+          <button
+            type="button"
+            class="mc-button mc-button-secondary min-h-7 px-2 py-0.5 text-xs"
+            @click="closeTimecode"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            data-test="timecode-submit"
+            class="mc-button mc-button-primary min-h-7 px-2 py-0.5 text-xs"
+            @click="submitTimecode"
+          >
+            添加
+          </button>
+        </div>
+      </div>
     </div>
 
     <button
@@ -247,6 +435,14 @@ onBeforeUnmount(() => {
             {{ formatTime(item.start) }}
           </span>
 
+          <!-- v3.0.4 M4-3: manual entries carry an explicit pending badge so
+               all three states are visible (legacy groups: DOM unchanged,
+               pending stays badge-less as before). -->
+          <span
+            v-if="item.type === 'manual' && item.status === 'pending'"
+            class="shrink-0 pt-0.5 font-bold text-primary"
+            title="待处理"
+          >[·]</span>
           <span
             v-if="item.status === 'confirmed'"
             class="shrink-0 pt-0.5 font-bold text-green-700"
@@ -269,6 +465,7 @@ onBeforeUnmount(() => {
             <button
               v-if="item.status !== 'confirmed'"
               class="mc-button mc-button-primary min-h-7 px-2 py-0.5 text-xs"
+              :title="confirmTitle(item)"
               @click.stop="handleAction(item, 'confirm')"
             >
               确认

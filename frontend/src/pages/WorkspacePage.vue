@@ -945,6 +945,14 @@ const workspaceActions = createWorkspaceActions({
 })
 provideWorkspaceActions(workspaceActions)
 
+// v3.0.4 M4-3 (P3-7): the suggestion panel's timecode popover shares the
+// M4-2 bubble's range-creation handler (snapshot ["edits"] -> add_range_
+// decision -> project-updated patch). SuggestionPanel sits inside
+// Timeline's subtree and Timeline stays untouched (red line), so the
+// callback travels by injection instead of a new relayed event -- the
+// WORKSPACE_ACTIONS_KEY pattern for page -> deep-child wiring.
+provide("suggestion:add-range-decision", handleRangeDecision)
+
 // v3.0.2 M5-3: Shift-marquee hits on the multi-row waveform merge into the
 // SAME global selection set the subtitle list uses (M3-2 ownership ruling).
 function handleWaveformSelectSegments(ids: string[]) {
