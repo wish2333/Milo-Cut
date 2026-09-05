@@ -22,6 +22,23 @@ _SUBPROCESS_KWARGS: dict = (
     else {"start_new_session": True}
 )
 
+# v3.0.4 M1-1/M1-5: supported translation target languages (BCP-47 short
+# codes = the SubtitleTrack.language fill-value convention) mapped to the
+# English display name injected into the {{target_language}} prompt slot.
+# start_translation validates against the keys; the handler resolves the
+# display name for the final replacement (SPEC M1-3).
+_TRANSLATION_LANGUAGES: dict[str, str] = {
+    "en": "English",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "zh-CN": "Simplified Chinese",
+    "zh-TW": "Traditional Chinese",
+    "fr": "French",
+    "de": "German",
+    "es": "Spanish",
+    "ru": "Russian",
+}
+
 
 def _fix_macos_path() -> None:
     """Inject shell PATH into the macOS .app bundle environment.
@@ -164,6 +181,9 @@ class MiloCutApi(Bridge):
         )
         self._task_manager.register_handler(
             TaskType.LLM_SEMANTIC_SEARCH, self._handle_semantic_search
+        )
+        self._task_manager.register_handler(
+            TaskType.LLM_TRANSLATION, self._handle_translation
         )
 
     def _handle_silence_detection(self, task, cancel_event, progress_cb):
@@ -1124,6 +1144,160 @@ class MiloCutApi(Bridge):
         )
 
         return {"results": search_results, "query": query}
+
+    def _handle_translation(self, task, cancel_event, progress_cb):
+        """Run LLM translation and write a bound translation track (v3.0.4 M1-5).
+
+        Five-step flow mirroring ``_handle_subtitle_correction`` (background
+        thread, payload-driven segment source, cancel/progress wiring):
+
+        1. Main-track subtitle segments, confirmed-deleted excluded.
+        2. Effective translation prompt + the final ``{{target_language}}``
+           replacement (English display name); any residual ``{{`` fails
+           fast so a mis-spelled system_override cannot silently degrade.
+        3. ``analyze_subtitle_translation`` -- any failure raises (task
+           failed, zero writes; full-output conservation lives there).
+        4. Completion-time timeline pinning: the task pinned the timeline it
+           started on; if the user switched timelines during the 1-3 min
+           run, the result is discarded with zero writes (SPEC M1-5 ruling).
+        5. ``create_translation_track`` single-patch write (its own guards:
+           duplicate language / timeline pinning double-check / idempotent
+           reconciliation with ``uncovered_ids`` reporting), then the
+           ``llm:translation_completed`` + ``llm:token_usage`` events.
+        """
+        if self._project.current is None:
+            raise ValueError("No project open")
+
+        from core.llm_service import analyze_subtitle_translation
+        from core.timeline_utils import collect_confirmed_deleted_seg_ids
+
+        timeline = self._get_target_timeline(task)
+        timeline_id = task.payload.get("timeline_id", "") or self._project.current.active_timeline_id
+
+        target_language = task.payload.get("target_language", "")
+        display_name = _TRANSLATION_LANGUAGES.get(target_language, target_language)
+        # Step 3 of the M1-1 flow: default track name = language display name.
+        track_name = task.payload.get("track_name", "") or display_name
+
+        # Step 1: main-track subtitle segments, confirmed-deleted excluded
+        # (same semantics as export mapping, correction-handler precedent).
+        deleted_seg_ids = collect_confirmed_deleted_seg_ids(timeline)
+        segments = [
+            s.model_dump()
+            for s in timeline.transcript.segments
+            if s.type == SegmentType.SUBTITLE and s.id not in deleted_seg_ids
+        ]
+        if not segments:
+            raise ValueError("No subtitle segments to translate")
+
+        # Step 2: resolve effective prompt, then the {{target_language}}
+        # final replacement with the English display name (M1-3 ruling:
+        # the placeholder passes through all three layers untouched).
+        from core.llm_prompts import get_effective_prompt
+
+        project_prompts = (
+            timeline.llm_prompts if hasattr(timeline, "llm_prompts") else None
+        )
+        system_prompt = get_effective_prompt("translation", project_prompts)
+        system_prompt = system_prompt.replace("{{target_language}}", display_name)
+        if "{{" in system_prompt:
+            # Fail fast: a user system_override carrying some OTHER
+            # {{placeholder}} would silently degrade the prompt contract.
+            raise RuntimeError(
+                "Translation system prompt still contains {{...}} placeholders "
+                "after the {{target_language}} replacement; check the prompt "
+                "override for mis-spelled placeholders"
+            )
+
+        # Step 3: the pipeline. ``target_language`` only feeds its internal
+        # semantics (never the prompt -- that is the system_prompt above).
+        result = analyze_subtitle_translation(
+            segments,
+            target_language,
+            cancel_event=cancel_event,
+            progress_cb=progress_cb,
+            system_prompt=system_prompt,
+        )
+
+        if not result.get("success"):
+            error = result.get("error", "Translation failed")
+            self._emit("llm:analysis_failed", {"error": error})
+            raise RuntimeError(error)
+
+        translations = result["data"]["translations"]
+        token_usage = result["data"]["token_usage"]
+        ledger = result["data"].get("ledger")
+
+        # Step 4: completion-time timeline pinning -- zero writes when the
+        # user switched timelines while the task ran (M1-5 / M1-4 contract 6).
+        if timeline_id != self._project.current.active_timeline_id:
+            raise RuntimeError(
+                "翻译期间已切换时间轴，结果已丢弃，请回到原时间轴重新发起"
+            )
+
+        # Step 5: assemble handler-snapshot items ({segment_id, start, end,
+        # text}) and batch-write the bound track in ONE patch. Reconciliation
+        # against the CURRENT main track (segment deleted mid-run goes to
+        # uncovered_ids, never silent) lives in create_translation_track.
+        source_by_id = {seg.get("id", ""): seg for seg in segments}
+        items = []
+        for t in translations:
+            source = source_by_id.get(str(t.get("segment_id", "")))
+            if source is None:
+                continue
+            items.append(
+                {
+                    "segment_id": str(t["segment_id"]),
+                    "start": source["start"],
+                    "end": source["end"],
+                    "text": str(t.get("translated_text", "")),
+                }
+            )
+
+        store_result = self._mark_dirty(
+            self._project.create_translation_track(
+                timeline_id=timeline_id,
+                name=track_name,
+                language=target_language,
+                items=items,
+                bind=True,
+            )
+        )
+        if not store_result["success"]:
+            # Duplicate language / all-vanished ids / write-side pinning:
+            # pass the guidance error through (task failed, zero writes).
+            raise RuntimeError(
+                store_result.get("error", "Failed to create translation track")
+            )
+
+        report = store_result["data"].get("meta", {}).get("translation", {})
+        from core.events import LLM_TRANSLATION_COMPLETED
+
+        self._emit(
+            LLM_TRANSLATION_COMPLETED,
+            {
+                "track_id": report.get("track_id", ""),
+                "track_name": track_name,
+                "language": target_language,
+                "written_count": report.get("written_count", 0),
+                "target_count": report.get("target_count", len(items)),
+                "uncovered_ids": report.get("uncovered_ids", []),
+                "ledger": ledger,
+            },
+        )
+        self._emit("llm:token_usage", token_usage)
+
+        return {
+            "track_id": report.get("track_id", ""),
+            "track_name": track_name,
+            "language": target_language,
+            "written_count": report.get("written_count", 0),
+            "target_count": report.get("target_count", len(items)),
+            "uncovered_ids": report.get("uncovered_ids", []),
+            "token_usage": token_usage,
+            "ledger": ledger,
+            "project": self._project.current.model_dump() if self._project.current else None,
+        }
 
     # ================================================================
     # region System
@@ -2699,6 +2873,77 @@ class MiloCutApi(Bridge):
             system_prompt=effective_prompt,
         )
         return result
+
+    @expose
+    def start_translation(
+        self,
+        target_language: str = "",
+        timeline_id: str = "",
+        track_name: str = "",
+    ) -> dict:
+        """Start LLM translation into a new secondary track (v3.0.4 M1-1).
+
+        Validation order (SPEC M1-1, short-circuits with
+        ``{"success": False, "error": ...}``): LLM configured -> project
+        open -> target language valid -> main track has subtitle segments
+        -> no same-language translation track yet -> create_task.
+
+        Args:
+            target_language: BCP-47 short code (key of _TRANSLATION_LANGUAGES).
+            timeline_id: Target timeline (defaults to active_timeline_id).
+            track_name: Name for the new track (defaults to the language
+                display name).
+
+        Returns:
+            {"success": True, "data": {"task_id": str}}
+        """
+        from core.llm_service import get_llm_config as _get_cfg
+
+        config = _get_cfg()
+        if not config.is_configured():
+            return {"success": False, "error": "LLM not configured"}
+
+        if self._project.current is None:
+            return {"success": False, "error": "No project open"}
+
+        if not target_language or target_language not in _TRANSLATION_LANGUAGES:
+            return {
+                "success": False,
+                "error": f"Unsupported target language: {target_language or '(empty)'}",
+            }
+
+        tl_id = timeline_id or self._project.current.active_timeline_id
+        timeline = self._project.current.get_timeline(tl_id)
+        if timeline is None:
+            return {"success": False, "error": f"Timeline {tl_id} not found"}
+
+        has_subtitle = any(
+            s.type == SegmentType.SUBTITLE for s in timeline.transcript.segments
+        )
+        if not has_subtitle:
+            return {"success": False, "error": "No subtitle segments to translate"}
+
+        if any(
+            t.role == "translation" and t.language == target_language
+            for t in timeline.transcript.tracks
+        ):
+            return {
+                "success": False,
+                "error": (
+                    f"同语言翻译轨已存在（{target_language}），"
+                    "可清空或删除该轨后重试"
+                ),
+            }
+
+        task = self._task_manager.create_task(
+            "llm_translation",
+            {
+                "timeline_id": tl_id,
+                "target_language": target_language,
+                "track_name": track_name,
+            },
+        )
+        return task
 
     @expose
     def detect_highlight_jump_cuts(self, timeline_id: str = "") -> dict:

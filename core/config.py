@@ -76,6 +76,10 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     # allowance for local inference endpoints (Ollama etc.)
     "llm_max_batch_chars": 4000,
     "llm_allow_local_urls": False,
+    # v3.0.4 M1-1/R1.1: remembered target language for "translate to a new
+    # secondary track" -- the frontend writes back the last successfully
+    # started language here (M1-6 consumes it as the dialog default).
+    "llm_translation_target_language": "en",
     # Per-provider config cache (v2.1.0): preserves base_url/api_key/model
     # across provider switches so the user never loses what they typed.
     # Structure: {provider_id: {base_url, api_key, model}}
