@@ -322,13 +322,13 @@ function cancelEdit() {
 }
 
 // Enter edit mode when globalEditMode turns on, save when it turns off.
-// v3.0.3 M1-3: track rows opt out of the global-edit sweep -- they enter
-// editing only via dblclick / their own menu item.
+// v3.0.4 M3-1: track rows join the global-edit sweep (R3.1 -- reverses the
+// 3.0.3 M1-3 opt-out after one release of user feedback read the button as
+// broken in track view). The save path stays variant-split (saveEdit).
 onMounted(() => {
-  if (props.globalEditMode && !isTrackVariant.value) startEdit()
+  if (props.globalEditMode) startEdit()
 })
 watch(() => props.globalEditMode, (val) => {
-  if (isTrackVariant.value) return
   if (val && !isEditingText.value) {
     startEdit()
   } else if (!val && isEditingText.value) {

@@ -147,7 +147,14 @@ gates_redline() {
   [ "$n_a" -eq 0 ] && ok "后端断言零删改" || bad "后端断言出现删改"
 
   echo "--- R0-3 前端断言白名单外零删改 (期望 = 0; 白名单唯一 = TranscriptRow.test.ts) ---"
-  local n_e; n_e=$(git diff "${BASELINE}" -- frontend/src | grep -E '^-[[:space:]]*expect\(' | grep -v 'TranscriptRow.test.ts' | wc -l)
+  # P3-2 勘误: 原管线 `grep -v 'TranscriptRow.test.ts'` 按行过滤, 而被删的
+  # expect 行本身不含文件名, 白名单恒失效 (首次真实反转即触发: 唯一命中恰为
+  # 白名单内条目仍报 1)。SPEC M5 意图 = 白名单【文件】外命中才 fail, 故改
+  # awk 以 hunk 头 +++ b/<path> 归属当前文件后计数, 判定口径不变。
+  local n_e; n_e=$(git diff "${BASELINE}" -- frontend/src | awk '
+    /^\+\+\+ b\// { f = $2 }
+    /^-[[:space:]]*expect\(/ && f !~ /TranscriptRow\.test\.ts$/ { c++ }
+    END { print c + 0 }')
   echo "  白名单外 expect 删除行数 = ${n_e}"
   [ "$n_e" -eq 0 ] && ok "前端断言白名单外零删改" || bad "白名单外断言删改命中"
 

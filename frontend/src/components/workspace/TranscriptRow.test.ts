@@ -267,10 +267,21 @@ describe("TranscriptRow track variant (M1-2)", () => {
     wrapper.unmount()
   })
 
-  it("never enters text edit under globalEditMode", async () => {
+  // v3.0.4 M3-1 -- assertion reversal (PRD §1.3 whitelist, the ONLY one
+  // this version). The 3.0.3 intent "track rows never join the global-edit
+  // sweep" was falsified by one release of user feedback (the button read
+  // as broken in track view, US-T1-1); R3.1 ruling (T1 option A) makes the
+  // sweep cover track rows. Intent and assertion flip together.
+  it("enters text edit under globalEditMode (track variant)", async () => {
     const wrapper = mountTrack({ globalEditMode: true })
     await nextTick()
-    expect(wrapper.find("input.edit-text-input").exists()).toBe(false)
+    expect(wrapper.find("input.edit-text-input").exists()).toBe(true)
+    // exiting the sweep batch-saves through the track channel
+    await wrapper.find("input.edit-text-input").setValue("swept edit")
+    await wrapper.setProps({ globalEditMode: false })
+    expect(wrapper.emitted("track-text")).toBeTruthy()
+    expect(wrapper.emitted("track-text")![0]).toEqual(["swept edit"])
+    expect(wrapper.emitted("update-text")).toBeUndefined()
     wrapper.unmount()
   })
 

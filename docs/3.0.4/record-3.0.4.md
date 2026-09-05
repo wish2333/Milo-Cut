@@ -34,7 +34,8 @@
 | P2-5 | [record-3.0.4-P2-5.md](./record-3.0.4-P2-5.md) | 已完成（前端门控与审阅：AIAssistantPanel prop 门控【智能删除/工作流入口置灰 + 纠错轨徽锁定当前轨 + 搜索不置灰】+ Timeline 精华 tab 置灰与停留回落【R3 must-fix #2】+ startSubtitleCorrection 轨透传【deps 字面量包装，useWorkspaceActions 零改动】+ 审阅 modal 来源轨徽；后端零改动；工作流入口存在性核查 = 存在且已置灰；工作流视图不强制回落单轨视图——负责人追认） | 合入（merge P2-5，vitest 790-789 全绿） |
 | P2-6 | [record-3.0.4-P2-6.md](./record-3.0.4-P2-6.md) | 已完成（可选尾项·对齐主轨上下文：handler 注入自描述字段 `aligned_main_text` + `_build_structured_user_message` 同款转发 +4 受控增行【架构师预裁决 1/2/3 落实，llm_prompts.py 零改动，§4.1 追认】；无绑定段自动退化；主轨路径零改动；P3 开工前完成，让位线未触发） | 合入（merge P2-6，pytest 808 全绿） |
 | P3-1 | [record-3.0.4-P3-1.md](./record-3.0.4-P3-1.md) | 已完成（golden 基线采集：v3.0.3 只读 worktree 采集【实际采用 fallback 方式：PYTHONPATH=worktree + 主仓 venv，双重采源断言】+ 固定 30 段四档 padding + 对拍用例 2 例，golden 26509 字节随本 commit 入库；零产品代码改动；M4-4 硬前置 = M0-3 约束 1 落实） | 分支 `dev-3.0.4-p3-1` 待合入（P3 首个 commit，先于 P3-2） |
-| P3-2 ~ P3-9 | （待建） | 未开始 | |
+| P3-2 | [record-3.0.4-P3-2.md](./record-3.0.4-P3-2.md) | 已完成（编辑扫掠覆盖副轨：TranscriptRow 两处 track 早退删除 + 断言反转白名单唯一一处执行【§4 已登记】+ Timeline 按钮文案轨感知 + 切轨 flush 顺序/编辑态跨轨保持 2 例【新宿主 WorkspacePage.trackEdit.test.ts，useTrackEdit 真实内核】；vitest 795-794；附带 gates R0-3 前端 grep 白名单实现失效勘误——按脚本头部条款修脚本，双向实测，见该 record §6） | 分支 `dev-3.0.4-p3-2` 待合入 |
+| P3-3 ~ P3-9 | （待建） | 未开始 | |
 | P4-1 ~ P4-5 | （待建） | 未开始 | |
 
 ## 2. 门禁基线（P0 首跑登记，零改动干净起点）
@@ -86,7 +87,7 @@
 
 | 文件:行 | 反转内容 | 理由 | 登记步 |
 |---|---|---|---|
-| （待 P3-2 执行后登记：TranscriptRow.test.ts:270-275「never enters text edit under globalEditMode」→「enters text edit under globalEditMode (track variant)」） | | R3.1 裁决反转（T1 方案 A） | P3-2 |
+| frontend/src/components/workspace/TranscriptRow.test.ts:270-275（改写后 :271-286） | 原意图「never enters text edit under globalEditMode」断言 `input.edit-text-input` **不存在**（固化 3.0.3 M1-3 副轨豁免）→ 新意图「enters text edit under globalEditMode (track variant)」断言 `input.edit-text-input` **存在**，并补退出扫掠经 `track-text` 批量保存、`update-text` 不触发 ×2 断言（意图与断言同步反转，非削弱；完整 diff 原文见 [record-3.0.4-P3-2.md](./record-3.0.4-P3-2.md) §3） | R3.1 裁决反转（T1 方案 A）：3.0.3 M1-3 豁免经一版使用被用户证伪为「按钮坏了」（US-T1-1）；Q1 裁决编辑态为跨轨全局态 | P3-2 |
 
 后端 `tests/` 断言零删改（反转白名单为空）。
 
