@@ -348,6 +348,7 @@ defineExpose({ metrics })
         hidden: false,
       }"
       :update-time="(sid, f, v) => updateTrackTime?.(laneItem.track.id, sid, f, v)"
+      :build-mode="buildMode"
       style="z-index: 3"
       @seek="(t: number) => emit('seek', t)"
       @toggle-collapse="(id: string) => emit('toggle-collapse', id)"

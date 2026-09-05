@@ -1113,6 +1113,8 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
           :tracks="tracks"
           :lane-state="laneCtl.state.value"
           :update-track-time="updateTrackTime"
+          :build-mode="buildMode"
+          :create-at-in-track="(tid: string, t: number) => emit('track-create', tid, t, Math.round((t + 0.5) * 100) / 100)"
           @seek="handleSeek"
           @toggle-collapse="laneCtl.toggleCollapse"
           @select-range="handleSelectRange"
@@ -1221,11 +1223,13 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation })
               ? (sid, f, v) => updateTrackTime!(lane.trackId, sid, f, v)
               : undefined
           "
+          :build-mode="buildMode"
           @seek="(t) => handleSeek(t)"
           @toggle-collapse="laneCtl.toggleCollapse"
           @delete-segment="(sid: string) => emit('delete-track-segment', lane.trackId, sid)"
           @clear-track="emit('clear-track', lane.trackId)"
           @delete-track="emit('delete-track', lane.trackId)"
+          @create-at="(t: number) => emit('track-create', lane.trackId, t, Math.round((t + 0.5) * 100) / 100)"
         />
       </template>
 
