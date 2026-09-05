@@ -301,8 +301,10 @@ R3 增补 4 条顺序约束的落点：① golden 先行 → **P3-1**（本版�
 
 ### P3-4 语义搜索轨模式修正（SemanticSearchBar.vue · AIAssistantPanel.vue，R3.3/X2）
 
-- [ ] SemanticSearchBar 新增 `mainSegments?: Segment[]` prop，segmentMap 改建自 `props.mainSegments ?? props.segments`；AIAssistantPanel 透传（复用 P1-6 链延伸一级）
-- [ ] 用例：轨模式传副轨 segments + 主轨 mainSegments + 主轨 id 结果 → 文本非空且时间正确、点击定位主轨命中段；主轨模式零变化（不传时与 v3.0.3 一致）——**新建宿主 `SemanticSearchBar.test.ts`**
+- [x] SemanticSearchBar 新增 `mainSegments?: Segment[]` prop，segmentMap 改建自 `props.mainSegments ?? props.segments`；AIAssistantPanel 透传（复用 P1-6 链延伸一级）
+- [x] 用例：轨模式传副轨 segments + 主轨 mainSegments + 主轨 id 结果 → 文本非空且时间正确、点击定位主轨命中段；主轨模式零变化（不传时与 v3.0.3 一致）——**新建宿主 `SemanticSearchBar.test.ts`**
+
+> 已完成（登记：[record-3.0.4-P3-4.md](./record-3.0.4-P3-4.md)；分支 `dev-3.0.4-p3-4`，vitest 801-800【+3 例，新建 SemanticSearchBar 宿主：轨模式文本/seek 时间取自 mainSegments、id 双侧同名对主轨解析、主轨回退零变化】；后端零改动，主轨模式零变化）。
 
 **验收方式**: M5 组 = M3 前端（X2 项 ≥2）。
 **验收标准**: 后端零改动（显示侧数据源对齐）。

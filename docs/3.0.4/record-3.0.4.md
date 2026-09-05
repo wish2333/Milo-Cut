@@ -36,7 +36,8 @@
 | P3-1 | [record-3.0.4-P3-1.md](./record-3.0.4-P3-1.md) | 已完成（golden 基线采集：v3.0.3 只读 worktree 采集【实际采用 fallback 方式：PYTHONPATH=worktree + 主仓 venv，双重采源断言】+ 固定 30 段四档 padding + 对拍用例 2 例，golden 26509 字节随本 commit 入库；零产品代码改动；M4-4 硬前置 = M0-3 约束 1 落实） | 分支 `dev-3.0.4-p3-1` 待合入（P3 首个 commit，先于 P3-2） |
 | P3-2 | [record-3.0.4-P3-2.md](./record-3.0.4-P3-2.md) | 已完成（编辑扫掠覆盖副轨：TranscriptRow 两处 track 早退删除 + 断言反转白名单唯一一处执行【§4 已登记】+ Timeline 按钮文案轨感知 + 切轨 flush 顺序/编辑态跨轨保持 2 例【新宿主 WorkspacePage.trackEdit.test.ts，useTrackEdit 真实内核】；vitest 795-794；附带 gates R0-3 前端 grep 白名单实现失效勘误——按脚本头部条款修脚本，双向实测，见该 record §6） | 分支 `dev-3.0.4-p3-2` 待合入 |
 | P3-3 | [record-3.0.4-P3-3.md](./record-3.0.4-P3-3.md) | 已完成（lane 建段接线：SPEC M3-2 三处接线照表施工——① multi WaveformRow `:build-mode` + `:create-at-in-track` 桥（0.5s 默认宽）/ ② WaveformRow 的 TrackLane `:build-mode` 透传【buildMode prop :78 既有，核实无需新增】/ ③ basic TrackLane `:build-mode` + `@create-at` 桥；TrackLane 零改动【buildMode prop 声明 :26 既有】；WorkspacePage/useWorkspaceActions 下游零改动；vitest 798-797【+3 例挂既有 WaveformEditor 宿主，X1 ≥3 达标】；41a1ac4 孤儿链路首次兑现；路径笔误勘误见 record §4） | 分支 `dev-3.0.4-p3-3` 待合入（X1 先于 M4-2 手势合入，M0-3 顺序约束） |
-| P3-4 ~ P3-9 | （待建） | 未开始 | |
+| P3-4 | [record-3.0.4-P3-4.md](./record-3.0.4-P3-4.md) | 已完成（语义搜索轨模式修正：SemanticSearchBar 新增 `mainSegments?: Segment[]` prop + segmentMap 数据源一行改 `props.mainSegments ?? props.segments`【map 键对齐后端恒搜主轨返回的主轨 segment_id】+ AIAssistantPanel 透传一行【P1-6 链延伸一级】；主轨模式零变化（不传回退 props.segments = v3.0.3 行为）；点击定位主轨命中段既有逻辑零触碰；**新建宿主 SemanticSearchBar.test.ts** 3 例【轨模式文本/时间取自 mainSegments + id 双侧同名对主轨解析 + 主轨回退零变化，X2 ≥2 达标】；vitest 801-800【+3 例】；锚点行号漂移勘误见 record §4） | 分支 `dev-3.0.4-p3-4` 待合入 |
+| P3-5 ~ P3-9 | （待建） | 未开始 | |
 | P4-1 ~ P4-5 | （待建） | 未开始 | |
 
 ## 2. 门禁基线（P0 首跑登记，零改动干净起点）
