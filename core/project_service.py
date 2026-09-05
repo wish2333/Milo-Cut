@@ -54,6 +54,26 @@ def compute_media_hash_deep(path: str) -> str:
     return h.hexdigest()
 
 
+def _merge_time_ranges(ranges: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Merge overlapping or adjacent (start, end) ranges (v3.0.4 M4-4).
+
+    Extracted verbatim from generate_subtitle_keep_ranges' keep-range
+    build fold (the inline ``if start <= keep_ranges[-1][1]`` branch) so
+    the M4-4 user-keep merge reuses the exact same adjacency rule: a
+    range starting at or before the current merged end joins it
+    (touching ranges merge). Behavior of the original fold is unchanged
+    (sorted-by-start input folds identically). Input order is
+    irrelevant; output is sorted by start.
+    """
+    merged: list[tuple[float, float]] = []
+    for start, end in sorted(ranges):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
 class ProjectService:
     """Manages project lifecycle and persistence."""
 
@@ -2819,6 +2839,14 @@ class ProjectService:
 
         For each subtitle segment, expands by `padding` seconds on both sides.
         The gaps between these expanded ranges become delete EditDecisions.
+
+        v3.0.4 M4-4 (R4.4, controlled change 1): user confirmed keep ranges
+        (action=keep, status=confirmed, target_type=range, source-agnostic)
+        join the keep set before the delete complement is computed, so kept
+        spans are subtracted from the auto delete ranges. Pre-existing
+        subtitle_trim delete edits intersecting a user keep are stale after
+        a re-run and are removed (counted in ``invalidated_count``). With no
+        user keeps the output is byte-identical to v3.0.3 (golden criterion).
         """
         if self._current is None:
             return {"success": False, "error": "No project is open"}
@@ -2841,16 +2869,30 @@ class ProjectService:
         # Compute total duration
         total_duration = max(s.end for s in self.active_timeline.transcript.segments)
 
-        # Build expanded keep ranges (subtitle + padding)
-        keep_ranges: list[tuple[float, float]] = []
+        # Build expanded keep ranges (subtitle + padding); overlapping or
+        # adjacent ranges merge via _merge_time_ranges (v3.0.4 M4-4: the
+        # former inline fold, extracted verbatim -- sorted-by-start input
+        # folds identically, so behavior is unchanged)
+        expanded: list[tuple[float, float]] = []
         for seg in subtitle_segs:
             start = max(0.0, seg.start - padding)
             end = min(total_duration, seg.end + padding)
-            if keep_ranges and start <= keep_ranges[-1][1]:
-                # Merge overlapping ranges
-                keep_ranges[-1] = (keep_ranges[-1][0], max(keep_ranges[-1][1], end))
-            else:
-                keep_ranges.append((start, end))
+            expanded.append((start, end))
+        keep_ranges = _merge_time_ranges(expanded)
+
+        # v3.0.4 M4-4 (R4.4): collect user confirmed keep ranges and merge
+        # them into the keep set (source-agnostic -- today the only keep-range
+        # producer is manual add_range_decision; future producers inherit the
+        # same semantics). Kept spans then subtract from the delete complement
+        # naturally. Empty user_keeps -> no merge -> output identical to v3.0.3.
+        user_keeps: list[tuple[float, float]] = [
+            (e.start, e.end) for e in self.active_timeline.edits
+            if e.action == "keep"
+            and e.status == EditStatus.CONFIRMED
+            and e.target_type == "range"
+        ]
+        if user_keeps:
+            keep_ranges = _merge_time_ranges([*keep_ranges, *user_keeps])
 
         # Compute delete ranges (gaps between keep ranges)
         delete_ranges: list[tuple[float, float]] = []
@@ -2864,6 +2906,34 @@ class ProjectService:
 
         # Create EditDecisions for delete ranges
         existing_edits = list(self.active_timeline.edits)
+
+        # v3.0.4 M4-4 (R4.4): a pre-existing subtitle_trim delete edit that
+        # intersects a user keep is stale (the re-run no longer generates a
+        # delete there) -- without this removal the kept span would keep
+        # wearing the old auto-trim stripe. Only source="subtitle_trim"
+        # deletes are invalidated; manual decisions are never touched.
+        invalidated_count = 0
+        if user_keeps:
+            surviving_edits: list[EditDecision] = []
+            for edit in existing_edits:
+                if (
+                    edit.source == "subtitle_trim"
+                    and edit.action == "delete"
+                    and any(
+                        edit.start < keep_end and keep_start < edit.end
+                        for keep_start, keep_end in user_keeps
+                    )
+                ):
+                    invalidated_count += 1
+                    continue
+                surviving_edits.append(edit)
+            existing_edits = surviving_edits
+            if invalidated_count:
+                logger.info(
+                    "Invalidated {} subtitle_trim delete edit(s) intersecting user keep ranges",
+                    invalidated_count,
+                )
+
         new_edits: list[EditDecision] = []
         for i, (start, end) in enumerate(delete_ranges):
             edit_id = f"edit-subtitle-trim-{i:04d}"
@@ -2913,6 +2983,7 @@ class ProjectService:
                 "keep_ranges": len(keep_ranges),
                 "delete_ranges": len(delete_ranges),
                 "new_edits": len(new_edits),
+                "invalidated_count": invalidated_count,
                 "project": self._current.model_dump(),
             },
         }
