@@ -6,7 +6,10 @@ export const MAX_VIEW_DURATION = 600
 const ZOOM_IN_FACTOR = 0.87
 const ZOOM_OUT_FACTOR = 1.15
 const AUTO_FOLLOW_THROTTLE_MS = 200
-const NICE_STEPS = [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300]
+// v3.0.2 M3-1 (P2-1): promoted to a shared export -- the row-metrics
+// adapter (rowMetrics.ts) reuses the same tick ladder so basic and
+// multi-row rulers stay visually identical. Import-only; no behavior change.
+export const NICE_STEPS = [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300]
 const TIME_MARK_TARGET_COUNT = 15
 
 export interface TimelineMetrics {

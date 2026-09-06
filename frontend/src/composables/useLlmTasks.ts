@@ -13,9 +13,11 @@ import {
   EVENT_LLM_SMART_DELETE_PROGRESS,
   EVENT_LLM_SMART_DELETE_COMPLETED,
   EVENT_LLM_SUBTITLE_CORRECTION_COMPLETED,
+  EVENT_LLM_TRANSLATION_COMPLETED,
   EVENT_LLM_HIGHLIGHT_PROGRESS,
   EVENT_LLM_HIGHLIGHT_COMPLETED,
   EVENT_TASK_CANCELLED,
+  EVENT_TASK_PROGRESS,
   EVENT_DEMO_RESET,
 } from "@/utils/events"
 
@@ -50,6 +52,17 @@ interface SubtitleCorrection {
   end: number
 }
 
+// v3.0.4 M1-6: completion payload of "translate to a new secondary track".
+// Consumed by the WorkspacePage watcher (auto track switch + uncovered toast);
+// the ref is module-level singleton state because useLlmTasks is a singleton
+// while activeListTrackId lives in a per-call useListTrackSelector instance.
+export interface TranslationCompletion {
+  track_id: string
+  track_name: string
+  language: string
+  uncovered_ids: string[]
+}
+
 interface HighlightResult {
   segment_id: string
   highlight_reason: string
@@ -76,6 +89,12 @@ const jumpCuts = ref<JumpCut[]>([])
 const isRunning = ref(false)
 const progress = ref(0)
 const errorMsg = ref<string | null>(null)
+// v3.0.0 M3-1: batch-ledger coverage gap from the last LLM task
+const coverageGap = ref<number>(0)
+// v3.0.4 M1-6: last translation completion (null = none pending). Set by the
+// completion event, cleared by the WorkspacePage watcher after it switches
+// the list to the new track, so consecutive completions re-trigger the watch.
+const lastTranslationCompletion = ref<TranslationCompletion | null>(null)
 
 // LLM configuration status (Phase 2 D-04, D-12)
 interface LlmConfigStatus {
@@ -102,6 +121,7 @@ function ensureListeners() {
     isRunning.value = false
     progress.value = 0
     errorMsg.value = null
+    lastTranslationCompletion.value = null
   })
 
   // P0 smart-delete: live progress updates
@@ -124,18 +144,19 @@ function ensureListeners() {
   )
 
   // P0 smart-delete: completed
-  onEvent<{ results?: SmartDeleteResult[] }>(
+  onEvent<{ results?: SmartDeleteResult[]; ledger?: { uncovered_segment_ids?: string[] } }>(
     EVENT_LLM_SMART_DELETE_COMPLETED,
     (detail) => {
       isRunning.value = false
       if (detail?.results) {
         smartDeleteResults.value = detail.results
       }
+      coverageGap.value = detail?.ledger?.uncovered_segment_ids?.length ?? 0
     },
   )
 
   // P1 subtitle correction: completed -> load pending corrections for review
-  onEvent<{ stored_count?: number } & Partial<SubtitleCorrectionResult>>(
+  onEvent<{ stored_count?: number; ledger?: { uncovered_segment_ids?: string[] } } & Partial<SubtitleCorrectionResult>>(
     EVENT_LLM_SUBTITLE_CORRECTION_COMPLETED,
     async (detail) => {
       isRunning.value = false
@@ -144,8 +165,29 @@ function ensureListeners() {
         // v2.1.0 Phase 2: auto-load stored corrections for the review UI.
         // The caller must pass the active timeline_id via loadCorrections.
       }
+      coverageGap.value = detail?.ledger?.uncovered_segment_ids?.length ?? 0
     },
   )
+
+  // v3.0.4 M1-6: translation completed -> expose the new track for the
+  // WorkspacePage watcher (switch list to the translation track; project
+  // refresh itself goes through the generic task:completed -> get_project
+  // path shared with correction).
+  onEvent<{
+    track_id?: string
+    track_name?: string
+    language?: string
+    uncovered_ids?: string[]
+  }>(EVENT_LLM_TRANSLATION_COMPLETED, (detail) => {
+    isRunning.value = false
+    if (!detail?.track_id) return
+    lastTranslationCompletion.value = {
+      track_id: detail.track_id,
+      track_name: detail.track_name ?? "",
+      language: detail.language ?? "",
+      uncovered_ids: detail.uncovered_ids ?? [],
+    }
+  })
 
   // P2 highlight: live progress updates
   onEvent<{ results?: HighlightResult[] }>(
@@ -204,6 +246,22 @@ function ensureListeners() {
     isRunning.value = false
     progress.value = 0
   })
+
+  // v3.0.4 smoke-fix 1b: the panel progress bar (llmProgress) was never
+  // wired to the generic task:progress stream -- only per-feature result
+  // streams had listeners, so translation ran at 0% until completion.
+  // UI single-flight (SPEC M1-5: at most one LLM task at a time) makes
+  // "any progress event while isRunning" unambiguous, so no task-id
+  // bookkeeping is needed.
+  onEvent<{ task_id?: string; percent?: number; message?: string }>(
+    EVENT_TASK_PROGRESS,
+    (detail) => {
+      if (!isRunning.value) return
+      if (typeof detail?.percent === "number") {
+        progress.value = detail.percent
+      }
+    },
+  )
 }
 
 export function useLlmTasks() {
@@ -220,14 +278,19 @@ export function useLlmTasks() {
       model?: string
       base_url?: string
       api_key_masked?: string
+      resolved_model?: string
+      resolved_base_url?: string
     }>("get_llm_config")
     if (res.success && res.data) {
-      const model = res.data.model ?? ""
-      const baseUrl = res.data.base_url ?? ""
-      // is_configured requires base_url + api_key + model all non-empty.
-      // api_key is masked out by backend, so we treat non-empty model +
-      // non-empty base_url as "configured" (api_key presence is implied --
-      // the backend masks but doesn't blank base_url/model).
+      // v3.0.4 smoke-fix 1a: judge "configured" on the PROVIDER-RESOLVED
+      // base_url/model (backend is_configured() semantics). Empty fields
+      // legitimately fall back to provider defaults -- judging on the raw
+      // values flagged default-configured setups as 未配置 even though the
+      // settings-page test button worked.
+      const model = res.data.resolved_model ?? res.data.model ?? ""
+      const baseUrl = res.data.resolved_base_url ?? res.data.base_url ?? ""
+      // api_key is masked out by backend (masked value non-empty = a key is
+      // set, matching is_configured()'s truthiness requirement).
       llmConfig.value = {
         configured: Boolean(model && baseUrl && (res.data.api_key_masked ?? "")),
         model,
@@ -262,17 +325,47 @@ export function useLlmTasks() {
     }
   }
 
-  async function startSubtitleCorrection(referenceText = ""): Promise<void> {
+  // v3.0.4 M2-4 C: trackId rides through to the backend as the 4th
+  // positional arg (P2-2 signature start_subtitle_correction(reference_text,
+  // timeline_id, context_window, track_id); "" / omitted = main track,
+  // v3.0.3 behavior unchanged). The middle two keep the backend defaults
+  // (timeline "" = active, context window 3).
+  async function startSubtitleCorrection(referenceText = "", trackId = ""): Promise<void> {
     isRunning.value = true
     progress.value = 0
     errorMsg.value = null
     resetSubtitleCorrection()
 
-    const res = await call<MiloTask>("start_subtitle_correction", referenceText)
+    const res = await call<MiloTask>(
+      "start_subtitle_correction",
+      referenceText,
+      "",
+      3,
+      trackId,
+    )
     if (!res.success) {
       isRunning.value = false
       errorMsg.value = res.error ?? "Failed to start subtitle correction"
     }
+  }
+
+  // v3.0.4 M1-6: start "translate the main track into a new secondary track".
+  // Same lifecycle as startSubtitleCorrection; returns whether the backend
+  // accepted the task so the caller can write back the remembered language
+  // ONLY on a successful start (config key llm_translation_target_language).
+  async function startTranslation(targetLanguage: string): Promise<boolean> {
+    isRunning.value = true
+    progress.value = 0
+    errorMsg.value = null
+    lastTranslationCompletion.value = null
+
+    const res = await call<MiloTask>("start_translation", targetLanguage)
+    if (!res.success) {
+      isRunning.value = false
+      errorMsg.value = res.error ?? "Failed to start translation"
+      return false
+    }
+    return true
   }
 
   function resetHighlight() {
@@ -432,6 +525,8 @@ export function useLlmTasks() {
     hasSmartDeleteResults,
     startSmartDelete,
     resetSmartDelete,
+    // v3.0.0 M3-1: coverage gap (uncovered segment count, 0 = full coverage)
+    coverageGap,
     // P1 subtitle correction
     subtitleCorrectionResult,
     startSubtitleCorrection,
@@ -445,6 +540,9 @@ export function useLlmTasks() {
     rejectCorrection,
     acceptHighConfidenceCorrections,
     clearCorrections,
+    // v3.0.4 M1-6: translation to a new secondary track
+    startTranslation,
+    lastTranslationCompletion,
     // P2 highlight
     highlightResults,
     hasHighlightResults,

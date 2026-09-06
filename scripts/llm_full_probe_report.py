@@ -7,6 +7,8 @@ Usage:  uv run scripts/llm_full_probe.py
 Output: scripts/llm_full_report.md
 """
 
+# ruff: noqa: E402  -- script bootstrap: sys.path before imports
+
 from __future__ import annotations
 
 import json
@@ -17,13 +19,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from core.config import load_settings
 from core.llm_prompts import (
+    _HIGHLIGHT_SYSTEM,
+    _SEARCH_SYSTEM,
     _SMART_DELETE_SYSTEM,
     _SUBTITLE_CORRECTION_SYSTEM_A,
     _SUBTITLE_CORRECTION_SYSTEM_B,
-    _HIGHLIGHT_SYSTEM,
-    _SEARCH_SYSTEM,
 )
 from core.llm_service import (
     analyze_highlights,
@@ -55,7 +56,6 @@ def load_pandora_segments() -> list[dict]:
 
 def run_probe() -> dict:
     """Run all probes, return structured results."""
-    settings = load_settings()
     cfg = get_llm_config()
     segments = load_pandora_segments()
     seg_map = {s["id"]: s for s in segments}
@@ -167,8 +167,8 @@ def generate_report(r: dict) -> str:
     # -- Config --
     w("## 1. 配置信息")
     w("")
-    w(f"| 项目 | 值 |")
-    w(f"|------|------|")
+    w("| 项目 | 值 |")
+    w("|------|------|")
     for k, v in r["config"].items():
         w(f"| {k} | `{v}` |")
     w(f"| 总片段数 | {r['segment_count']} |")
@@ -274,12 +274,12 @@ def generate_report(r: dict) -> str:
 def _print_feature_section(w, data: dict, name: str) -> None:
     """Print a standard feature result section."""
     if not data["success"]:
-        w(f"- **状态**: FAIL")
+        w("- **状态**: FAIL")
         w(f"- **错误**: {data.get('error')}")
         w("")
         return
 
-    w(f"- **状态**: PASS")
+    w("- **状态**: PASS")
     w(f"- **耗时**: {data['wall_time_s']:.1f}s")
     w(f"- **结果数**: {data['count']}")
     tu = data.get("token_usage", {})

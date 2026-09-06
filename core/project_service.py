@@ -10,11 +10,13 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 from loguru import logger
 
+from core import migrations
+from core.correction_service import CorrectionService
 from core.models import (
-    AnalysisData,
     AnalysisResult,
     EditDecision,
     EditStatus,
@@ -23,10 +25,14 @@ from core.models import (
     ProjectMeta,
     Segment,
     SegmentType,
+    SubtitleTrack,
     Timeline,
-    TranscriptData,
+    TrackBinding,
 )
 from core.paths import get_projects_dir
+from core.persistence import atomic_save_with_backup, load_json_with_recovery
+from core.timeline_utils import split_words
+from core.track_constraints import OVERLAP_EPSILON
 
 
 def compute_media_fingerprint(path: str) -> str:
@@ -48,6 +54,26 @@ def compute_media_hash_deep(path: str) -> str:
     return h.hexdigest()
 
 
+def _merge_time_ranges(ranges: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Merge overlapping or adjacent (start, end) ranges (v3.0.4 M4-4).
+
+    Extracted verbatim from generate_subtitle_keep_ranges' keep-range
+    build fold (the inline ``if start <= keep_ranges[-1][1]`` branch) so
+    the M4-4 user-keep merge reuses the exact same adjacency rule: a
+    range starting at or before the current merged end joins it
+    (touching ranges merge). Behavior of the original fold is unchanged
+    (sorted-by-start input folds identically). Input order is
+    irrelevant; output is sorted by start.
+    """
+    merged: list[tuple[float, float]] = []
+    for start, end in sorted(ranges):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
 class ProjectService:
     """Manages project lifecycle and persistence."""
 
@@ -58,6 +84,8 @@ class ProjectService:
         # Frontend rejects patches with revision <= its last_seen_revision
         # to defend against out-of-order bridge responses.
         self._revision: int = 0
+        # v3.0.0 M10: correction domain service (single-direction dependency)
+        self.correction = CorrectionService(self)
 
     @property
     def current(self) -> Project | None:
@@ -112,6 +140,10 @@ class ProjectService:
         path so reads stay cheap. Methods that may disturb ordering
         (``update_transcript`` / ``update_segment`` with start changes /
         ``import_srt``) call this after mutation.
+
+        v3.0.0 M11-2: MAIN TRACK ONLY by contract. Extension tracks
+        (``transcript.tracks``) maintain their own ordering; the main-track
+        invariant must never rewrite them.
         """
         if self._current is None:
             return
@@ -123,19 +155,22 @@ class ProjectService:
             new_transcript = tl.transcript.model_copy(update={"segments": sorted_segs})
             self._update_active_timeline(transcript=new_transcript)
 
-    def _success_patch(self, **layers) -> dict:
+    def _success_patch(self, meta: dict | None = None, **layers) -> dict:
         """Build a ProjectPatch response envelope for the active timeline.
 
         ``layers`` are passed straight to :class:`ProjectPatch`; only the
         layers the caller actually mutated should be populated. The
         ``revision`` is set via :meth:`_next_revision` and ``timeline_id``
-        defaults to the active timeline.
+        defaults to the active timeline. ``meta`` carries side-channel
+        payloads (v3.0.1 linkage counters) -- optional, old frontends
+        ignore it.
         """
         from core.models import ProjectPatch
 
         patch = ProjectPatch(
             revision=self._next_revision(),
             timeline_id=self._current.active_timeline_id if self._current else None,
+            meta=meta,
             **layers,
         )
         return {"success": True, "data": patch.model_dump(mode="json")}
@@ -155,6 +190,130 @@ class ProjectService:
             full_project=self._current.model_dump(mode="json"),
         )
         return {"success": True, "data": patch.model_dump(mode="json")}
+
+    # v3.0.0 M5: layered undo. Undoable layers are the timeline-scoped ones
+    # the frontend actually snapshots before an operation. ``media`` /
+    # ``active_timeline_id`` are not undoable (no caller snapshots them).
+    # v3.0.1 M5-1: tracks/bindings join for the stacked-timeline linkage
+    # operations (atomic three-layer snapshots).
+    _UNDO_LAYERS = ("segments", "edits", "analysis", "tracks", "bindings")
+
+    def apply_undo(self, layers_payload: dict, base_revision: int) -> dict:
+        """Replace timeline layers from an undo/redo snapshot (M5-2).
+
+        The single backend entry point for the layered undo path. Semantics
+        (risk review 4.3 red lines):
+
+        1. Validate the snapshot structure for *every* requested layer
+           BEFORE mutating anything (all-or-nothing atomic apply).
+        2. Reject stale/future ``base_revision`` (defends against
+           out-of-order frontend state, same contract as the patch
+           protocol's ``is_stale_patch``).
+        3. Replace the layers, bump revision strictly forward, and return
+           the resulting ProjectPatch via :meth:`_success_patch` so the
+           frontend applies it through the existing patch channel.
+
+        Args:
+            layers_payload: mapping layer name -> layer payload
+                (``segments``: list of Segment dicts, ``edits``: list of
+                EditDecision dicts, ``analysis``: AnalysisData dict).
+            base_revision: the frontend's last seen revision; must equal
+                the current revision.
+
+        Returns:
+            ``_success_patch`` envelope on success; ``{"success": False,
+            "error": ...}`` otherwise. Revision is never rewound.
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+        if not isinstance(layers_payload, dict) or not layers_payload:
+            return {"success": False, "error": "apply_undo: empty layers payload"}
+
+        unknown = set(layers_payload) - set(self._UNDO_LAYERS)
+        if unknown:
+            return {
+                "success": False,
+                "error": f"apply_undo: unknown layer(s): {sorted(unknown)}",
+            }
+        if base_revision != self._revision:
+            return {
+                "success": False,
+                "error": (
+                    f"apply_undo: stale revision {base_revision} "
+                    f"(current {self._revision})"
+                ),
+                "data": {"current_revision": self._revision},
+            }
+
+        # Validate all layers first - no mutation on any failure.
+        from core.models import AnalysisData, EditDecision, Segment, SubtitleTrack, TrackBinding
+
+        validated: dict = {}
+        try:
+            if "segments" in layers_payload:
+                if not isinstance(layers_payload["segments"], list):
+                    raise ValueError("segments must be a list")
+                validated["segments"] = [
+                    Segment.model_validate(s) for s in layers_payload["segments"]
+                ]
+            if "edits" in layers_payload:
+                if not isinstance(layers_payload["edits"], list):
+                    raise ValueError("edits must be a list")
+                validated["edits"] = [
+                    EditDecision.model_validate(e) for e in layers_payload["edits"]
+                ]
+            if "analysis" in layers_payload:
+                validated["analysis"] = AnalysisData.model_validate(
+                    layers_payload["analysis"]
+                )
+            if "tracks" in layers_payload:
+                if not isinstance(layers_payload["tracks"], list):
+                    raise ValueError("tracks must be a list")
+                validated["tracks"] = [
+                    SubtitleTrack.model_validate(t) for t in layers_payload["tracks"]
+                ]
+            if "bindings" in layers_payload:
+                if not isinstance(layers_payload["bindings"], list):
+                    raise ValueError("bindings must be a list")
+                validated["bindings"] = [
+                    TrackBinding.model_validate(b) for b in layers_payload["bindings"]
+                ]
+        except Exception as exc:  # pydantic ValidationError or shape error
+            return {"success": False, "error": f"apply_undo: invalid snapshot: {exc}"}
+
+        # v3.0.1 M5-1: transcript-scoped layers merge into ONE transcript
+        # model_copy so a combined segments+tracks+bindings snapshot applies
+        # atomically (single replacement, no intermediate states).
+        updates: dict = {}
+        transcript_updates: dict = {}
+        if "segments" in validated:
+            transcript_updates["segments"] = validated["segments"]
+        if "tracks" in validated:
+            transcript_updates["tracks"] = validated["tracks"]
+        if "bindings" in validated:
+            transcript_updates["bindings"] = validated["bindings"]
+        if transcript_updates:
+            updates["transcript"] = self.active_timeline.transcript.model_copy(
+                update=transcript_updates
+            )
+        if "edits" in validated:
+            updates["edits"] = validated["edits"]
+        if "analysis" in validated:
+            updates["analysis"] = validated["analysis"]
+        self._update_active_timeline(**updates)
+
+        if "segments" in validated:
+            # Restore the start-ascending invariant the rest of the code
+            # base relies on (snapshots may be legitimately unordered).
+            self._enforce_segment_sort_invariant()
+
+        def _dump(layer: str):
+            val = validated[layer]
+            if isinstance(val, list):
+                return [item.model_dump(mode="json") for item in val]
+            return val.model_dump(mode="json")
+
+        return self._success_patch(**{layer: _dump(layer) for layer in validated})
 
     def create_project(self, name: str, media_path: str, media_info: dict) -> dict:
         """Create a new project with media info."""
@@ -191,39 +350,50 @@ class ProjectService:
             if not project_path.exists():
                 return {"success": False, "error": f"Project file not found: {path}"}
 
-            data = json.loads(project_path.read_text(encoding="utf-8"))
+            # v3.0.0 M2: corrupted main file falls back to .bak.1 then .bak.2.
+            def _validate(raw: dict) -> Project:
+                return Project.model_validate(migrations.migrate_v1_to_v2(raw))
 
-            # Migrate v1 -> v2 schema if needed
-            data = self._migrate_to_v2(data)
-
-            project = Project.model_validate(data)
+            payload, recovered_from, tried = load_json_with_recovery(
+                project_path, validate=_validate
+            )
+            if payload is None:
+                return {
+                    "success": False,
+                    "error": "项目文件损坏且无可用备份",
+                    "data": {"tried": tried},
+                }
+            project = payload
 
             self._current = project
             self._current_path = project_path
             logger.info("Opened project: {}", path)
 
-            # Migrate old format silence edits
-            self._migrate_silence_edits()
+            # v3.0.0 fix (macOS smoke round 2): self-heal the main file.
+            # Recovery only lived in memory before, so project.json stayed
+            # corrupt on disk until some later save happened. Repair now.
+            if recovered_from:
+                try:
+                    self.save_project()
+                    logger.info("Repaired corrupted project.json from {}", recovered_from)
+                except Exception as e:  # noqa: BLE001 -- self-heal must not block open
+                    logger.warning("Self-heal save after recovery failed: {}", e)
 
-            # v2.1.1: Dedupe duplicate edit ids (legacy llm_smart bug fix)
-            self._dedupe_edit_ids()
-
-            # v2.1.1: Migrate legacy highlight EditDecisions (Bug E/G fix)
-            self._migrate_highlights()
-
-            # v2.1.2: Reject silence_detection edits that overwrite prior user
-            # decisions (overlap-based repair; replaces fragile exact-time check)
-            self._migrate_overlapping_silence_edits()
+            # v3.0.0 M10: post-load migration chain moved to core/migrations.py
+            migrations.run_post_load_migrations(self)
 
             # Check media path reachability
             if self._current.media and self._current.media.path:
                 media_path = Path(self._current.media.path)
                 if not media_path.exists():
-                    return {
+                    result_nf = {
                         "success": False,
                         "error": "MEDIA_NOT_FOUND",
                         "data": {"path": self._current.media.path},
                     }
+                    if recovered_from:
+                        result_nf["recovered_from"] = recovered_from
+                    return result_nf
 
                 # Fingerprint mismatch warning (file may have been overwritten)
                 warnings = []
@@ -235,207 +405,18 @@ class ProjectService:
                 result = {"success": True, "data": self._current.model_dump()}
                 if warnings:
                     result["warnings"] = warnings
+                if recovered_from:
+                    result["recovered_from"] = recovered_from
                 return result
 
-            return {"success": True, "data": self._current.model_dump()}
+            result = {"success": True, "data": self._current.model_dump()}
+            if recovered_from:
+                result["recovered_from"] = recovered_from
+            return result
 
         except Exception as e:
             logger.exception("Failed to open project: {}", path)
             return {"success": False, "error": str(e)}
-
-    def _migrate_to_v2(self, raw: dict) -> dict:
-        """Migrate schema_version 1 -> 2: wrap flat fields into default Timeline."""
-        if raw.get("schema_version", 1) >= 2:
-            return raw
-
-        transcript = raw.pop("transcript", {"segments": []})
-        edits = raw.pop("edits", [])
-        analysis = raw.pop("analysis", {"results": []})
-        raw.pop("topic_drift", None)  # Drop old Topic Drift data
-
-        created_at = raw.get("project", {}).get("created_at", "")
-        raw["timelines"] = [
-            {
-                "id": "default",
-                "label": "原始",
-                "source": "migrated",
-                "created_at": created_at,
-                "parent_id": "",
-                "transcript": transcript,
-                "edits": edits,
-                "analysis": analysis,
-            }
-        ]
-        raw["active_timeline_id"] = "default"
-        raw["schema_version"] = 2
-        return raw
-
-    def _migrate_silence_edits(self) -> None:
-        """Migrate old format silence EditDecisions to bind target_id."""
-        if not self._current:
-            return
-
-        silence_map = {
-            s.id: s for s in self.active_timeline.transcript.segments
-            if s.type == SegmentType.SILENCE
-        }
-
-        migrated = []
-        for edit in self.active_timeline.edits:
-            if (edit.source == "silence_detection"
-                    and edit.target_type == "range"
-                    and edit.target_id is None):
-                # Try to match by time range
-                matched = next(
-                    (s for s in silence_map.values()
-                     if abs(s.start - edit.start) < 0.05 and abs(s.end - edit.end) < 0.05),
-                    None,
-                )
-                if matched:
-                    migrated.append(edit.model_copy(update={
-                        "target_type": "segment",
-                        "target_id": matched.id,
-                    }))
-                else:
-                    migrated.append(edit)
-            else:
-                migrated.append(edit)
-
-        self._update_active_timeline(edits=migrated)
-
-    def _dedupe_edit_ids(self) -> None:
-        """One-time fix: append _dup{N} suffix to duplicate edit ids in the active timeline.
-
-        Suffix format matches the defensive logic in add_analysis_results (_dup{N}).
-        O(n) fast path skips projects with no duplicates (zero overhead for large projects).
-        """
-        if not self._current:
-            return
-
-        tl = self.active_timeline
-        edits = list(tl.edits)
-        ids = [e.id for e in edits]
-
-        # Fast path: no duplicates, skip entirely
-        if len(ids) == len(set(ids)):
-            return
-
-        # Duplicate detected -- back up and fix
-        all_ids = set(ids)
-        seen: dict[str, int] = {}
-        fixed = []
-        changed_count = 0
-
-        for e in edits:
-            if e.id in seen:
-                seen[e.id] += 1
-                candidate = f"{e.id}_dup{seen[e.id]}"
-                # Guard: candidate might collide with an existing id (secondary conflict)
-                while candidate in all_ids:
-                    seen[e.id] += 1
-                    candidate = f"{e.id}_dup{seen[e.id]}"
-                all_ids.add(candidate)
-                fixed.append(e.model_copy(update={"id": candidate}))
-                changed_count += 1
-            else:
-                seen[e.id] = 1
-                fixed.append(e)
-
-        if changed_count > 0:
-            logger.warning("Deduped {} duplicate edit ids in timeline {}", changed_count, tl.id)
-            self._update_active_timeline(edits=fixed)
-
-    def _migrate_highlights(self) -> None:
-        """One-time migration: fix legacy EditDecisions created before Bug E/G fix.
-
-        - Remove ANY orphan EditDecision whose analysis_id no longer exists
-          (not limited to highlights; covers all analysis-driven sources)
-        - Set action="keep" for highlight-source EditDecisions still on "delete"
-        Idempotent: safe to run multiple times.
-        """
-        if not self._current:
-            return
-
-        tl = self.active_timeline
-        ar_ids = {r.id for r in tl.analysis.results}
-
-        updated_edits = []
-        fixed = 0
-        orphan_removed = 0
-        for e in tl.edits:
-            is_highlight = e.source in ("llm_highlight", "manual_highlight")
-            # An edit with analysis_id pointing at a non-existent result is an
-            # orphan regardless of source -- its driving analysis was deleted.
-            if e.analysis_id and e.analysis_id not in ar_ids:
-                orphan_removed += 1
-                continue
-
-            if is_highlight and e.action == "delete":
-                # Bug E legacy: highlight edit had wrong action
-                updated_edits.append(e.model_copy(update={"action": "keep"}))
-                fixed += 1
-            else:
-                updated_edits.append(e)
-
-        if fixed > 0 or orphan_removed > 0:
-            self._update_active_timeline(edits=updated_edits)
-            logger.info(
-                "Highlight migration: fixed %d actions, removed %d orphans",
-                fixed, orphan_removed,
-            )
-
-    def _migrate_overlapping_silence_edits(self) -> None:
-        """Repair silence_detection edits that conflict with prior user decisions.
-
-        Background: older versions of add_silence_results used exact 0.05s
-        time-range matching for deduplication, so silence_detection edits could
-        be auto-created and then confirmed by bulk actions in ranges where the
-        user had already rejected deletion. The frontend's resolveSegmentState
-        would then show "confirmed delete" on a subtitle the user wanted to keep.
-
-        This migration marks confirmed silence_detection edits as REJECTED when
-        they overlap (>0.3s) a user edit whose effective intent is "keep".
-        Idempotent: safe to run multiple times.
-        """
-        if not self._current:
-            return
-
-        tl = self.active_timeline
-        edits = list(tl.edits)
-
-        user_edits = [e for e in edits if e.source == "user"]
-        if not user_edits:
-            return
-
-        updated: list[EditDecision] = []
-        changed = 0
-        for e in edits:
-            if e.source != "silence_detection" or e.status != EditStatus.CONFIRMED:
-                updated.append(e)
-                continue
-
-            # Effective intent "keep" = user rejected delete OR confirmed keep
-            conflict = any(
-                self._ranges_overlap(e.start, e.end, ue.start, ue.end)
-                and (
-                    (ue.status == EditStatus.REJECTED and ue.action == "delete")
-                    or (ue.status == EditStatus.CONFIRMED and ue.action == "keep")
-                )
-                for ue in user_edits
-            )
-
-            if conflict:
-                updated.append(e.model_copy(update={"status": EditStatus.REJECTED}))
-                changed += 1
-            else:
-                updated.append(e)
-
-        if changed > 0:
-            self._update_active_timeline(edits=updated)
-            logger.info(
-                "Silence overlap migration: rejected {} conflicting silence edits",
-                changed,
-            )
 
     def save_project(self) -> dict:
         """Save the current project to disk."""
@@ -450,9 +431,10 @@ class ProjectService:
             })
             self._current = updated
 
-            tmp = self._current_path.with_suffix(".tmp")
-            tmp.write_text(updated.model_dump_json(indent=2), encoding="utf-8")
-            os.replace(tmp, self._current_path)
+            # v3.0.0 M2: fsync + backup rotation; failures inside only warn.
+            atomic_save_with_backup(
+                self._current_path, updated.model_dump_json(indent=2)
+            )
 
             logger.info("Saved project to {}", self._current_path)
             return {"success": True}
@@ -602,10 +584,289 @@ class ProjectService:
         ]
 
         self._update_active_timeline(
-            transcript=TranscriptData(segments=all_segments),
+            # v3.0.0 M11-2 construction guard: model_copy preserves
+            # engine/language/tracks/bindings (a fresh TranscriptData would
+            # silently drop them).
+            transcript=self.active_timeline.transcript.model_copy(
+                update={"segments": all_segments}
+            ),
             edits=cleaned_edits,
         )
         return {"success": True, "data": self._current.model_dump()}
+
+    def update_transcript_meta(
+        self,
+        engine: str | None = None,
+        language: str | None = None,
+    ) -> dict:
+        """Update transcript-level metadata without touching segments.
+
+        v3.0.0 M1-1: transcription results are the single source of truth;
+        this records which ASR engine/language produced the current transcript.
+        Only provided fields are updated; segments/edits are left untouched.
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        updates: dict = {}
+        if engine is not None:
+            updates["engine"] = engine
+        if language is not None:
+            updates["language"] = language
+        if not updates:
+            return {"success": True, "data": self._current.model_dump()}
+
+        transcript = self.active_timeline.transcript.model_copy(update=updates)
+        self._update_active_timeline(transcript=transcript)
+        return {"success": True, "data": self._current.model_dump()}
+
+    def import_srt_as_track(
+        self,
+        file_path: str,
+        language: str = "",
+        role: str = "extension",
+    ) -> dict:
+        """Import an SRT file as a read-only extension track (v3.0.0 M11-2).
+
+        Segment ids are re-namespaced into ``track_{track_id}_seg_{start:.3f}``
+        so merge / edit-decision systems can never match them against
+        main-track segments. Track segments are auto-bound to main-track
+        subtitle segments within a 300 ms start-time tolerance (greedy,
+        time-ordered, one-to-one); bindings are written but not consumed
+        this version.
+
+        Returns:
+            ``tracks`` / ``bindings`` layer patch envelope (ProjectPatch).
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        from core.subtitle_service import parse_srt
+
+        parsed = parse_srt(file_path)
+        if not parsed.get("success"):
+            return {"success": False, "error": parsed.get("error", "SRT parse failed")}
+        raw_segments = parsed["data"]
+        if not raw_segments:
+            return {"success": False, "error": "SRT file contains no subtitles"}
+
+        from uuid import uuid4
+
+        track_id = f"trk_{uuid4().hex[:8]}"
+        track_segments = sorted(
+            (
+                Segment.model_validate({**s, "id": f"track_{track_id}_seg_{s['start']:.3f}"})
+                for s in raw_segments
+            ),
+            key=lambda s: s.start,
+        )
+        track = SubtitleTrack(
+            id=track_id,
+            role=role,
+            name=Path(file_path).stem,
+            language=language,
+            segments=track_segments,
+        )
+
+        # 300 ms tolerance auto-binding against main-track subtitle segments.
+        main_subs = [
+            s for s in self.active_timeline.transcript.segments
+            if s.type == SegmentType.SUBTITLE
+        ]
+        consumed: set[str] = set()
+        bindings: list[TrackBinding] = []
+        for ext in track_segments:
+            main = next(
+                (
+                    m for m in main_subs
+                    if m.id not in consumed and abs(ext.start - m.start) <= 0.3
+                ),
+                None,
+            )
+            if main is None:
+                continue
+            consumed.add(main.id)
+            bindings.append(
+                TrackBinding(
+                    id=f"bind_{uuid4().hex[:8]}",
+                    track_id=track_id,
+                    main_segment_id=main.id,
+                    extension_segment_id=ext.id,
+                    start_offset=round(ext.start - main.start, 3),
+                    end_offset=round(ext.end - main.end, 3),
+                )
+            )
+
+        transcript = self.active_timeline.transcript.model_copy(
+            update={
+                "tracks": [*self.active_timeline.transcript.tracks, track],
+                "bindings": [*self.active_timeline.transcript.bindings, *bindings],
+            }
+        )
+        self._update_active_timeline(transcript=transcript)
+        logger.info(
+            "Imported SRT as track {} ({} segments, {} bindings, language={})",
+            track_id, len(track_segments), len(bindings), language or "-",
+        )
+        return self._success_patch(
+            tracks=transcript.tracks,
+            bindings=transcript.bindings,
+        )
+
+    def create_translation_track(
+        self,
+        timeline_id: str,
+        name: str,
+        language: str,
+        items: list[dict],
+        bind: bool = True,
+    ) -> dict:
+        """Batch-write a bound translation track in ONE patch (v3.0.4 M1-4).
+
+        Called by the LLM translation handler with the pipeline output:
+        ``items = [{"segment_id", "start", "end", "text"}, ...]`` where
+        ``segment_id`` references a main-track subtitle segment and
+        ``text`` is its translation. This method does NO LLM work -- it
+        only reconciles the items against the CURRENT main track and
+        persists what still exists.
+
+        Contract (SPEC M1-4, R1.3):
+
+        1. Timeline pinning (entry check): ``timeline_id`` must equal
+           the active timeline -- both ``_update_active_timeline`` and
+           the patch envelope's ``timeline_id`` target the active
+           timeline, so a mismatch is rejected with zero writes.
+        2. Duplicate-language rejection: the write-side twin of the
+           start_translation guard (the user may have created a same
+           language track while the 1-3 minute task was running).
+        3. Idempotent reconciliation: every item is checked against the
+           current main-track subtitle segments. Survivors become track
+           segments whose start/end are copied VERBATIM from the main
+           segment (ids live in the ``track_{track_id}_seg_{start:.3f}``
+           namespace so merge / edit-decision systems can never match
+           them); vanished ids are reported in ``uncovered_ids`` (never
+           silently dropped). Nothing surviving (or empty items) ->
+           reject with zero writes.
+        4. ``bind=True`` builds exact 1:1 bindings with zero offsets
+           (times are copied, so extension - main == 0); ``bind=False``
+           writes track segments only.
+        5. Single-patch persistence via the ``import_srt_as_track``
+           whole-replace pattern -- ONE ``_success_patch(tracks=...,
+           bindings=...)`` envelope (revision +1, one undo step reverts
+           the whole track). NEVER loop ``add_track_segment``: a
+           per-segment patch means 1000 bridge round-trips, revision
+           +1000, and a thousand-entry undo history for a thousand
+           segment project (3.0.2 smoke already proved that trap).
+
+        The write report (``track_id`` / ``written_count`` /
+        ``target_count`` / ``uncovered_ids``) rides the patch ``meta``
+        side-channel -- the sanctioned extra-data slot of a ProjectPatch
+        envelope (old frontends ignore it).
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        from uuid import uuid4
+
+        # Contract 6: timeline pinning, entry check, zero writes.
+        if timeline_id != self._current.active_timeline_id:
+            return {
+                "success": False,
+                "error": "Timeline no longer active: 翻译期间已切换时间轴",
+            }
+
+        tl = self.active_timeline
+        # Contract 1: duplicate-language rejection, write-side twin of the
+        # start_translation guard (M1-1 step 5).
+        if any(
+            t.role == "translation" and t.language == language
+            for t in tl.transcript.tracks
+        ):
+            return {
+                "success": False,
+                "error": f"同语言翻译轨已存在（{language}），可清空或删除该轨后重试",
+            }
+
+        # Contract 2: reconcile against the CURRENT main-track subtitle
+        # segments -- the task ran for minutes and segments may be gone.
+        main_subs = {
+            s.id: s for s in tl.transcript.segments if s.type == SegmentType.SUBTITLE
+        }
+        track_id = f"trk_{uuid4().hex[:8]}"
+        track_segments: list[Segment] = []
+        main_ids: list[str] = []
+        uncovered_ids: list[str] = []
+        for item in items:
+            seg_id = item["segment_id"]
+            main = main_subs.get(seg_id)
+            if main is None:
+                uncovered_ids.append(seg_id)
+                continue
+            track_segments.append(
+                Segment(
+                    id=f"track_{track_id}_seg_{main.start:.3f}",
+                    type=SegmentType.SUBTITLE,
+                    start=main.start,
+                    end=main.end,
+                    text=item["text"],
+                )
+            )
+            main_ids.append(seg_id)
+
+        if not track_segments:
+            return {"success": False, "error": "所有目标段已被删除"}
+
+        track = SubtitleTrack(
+            id=track_id,
+            role="translation",
+            name=name,
+            language=language,
+            segments=track_segments,
+        )
+        # Contract 3: exact 1:1 bindings, offsets are zero because the
+        # track segment times are verbatim copies of the main segment's.
+        bindings: list[TrackBinding] = []
+        if bind:
+            bindings = [
+                TrackBinding(
+                    id=f"bind_{uuid4().hex[:8]}",
+                    track_id=track_id,
+                    main_segment_id=main_id,
+                    extension_segment_id=seg.id,
+                    start_offset=0.0,
+                    end_offset=0.0,
+                )
+                for main_id, seg in zip(main_ids, track_segments, strict=True)
+            ]
+
+        # Contract 4: single whole-replace write (import_srt_as_track
+        # pattern) -- one revision bump, one undo step for the track.
+        transcript = tl.transcript.model_copy(
+            update={
+                "tracks": [*tl.transcript.tracks, track],
+                "bindings": [*tl.transcript.bindings, *bindings],
+            }
+        )
+        self._update_active_timeline(transcript=transcript)
+        logger.info(
+            "Created translation track {} ({} segments, {} bindings, "
+            "language={}, uncovered={})",
+            track_id, len(track_segments), len(bindings), language or "-",
+            len(uncovered_ids),
+        )
+        # Contract 5: report rides the meta side-channel.
+        return self._success_patch(
+            tracks=transcript.tracks,
+            bindings=transcript.bindings,
+            meta={
+                "translation": {
+                    "track_id": track_id,
+                    "written_count": len(track_segments),
+                    "target_count": len(items),
+                    "uncovered_ids": uncovered_ids,
+                }
+            },
+        )
 
     def update_media_info(self, media_info: dict) -> dict:
         """Update media info in the current project."""
@@ -883,7 +1144,10 @@ class ProjectService:
         # subtitle_correction, highlight). On next project open, _migrate_highlights
         # then removed the now-orphaned edits, destroying AI suggestions.
         self._update_active_timeline(
-            transcript=TranscriptData(segments=all_segments),
+            # v3.0.0 M11-2 construction guard (see update_transcript).
+            transcript=self.active_timeline.transcript.model_copy(
+                update={"segments": all_segments}
+            ),
             edits=all_edits,
         )
         logger.info("Added {} silence segments to project", len(new_segments))
@@ -1010,10 +1274,258 @@ class ProjectService:
         )
         return {"success": True, "data": self._current.model_dump()}
 
+    def add_range_decision(
+        self, start: float, end: float, action: str = "delete", source: str = "manual"
+    ) -> dict:
+        """Add a manual range EditDecision (v3.0.4 M4-1, R4.1).
+
+        Creates a ``target_type="range"`` edit covering ``[start, end]``.
+        Unlike subtitle_trim (deterministic, regenerable, CONFIRMED at
+        creation), manual ranges are PENDING at creation -- they need
+        human review before export/preview consumers pick them up.
+
+        Contract (SPEC M4-1, validation order per PLAN P3-5):
+
+        1. clamp: ``start = max(0, start)``; ``end = min(upper, end)``
+           where upper = media.duration, or -- media missing -- the max
+           end of main-track subtitle segments (same bound caliber as
+           generate_subtitle_keep_ranges). No media AND no subtitle
+           segments -> reject first (empty-max() guard, mirrors the
+           "No subtitle segments found" early rejection). ``end <= start``
+           after clamp -> reject.
+        2. action must be "delete" or "keep" (entry-level check ahead of
+           the model Literal).
+        3. dedup (same threshold/criteria as the subtitle_trim generation
+           side): an existing edit (any status) with the same action and
+           ``|e.start - start| < 0.05 and |e.end - end| < 0.05`` ->
+           idempotent return of that edit's id (no patch, zero writes).
+           Cross-action overlap passes (keep exists to punch through
+           delete, M4-4); arbitrarily-overlapping non-near-equal ranges
+           pass (range overlap is a legal state).
+        4. new edit: id ``edit-manual-{uuid4().hex[:8]}`` (uuid guards
+           against id collision after historical deletions; the
+           sequential subtitle_trim ids rely on wholesale regeneration
+           and do not fit incremental manual adds).
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        # 1. clamp to a defensible upper bound
+        if self._current.media is not None:
+            upper_bound = self._current.media.duration
+        else:
+            subtitle_ends = [
+                s.end for s in self.active_timeline.transcript.segments
+                if s.type == SegmentType.SUBTITLE
+            ]
+            if not subtitle_ends:
+                return {
+                    "success": False,
+                    "error": "无媒体时长且无字幕段，无法确定范围上界",
+                }
+            upper_bound = max(subtitle_ends)
+
+        clamped_start = max(0.0, start)
+        clamped_end = min(upper_bound, end)
+        if clamped_end <= clamped_start:
+            return {
+                "success": False,
+                "error": (
+                    f"Invalid range: end ({clamped_end}) must be greater "
+                    f"than start ({clamped_start})"
+                ),
+            }
+
+        # 2. action validation
+        if action not in ("delete", "keep"):
+            return {
+                "success": False,
+                "error": f"Invalid action: {action} (must be 'delete' or 'keep')",
+            }
+
+        # 3. idempotent dedup: same action + near-equal bounds (any status)
+        for edit in self.active_timeline.edits:
+            if (
+                edit.action == action
+                and abs(edit.start - clamped_start) < 0.05
+                and abs(edit.end - clamped_end) < 0.05
+            ):
+                return {
+                    "success": True,
+                    "data": {"edit_id": edit.id, "duplicate": True},
+                }
+
+        # 4. create the pending manual range edit
+        new_edit = EditDecision(
+            id=f"edit-manual-{uuid4().hex[:8]}",
+            start=clamped_start,
+            end=clamped_end,
+            action=action,
+            source=source,
+            status=EditStatus.PENDING,
+            priority=100,
+            target_type="range",
+            target_id=None,
+        )
+        updated_edits = [*self.active_timeline.edits, new_edit]
+        self._update_active_timeline(edits=updated_edits)
+        logger.info(
+            "Added manual range decision [{:.3f}s, {:.3f}s] action={} ({})",
+            clamped_start, clamped_end, action, new_edit.id,
+        )
+        return self._success_patch(edits=updated_edits)
+
+    def _apply_main_linkage(
+        self,
+        segment_id: str,
+        old_range: tuple[float, float],
+        new_range: tuple[float, float],
+    ) -> tuple[list, list, dict] | None:
+        """v3.0.1 M2-1 step 4: linkage resolution after a main-track
+        move/trim, per affected extension track:
+
+        Phase A (unbound segments): segments crossed by the new main range
+        keep their longest uncovered side; below-minimum ones are deleted
+        (the passive reconcile rule, SPEC M1-3).
+
+        Phase B (bound segments): FOLLOW WINS -- the synced geometry is the
+        segment's expected state, so it is never "resolved away" for being
+        inside the main range. It is clamped to [0, duration]; only when
+        the clamped geometry still overlaps a placed sibling is it deleted
+        and unbound (no room on the lane; MVP ruling, no fine squeezing --
+        recorded in SPEC errata).
+
+        Red lines (SPEC M0-3): reconcile NEVER rewrites the main track;
+        offsets are rebuilt wholesale from the final geometry; returned
+        layers are FULL layer arrays (frontend merges in place).
+
+        Returns ``(all_tracks, all_bindings, counters)`` or ``None`` when
+        the segment has no bindings (or there are no tracks at all).
+        """
+        from core.track_constraints import (
+            MIN_SEGMENT_DURATION,
+            clamp_extension_range,
+            overlaps_neighbors,
+            rebuild_binding_offsets,
+            reconcile_extension_track,
+            sync_bound_extension_for_main,
+        )
+
+        tl = self.active_timeline
+        tracks = list(tl.transcript.tracks)
+        if not tracks:
+            return None
+        all_bindings = list(tl.transcript.bindings)
+        bindings = [b for b in all_bindings if b.main_segment_id == segment_id]
+        if not bindings:
+            return None
+
+        duration = self._current.media.duration if self._current.media else 0.0
+        counters: dict = {"squeezed": 0, "removed": 0, "unbound": 0}
+        dropped_binding_ids: set[str] = set()
+
+        by_track: dict[str, list] = {}
+        for b in bindings:
+            by_track.setdefault(b.track_id, []).append(b)
+
+        for track_id, tbindings in by_track.items():
+            track = next((t for t in tracks if t.id == track_id), None)
+            if track is None:
+                # Dangling binding -> dissolve.
+                counters["unbound"] += len(tbindings)
+                dropped_binding_ids.update(b.id for b in tbindings)
+                continue
+
+            ext_by_id = {s.id: s for s in track.segments}
+            candidates = []  # (binding, ext_seg, synced_range)
+            for b in tbindings:
+                ext = ext_by_id.get(b.extension_segment_id)
+                if ext is None:
+                    counters["unbound"] += 1
+                    dropped_binding_ids.add(b.id)
+                    continue
+                synced = sync_bound_extension_for_main(
+                    old_range, new_range, (ext.start, ext.end)
+                )
+                candidates.append((b, ext, synced))
+            if not candidates:
+                continue
+
+            moved_ids = {ext.id for _, ext, _ in candidates}
+            # Phase A targets UNBOUND segments only -- segments bound to
+            # OTHER main segments belong to their own linkage and are never
+            # passively resolved here (they move with their own main).
+            bound_ext_ids = {b.extension_segment_id for b in all_bindings}
+            unbound_segs = [
+                s for s in track.segments
+                if s.id not in moved_ids and s.id not in bound_ext_ids
+            ]
+            result = reconcile_extension_track(unbound_segs, [new_range])
+            counters["squeezed"] += result.counters.squeezed
+            counters["removed"] += len(result.removed_ids)
+            removed_unbound = set(result.removed_ids)
+            reconciled_by_id = {item["id"]: item for item in result.segments}
+
+            placed: list = []
+            for s in track.segments:
+                if s.id in moved_ids or s.id in removed_unbound:
+                    continue
+                geom = reconciled_by_id.get(s.id)
+                if geom is not None and (
+                    abs(geom["start"] - s.start) > 1e-9 or abs(geom["end"] - s.end) > 1e-9
+                ):
+                    placed.append(
+                        s.model_copy(update={"start": geom["start"], "end": geom["end"]})
+                    )
+                else:
+                    placed.append(s)
+
+            # -- Phase B: bound segments follow (follow wins) -------------
+            for b, ext, synced in candidates:
+                g = clamp_extension_range(synced[0], synced[1], duration)
+                if g[1] - g[0] < MIN_SEGMENT_DURATION - 1e-6:
+                    # Degenerate media -- no room at all.
+                    counters["removed"] += 1
+                    counters["unbound"] += 1
+                    dropped_binding_ids.add(b.id)
+                    continue
+                if overlaps_neighbors(g[0], g[1], placed, ext.id):
+                    # No free space on the lane -> delete + unbind (MVP
+                    # ruling: honest removal + undo, no fine squeezing).
+                    counters["removed"] += 1
+                    counters["unbound"] += 1
+                    dropped_binding_ids.add(b.id)
+                    continue
+                placed.append(ext.model_copy(update={"start": g[0], "end": g[1]}))
+                new_offsets = rebuild_binding_offsets(new_range, (g[0], g[1]))
+                idx = next(i for i, x in enumerate(all_bindings) if x.id == b.id)
+                all_bindings[idx] = all_bindings[idx].model_copy(update=new_offsets)
+
+            # Extension tracks maintain their own start ordering (M11-2).
+            placed.sort(key=lambda s: s.start)
+            tidx = next(i for i, t in enumerate(tracks) if t.id == track_id)
+            tracks[tidx] = track.model_copy(update={"segments": placed})
+
+        if dropped_binding_ids:
+            all_bindings = [b for b in all_bindings if b.id not in dropped_binding_ids]
+
+        return tracks, all_bindings, counters
+
     def update_segment(self, segment_id: str, updates: dict) -> dict:
         """Update a segment's fields (start, end, text)."""
         if self._current is None:
             return {"success": False, "error": "No project is open"}
+
+        # v3.0.1 M2-1: extension-track segments live in the track_ id
+        # namespace and go through their own channel (update_track_segment).
+        if segment_id.startswith("track_"):
+            return {
+                "success": False,
+                "error": (
+                    "update_segment: use update_track_segment for "
+                    "extension-track segments (track_ namespace)"
+                ),
+            }
 
         allowed_fields = {"start", "end", "text"}
         filtered = {k: v for k, v in updates.items() if k in allowed_fields}
@@ -1027,6 +1539,36 @@ class ProjectService:
         if old_seg is None:
             return {"success": False, "error": f"Segment not found: {segment_id}"}
 
+        # v3.0.1 M2-1 step 4: linkage follow for bound extension segments
+        # (computed BEFORE the main-track mutation so the whole change —
+        # main geometry + extension tracks + bindings — lands as one patch).
+        linkage = None
+        cand_start = old_seg.start
+        cand_end = old_seg.end
+        if "start" in filtered or "end" in filtered:
+            cand_start = float(filtered.get("start", old_seg.start))
+            cand_end = float(filtered.get("end", old_seg.end))
+            for other in self.active_timeline.transcript.segments:
+                if other.id == segment_id:
+                    continue
+                if (
+                    cand_start < other.end - OVERLAP_EPSILON
+                    and cand_end > other.start + OVERLAP_EPSILON
+                ):
+                    return {
+                        "success": False,
+                        "error": (
+                            f"update_segment: segment {segment_id} "
+                            f"[{cand_start:.3f}, {cand_end:.3f}] overlaps "
+                            f"{other.id} [{other.start:.3f}, {other.end:.3f}]"
+                        ),
+                    }
+            linkage = self._apply_main_linkage(
+                segment_id,
+                (old_seg.start, old_seg.end),
+                (cand_start, cand_end),
+            )
+
         updated_segments = []
         updated_seg = None
         for seg in self.active_timeline.transcript.segments:
@@ -1036,8 +1578,13 @@ class ProjectService:
             else:
                 updated_segments.append(seg)
 
+        updated_transcript_updates: dict = {"segments": updated_segments}
+        if linkage is not None:
+            new_tracks, new_bindings, _counters = linkage
+            updated_transcript_updates["tracks"] = new_tracks
+            updated_transcript_updates["bindings"] = new_bindings
         updated_transcript = self.active_timeline.transcript.model_copy(
-            update={"segments": updated_segments}
+            update=updated_transcript_updates
         )
 
         update_kwargs: dict = {"transcript": updated_transcript}
@@ -1072,7 +1619,348 @@ class ProjectService:
         patch_kwargs: dict = {"segments": updated_segments}
         if updated_edits is not None:
             patch_kwargs["edits"] = updated_edits
+        if linkage is not None:
+            # v3.0.2 M1-2 (S2): the linkage path must carry the resolved
+            # tracks + bindings layers in the patch (v3.0.1 SPEC M2-1 step
+            # 5) -- dropping them left the frontend's track state stale
+            # until an unrelated write happened to refresh the layers.
+            tracks_arr, bindings_arr, linkage_counters = linkage
+            patch_kwargs["tracks"] = tracks_arr
+            patch_kwargs["bindings"] = bindings_arr
+            patch_kwargs["meta"] = {"linkage": linkage_counters}
         return self._success_patch(**patch_kwargs)
+
+    def update_track_segment(
+        self, track_id: str, segment_id: str, updates: dict
+    ) -> dict:
+        """Update an extension-track segment (v3.0.1 M2-2).
+
+        Validation chain (fixed order): track exists -> segment exists in
+        the track -> ``id`` is never writable -> clamp to [0, duration]
+        (min duration + round3) -> same-track overlap rejection. After a
+        time change, the offsets of every binding on this segment are
+        rebuilt wholesale (derivative rule); the main track is NEVER
+        touched (red line M0-3).
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        from core.track_constraints import (
+            MIN_SEGMENT_DURATION,
+            clamp_extension_range,
+            rebuild_binding_offsets,
+        )
+
+        tl = self.active_timeline
+        track = next((t for t in tl.transcript.tracks if t.id == track_id), None)
+        if track is None:
+            return {"success": False, "error": f"Track not found: {track_id}"}
+
+        allowed_fields = {"start", "end", "text"}
+        filtered = {k: v for k, v in updates.items() if k in allowed_fields}
+        if not filtered:
+            return {"success": False, "error": "No valid fields to update"}
+
+        ext = next((s for s in track.segments if s.id == segment_id), None)
+        if ext is None:
+            return {
+                "success": False,
+                "error": f"Segment not found in track {track_id}: {segment_id}",
+            }
+
+        updates_geom = "start" in filtered or "end" in filtered
+        new_start = ext.start
+        new_end = ext.end
+        if updates_geom:
+            new_start = float(filtered.get("start", ext.start))
+            new_end = float(filtered.get("end", ext.end))
+            # Minimum duration is an explicit rejection (NOT silently
+            # widened): the frontend never submits below-min drags, so this
+            # guards direct API calls with the same semantics the user sees.
+            if new_end - new_start < MIN_SEGMENT_DURATION - 1e-6:
+                return {
+                    "success": False,
+                    "error": (
+                        f"update_track_segment: segment {segment_id} width "
+                        f"{new_end - new_start:.3f} below minimum "
+                        f"{MIN_SEGMENT_DURATION}"
+                    ),
+                }
+            # Upper bound: media duration; without media, allow growing up
+            # to the requested extent (nothing to clamp against).
+            upper = (
+                self._current.media.duration
+                if self._current.media and self._current.media.duration > 0
+                else max(new_start, new_end, ext.end, MIN_SEGMENT_DURATION)
+            )
+            new_start, new_end = clamp_extension_range(new_start, new_end, upper)
+            for other in track.segments:
+                if other.id == segment_id:
+                    continue
+                if (
+                    new_start < other.end - OVERLAP_EPSILON
+                    and new_end > other.start + OVERLAP_EPSILON
+                ):
+                    return {
+                        "success": False,
+                        "error": (
+                            f"update_track_segment: segment {segment_id} "
+                            f"[{new_start:.3f}, {new_end:.3f}] overlaps "
+                            f"{other.id} [{other.start:.3f}, {other.end:.3f}]"
+                        ),
+                    }
+
+        geom_updates: dict = {}
+        if updates_geom:
+            geom_updates = {"start": new_start, "end": new_end}
+        # geom_updates wins over raw filtered values (clamped geometry).
+        new_ext = ext.model_copy(update={**filtered, **geom_updates})
+        if new_ext.end - new_ext.start < MIN_SEGMENT_DURATION - 1e-6:
+            return {
+                "success": False,
+                "error": (
+                    f"update_track_segment: segment {segment_id} width "
+                    f"{new_ext.end - new_ext.start:.3f} below minimum"
+                ),
+            }
+
+        new_segments = []
+        for s in track.segments:
+            if s.id == segment_id:
+                new_segments.append(new_ext)
+            else:
+                new_segments.append(s)
+        new_segments.sort(key=lambda s: s.start)
+
+        new_tracks = [
+            t.model_copy(update={"segments": new_segments})
+            if t.id == track_id
+            else t
+            for t in tl.transcript.tracks
+        ]
+
+        # Offsets rebuild (derivative): every binding on this segment.
+        rebuilt = 0
+        new_bindings = list(tl.transcript.bindings)
+        main_by_id = {s.id: s for s in tl.transcript.segments}
+        for i, b in enumerate(new_bindings):
+            if b.extension_segment_id != segment_id:
+                continue
+            main = main_by_id.get(b.main_segment_id)
+            if main is None:
+                continue
+            offsets = rebuild_binding_offsets(
+                (main.start, main.end), (new_ext.start, new_ext.end)
+            )
+            new_bindings[i] = b.model_copy(update=offsets)
+            rebuilt += 1
+
+        new_transcript = tl.transcript.model_copy(
+            update={"tracks": new_tracks, "bindings": new_bindings}
+        )
+        self._update_active_timeline(transcript=new_transcript)
+
+        meta = {"linkage": {"rebuilt": rebuilt}} if rebuilt else None
+        return self._success_patch(
+            tracks=new_tracks,
+            bindings=new_bindings,
+            meta=meta,
+        )
+
+    def delete_track_segment(self, track_id: str, segment_id: str) -> dict:
+        """Delete an extension-track segment (v3.0.2 smoke fix).
+
+        Bindings anchored to the deleted extension segment are dropped
+        wholesale (offsets are undefined without the anchor text -- the
+        derivative rule); the main track is NEVER touched (red line M0-3).
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        tl = self.active_timeline
+        track = next((t for t in tl.transcript.tracks if t.id == track_id), None)
+        if track is None:
+            return {"success": False, "error": f"Track not found: {track_id}"}
+
+        ext = next((s for s in track.segments if s.id == segment_id), None)
+        if ext is None:
+            return {
+                "success": False,
+                "error": f"Segment not found in track {track_id}: {segment_id}",
+            }
+
+        new_segments = sorted(
+            (s for s in track.segments if s.id != segment_id), key=lambda s: s.start
+        )
+        new_tracks = [
+            t.model_copy(update={"segments": new_segments})
+            if t.id == track_id
+            else t
+            for t in tl.transcript.tracks
+        ]
+
+        dropped = sum(
+            1 for b in tl.transcript.bindings if b.extension_segment_id == segment_id
+        )
+        new_bindings = [
+            b for b in tl.transcript.bindings if b.extension_segment_id != segment_id
+        ]
+
+        new_transcript = tl.transcript.model_copy(
+            update={"tracks": new_tracks, "bindings": new_bindings}
+        )
+        self._update_active_timeline(transcript=new_transcript)
+
+        meta = {"linkage": {"unbound": dropped}} if dropped else None
+        return self._success_patch(
+            tracks=new_tracks,
+            bindings=new_bindings,
+            meta=meta,
+        )
+
+    def add_track_segment(
+        self, track_id: str, start: float, end: float, text: str = ""
+    ) -> dict:
+        """Add a segment to an extension track (v3.0.2 smoke feedback).
+
+        Mirrors update_track_segment's validation: clamp to [0, duration],
+        min duration, same-track overlap rejection. New segments are
+        unbound; ids follow the import namespacing convention.
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        from core.track_constraints import (
+            MIN_SEGMENT_DURATION,
+            clamp_extension_range,
+        )
+
+        tl = self.active_timeline
+        track = next((t for t in tl.transcript.tracks if t.id == track_id), None)
+        if track is None:
+            return {"success": False, "error": f"Track not found: {track_id}"}
+
+        if end - start < MIN_SEGMENT_DURATION - 1e-6:
+            return {
+                "success": False,
+                "error": f"add_track_segment: width {end - start:.3f} below minimum {MIN_SEGMENT_DURATION}",
+            }
+        upper = (
+            self._current.media.duration
+            if self._current.media and self._current.media.duration > 0
+            else max(start, end, MIN_SEGMENT_DURATION)
+        )
+        start, end = clamp_extension_range(start, end, upper)
+        for other in track.segments:
+            if start < other.end - OVERLAP_EPSILON and end > other.start + OVERLAP_EPSILON:
+                return {
+                    "success": False,
+                    "error": (
+                        f"add_track_segment: [{start:.3f}, {end:.3f}] overlaps "
+                        f"{other.id} [{other.start:.3f}, {other.end:.3f}]"
+                    ),
+                }
+
+        new_seg = Segment(
+            id=f"track_{track_id}_seg_{start:.3f}",
+            version=1,
+            type=SegmentType.SUBTITLE,
+            start=start,
+            end=end,
+            text=text,
+            speaker="",
+        )
+        new_segments = sorted([*track.segments, new_seg], key=lambda s: s.start)
+        new_tracks = [
+            t.model_copy(update={"segments": new_segments})
+            if t.id == track_id
+            else t
+            for t in tl.transcript.tracks
+        ]
+        new_transcript = tl.transcript.model_copy(update={"tracks": new_tracks})
+        self._update_active_timeline(transcript=new_transcript)
+        return self._success_patch(tracks=new_tracks)
+
+    def clear_track_segments(self, track_id: str) -> dict:
+        """Remove every segment of a track in ONE operation (v3.0.2 smoke
+        feedback: the per-segment loop churned N patches). Bindings
+        anchored to the track are dropped wholesale (derivative rule)."""
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        tl = self.active_timeline
+        track = next((t for t in tl.transcript.tracks if t.id == track_id), None)
+        if track is None:
+            return {"success": False, "error": f"Track not found: {track_id}"}
+
+        dropped = sum(1 for b in tl.transcript.bindings if b.track_id == track_id)
+        new_bindings = [b for b in tl.transcript.bindings if b.track_id != track_id]
+        new_tracks = [
+            t.model_copy(update={"segments": []}) if t.id == track_id else t
+            for t in tl.transcript.tracks
+        ]
+        new_transcript = tl.transcript.model_copy(
+            update={"tracks": new_tracks, "bindings": new_bindings}
+        )
+        self._update_active_timeline(transcript=new_transcript)
+
+        meta = {"linkage": {"unbound": dropped}} if dropped else None
+        return self._success_patch(
+            tracks=new_tracks,
+            bindings=new_bindings,
+            meta=meta,
+        )
+
+    def add_track(self, name: str, language: str = "", role: str = "extension") -> dict:
+        """Create an empty extension track (v3.0.2 smoke feedback: tracks
+        could only come from SRT import -- no way to start fresh)."""
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        import uuid
+
+        from core.models import SubtitleTrack
+
+        tl = self.active_timeline
+        track = SubtitleTrack(
+            id=f"trk_{uuid.uuid4().hex[:8]}",
+            role=role,
+            name=name,
+            language=language,
+            segments=[],
+        )
+        new_tracks = [*tl.transcript.tracks, track]
+        new_transcript = tl.transcript.model_copy(update={"tracks": new_tracks})
+        self._update_active_timeline(transcript=new_transcript)
+        return self._success_patch(tracks=new_tracks)
+
+    def delete_track(self, track_id: str) -> dict:
+        """Delete a whole extension track and every binding anchored to it
+        (v3.0.2 smoke feedback: tracks could only be cleared, not removed).
+        Main track untouched (red line M0-3).
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        tl = self.active_timeline
+        if not any(t.id == track_id for t in tl.transcript.tracks):
+            return {"success": False, "error": f"Track not found: {track_id}"}
+
+        new_tracks = [t for t in tl.transcript.tracks if t.id != track_id]
+        dropped = sum(1 for b in tl.transcript.bindings if b.track_id == track_id)
+        new_bindings = [b for b in tl.transcript.bindings if b.track_id != track_id]
+
+        new_transcript = tl.transcript.model_copy(
+            update={"tracks": new_tracks, "bindings": new_bindings}
+        )
+        self._update_active_timeline(transcript=new_transcript)
+
+        meta = {"linkage": {"unbound": dropped}} if dropped else None
+        return self._success_patch(
+            tracks=new_tracks,
+            bindings=new_bindings,
+            meta=meta,
+        )
 
     def update_segment_text(self, segment_id: str, text: str) -> dict:
         """Update a subtitle segment's text and set dirty_flags."""
@@ -1129,15 +2017,29 @@ class ProjectService:
         all_segments.sort(key=lambda s: s.start)
 
         self._update_active_timeline(
-            transcript=TranscriptData(segments=all_segments),
+            # v3.0.0 M11-2 construction guard (see update_transcript).
+            transcript=self.active_timeline.transcript.model_copy(
+                update={"segments": all_segments}
+            ),
         )
         logger.info("Added segment {} ({:.3f}s - {:.3f}s)", seg_id, start, end)
         return {"success": True, "data": self._current.model_dump()}
 
     def delete_segment(self, segment_id: str) -> dict:
-        """Remove a segment and its associated edit decisions."""
+        """Remove a segment, its edit decisions, and (v3.0.1 M2-3) any bound
+        extension segments with their bindings (paired deletion)."""
         if self._current is None:
             return {"success": False, "error": "No project is open"}
+
+        # Extension-track segments are managed by their own channel.
+        if segment_id.startswith("track_"):
+            return {
+                "success": False,
+                "error": (
+                    "delete_segment: use update_track_segment for "
+                    "extension-track segments (track_ namespace)"
+                ),
+            }
 
         segments = self.active_timeline.transcript.segments
         target = [s for s in segments if s.id == segment_id]
@@ -1147,12 +2049,45 @@ class ProjectService:
         remaining_segs = [s for s in segments if s.id != segment_id]
         remaining_edits = [e for e in self.active_timeline.edits if e.target_id != segment_id]
 
+        # v3.0.1 M2-3: paired deletion -- bound extension segments go with
+        # the main segment, bindings dissolve.
+        tl = self.active_timeline
+        hit_bindings = [b for b in tl.transcript.bindings if b.main_segment_id == segment_id]
+        removed_ext_ids: set[str] = set()
+        for t in tl.transcript.tracks:
+            removed_ext_ids |= {s.id for s in t.segments} & {
+                b.extension_segment_id for b in hit_bindings
+            }
+        dropped_binding_ids = {b.id for b in hit_bindings}
+
+        transcript_updates: dict = {"segments": remaining_segs}
+        patch_kwargs: dict = {"segments": remaining_segs, "edits": remaining_edits}
+        if hit_bindings:
+            new_tracks = [
+                t.model_copy(
+                    update={"segments": [s for s in t.segments if s.id not in removed_ext_ids]}
+                )
+                for t in tl.transcript.tracks
+            ]
+            new_bindings = [
+                b for b in tl.transcript.bindings if b.id not in dropped_binding_ids
+            ]
+            transcript_updates["tracks"] = new_tracks
+            transcript_updates["bindings"] = new_bindings
+            patch_kwargs["tracks"] = new_tracks
+            patch_kwargs["bindings"] = new_bindings
+            patch_kwargs["meta"] = {
+                "linkage": {"removed": len(removed_ext_ids), "unbound": 0}
+            }
+
         self._update_active_timeline(
-            transcript=self.active_timeline.transcript.model_copy(update={"segments": remaining_segs}),
+            transcript=tl.transcript.model_copy(update=transcript_updates),
             edits=remaining_edits,
         )
-        logger.info("Deleted segment {}", segment_id)
-        return {"success": True, "data": self._current.model_dump()}
+        logger.info("Deleted segment {} (paired ext removals: {})", segment_id, len(removed_ext_ids))
+        return self._success_patch(meta=patch_kwargs.get("meta"), **{
+            k: v for k, v in patch_kwargs.items() if k != "meta"
+        })
 
     def clear_subtitles(self) -> dict:
         """Remove all subtitle-type segments and their associated edit decisions."""
@@ -1232,9 +2167,15 @@ class ProjectService:
 
         targets.sort(key=lambda s: s.start)
         merged_text = "".join(s.text for s in targets)
+        # v3.0.0 M1-2: keep word-level data across merges (ordered by start,
+        # which holds naturally when each source segment's words are ordered).
+        merged_words = sorted(
+            (w for s in targets for w in s.words), key=lambda w: w.start
+        )
         merged_seg = targets[0].model_copy(update={
             "end": targets[-1].end,
             "text": merged_text,
+            "words": merged_words,
             "dirty_flags": {**targets[0].dirty_flags, "merged": True},
         })
 
@@ -1253,10 +2194,14 @@ class ProjectService:
         logger.info("Merged {} segments into {}", len(targets), merged_seg.id)
         return {"success": True, "data": self._current.model_dump()}
 
-    def split_segment(self, segment_id: str, position: float) -> dict:
+    def split_segment(
+        self, segment_id: str, position: float, snap_to_word: bool = False
+    ) -> dict:
         """Split a subtitle segment at the given time position.
 
         Creates two segments: {id}-a and {id}-b. Text is split proportionally.
+        v3.0.0 M1-4: with ``snap_to_word`` and word-level data present, the cut
+        time snaps to the nearest word start before splitting.
         """
         if self._current is None:
             return {"success": False, "error": "No project is open"}
@@ -1271,21 +2216,50 @@ class ProjectService:
         if position < target.start or position > target.end:
             return {"success": False, "error": "Split position must be within segment bounds"}
 
+        # v3.0.0 M1-4: snap the cut to the nearest word boundary when requested
+        # and word-level data is available. Report the applied offset so the UI
+        # can toast "snapped +-Nms".
+        snap_offset_ms = 0.0
+        if snap_to_word and target.words:
+            word_starts = [w.start for w in target.words if target.start <= w.start <= target.end]
+            if word_starts:
+                nearest = min(word_starts, key=lambda ws: abs(ws - position))
+                if abs(nearest - position) <= 1.0:  # only snap within 1s, never teleport
+                    snap_offset_ms = round((nearest - position) * 1000)
+                    position = nearest
+
         # Split text proportionally by duration ratio
         total_dur = target.end - target.start
         ratio = (position - target.start) / total_dur
         split_idx = max(1, min(len(target.text) - 1, int(len(target.text) * ratio)))
 
+        a_text = target.text[:split_idx].strip()
+        b_text = target.text[split_idx:].strip()
+
+        # v3.0.0 M1-2: split words at the text boundary. When the cut point
+        # does not align with a word boundary (tolerance 2 chars), split_words
+        # returns ([], []) -- prefer missing words over misaligned ones.
+        if snap_to_word and target.words:
+            # Snapped to a word start: assignment by word start is exact.
+            a_words = [w for w in target.words if w.start < position]
+            b_words = [w for w in target.words if w.start >= position]
+        else:
+            a_words, b_words = split_words(
+                target.words, target.text, split_idx, a_text, b_text
+            )
+
         seg_a = target.model_copy(update={
             "id": f"{segment_id}-a",
             "end": position,
-            "text": target.text[:split_idx].strip(),
+            "text": a_text,
+            "words": a_words,
             "dirty_flags": {**target.dirty_flags, "split": True},
         })
         seg_b = target.model_copy(update={
             "id": f"{segment_id}-b",
             "start": position,
-            "text": target.text[split_idx:].strip(),
+            "text": b_text,
+            "words": b_words,
             "dirty_flags": {**target.dirty_flags, "split": True},
         })
 
@@ -1355,8 +2329,117 @@ class ProjectService:
             transcript=self.active_timeline.transcript.model_copy(update={"segments": new_segments}),
             edits=new_edits,
         )
-        logger.info("Split segment {} at {:.3f}s", segment_id, position)
-        return {"success": True, "data": self._current.model_dump()}
+
+        # v3.0.1 M2-3: linked split -- bound extension segments share the
+        # same absolute cut instant (mapped through their offset). Per
+        # binding: cut inside the ext segment -> both halves rebind to a/b
+        # (offsets rebuilt); cut outside -> the binding rebinds to the side
+        # overlapping the ext segment more; neither side overlaps enough ->
+        # unbind (countered, never silent).
+        from core.track_constraints import MIN_SEGMENT_DURATION, rebuild_binding_offsets
+
+        tl = self.active_timeline
+        hit_bindings = [b for b in tl.transcript.bindings if b.main_segment_id == segment_id]
+        new_tracks = tl.transcript.tracks
+        new_bindings = list(tl.transcript.bindings)
+        linkage_meta = None
+        if hit_bindings:
+            counters = {"split": 0, "rebound": 0, "unbound": 0}
+            old_binding_ids = {b.id for b in hit_bindings}
+            dropped: set[str] = set()
+            tracks = list(new_tracks)
+            additions: list[TrackBinding] = []
+            by_track: dict[str, list] = {}
+            for b in hit_bindings:
+                by_track.setdefault(b.track_id, []).append(b)
+
+            for track_id, tb in by_track.items():
+                tidx = next((i for i, t in enumerate(tracks) if t.id == track_id), None)
+                if tidx is None:
+                    counters["unbound"] += len(tb)
+                    dropped.update(b.id for b in tb)
+                    continue
+                track = tracks[tidx]
+                segs = list(track.segments)
+                for b in tb:
+                    ext = next((s for s in segs if s.id == b.extension_segment_id), None)
+                    if ext is None:
+                        counters["unbound"] += 1
+                        dropped.add(b.id)
+                        continue
+                    cut_ext = round(position + b.start_offset, 3)
+                    if ext.start + MIN_SEGMENT_DURATION <= cut_ext <= ext.end - MIN_SEGMENT_DURATION:
+                        dur = ext.end - ext.start
+                        ratio = (cut_ext - ext.start) / dur
+                        cut_idx = max(1, min(len(ext.text) - 1, int(len(ext.text) * ratio)))
+                        ext_a = ext.model_copy(update={
+                            "id": f"{ext.id}__a",
+                            "end": cut_ext,
+                            "text": ext.text[:cut_idx].strip(),
+                        })
+                        ext_b = ext.model_copy(update={
+                            "id": f"{ext.id}__b",
+                            "start": cut_ext,
+                            "text": ext.text[cut_idx:].strip(),
+                        })
+                        segs = [s for s in segs if s.id != ext.id]
+                        segs.extend([ext_a, ext_b])
+                        segs.sort(key=lambda s: s.start)
+                        additions.append(b.model_copy(update={
+                            "id": f"{b.id}__a",
+                            "main_segment_id": seg_a.id,
+                            "extension_segment_id": ext_a.id,
+                            **rebuild_binding_offsets((seg_a.start, seg_a.end), (ext_a.start, ext_a.end)),
+                        }))
+                        additions.append(b.model_copy(update={
+                            "id": f"{b.id}__b",
+                            "main_segment_id": seg_b.id,
+                            "extension_segment_id": ext_b.id,
+                            **rebuild_binding_offsets((seg_b.start, seg_b.end), (ext_b.start, ext_b.end)),
+                        }))
+                        counters["split"] += 1
+                    else:
+                        ov_a = max(0.0, min(ext.end, position) - ext.start)
+                        ov_b = max(0.0, ext.end - max(ext.start, position))
+                        if max(ov_a, ov_b) >= MIN_SEGMENT_DURATION:
+                            target_seg = seg_a if ov_a >= ov_b else seg_b
+                            additions.append(b.model_copy(update={
+                                "main_segment_id": target_seg.id,
+                                **rebuild_binding_offsets(
+                                    (target_seg.start, target_seg.end), (ext.start, ext.end)
+                                ),
+                            }))
+                            counters["rebound"] += 1
+                        else:
+                            dropped.add(b.id)
+                            counters["unbound"] += 1
+                tracks[tidx] = track.model_copy(update={"segments": segs})
+
+            new_tracks = tracks
+            new_bindings = [
+                b for b in new_bindings if b.id not in old_binding_ids
+            ]
+            new_bindings.extend(additions)
+            if dropped:
+                new_bindings = [b for b in new_bindings if b.id not in dropped]
+            linkage_meta = {"linkage": counters}
+
+        self._update_active_timeline(
+            transcript=tl.transcript.model_copy(
+                update={"segments": new_segments, "tracks": new_tracks, "bindings": new_bindings}
+            ),
+            edits=new_edits,
+        )
+        logger.info("Split segment {} at {:.3f}s (snap_offset={}ms)", segment_id, position, snap_offset_ms)
+        patch_kwargs: dict = {"segments": new_segments, "edits": new_edits}
+        if hit_bindings:
+            patch_kwargs["tracks"] = new_tracks
+            patch_kwargs["bindings"] = new_bindings
+            patch_kwargs["meta"] = linkage_meta
+        result = self._success_patch(**patch_kwargs)
+        if snap_to_word:
+            result["snap_offset_ms"] = snap_offset_ms
+        return result
 
     def search_replace(
         self,
@@ -1704,435 +2787,6 @@ class ProjectService:
         self._current = self._current.model_copy(update={"timelines": new_timelines})
         return self._current
 
-    def store_subtitle_corrections(
-        self, corrections: list[dict], timeline_id: str
-    ) -> dict:
-        """Persist LLM subtitle corrections as AnalysisResult records (D-54).
-
-        Instead of immediately mutating segment text (the old behavior), each
-        correction is stored as an AnalysisResult with type=
-        llm_subtitle_correction and its structured payload JSON-encoded in
-        ``detail``. The frontend reviews them and calls accept/reject per item.
-
-        Existing unreviewed corrections of the same type are cleared first so
-        re-running P1 replaces the pending review set.
-
-        Args:
-            corrections: LLM output list (segment_id, corrected_text, changes,
-                category, confidence).
-            timeline_id: Target timeline.
-
-        Returns:
-            {"success": True, "data": {"stored_count": int}}
-        """
-        if self._current is None:
-            return {"success": False, "error": "No project is open"}
-
-        import json
-        from uuid import uuid4
-
-        tl = self._current.get_timeline(timeline_id)
-        if tl is None:
-            return {"success": False, "error": f"Timeline {timeline_id} not found"}
-
-        seg_map = {s.id: s for s in tl.transcript.segments}
-
-        # Clear previously-pending corrections (avoid duplicates on re-run).
-        kept_results = [
-            r for r in tl.analysis.results
-            if r.type != "llm_subtitle_correction"
-        ]
-
-        stored: list[AnalysisResult] = []
-        for corr in corrections:
-            seg_id = corr.get("segment_id")
-            if not seg_id or seg_id not in seg_map:
-                continue
-            original_text = seg_map[seg_id].text
-            corrected_text = str(corr.get("corrected_text", original_text))
-            # Skip no-op corrections (LLM says "no change").
-            if corrected_text.strip() == original_text.strip():
-                continue
-            result = AnalysisResult(
-                id=f"corr-{seg_id}-{uuid4().hex[:8]}",
-                type="llm_subtitle_correction",
-                segment_ids=[seg_id],
-                confidence=float(corr.get("confidence", 0.8)),
-                detail=json.dumps(
-                    {
-                        "original_text": original_text,
-                        "corrected_text": corrected_text,
-                        "changes": corr.get("changes", []),
-                        "category": corr.get("category", "none"),
-                    },
-                    ensure_ascii=False,
-                ),
-            )
-            stored.append(result)
-
-        new_results = kept_results + stored
-        self._update_timeline_by_id(
-            timeline_id,
-            analysis=tl.analysis.model_copy(update={"results": new_results}),
-        )
-        logger.info(
-            "Stored {} subtitle corrections for review (timeline {})",
-            len(stored), timeline_id,
-        )
-        return {"success": True, "data": {"stored_count": len(stored)}}
-
-    def get_subtitle_corrections(self, timeline_id: str) -> dict:
-        """Read pending P1 corrections for a timeline (parsed detail JSON).
-
-        Returns:
-            {"success": True, "data": [correction_dict, ...]} where each dict
-            has id, segment_id, confidence, original_text, corrected_text,
-            changes, category, start, end (for time-link rendering).
-        """
-        if self._current is None:
-            return {"success": False, "error": "No project is open"}
-
-        import json
-
-        tl = self._current.get_timeline(timeline_id)
-        if tl is None:
-            return {"success": False, "error": f"Timeline {timeline_id} not found"}
-
-        seg_map = {s.id: s for s in tl.transcript.segments}
-        out: list[dict] = []
-        for r in tl.analysis.results:
-            if r.type != "llm_subtitle_correction":
-                continue
-            try:
-                payload = json.loads(r.detail) if r.detail else {}
-            except (ValueError, TypeError):
-                payload = {}
-            seg_id = r.segment_ids[0] if r.segment_ids else ""
-            seg = seg_map.get(seg_id)
-            out.append({
-                "id": r.id,
-                "segment_id": seg_id,
-                "confidence": r.confidence,
-                "original_text": payload.get("original_text", seg.text if seg else ""),
-                "corrected_text": payload.get("corrected_text", ""),
-                "changes": payload.get("changes", []),
-                "category": payload.get("category", "none"),
-                "start": seg.start if seg else 0.0,
-                "end": seg.end if seg else 0.0,
-            })
-        return {"success": True, "data": out}
-
-    def _parse_correction_result(self, result: AnalysisResult) -> dict | None:
-        """Decode the detail JSON of a correction AnalysisResult."""
-        import json
-        if not result.detail:
-            return None
-        try:
-            return json.loads(result.detail)
-        except (ValueError, TypeError):
-            return None
-
-    def accept_subtitle_correction(self, result_id: str) -> dict:
-        """Accept one correction: apply to segment.text + remove AnalysisResult.
-
-        Args:
-            result_id: The AnalysisResult id (``corr-<seg>-<hex>``).
-
-        Returns:
-            {"success": True, "data": {"segment_id": str}}
-            {"success": False, "error": str} if not found.
-        """
-        if self._current is None:
-            return {"success": False, "error": "No project is open"}
-
-        from core.llm_service import (
-            TimestampCorruptionError,
-            _assert_timestamps_unchanged,
-            _check_correction_confidence,
-        )
-
-        tl = self.active_timeline
-        target = next(
-            (r for r in tl.analysis.results if r.id == result_id), None
-        )
-        if target is None or target.type != "llm_subtitle_correction":
-            return {"success": False, "error": f"Correction {result_id} not found"}
-
-        payload = self._parse_correction_result(target)
-        if payload is None:
-            return {"success": False, "error": "Malformed correction detail"}
-
-        seg_id = target.segment_ids[0] if target.segment_ids else ""
-        seg = next((s for s in tl.transcript.segments if s.id == seg_id), None)
-        if seg is None:
-            return {"success": False, "error": f"Segment {seg_id} not found"}
-
-        corrected_text = str(payload.get("corrected_text", seg.text))
-        conf = _check_correction_confidence(seg.text, corrected_text)
-        new_flags = {**seg.dirty_flags, "llm_corrected": True}
-        if conf["low_confidence"]:
-            new_flags["llm_low_confidence"] = True
-
-        corrected_seg = seg.model_copy(
-            update={"text": corrected_text, "dirty_flags": new_flags}
-        )
-
-        # Timestamp assertion (defensive -- LLM should never alter timestamps).
-        try:
-            _assert_timestamps_unchanged(
-                seg.start, seg.end, corrected_seg.start, corrected_seg.end,
-                segment_id=seg.id,
-            )
-            new_segments = [
-                corrected_seg if s.id == seg_id else s
-                for s in tl.transcript.segments
-            ]
-        except TimestampCorruptionError:
-            logger.warning("Timestamp corruption on accept, rollback segment %s", seg_id)
-            new_segments = list(tl.transcript.segments)
-
-        # Remove the accepted correction from analysis results.
-        new_results = [r for r in tl.analysis.results if r.id != result_id]
-
-        self._update_active_timeline(
-            transcript=tl.transcript.model_copy(update={"segments": new_segments}),
-            analysis=tl.analysis.model_copy(update={"results": new_results}),
-        )
-        logger.info("Accepted subtitle correction {} (seg {})", result_id, seg_id)
-        return {"success": True, "data": {"segment_id": seg_id}}
-
-    def reject_subtitle_correction(self, result_id: str) -> dict:
-        """Reject one correction: remove AnalysisResult without touching text.
-
-        Args:
-            result_id: The AnalysisResult id.
-
-        Returns:
-            {"success": True, "data": {"segment_id": str}}
-        """
-        if self._current is None:
-            return {"success": False, "error": "No project is open"}
-
-        tl = self.active_timeline
-        target = next(
-            (r for r in tl.analysis.results if r.id == result_id), None
-        )
-        if target is None or target.type != "llm_subtitle_correction":
-            return {"success": False, "error": f"Correction {result_id} not found"}
-
-        seg_id = target.segment_ids[0] if target.segment_ids else ""
-        new_results = [r for r in tl.analysis.results if r.id != result_id]
-        self._update_active_timeline(
-            analysis=tl.analysis.model_copy(update={"results": new_results}),
-        )
-        logger.info("Rejected subtitle correction {} (seg {})", result_id, seg_id)
-        return {"success": True, "data": {"segment_id": seg_id}}
-
-    def accept_high_confidence_corrections(
-        self, timeline_id: str, threshold: float = 0.8
-    ) -> dict:
-        """Batch-accept all corrections with confidence >= threshold (D-52).
-
-        Iterates the pending corrections, applying each qualifying one to
-        segment.text and removing it from the analysis results. Corrections
-        below the threshold remain pending for manual review.
-
-        Args:
-            timeline_id: Target timeline.
-            threshold: Minimum confidence to auto-accept (default 0.8, D-68).
-
-        Returns:
-            {"success": True, "data": {"accepted_count": int, "remaining_count": int}}
-        """
-        if self._current is None:
-            return {"success": False, "error": "No project is open"}
-
-        tl = self._current.get_timeline(timeline_id)
-        if tl is None:
-            return {"success": False, "error": f"Timeline {timeline_id} not found"}
-
-        # Gather qualifying ids, then reuse the single-accept path so the
-        # apply logic (confidence flag, timestamp assertion) stays unified.
-        qualifying = [
-            r.id for r in tl.analysis.results
-            if r.type == "llm_subtitle_correction" and r.confidence >= threshold
-        ]
-
-        # Ensure the target timeline is active so accept_subtitle_correction
-        # (which operates on active_timeline) hits the right timeline.
-        if self._current.active_timeline_id != timeline_id:
-            self._current = self._current.model_copy(
-                update={"active_timeline_id": timeline_id}
-            )
-
-        accepted = 0
-        for rid in qualifying:
-            res = self.accept_subtitle_correction(rid)
-            if res.get("success"):
-                accepted += 1
-
-        # Count remaining (active timeline may have changed during accepts).
-        tl_after = self._current.get_timeline(timeline_id)
-        remaining = sum(
-            1 for r in tl_after.analysis.results
-            if r.type == "llm_subtitle_correction"
-        ) if tl_after else 0
-        logger.info(
-            "Batch-accepted {} high-confidence corrections (threshold {}, {})",
-            accepted, threshold, "remaining" if remaining else "clean",
-        )
-        return {
-            "success": True,
-            "data": {"accepted_count": accepted, "remaining_count": remaining},
-        }
-
-    def clear_subtitle_corrections(self, timeline_id: str) -> dict:
-        """Clear all pending P1 corrections for a timeline (D-50).
-
-        Used when the user dismisses the review without per-item action.
-
-        Returns:
-            {"success": True, "data": {"cleared_count": int}}
-        """
-        if self._current is None:
-            return {"success": False, "error": "No project is open"}
-
-        tl = self._current.get_timeline(timeline_id)
-        if tl is None:
-            return {"success": False, "error": f"Timeline {timeline_id} not found"}
-
-        cleared = sum(1 for r in tl.analysis.results if r.type == "llm_subtitle_correction")
-        if cleared == 0:
-            return {"success": True, "data": {"cleared_count": 0}}
-
-        new_results = [
-            r for r in tl.analysis.results
-            if r.type != "llm_subtitle_correction"
-        ]
-        self._update_timeline_by_id(
-            timeline_id,
-            analysis=tl.analysis.model_copy(update={"results": new_results}),
-        )
-        logger.info("Cleared {} subtitle corrections (timeline {})", cleared, timeline_id)
-        return {"success": True, "data": {"cleared_count": cleared}}
-
-    def apply_subtitle_corrections(self, corrections: list[dict]) -> dict:
-        """Apply LLM subtitle corrections to the active timeline.
-
-        Uses layered fault tolerance: does not fail entirely on partial
-        mismatches. Matches by segment_id, applies what matches, and marks
-        uncovered segments with dirty_flags.llm_uncovered.
-
-        Args:
-            corrections: List of dicts with segment_id, corrected_text,
-                changes, category, confidence.
-
-        Returns:
-            {"success": True, "data": {corrected_count, uncovered_count,
-             uncovered_ids, orphaned_count, partial}}
-            {"success": False, "error": str} on complete mismatch.
-        """
-        if self._current is None:
-            return {"success": False, "error": "No project is open"}
-
-        from core.llm_service import (
-            TimestampCorruptionError,
-            _assert_timestamps_unchanged,
-            _check_correction_confidence,
-        )
-
-        timeline = self.active_timeline
-        seg_map = {s.id: s for s in timeline.transcript.segments}
-        total = len(timeline.transcript.segments)
-
-        # Match corrections to segments
-        matched: list[tuple[Segment, dict]] = []
-        uncovered_ids: list[str] = []
-
-        for seg in timeline.transcript.segments:
-            corr = next((c for c in corrections if c["segment_id"] == seg.id), None)
-            if corr:
-                matched.append((seg, corr))
-            else:
-                uncovered_ids.append(seg.id)
-
-        extra_corrections = [c for c in corrections if c["segment_id"] not in seg_map]
-
-        # Complete mismatch
-        if len(matched) == 0 and total > 0:
-            return {
-                "success": False,
-                "error": "No segment_id matched (LLM output completely mismatched)",
-            }
-
-        if len(matched) < total:
-            logger.warning(
-                f"Partial correction coverage: {len(matched)}/{total} segments matched, "
-                f"{len(uncovered_ids)} uncovered, {len(extra_corrections)} orphaned"
-            )
-
-        # Apply corrections
-        corr_map = {seg_id: corr for seg, corr in matched for seg_id in [seg.id]}
-        new_segments: list[Segment] = []
-        rolled_back_count = 0
-
-        for seg in timeline.transcript.segments:
-            corr = corr_map.get(seg.id)
-            if corr:
-                corrected_text = str(corr.get("corrected_text", seg.text))
-                # Confidence check
-                conf = _check_correction_confidence(seg.text, corrected_text)
-                new_flags = {**seg.dirty_flags, "llm_corrected": True}
-                if conf["low_confidence"]:
-                    new_flags["llm_low_confidence"] = True
-
-                corrected = seg.model_copy(
-                    update={"text": corrected_text, "dirty_flags": new_flags}
-                )
-
-                # Timestamp assertion
-                try:
-                    _assert_timestamps_unchanged(
-                        seg.start, seg.end, corrected.start, corrected.end,
-                        segment_id=seg.id,
-                    )
-                    new_segments.append(corrected)
-                except TimestampCorruptionError:
-                    # Rollback this segment, keep original
-                    rolled_back_count += 1
-                    new_segments.append(seg)
-            else:
-                # Uncovered: keep original, mark for UI
-                uncovered = seg.model_copy(
-                    update={
-                        "dirty_flags": {**seg.dirty_flags, "llm_uncovered": True}
-                    }
-                )
-                new_segments.append(uncovered)
-
-        # Update timeline: new segments + invalidate analysis
-        self._update_active_timeline(
-            transcript=timeline.transcript.model_copy(update={"segments": new_segments}),
-            analysis=timeline.analysis.model_copy(update={"last_run": None}),
-        )
-
-        logger.info(
-            f"Applied subtitle corrections: {len(matched)} matched, "
-            f"{len(uncovered_ids)} uncovered, {rolled_back_count} rolled back"
-        )
-
-        return {
-            "success": True,
-            "data": {
-                "corrected_count": len(matched) - rolled_back_count,
-                "uncovered_count": len(uncovered_ids),
-                "uncovered_ids": uncovered_ids,
-                "orphaned_count": len(extra_corrections),
-                "rolled_back_count": rolled_back_count,
-                "partial": len(matched) < total,
-            },
-        }
-
     def confirm_all_from_source(self, source: str, min_confidence: float = 0.0) -> dict:
         """Batch-confirm all edit decisions from a given source.
 
@@ -2185,6 +2839,14 @@ class ProjectService:
 
         For each subtitle segment, expands by `padding` seconds on both sides.
         The gaps between these expanded ranges become delete EditDecisions.
+
+        v3.0.4 M4-4 (R4.4, controlled change 1): user confirmed keep ranges
+        (action=keep, status=confirmed, target_type=range, source-agnostic)
+        join the keep set before the delete complement is computed, so kept
+        spans are subtracted from the auto delete ranges. Pre-existing
+        subtitle_trim delete edits intersecting a user keep are stale after
+        a re-run and are removed (counted in ``invalidated_count``). With no
+        user keeps the output is byte-identical to v3.0.3 (golden criterion).
         """
         if self._current is None:
             return {"success": False, "error": "No project is open"}
@@ -2207,16 +2869,30 @@ class ProjectService:
         # Compute total duration
         total_duration = max(s.end for s in self.active_timeline.transcript.segments)
 
-        # Build expanded keep ranges (subtitle + padding)
-        keep_ranges: list[tuple[float, float]] = []
+        # Build expanded keep ranges (subtitle + padding); overlapping or
+        # adjacent ranges merge via _merge_time_ranges (v3.0.4 M4-4: the
+        # former inline fold, extracted verbatim -- sorted-by-start input
+        # folds identically, so behavior is unchanged)
+        expanded: list[tuple[float, float]] = []
         for seg in subtitle_segs:
             start = max(0.0, seg.start - padding)
             end = min(total_duration, seg.end + padding)
-            if keep_ranges and start <= keep_ranges[-1][1]:
-                # Merge overlapping ranges
-                keep_ranges[-1] = (keep_ranges[-1][0], max(keep_ranges[-1][1], end))
-            else:
-                keep_ranges.append((start, end))
+            expanded.append((start, end))
+        keep_ranges = _merge_time_ranges(expanded)
+
+        # v3.0.4 M4-4 (R4.4): collect user confirmed keep ranges and merge
+        # them into the keep set (source-agnostic -- today the only keep-range
+        # producer is manual add_range_decision; future producers inherit the
+        # same semantics). Kept spans then subtract from the delete complement
+        # naturally. Empty user_keeps -> no merge -> output identical to v3.0.3.
+        user_keeps: list[tuple[float, float]] = [
+            (e.start, e.end) for e in self.active_timeline.edits
+            if e.action == "keep"
+            and e.status == EditStatus.CONFIRMED
+            and e.target_type == "range"
+        ]
+        if user_keeps:
+            keep_ranges = _merge_time_ranges([*keep_ranges, *user_keeps])
 
         # Compute delete ranges (gaps between keep ranges)
         delete_ranges: list[tuple[float, float]] = []
@@ -2230,6 +2906,34 @@ class ProjectService:
 
         # Create EditDecisions for delete ranges
         existing_edits = list(self.active_timeline.edits)
+
+        # v3.0.4 M4-4 (R4.4): a pre-existing subtitle_trim delete edit that
+        # intersects a user keep is stale (the re-run no longer generates a
+        # delete there) -- without this removal the kept span would keep
+        # wearing the old auto-trim stripe. Only source="subtitle_trim"
+        # deletes are invalidated; manual decisions are never touched.
+        invalidated_count = 0
+        if user_keeps:
+            surviving_edits: list[EditDecision] = []
+            for edit in existing_edits:
+                if (
+                    edit.source == "subtitle_trim"
+                    and edit.action == "delete"
+                    and any(
+                        edit.start < keep_end and keep_start < edit.end
+                        for keep_start, keep_end in user_keeps
+                    )
+                ):
+                    invalidated_count += 1
+                    continue
+                surviving_edits.append(edit)
+            existing_edits = surviving_edits
+            if invalidated_count:
+                logger.info(
+                    "Invalidated {} subtitle_trim delete edit(s) intersecting user keep ranges",
+                    invalidated_count,
+                )
+
         new_edits: list[EditDecision] = []
         for i, (start, end) in enumerate(delete_ranges):
             edit_id = f"edit-subtitle-trim-{i:04d}"
@@ -2279,6 +2983,7 @@ class ProjectService:
                 "keep_ranges": len(keep_ranges),
                 "delete_ranges": len(delete_ranges),
                 "new_edits": len(new_edits),
+                "invalidated_count": invalidated_count,
                 "project": self._current.model_dump(),
             },
         }
@@ -2299,8 +3004,29 @@ class ProjectService:
                     "path": str(project_file),
                     "updated_at": meta.get("updated_at", ""),
                     "created_at": meta.get("created_at", ""),
+                    "corrupted": False,
                 })
             except (json.JSONDecodeError, OSError):
+                # v3.0.0 fix (macOS smoke): a corrupted main file must still
+                # show up in the recent list -- fall back to backup metadata
+                # so the user can open it (open_project recovers from .bak).
+                meta = None
+                for i in (1, 2):
+                    bak = project_file.with_suffix(f".json.bak.{i}")
+                    try:
+                        data = json.loads(bak.read_text(encoding="utf-8"))
+                        meta = data.get("project", {})
+                        break
+                    except (json.JSONDecodeError, OSError):
+                        continue
+                if meta is not None:
+                    recent.append({
+                        "name": meta.get("name", project_file.parent.name),
+                        "path": str(project_file),
+                        "updated_at": meta.get("updated_at", ""),
+                        "created_at": meta.get("created_at", ""),
+                        "corrupted": True,
+                    })
                 continue
 
         recent.sort(key=lambda p: p["updated_at"], reverse=True)

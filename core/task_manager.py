@@ -271,12 +271,23 @@ class TaskManager:
                         }
                     )
 
+            # v3.0.0 M4: the ``task:completed`` event must not carry the
+            # full project dump (evaluate_js IPC tax). The task *record*
+            # keeps the full result (``get_task`` is a plain call), while
+            # the event carries only result_meta; consumers that need the
+            # project detect ``project_stripped`` and pull via get_project.
+            event_result = result
+            result_meta: dict = {}
+            if isinstance(result, dict) and "project" in result:
+                event_result = {k: v for k, v in result.items() if k != "project"}
+                result_meta = {"project_stripped": True, "keys": sorted(event_result)}
             self._emit(
                 TASK_COMPLETED,
                 {
                     "task_id": task_id,
                     "task_type": task.type.value,
-                    "result": result,
+                    "result": event_result,
+                    "result_meta": result_meta,
                 },
             )
 

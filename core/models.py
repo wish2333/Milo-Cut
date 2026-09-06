@@ -43,6 +43,8 @@ class TaskType(StrEnum):
     LLM_SUBTITLE_CORRECTION = "llm_subtitle_correction"
     LLM_HIGHLIGHT = "llm_highlight"
     LLM_SEMANTIC_SEARCH = "llm_semantic_search"
+    # v3.0.4 M1: AI translation to a bound secondary subtitle track
+    LLM_TRANSLATION = "llm_translation"
 
 
 class EditStatus(StrEnum):
@@ -139,10 +141,45 @@ class ProjectMeta(BaseModel, frozen=True):
     updated_at: str = Field(default_factory=lambda: datetime.now().isoformat())
 
 
+class SubtitleTrack(BaseModel, frozen=True):
+    """Read-only extension subtitle track (v3.0.0 M11-2).
+
+    Segment ids inside a track live in their own namespace
+    (``track_{track_id}_seg_{start:.3f}``) so merge / edit-decision
+    systems can never match them against main-track segments.
+    """
+
+    id: str
+    role: Literal["extension", "translation", "caption"] = "extension"
+    name: str = ""
+    language: str = ""
+    segments: list[Segment] = Field(default_factory=list)
+
+
+class TrackBinding(BaseModel, frozen=True):
+    """Binding between a main-track segment and an extension-track segment.
+
+    Offsets are ``extension - main`` in seconds. v3.0.0 writes bindings
+    only (300 ms tolerance at import); linkage editing is v3.1.
+    """
+
+    id: str
+    track_id: str
+    main_segment_id: str
+    extension_segment_id: str
+    start_offset: float = 0.0
+    end_offset: float = 0.0
+
+
 class TranscriptData(BaseModel, frozen=True):
     engine: str = "srt"
     language: str = "zh-CN"
     segments: list[Segment] = Field(default_factory=list)
+    # v3.0.0 M11-2: subtitle tracks (multi-track structure, MVP). The main
+    # track stays ``segments``; ``tracks`` only ever holds read-only
+    # extension tracks this version (bindings written but not consumed).
+    tracks: list[SubtitleTrack] = Field(default_factory=list)
+    bindings: list[TrackBinding] = Field(default_factory=list)
 
 
 class AnalysisResult(BaseModel, frozen=True):
@@ -230,9 +267,15 @@ class LlmConfig(BaseModel, frozen=True):
     base_url: str = ""
     api_key: str = ""
     model: str = ""
-    temperature: float = 0.3
+    temperature: float = 0.1  # v3.0.0 M3-5: 0.3 -> 0.1
+    # v3.0.0 M3-5: per-call override (e.g. semantic search uses 0.0)
+    temperature_override: float | None = None
     timeout: int = 120
     thinking_enabled: bool = False
+
+    def effective_temperature(self) -> float:
+        """Temperature actually sent to the API (override wins when set)."""
+        return self.temperature if self.temperature_override is None else self.temperature_override
 
     def resolved_base_url(self) -> str:
         """Return configured base_url or provider default."""
@@ -382,6 +425,9 @@ class ProjectPatch(BaseModel, frozen=True):
     - ``segments`` / ``edits`` / ``analysis`` -- the three layers inside
       the active timeline. Setting any of these replaces the active
       timeline's corresponding field *wholesale*; the rest stay untouched.
+    - ``tracks`` / ``bindings`` (v3.0.0 M11-2) -- subtitle-track layers
+      inside the active timeline's transcript, same wholesale-replace
+      semantics (grouped with the timeline layers).
     - ``media`` -- the project-level MediaInfo; rarely changes outside
       relink/waveform/info updates.
     - ``active_timeline_id`` -- use when the write switched timelines
@@ -403,9 +449,16 @@ class ProjectPatch(BaseModel, frozen=True):
     segments: list[Segment] | None = None
     edits: list[EditDecision] | None = None
     analysis: AnalysisData | None = None
+    # v3.0.0 M11-2: subtitle-track layers (timeline-scoped, wholesale
+    # replace like segments/edits/analysis).
+    tracks: list[SubtitleTrack] | None = None
+    bindings: list[TrackBinding] | None = None
     media: MediaInfo | None = None
     active_timeline_id: str | None = None
     full_project: Project | None = None
+    # v3.0.1 M2-1: side-channel payload (linkage counters etc.). Absence
+    # means "no meta"; old frontends ignore unknown fields.
+    meta: dict | None = None
 
     def is_full_project_fallback(self) -> bool:
         return self.full_project is not None

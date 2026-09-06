@@ -10,9 +10,8 @@ import json
 import os
 from typing import Any
 
-from core.paths import get_settings_path
-
 from core.logging import get_logger
+from core.paths import get_settings_path
 
 logger = get_logger()
 
@@ -59,7 +58,7 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     "llm_base_url": "",
     "llm_api_key": "",
     "llm_model": "",
-    "llm_temperature": 0.3,
+    "llm_temperature": 0.1,
     "llm_timeout": 120,
     "llm_thinking_enabled": False,
     # v2.1.1 M2: tunable LLM chunking / batching / concurrency parameters.
@@ -73,6 +72,14 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     "llm_highlight_chunk_duration": 1800.0,
     "llm_highlight_overlap_duration": 60.0,
     "llm_concurrency": 5,
+    # v3.0.0 M3-2/M3-4: per-batch char budget (0 = unlimited) and SSRF
+    # allowance for local inference endpoints (Ollama etc.)
+    "llm_max_batch_chars": 4000,
+    "llm_allow_local_urls": False,
+    # v3.0.4 M1-1/R1.1: remembered target language for "translate to a new
+    # secondary track" -- the frontend writes back the last successfully
+    # started language here (M1-6 consumes it as the dialog default).
+    "llm_translation_target_language": "en",
     # Per-provider config cache (v2.1.0): preserves base_url/api_key/model
     # across provider switches so the user never loses what they typed.
     # Structure: {provider_id: {base_url, api_key, model}}
@@ -83,6 +90,8 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     "llm_prompt_presets": {},
     # Workflows (v2.1.0 Phase 3: saved workflow definitions, shared across projects)
     "workflows": [],
+    # v3.0.1 M6-2: secondary (extension-track) subtitle overlay on playback
+    "show_secondary_subtitle": True,
 }
 
 

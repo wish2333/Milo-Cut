@@ -211,7 +211,7 @@ function handleSeekFromRange(event: Event) {
       </section>
     </main>
 
-    <nav class="fixed inset-x-0 bottom-0 z-20 flex border-t border-hairline bg-canvas/95 p-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))] backdrop-blur sm:absolute">
+    <nav class="fixed inset-x-0 bottom-0 z-raised flex border-t border-hairline bg-canvas/95 p-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))] backdrop-blur sm:absolute">
       <button v-for="item in sections" :key="item.key" class="mc-button min-h-9 flex-1 px-2 text-xs" :class="activeSection === item.key ? 'mc-button-primary' : 'mc-button-quiet'" @click="setSection(item.key)">{{ item.label }}</button>
     </nav>
   </div>

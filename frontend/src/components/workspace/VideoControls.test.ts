@@ -1,3 +1,8 @@
+// File-level exemption (v3.0.0 final gate, full-project lint 0/0): the two
+// render-count stubs are per-test closures capturing separate counters and
+// cannot be merged; multiple inline stub components in a test file are
+// intentional.
+/* eslint-disable vue/one-component-per-file */
 import { describe, it, expect, vi, afterEach } from "vitest"
 import { mount } from "@vue/test-utils"
 import { h, defineComponent, nextTick } from "vue"

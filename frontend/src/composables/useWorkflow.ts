@@ -16,6 +16,7 @@ import {
   EVENT_WORKFLOW_STEP_FAILED,
   EVENT_WORKFLOW_COMPLETED,
   EVENT_WORKFLOW_CANCELLED,
+  EVENT_WORKFLOW_ROLLED_BACK,
   EVENT_WORKFLOW_CONFLICTS_DETECTED,
   EVENT_WORKFLOW_HEARTBEAT,
   EVENT_DEMO_RESET,
@@ -90,6 +91,8 @@ const conflicts = ref<WorkflowConflict[]>([])
 const showConflictView = ref(false)
 const showFailureDialog = ref(false)
 const failureInfo = ref<{ stepName: string; error: string } | null>(null)
+// v3.0.0 M3-6: set when a failure rollback finished (project changed on disk)
+const rolledBack = ref<{ toStep: number } | null>(null)
 
 // Heartbeat watchdog (D-72)
 let heartbeatTimer: ReturnType<typeof setTimeout> | null = null
@@ -187,6 +190,16 @@ function ensureListeners() {
     void _completed
   })
 
+  // v3.0.0 M3-6: layers restored via apply_undo -- WorkspacePage listens for
+  // this event to pull the updated project; here we just terminate the run.
+  onEvent(EVENT_WORKFLOW_ROLLED_BACK, (d: Record<string, unknown>) => {
+    isActive.value = false
+    cancelMode.value = ""
+    showFailureDialog.value = false
+    stopHeartbeat()
+    rolledBack.value = { toStep: (d.rolled_back_to_step as number) ?? -1 }
+  })
+
   onEvent(EVENT_WORKFLOW_CONFLICTS_DETECTED, (d: Record<string, unknown>) => {
     conflicts.value = (d.conflicts as WorkflowConflict[]) || []
     if (conflicts.value.length > 0) {
@@ -265,7 +278,9 @@ async function cancelWorkflow(mode: "immediate" | "after_current" = "immediate")
   return res
 }
 
-async function handleStepFailure(action: "retry" | "skip" | "abort") {
+async function handleStepFailure(
+  action: "retry" | "skip" | "abort" | "rollback_step" | "rollback_all",
+) {
   showFailureDialog.value = false
   return call("handle_step_failure", action)
 }
@@ -357,6 +372,7 @@ export function useWorkflow() {
     showConflictView,
     showFailureDialog,
     failureInfo,
+    rolledBack,
     overallProgress,
 
     // CRUD

@@ -1,0 +1,973 @@
+{
+  "meta": {
+    "baseline_commit": "55c68da5e273ea9df6b7994f49ff86cf4e3934a1",
+    "baseline_commit_expected": "55c68da5e273ea9df6b7994f49ff86cf4e3934a1",
+    "baseline_tag": "v3.0.3",
+    "capture_date": "2026-09-05",
+    "capture_mode": "pythonpath-fallback: PYTHONPATH=/tmp/milo-golden-v303 + main-repo venv (uv run --no-sync from dev repo); primary mode unusable -- uv created a bare worktree .venv without deps (ModuleNotFoundError: loguru)",
+    "comparable_section": "results",
+    "function": "ProjectService.generate_subtitle_keep_ranges",
+    "media_duration": 90.0,
+    "notes": [
+      "captured in a pristine v3.0.3 worktree before any P3/P4 change to generate_subtitle_keep_ranges (SPEC M0-3 constraint 1)",
+      "per tier: summary counts + active-timeline edits dump from the project dump returned by the function",
+      "consumed by tests/test_keep_ranges_golden.py (byte-for-byte comparison via scripts/capture_keep_ranges_golden.py helpers)"
+    ],
+    "padding_parameter": "padding",
+    "padding_tiers": [
+      0.0,
+      0.2,
+      0.5,
+      1.0
+    ],
+    "segment_set": {
+      "count": 30,
+      "fields": [
+        "id",
+        "type",
+        "start",
+        "end",
+        "text"
+      ],
+      "segments": [
+        {
+          "end": 3.0,
+          "id": "gseg-0001",
+          "start": 1.0,
+          "text": "golden 固定段 01"
+        },
+        {
+          "end": 5.0,
+          "id": "gseg-0002",
+          "start": 3.0,
+          "text": "golden 固定段 02"
+        },
+        {
+          "end": 6.5,
+          "id": "gseg-0003",
+          "start": 5.0,
+          "text": "golden 固定段 03"
+        },
+        {
+          "end": 7.0,
+          "id": "gseg-0004",
+          "start": 6.6,
+          "text": "golden 固定段 04"
+        },
+        {
+          "end": 9.0,
+          "id": "gseg-0005",
+          "start": 7.4,
+          "text": "golden 固定段 05"
+        },
+        {
+          "end": 11.5,
+          "id": "gseg-0006",
+          "start": 9.5,
+          "text": "golden 固定段 06"
+        },
+        {
+          "end": 14.3,
+          "id": "gseg-0007",
+          "start": 12.3,
+          "text": "golden 固定段 07"
+        },
+        {
+          "end": 16.3,
+          "id": "gseg-0008",
+          "start": 15.3,
+          "text": "golden 固定段 08"
+        },
+        {
+          "end": 19.8,
+          "id": "gseg-0009",
+          "start": 17.8,
+          "text": "golden 固定段 09"
+        },
+        {
+          "end": 24.0,
+          "id": "gseg-0010",
+          "start": 21.8,
+          "text": "golden 固定段 10"
+        },
+        {
+          "end": 30.0,
+          "id": "gseg-0011",
+          "start": 28.0,
+          "text": "golden 固定段 11"
+        },
+        {
+          "end": 32.5,
+          "id": "gseg-0012",
+          "start": 30.5,
+          "text": "golden 固定段 12"
+        },
+        {
+          "end": 35.0,
+          "id": "gseg-0013",
+          "start": 33.0,
+          "text": "golden 固定段 13"
+        },
+        {
+          "end": 37.5,
+          "id": "gseg-0014",
+          "start": 35.5,
+          "text": "golden 固定段 14"
+        },
+        {
+          "end": 40.0,
+          "id": "gseg-0015",
+          "start": 38.0,
+          "text": "golden 固定段 15"
+        },
+        {
+          "end": 42.5,
+          "id": "gseg-0016",
+          "start": 40.5,
+          "text": "golden 固定段 16"
+        },
+        {
+          "end": 42.9,
+          "id": "gseg-0017",
+          "start": 42.6,
+          "text": "golden 固定段 17"
+        },
+        {
+          "end": 43.2,
+          "id": "gseg-0018",
+          "start": 43.0,
+          "text": "golden 固定段 18"
+        },
+        {
+          "end": 48.0,
+          "id": "gseg-0019",
+          "start": 44.0,
+          "text": "golden 固定段 19"
+        },
+        {
+          "end": 48.4,
+          "id": "gseg-0020",
+          "start": 48.0,
+          "text": "golden 固定段 20"
+        },
+        {
+          "end": 53.0,
+          "id": "gseg-0021",
+          "start": 50.4,
+          "text": "golden 固定段 21"
+        },
+        {
+          "end": 56.0,
+          "id": "gseg-0022",
+          "start": 53.6,
+          "text": "golden 固定段 22"
+        },
+        {
+          "end": 59.0,
+          "id": "gseg-0023",
+          "start": 57.1,
+          "text": "golden 固定段 23"
+        },
+        {
+          "end": 61.0,
+          "id": "gseg-0024",
+          "start": 60.2,
+          "text": "golden 固定段 24"
+        },
+        {
+          "end": 65.0,
+          "id": "gseg-0025",
+          "start": 61.0,
+          "text": "golden 固定段 25"
+        },
+        {
+          "end": 68.8,
+          "id": "gseg-0026",
+          "start": 65.0,
+          "text": "golden 固定段 26"
+        },
+        {
+          "end": 72.0,
+          "id": "gseg-0027",
+          "start": 70.3,
+          "text": "golden 固定段 27"
+        },
+        {
+          "end": 77.7,
+          "id": "gseg-0028",
+          "start": 74.5,
+          "text": "golden 固定段 28"
+        },
+        {
+          "end": 80.0,
+          "id": "gseg-0029",
+          "start": 79.7,
+          "text": "golden 固定段 29"
+        },
+        {
+          "end": 86.5,
+          "id": "gseg-0030",
+          "start": 82.0,
+          "text": "golden 固定段 30"
+        }
+      ],
+      "shape_notes": [
+        "consecutive zero-gap run: gseg-0002/0003, gseg-0020 after 0019, gseg-0025/0026",
+        "gaps below smallest nonzero tier: 0.1s (gseg-0004/0017/0018)",
+        "gaps straddling every merge threshold 2*padding in {0.0, 0.4, 1.0, 2.0}: 0.4/0.5/0.6/0.8/1.0/1.1/1.2/1.5/2.0/2.5/4.0",
+        "equal-length run: gseg-0011..0016 (six 2.0s, constant 0.5 gap)",
+        "varied lengths: 0.2 .. 4.5 (see module docstring)",
+        "first segment starts at 1.0 (leading delete range exercised for padding < 1.0)",
+        "final segment ends at 86.5 = total duration (subtitle-only set: no trailing range)"
+      ],
+      "total_duration": 86.5
+    },
+    "serialization": "json.dumps(sort_keys=True, ensure_ascii=False, indent=2); edits list kept in generation order (ids are zero-padded serials edit-subtitle-trim-NNNN, ascending with time)"
+  },
+  "results": {
+    "0.0": {
+      "edits": [
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 1.0,
+          "id": "edit-subtitle-trim-0000",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 0.0,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 6.6,
+          "id": "edit-subtitle-trim-0001",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 6.5,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 7.4,
+          "id": "edit-subtitle-trim-0002",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 7.0,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 9.5,
+          "id": "edit-subtitle-trim-0003",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 9.0,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 12.3,
+          "id": "edit-subtitle-trim-0004",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 11.5,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 15.3,
+          "id": "edit-subtitle-trim-0005",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 14.3,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 17.8,
+          "id": "edit-subtitle-trim-0006",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 16.3,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 21.8,
+          "id": "edit-subtitle-trim-0007",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 19.8,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 28.0,
+          "id": "edit-subtitle-trim-0008",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 24.0,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 30.5,
+          "id": "edit-subtitle-trim-0009",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 30.0,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 33.0,
+          "id": "edit-subtitle-trim-0010",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 32.5,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 35.5,
+          "id": "edit-subtitle-trim-0011",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 35.0,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 38.0,
+          "id": "edit-subtitle-trim-0012",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 37.5,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 40.5,
+          "id": "edit-subtitle-trim-0013",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 40.0,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 42.6,
+          "id": "edit-subtitle-trim-0014",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 42.5,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 43.0,
+          "id": "edit-subtitle-trim-0015",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 42.9,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 44.0,
+          "id": "edit-subtitle-trim-0016",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 43.2,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 50.4,
+          "id": "edit-subtitle-trim-0017",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 48.4,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 53.6,
+          "id": "edit-subtitle-trim-0018",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 53.0,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 57.1,
+          "id": "edit-subtitle-trim-0019",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 56.0,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 60.2,
+          "id": "edit-subtitle-trim-0020",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 59.0,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 70.3,
+          "id": "edit-subtitle-trim-0021",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 68.8,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 74.5,
+          "id": "edit-subtitle-trim-0022",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 72.0,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 79.7,
+          "id": "edit-subtitle-trim-0023",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 77.7,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 82.0,
+          "id": "edit-subtitle-trim-0024",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 80.0,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        }
+      ],
+      "summary": {
+        "delete_ranges": 25,
+        "keep_ranges": 25,
+        "new_edits": 25
+      }
+    },
+    "0.2": {
+      "edits": [
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 0.8,
+          "id": "edit-subtitle-trim-0000",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 0.0,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 9.3,
+          "id": "edit-subtitle-trim-0001",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 9.2,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 12.100000000000001,
+          "id": "edit-subtitle-trim-0002",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 11.7,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 15.100000000000001,
+          "id": "edit-subtitle-trim-0003",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 14.5,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 17.6,
+          "id": "edit-subtitle-trim-0004",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 16.5,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 21.6,
+          "id": "edit-subtitle-trim-0005",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 20.0,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 27.8,
+          "id": "edit-subtitle-trim-0006",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 24.2,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 30.3,
+          "id": "edit-subtitle-trim-0007",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 30.2,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 32.8,
+          "id": "edit-subtitle-trim-0008",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 32.7,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 35.3,
+          "id": "edit-subtitle-trim-0009",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 35.2,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 37.8,
+          "id": "edit-subtitle-trim-0010",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 37.7,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 40.3,
+          "id": "edit-subtitle-trim-0011",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 40.2,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 43.8,
+          "id": "edit-subtitle-trim-0012",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 43.400000000000006,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 50.199999999999996,
+          "id": "edit-subtitle-trim-0013",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 48.6,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 53.4,
+          "id": "edit-subtitle-trim-0014",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 53.2,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 56.9,
+          "id": "edit-subtitle-trim-0015",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 56.2,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 60.0,
+          "id": "edit-subtitle-trim-0016",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 59.2,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 70.1,
+          "id": "edit-subtitle-trim-0017",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 69.0,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 74.3,
+          "id": "edit-subtitle-trim-0018",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 72.2,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 79.5,
+          "id": "edit-subtitle-trim-0019",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 77.9,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 81.8,
+          "id": "edit-subtitle-trim-0020",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 80.2,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        }
+      ],
+      "summary": {
+        "delete_ranges": 21,
+        "keep_ranges": 21,
+        "new_edits": 21
+      }
+    },
+    "0.5": {
+      "edits": [
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 0.5,
+          "id": "edit-subtitle-trim-0000",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 0.0,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 17.3,
+          "id": "edit-subtitle-trim-0001",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 16.8,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 21.3,
+          "id": "edit-subtitle-trim-0002",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 20.3,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 27.5,
+          "id": "edit-subtitle-trim-0003",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 24.5,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 49.9,
+          "id": "edit-subtitle-trim-0004",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 48.9,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 56.6,
+          "id": "edit-subtitle-trim-0005",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 56.5,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 59.7,
+          "id": "edit-subtitle-trim-0006",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 59.5,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 69.8,
+          "id": "edit-subtitle-trim-0007",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 69.3,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 74.0,
+          "id": "edit-subtitle-trim-0008",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 72.5,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 79.2,
+          "id": "edit-subtitle-trim-0009",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 78.2,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 81.5,
+          "id": "edit-subtitle-trim-0010",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 80.5,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        }
+      ],
+      "summary": {
+        "delete_ranges": 11,
+        "keep_ranges": 11,
+        "new_edits": 11
+      }
+    },
+    "1.0": {
+      "edits": [
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 27.0,
+          "id": "edit-subtitle-trim-0000",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 25.0,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        },
+        {
+          "action": "delete",
+          "analysis_id": null,
+          "end": 73.5,
+          "id": "edit-subtitle-trim-0001",
+          "priority": 100,
+          "source": "subtitle_trim",
+          "start": 73.0,
+          "status": "confirmed",
+          "target_id": null,
+          "target_type": "range"
+        }
+      ],
+      "summary": {
+        "delete_ranges": 2,
+        "keep_ranges": 3,
+        "new_edits": 2
+      }
+    }
+  }
+}

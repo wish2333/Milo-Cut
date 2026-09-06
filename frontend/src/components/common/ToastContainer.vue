@@ -17,7 +17,7 @@ const iconMap = {
 </script>
 
 <template>
-  <div class="fixed bottom-4 right-4 z-[10000] flex flex-col gap-2 pointer-events-none">
+  <div class="fixed bottom-4 right-4 z-toast flex flex-col gap-2 pointer-events-none">
     <TransitionGroup
       name="toast"
       tag="div"

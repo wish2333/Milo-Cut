@@ -3,6 +3,7 @@ import type { EditDecision, Project, ProjectResponse, Segment } from "@/types/pr
 import { call, type ApiResponse } from "@/bridge"
 import { resolveSegmentState, getEditForSegment } from "@/utils/segmentHelpers"
 import type { SegmentState } from "@/utils/segmentHelpers"
+import type { UndoLayer } from "@/utils/undoRecords"
 
 const DEBOUNCE_MS = 300
 
@@ -41,6 +42,15 @@ function activeTranscriptSegments(p: Project): Segment[] {
   return p.timelines.find(t => t.id === p.active_timeline_id)?.transcript?.segments ?? []
 }
 
+// v3.0.2 M1-3 (S3/R3.1): binding predicate for the undo capture mapping --
+// the backend linkage path fires only when the edited main segment is a
+// binding's main side, so the capture layers must match that condition.
+function segmentHasBinding(p: Project, segmentId: string): boolean {
+  const bindings =
+    p.timelines.find(t => t.id === p.active_timeline_id)?.transcript?.bindings ?? []
+  return bindings.some(b => b.main_segment_id === segmentId)
+}
+
 function replaceSegment(project: Project, segId: string, patch: Partial<Segment>): Project {
   return {
     ...project,
@@ -63,7 +73,13 @@ function replaceSegment(project: Project, segId: string, patch: Partial<Segment>
 export function useSegmentEdit(
   project: Ref<Project>,
   onProjectUpdate: (project: ProjectResponse) => void,
-  onBeforeProjectUpdate?: (project: Project) => void,
+  onBeforeProjectUpdate?: (project: Project, layers?: UndoLayer[], label?: string) => void,
+  // v3.0.1 R7.5: reconcile counters surfacing (squeezed/removed/unbound).
+  onLinkageCounters?: (counters: {
+    squeezed: number
+    removed: number
+    unbound: number
+  }) => void,
 ): UseSegmentEditReturn {
   const selectedSegmentId = ref<string | null>(null)
   const selectedRange = ref<{ start: number; end: number } | null>(null)
@@ -153,12 +169,33 @@ export function useSegmentEdit(
 
   // -- Debounced time updates -------------------------------------------
 
+  // v3.0.2 smoke fix: ONE undo point per drag gesture -- a trim drag fires
+  // updateSegmentTime on every mousemove; capturing each move floods the
+  // undo stack and evicts history. Coalesce by segment+field with an idle
+  // window (first move captures the pre-drag state; pauses > 1.2s start a
+  // new point).
+  const trimCaptureAt = new Map<string, number>()
+  const TRIM_CAPTURE_COALESCE_MS = 1200
+
   function updateSegmentTime(segmentId: string, field: "start" | "end", value: number) {
     const prev = project.value
     const seg = activeTranscriptSegments(prev).find(s => s.id === segmentId)
     if (!seg) return
 
-    if (onBeforeProjectUpdate) onBeforeProjectUpdate(prev)
+    // v3.0.2 M1-3 (S3/R3.1): capture layers follow the M5-1 mapping --
+    // bound segment (linkage fires on the backend) captures all three
+    // layers so undo rolls back atomically; unbound keeps ["segments"].
+    const bound = segmentHasBinding(prev, segmentId)
+    const capKey = `${segmentId}:${field}`
+    const now = Date.now()
+    if (onBeforeProjectUpdate && now - (trimCaptureAt.get(capKey) ?? -Infinity) >= TRIM_CAPTURE_COALESCE_MS) {
+      trimCaptureAt.set(capKey, now)
+      onBeforeProjectUpdate(
+        prev,
+        bound ? ["segments", "tracks", "bindings"] : ["segments"],
+        "调整时间",
+      )
+    }
     const optimistic = replaceSegment(prev, segmentId, { [field]: value })
     onProjectUpdate(optimistic)
 
@@ -169,6 +206,16 @@ export function useSegmentEdit(
     const callback = async () => {
       const res = await call<Project>("update_segment", segmentId, { [field]: value })
       if (res.success && res.data) {
+        // v3.0.1 R7.5: destructive reconcile (squeezed/removed/unbound
+        // extension segments) is NEVER silent -- the patch meta carries
+        // the counters when the edited segment had bound extensions.
+        const maybePatch = res.data as unknown as {
+          meta?: { linkage?: { squeezed: number; removed: number; unbound: number } }
+        }
+        const linkage = maybePatch.meta?.linkage
+        if (linkage && (linkage.squeezed || linkage.removed || linkage.unbound)) {
+          onLinkageCounters?.(linkage)
+        }
         onProjectUpdate(res.data)
       } else {
         onProjectUpdate(prev)
@@ -186,7 +233,7 @@ export function useSegmentEdit(
   // -- Immediate text updates -------------------------------------------
 
   async function updateSegmentText(segmentId: string, text: string): Promise<boolean> {
-    if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value)
+    if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value, ["segments"], "修改文本") // D2
     const res = await call<Project>("update_segment_text", segmentId, text)
     if (res.success && res.data) {
       onProjectUpdate(res.data)
@@ -211,7 +258,7 @@ export function useSegmentEdit(
   // - Reuses ApiResponse<Project> instead of hand-written response shape.
 
   async function toggleEditStatus(segment: Segment, nextStatus?: string): Promise<boolean> {
-    if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value)
+    if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value, ["edits"], "编辑决策") // D3
     const edits = activeEdits(project.value)
     const state = resolveSegmentState(edits, segment)
 

@@ -152,24 +152,42 @@ class TestFrontendSource:
     """Source-level behavioral checks on Vue components."""
 
     def test_settings_modal_uses_engine_prefixed_keys(self):
-        """SettingsModal.vue must use engine-prefixed keys, not old asr_compute_type."""
-        src = _read_source("frontend/src/components/workspace/SettingsModal.vue")
+        """Settings UI must use engine-prefixed keys, not old asr_compute_type.
+
+        v3.0.0 M8-1: the settings UI was split into SettingsModal.vue plus
+        the tab components under components/workspace/settings/ -- the keys
+        under test now live in ExportSettingsTab.vue, so assert on the
+        combined source of the shell and all tabs.
+        """
+        settings_dir = PROJECT_ROOT / "frontend/src/components/workspace/settings"
+        paths = [PROJECT_ROOT / "frontend/src/components/workspace/SettingsModal.vue"]
+        paths.extend(sorted(settings_dir.glob("*.vue")))
+        src = "\n".join(p.read_text(encoding="utf-8") for p in paths)
         # Must use engine-prefixed keys
-        assert "whisper_compute_type" in src, "SettingsModal.vue does not use whisper_compute_type"
-        assert "qwen_compute_type" in src, "SettingsModal.vue does not use qwen_compute_type"
+        assert "whisper_compute_type" in src, "Settings UI does not use whisper_compute_type"
+        assert "qwen_compute_type" in src, "Settings UI does not use qwen_compute_type"
         # Must have int8_float16 as a compute option
-        assert "int8_float16" in src, "SettingsModal.vue missing int8_float16 compute option"
+        assert "int8_float16" in src, "Settings UI missing int8_float16 compute option"
         # Must NOT use old un-prefixed key as a settings key
         # (allow it only if not used in updateField/setField calls)
         if "asr_compute_type" in src:
             # If present, must only be in a comparison, not as a settings key
             assert not re.search(r"updateField\(\s*['\"]asr_compute_type", src), (
-                "SettingsModal.vue still uses old asr_compute_type as settings key"
+                "Settings UI still uses old asr_compute_type as settings key"
             )
 
     def test_workspace_handle_transcribe_saves_first(self):
-        """handleTranscribe must call saveAsrSettings() before runTranscription()."""
-        src = _read_source("frontend/src/pages/WorkspacePage.vue")
+        """handleTranscribe must persist ASR settings before runTranscription().
+
+        v3.0.0 M8-2b: the persistence logic moved into
+        useAsrEngines.saveAsrSettings; the page keeps the
+        handleSaveAsrSettings wrapper (closes the popover on success).
+        v3.0.0 M8-2c: handleTranscribe itself moved into
+        useWorkspaceActions.ts (five-group action hub), so the invariant is
+        asserted there. Match case-insensitively so either spelling
+        satisfies the save-before-transcribe invariant.
+        """
+        src = _read_source("frontend/src/composables/useWorkspaceActions.ts")
         # Find the handleTranscribe function body
         match = re.search(
             r"async function handleTranscribe\(\)\s*\{(.*?)(?=\n(?:async )?function |\nconst \w+ = |\Z)",
@@ -177,13 +195,13 @@ class TestFrontendSource:
             re.DOTALL,
         )
         assert match is not None, "handleTranscribe function not found"
-        body = match.group(1)
+        body = match.group(1).lower()
         # Both calls must exist
-        assert "saveAsrSettings" in body, "handleTranscribe does not call saveAsrSettings"
-        assert "runTranscription" in body, "handleTranscribe does not call runTranscription"
+        assert "saveasrsettings" in body, "handleTranscribe does not call saveAsrSettings"
+        assert "runtranscription" in body, "handleTranscribe does not call runTranscription"
         # saveAsrSettings must come before runTranscription
-        save_pos = body.index("saveAsrSettings")
-        transcribe_pos = body.index("runTranscription")
+        save_pos = body.index("saveasrsettings")
+        transcribe_pos = body.index("runtranscription")
         assert save_pos < transcribe_pos, (
             f"saveAsrSettings (pos {save_pos}) must come before "
             f"runTranscription (pos {transcribe_pos})"

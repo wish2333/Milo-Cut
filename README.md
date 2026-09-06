@@ -32,6 +32,52 @@ Milo-Cut is a local-first, AI-powered desktop video preprocessing tool for oral 
 - **Timeline formats** -- OTIO, EDL, FCPXML, Premiere XML. Audio-only projects (fps=0) now produce valid timeline files (v2.3.1 P0 fix).
 - **Highlight export** -- Export only the highlight ranges to MP4 / audio / SRT / VTT (v2.2.0).
 
+### Data Fidelity & Reliability (v3.0.0)
+
+- **Word-level timestamps preserved end-to-end** -- transcription no longer round-trips through SRT; split/merge maintain word data, and LLM corrections re-align word timings (local edits keep original timestamps, unreliable alignments are cleared rather than misplaced).
+- **Crash-safe project files** -- atomic saves with fsync + rotating `.bak.1/.bak.2` backups; corrupted projects auto-recover with a toast and self-heal on disk.
+- **LLM reliability protocol** -- batch ledger with retry and coverage-gap surfacing (never silently drops a batch), response sanitization, SSRF guard on base URLs, opaque segment ids, per-path temperature control.
+- **Waveform peak cache** -- `<media>.peaks.json` sidecar with a `{size, mtime_ms}` signature; reopening the same media is ready in ~1 ms instead of re-running ffmpeg.
+
+### Performance & Scale (v3.0.0)
+
+- **Layered undo** -- per-layer snapshots via the backend `apply_undo` channel; undo on a 1167-segment project costs ~1.2 ms on the main thread with a strictly increasing revision.
+- **Virtualized transcript list + in-place patch merging** -- 1200-segment projects scroll at 60 fps; unchanged rows keep object identity so Vue skips re-rendering them.
+- **Batched bridge events + adaptive tick** -- one `evaluate_js` per batch (512 KB budget), idle tick drops to 250 ms; waveform generation no longer blocks the UI thread.
+- **Waveform rendering pipeline** -- rAF-coalesced draws, DPR-aware canvas resizing, imperative playhead (zero Vue patches during playback), hover seek preview.
+
+### Multi-Row Timeline (v3.0.2)
+
+- **Multi-row timeline** -- flip the waveform into a virtualized row list ("one row = one window", presets 5/10/20/30 s per row) to see minutes of material at once; the last row shrinks to the remaining duration and a mini overview strip shows the covered range plus the playhead tick (click/drag to jump, row-aligned).
+- **Row gestures** -- plain wheel scrolls rows natively; Ctrl/Cmd+wheel cycles seconds-per-row, Ctrl/Cmd+Shift+wheel cycles row height (160 ms burst merge, then the playing row re-anchors at its new geometry).
+- **In-row editing** -- click empty space to seek, drag to scrub (32 ms throttled), double-click to toggle playback; Ctrl+drag creates a segment (preview stops at block edges, narrow gaps rejected); Shift+drag marquees across rows into the global selection; trim crosses row boundaries freely (row edges never clamp -- neighbor bounds + snap with a post-snap re-clamp; Alt only inverts snapping).
+- **Follow & persistence** -- playback follow judges on row change only (comfort zone = playhead-only), manual scrolling pauses it for 3 s, and list navigation jumps through the same reveal path; mode, presets, scroll position and panel height persist in localStorage and survive re-open.
+- **Tracks inside every row** -- extension lanes compose inside each row (collapse/preset state stays in lockstep across rows); with tracks present the default row height bumps to 168 px unless you already picked your own.
+
+### Track-Aware Subtitle List (v3.0.3)
+
+- **List track selector** -- the subtitle list gains a segmented switch (main track / each extension track); the selection is session view state only (never patched, never persisted, always back to the main track on reload).
+- **In-list extension editing** -- extension rows show text/timestamps/duration with the binding mark; double-click or the row menu edits text, stamps are click-editable with ±0.1s nudges, and edits share the debounced optimistic kernel with waveform trims (failures roll back and surface the backend error verbatim).
+- **Row actions & undo predicates** -- click seeks, the playhead highlights the active row, and the context menu offers 定位 / 编辑 / 删除此条字幕 (no confirm -- undo covers it); capture layers follow the predicate table (text -> tracks only; time -> tracks + bindings when bound; delete always both) with atomic offsets restore on undo.
+- **Follow smoothing (opt-in)** -- navigation jumps can animate with a 140 ms ease-out (`milocut:timeline-follow-smooth:v1`, default off); the playback-clock path always writes instantly, so continuous playback behavior is unchanged.
+- **Menu kbd badges** -- row context menus annotate registered shortcuts (mono badges, R9.4 style); items without a registered shortcut render text-only.
+
+### AI Translation, Track-Aware Correction & Manual Ranges (v3.0.4)
+
+- **AI translation sidecar track** -- one click translates the main-track subtitles into a bound extension track: pick a target language (9 built-ins, remembers your last choice), the LLM translates in batches, and each translated segment binds 1:1 to its main-track segment with copied timestamps. On completion the list switches to the new track automatically; bilingual playback (the bound translation line shows under the main subtitle) and two-line bilingual SRT/VTT export work out of the box; a single undo removes the whole track including its bindings. Any failed batch leaves the project untouched (zero writes), and main-track segments deleted mid-translation are reconciled into an explicit uncovered list.
+- **Cascade deletion note** -- deleting a main-track segment also deletes its bound translated segment (1:1 binding semantics); accidental deletions are covered by undo.
+- **Track-aware subtitle correction** -- correction is no longer main-track-only: in a track view the correction card stays available and locks to the current track (explicit track badge), pending suggestions are scoped per track, and review entries carry their source track. Accept/reject now return a ProjectPatch (layer-scoped, no more full-project refresh) with one-shot undo of both text and the review entry; bound segments of confirmed-deleted main-track segments are skipped, while unbound segments are corrected as usual.
+- **Manual edit ranges** -- a "range mark" toolbar toggle (default off) enables press-drag marquee selection over empty main-track space, with a delete/keep choice in the release bubble; the suggestion panel gains a "manual ranges" group plus a "+ timecode" precise entry point (confirmed ranges join the trim computation). Confirmed keep ranges are excluded from automatic trim computation -- kept content is never eaten by auto-trim (the 2.x "hold the gap" behavior is back); when a keep overlaps a manual delete, export obeys the delete; pending ranges never affect jump playback, the progress-bar red mask, or the export preview.
+- **Incidental batch** -- the list edit sweep now covers extension rows (one click in/out of whole-column text editing, pending edits flush before track switches); build-mode clicks on extension lanes create segments again (a long-dead chain rewired, both multi and basic paths); semantic search shows correct result text and timestamps in track views and locates the main-track hit.
+
+### Multi-Track Subtitles & Stacked Timeline (v3.0.0 data layer / v3.0.1 full UX)
+
+- **Stacked timeline** -- main track and every extension lane stack on one zoom/scroll surface with a single playhead spanning all lanes; lanes collapse/resize/hide (heights persist globally).
+- **Extension tracks** -- import an SRT as a second track with automatic 300 ms-tolerance binding; trim/drag extension segments with neighbor-gap constraints; linked split/paired deletion keep bindings honest (destructive resolves are always counted in a toast and undone atomically).
+- **Linkage that never drifts** -- binding offsets are rebuilt wholesale from final geometry after every edit; the main track is never rewritten by reconciliation.
+- **Track exports** -- per-track SRT/VTT through the same confirmed-deletion mapping as the main track, plus a bilingual merged (two-line) export; playback shows the bound extension line under the main subtitle (toggle in settings).
+- **Workflow failure rollback** (v3.0.0) -- per-step layer snapshots persisted cross-session; roll back just the failed step or the whole workflow.
+
 ### Platform & Local-First
 
 - **Local-first** -- All processing happens on your machine. No data leaves your device. LLM calls go directly from the desktop app to your configured provider.

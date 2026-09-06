@@ -5,6 +5,7 @@ import SettingsModal from "@/components/workspace/SettingsModal.vue"
 import { call } from "@/bridge"
 import type { MediaInfo, Project } from "@/types/project"
 import type { RecentProject } from "@/types/edit"
+import { useToast } from "@/composables/useToast"
 
 interface Emits {
   (e: "project-created", project: Project): void
@@ -54,6 +55,11 @@ async function openRecentProject(rp: RecentProject) {
   }
 
   status.value = ""
+  // v3.0.0 fix (macOS smoke round 2): surface backup recovery on this path too
+  const recoveredFrom = (res as unknown as { recovered_from?: string }).recovered_from
+  if (recoveredFrom) {
+    useToast().showToast("项目文件损坏，已从备份恢复", "info", 5000)
+  }
   emit("project-created", res.data)
 }
 
@@ -136,7 +142,13 @@ function formatRelativeTime(iso: string): string {
             @click="openRecentProject(rp)"
           >
             <div class="min-w-0 flex-1">
-              <div class="truncate text-sm font-semibold text-ink">{{ rp.name }}</div>
+              <div class="truncate text-sm font-semibold text-ink">
+                {{ rp.name }}
+                <span
+                  v-if="rp.corrupted"
+                  class="ml-1 rounded bg-status-pending/15 px-1 py-0.5 text-[10px] font-normal text-status-pending"
+                >主文件损坏，将从备份恢复</span>
+              </div>
               <div class="text-xs text-ink-muted truncate mt-0.5">{{ rp.path }}</div>
             </div>
             <div class="text-xs text-ink-muted-48 shrink-0">

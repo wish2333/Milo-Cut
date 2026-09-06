@@ -13,6 +13,7 @@ function getDemoSettings(): AppSettings {
     ffmpeg_path: "",
     ffprobe_path: "",
     theme: "light",
+    show_secondary_subtitle: true,
     language: "zh-CN",
     silence_threshold_db: -30,
     silence_min_duration: 0.5,
@@ -52,7 +53,7 @@ function getDemoSettings(): AppSettings {
     llm_base_url: "demo://llm",
     llm_api_key: "demo",
     llm_model: "Milo Demo LLM",
-    llm_temperature: 0.2,
+    llm_temperature: 0.1,
     llm_timeout: 30,
     llm_thinking_enabled: true,
     llm_provider_configs: {
@@ -65,6 +66,8 @@ function getDemoSettings(): AppSettings {
     llm_highlight_chunk_duration: 60,
     llm_highlight_overlap_duration: 5,
     llm_concurrency: 1,
+    llm_max_batch_chars: 4000,
+    llm_allow_local_urls: false,
   }
 }
 
@@ -85,6 +88,14 @@ export async function callDemo<T = unknown>(method: string, ...args: unknown[]):
       return ok(demoStore.updateSegment(segmentId, field, value) as T)
     }
     case "update_segment_text": return ok(demoStore.updateSegmentText(args[0] as string, args[1] as string) as T)
+    case "apply_undo": {
+      // v3.0.0 M5: layered undo (demo mirror of backend apply_undo).
+      const [layers, baseRevision] = args as [Record<string, unknown>, number]
+      const patch = demoStore.applyUndo(layers ?? {}, Number(baseRevision))
+      return patch === null
+        ? { success: false, error: "apply_undo: stale revision" } as ApiResponse<T>
+        : ok(patch as T)
+    }
     case "update_edit_decision": return ok(demoStore.setEditStatus(args[0] as string, args[1] as EditDecision["status"]) as T)
     case "update_edit_decisions_batch": return ok(demoStore.setEditStatuses(args[0] as string[], args[1] as EditDecision["status"]) as T)
     case "mark_segments": return ok(demoStore.addSmartDeleteEdits() as T)

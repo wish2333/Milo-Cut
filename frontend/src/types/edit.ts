@@ -11,6 +11,8 @@ export interface RecentProject {
   path: string
   updated_at: string
   created_at: string
+  // v3.0.0: main project.json corrupt; backup metadata used, open will recover
+  corrupted?: boolean
 }
 
 export interface AppSettings {
@@ -20,6 +22,8 @@ export interface AppSettings {
   // General
   theme: string
   language: string
+  // v3.0.1 M6-2: secondary (extension-track) subtitle overlay on playback
+  show_secondary_subtitle: boolean
   // Silence detection
   silence_threshold_db: number
   silence_min_duration: number
@@ -78,4 +82,7 @@ export interface AppSettings {
   llm_highlight_chunk_duration: number
   llm_highlight_overlap_duration: number
   llm_concurrency: number
+  // v3.0.0 M3-2/M3-4: batch char budget + local URL allow flag
+  llm_max_batch_chars: number
+  llm_allow_local_urls: boolean
 }

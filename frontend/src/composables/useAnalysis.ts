@@ -5,6 +5,7 @@ import { useTask } from "./useTask"
 import { EVENT_TASK_COMPLETED } from "@/utils/events"
 import type { Project } from "@/types/project"
 import type { TaskType } from "@/types/task"
+import type { UndoLayer } from "@/utils/undoRecords"
 
 const ANALYSIS_TASKS: TaskType[] = [
   "silence_detection",
@@ -13,7 +14,7 @@ const ANALYSIS_TASKS: TaskType[] = [
 
 export function useAnalysis(
   project: Ref<Project | null>,
-  onBeforeProjectUpdate?: (project: Project) => void,
+  onBeforeProjectUpdate?: (project: Project, layers?: UndoLayer[], label?: string) => void,
 ) {
   const { on } = useBridge()
   const { createTask, startTask, tasks, activeTask, isRunning } = useTask()
@@ -31,11 +32,26 @@ export function useAnalysis(
     return null
   })
 
-  on(EVENT_TASK_COMPLETED, (data: { task_id: string; result?: { project?: Project } }) => {
+  // v3.0.0 M4: task:completed no longer carries the full project; detect
+  // project_stripped and pull via get_project. Non-stripped payloads
+  // (demo bridge) keep the old path.
+  on(EVENT_TASK_COMPLETED, async (data: {
+    task_id: string
+    task_type?: string
+    result?: { project?: Project }
+    result_meta?: { project_stripped?: boolean }
+  }) => {
     const task = tasks.value.find(t => t.id === data.task_id)
-    if (task && ANALYSIS_TASKS.includes(task.type) && data.result?.project) {
-      if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value)
+    if (!task || !ANALYSIS_TASKS.includes(task.type)) return
+    if (data.result?.project) {
+      if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value, ["segments", "edits"], "分析结果回填")
       project.value = data.result.project
+    } else if (data.result_meta?.project_stripped) {
+      const res = await call<Project>("get_project")
+      if (res.success && res.data) {
+        if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value, ["segments", "edits"], "分析结果回填")
+        project.value = res.data
+      }
     }
   })
 
@@ -54,7 +70,7 @@ export function useAnalysis(
   async function confirmEdit(editId: string): Promise<boolean> {
     const res = await call<Project>("update_edit_decision", editId, "confirmed")
     if (res.success && res.data) {
-      if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value)
+      if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value, ["edits"], "编辑决策")
       project.value = res.data
       return true
     }
@@ -64,7 +80,7 @@ export function useAnalysis(
   async function rejectEdit(editId: string): Promise<boolean> {
     const res = await call<Project>("update_edit_decision", editId, "rejected")
     if (res.success && res.data) {
-      if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value)
+      if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value, ["edits"], "编辑决策")
       project.value = res.data
       return true
     }
@@ -75,7 +91,7 @@ export function useAnalysis(
   async function resetEdit(editId: string): Promise<boolean> {
     const res = await call<Project>("update_edit_decision", editId, "pending")
     if (res.success && res.data) {
-      if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value)
+      if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value, ["edits"], "编辑决策")
       project.value = res.data
       return true
     }
@@ -88,7 +104,7 @@ export function useAnalysis(
     status: "confirmed" | "rejected" | "pending",
   ): Promise<boolean> {
     if (editIds.length === 0) return false
-    if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value)
+    if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value, ["edits"], "编辑决策")
     const res = await call<Project>("update_edit_decisions_batch", editIds, status)
     if (res.success && res.data) {
       project.value = res.data
@@ -100,7 +116,7 @@ export function useAnalysis(
   /** v2.1.1: Permanently delete a group of edits (not just reset status). */
   async function deleteEdits(editIds: string[]): Promise<boolean> {
     if (editIds.length === 0) return false
-    if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value)
+    if (onBeforeProjectUpdate && project.value) onBeforeProjectUpdate(project.value, ["edits"], "编辑决策")
     const res = await call<Project>("delete_edit_decisions_batch", editIds)
     if (res.success && res.data) {
       project.value = res.data

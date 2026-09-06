@@ -237,6 +237,84 @@ def detect_silence(
         return {"success": False, "error": str(e)}
 
 
+# ================================================================
+# v3.0.0 M11-3: waveform peak cache (sidecar double-factor signature)
+# ================================================================
+
+_WAVEFORM_CACHE_VERSION = 1
+
+
+def media_signature(file_path: str) -> dict:
+    """``{size, mtime_ms}`` double-factor signature of a media file."""
+    st = Path(file_path).stat()
+    return {"size": st.st_size, "mtime_ms": st.st_mtime_ns // 1_000_000}
+
+
+def peaks_sidecar_path(media_path: str) -> Path:
+    """Sidecar cache path next to the media: ``media.mp4`` -> ``media.peaks.json``."""
+    return Path(media_path).with_suffix(".peaks.json")
+
+
+def read_peaks_file(path: str) -> list[dict] | None:
+    """Read a bare-array peaks JSON file (legacy waveform.json shape)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, list) or not data:
+        return None
+    return data
+
+
+def load_waveform_cache(media_path: str) -> str | None:
+    """Return the sidecar path when the cached signature matches the media.
+
+    A hit requires the sidecar to exist, carry the current
+    ``{size, mtime_ms}`` signature and version, and hold a non-empty peaks
+    array. Any mismatch, corruption, or unreadable file is a miss (the cache
+    is a pure optimization -- never a correctness gate).
+    """
+    sidecar = peaks_sidecar_path(media_path)
+    try:
+        if not sidecar.exists():
+            return None
+        with open(sidecar, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or data.get("version") != _WAVEFORM_CACHE_VERSION:
+            return None
+        if data.get("media_signature") != media_signature(media_path):
+            return None
+        peaks = data.get("peaks")
+        if not isinstance(peaks, list) or not peaks:
+            return None
+        return str(sidecar)
+    except (OSError, ValueError):
+        return None
+
+
+def write_waveform_cache(media_path: str, peaks: list[dict]) -> str | None:
+    """Write the peaks sidecar next to the media file.
+
+    Returns the sidecar path, or ``None`` when the media directory is not
+    writable (cache is best-effort; generation result still applies via the
+    legacy waveform path).
+    """
+    sidecar = peaks_sidecar_path(media_path)
+    try:
+        payload = {
+            "version": _WAVEFORM_CACHE_VERSION,
+            "media_signature": media_signature(media_path),
+            "peaks": peaks,
+        }
+        with open(sidecar, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        return str(sidecar)
+    except (OSError, ValueError) as e:
+        logger.warning("Waveform sidecar write skipped ({}): {}", sidecar, e)
+        return None
+
+
 def generate_waveform(
     file_path: str,
     duration: float,

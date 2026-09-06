@@ -17,6 +17,10 @@ interface SearchResult {
 const props = defineProps<{
   segments: Segment[]
   llmConfigured: boolean
+  // v3.0.4 M3-3: main-track segments. Backend semantic_search always
+  // searches the MAIN track; in track mode `segments` is the extension
+  // track's list, so result ids must resolve against the main track.
+  mainSegments?: Segment[]
 }>()
 
 const emit = defineEmits<{
@@ -29,10 +33,13 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 const hasSearched = ref(false)
 
-// Segment lookup map for text preview and time resolution
+// Segment lookup map for text preview and time resolution.
+// v3.0.4 M3-3: built from the MAIN track (mainSegments) when provided --
+// backend search results carry main-track segment ids; falls back to
+// segments (identical in main-track mode, zero change vs v3.0.3).
 const segmentMap = computed(() => {
   const m = new Map<string, Segment>()
-  for (const s of props.segments) {
+  for (const s of props.mainSegments ?? props.segments) {
     m.set(s.id, s)
   }
   return m

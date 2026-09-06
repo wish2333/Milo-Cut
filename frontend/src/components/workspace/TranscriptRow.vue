@@ -1,11 +1,20 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, watch, onMounted } from "vue"
 import type { Segment } from "@/types/project"
-import { formatTime, parseTime } from "@/utils/format"
+import { formatTime, formatTimeShort, parseTime } from "@/utils/format"
 import { openContextMenu, closeContextMenu as closeContextMenuManager } from "@/utils/contextMenuManager"
 
 const props = defineProps<{
   segment: Segment
+  /**
+   * v3.0.3 M1-2 (P1-2): row variant. "main" = v3.0.2 behavior untouched
+   * (status column, edit buttons, context menu, click-to-edit times).
+   * "track" = extension-track list row: display-only text/start/end +
+   * duration + binding mark, no main-track edit machinery.
+   */
+  variant?: "main" | "track"
+  /** v3.0.3 M1-2: segment has a main-track binding (linkage mark). */
+  isBound?: boolean
   displayStatus?: string
   styleClass?: string
   isSelected?: boolean
@@ -20,6 +29,8 @@ const props = defineProps<{
   isPlayheadInside?: boolean
   /** v2.1.1 A-2.1: externally-driven temporary highlight (e.g. SuggestionPanel click) */
   isHighlighted?: boolean
+  /** v3.0.0 M7-2: unsaved edit draft restored on remount after virtual-scroll unmount */
+  draft?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -39,10 +50,22 @@ const emit = defineEmits<{
   toast: [msg: string]
   // Spec-6 §11.5.2: right-click add to highlights
   "add-to-highlight": [segmentId: string]
+  // v3.0.0 M7-2: draft cache sync (null clears the stored draft)
+  "draft-change": [segmentId: string, text: string | null]
+  // ---- v3.0.3 M1-3/M1-4: track-variant entries (segment/track ids are
+  // bound by the parent -- Timeline attaches activeTrackId) ----
+  /** Text committed from the track row editor (dblclick / menu). */
+  "track-text": [text: string]
+  /** Time field committed from the track row stamp editor. */
+  "track-time": [field: "start" | "end", value: number]
+  /** Delete this track subtitle (no confirm -- undo covers, 3.0.2 ruling). */
+  "track-delete": []
 }>()
 
 // Context menu
 const contextMenu = ref<{ x: number; y: number } | null>(null)
+
+const isTrackVariant = computed(() => props.variant === "track")
 
 function handleContextMenu(e: MouseEvent) {
   e.preventDefault()
@@ -100,10 +123,123 @@ function handleDeleteSegment() {
   closeContextMenu()
 }
 
+// v3.0.3 M1-4: track-row menu actions -- 定位 / 编辑 / 删除此条字幕.
+// Delete has NO confirm dialog: undo covers it (3.0.2 ruling).
+function handleTrackSeek() {
+  emit("seek", props.segment.start)
+  closeContextMenu()
+}
+
+function handleTrackEdit() {
+  startEdit()
+  closeContextMenu()
+}
+
+function handleTrackDelete() {
+  emit("track-delete")
+  closeContextMenu()
+}
+
+// -- v3.0.3 M3 (S3): config-driven menu with optional kbd badges -----------
+//
+// Badges annotate REAL shortcuts only (R9.4 principle: no invented
+// shortcuts -- ShortcutsSettingsTab registry). Per that registry exactly
+// one menu action has one: 标记删除 = Delete (selection-mode main rows).
+// Everything else renders text-only; `kbd` absent -> no <kbd> node.
+interface RowMenuItem {
+  id: string
+  label: string
+  /** Registered shortcut label (ShortcutsSettingsTab registry). */
+  kbd?: string
+  tone?: "default" | "primary" | "danger"
+  dividerBefore?: boolean
+  title?: string
+  /** false = conditionally hidden (从时间指针分割 needs the playhead). */
+  show?: boolean
+  action: () => void
+}
+
+const toneClass: Record<NonNullable<RowMenuItem["tone"]> | "default", string> = {
+  default: "text-gray-700 hover:bg-gray-50",
+  primary: "text-blue-600 hover:bg-blue-50",
+  danger: "text-red-600 hover:bg-red-50",
+}
+
+const trackMenuItems = computed<RowMenuItem[]>(() => [
+  { id: "track-seek", label: "定位", action: handleTrackSeek },
+  { id: "track-edit", label: "编辑", action: handleTrackEdit },
+  {
+    id: "track-delete",
+    label: "删除此条字幕",
+    tone: "danger",
+    dividerBefore: true,
+    action: handleTrackDelete,
+  },
+])
+
+const mainMenuItems = computed<RowMenuItem[]>(() => [
+  { id: "edit-text", label: "编辑文本", action: startEdit },
+  {
+    id: "toggle-status",
+    label: props.displayStatus === "confirmed" ? "取消删除" : "标记删除",
+    kbd: "Del",
+    action: () => emit("toggle-status"),
+  },
+  {
+    id: "split-pointer",
+    label: "从时间指针分割",
+    title: "在时间指针位置分割",
+    show: props.isPlayheadInside,
+    // v3.0.2 parity: the static divider sat before the split GROUP; it
+    // moves with the lead item and vanishes when the group lead is hidden
+    // (split-mid carries it instead -- see below).
+    dividerBefore: true,
+    action: handleSplitAtPointer,
+  },
+  {
+    id: "split-mid",
+    label: "从中点分割",
+    title: "从此段中间分为两段",
+    dividerBefore: !props.isPlayheadInside,
+    action: handleSplitAtMidpoint,
+  },
+  {
+    id: "highlight",
+    label: "加入精华",
+    tone: "primary",
+    dividerBefore: true,
+    action: () => {
+      emit("add-to-highlight", props.segment.id)
+      closeContextMenu()
+    },
+  },
+  {
+    id: "delete-segment",
+    label: "删除段落",
+    tone: "danger",
+    dividerBefore: true,
+    action: handleDeleteSegment,
+  },
+])
+
+const activeMenuItems = computed<RowMenuItem[]>(() =>
+  isTrackVariant.value ? trackMenuItems.value : mainMenuItems.value,
+)
+
 // Text editing
 const isEditingText = ref(false)
 const editText = ref("")
 const originalText = ref("")
+
+// v3.0.0 M7-2: virtual scrolling unmounts rows that leave the window. The
+// unsaved draft is mirrored to the parent (Timeline) on every keystroke and
+// restored in startEdit(), so scrolling never loses an in-progress edit.
+watch(editText, (val) => {
+  if (isEditingText.value) emit("draft-change", props.segment.id, val)
+})
+function clearDraft() {
+  emit("draft-change", props.segment.id, null)
+}
 
 // Time editing (click on time value)
 const editingTimeField = ref<"start" | "end" | null>(null)
@@ -125,7 +261,13 @@ function applyTimeEdit() {
   const parsed = parseTime(editingTimeValue.value)
   const finalSeconds = parsed !== null ? parsed : editingTimeSeconds.value
   if (editingTimeField.value) {
-    emit("update-time", props.segment.id, editingTimeField.value, finalSeconds)
+    // v3.0.3 M1-3: track rows route through the track-time entry (parent
+    // attaches the track id); main rows keep the update-time path.
+    if (isTrackVariant.value) {
+      emit("track-time", editingTimeField.value, finalSeconds)
+    } else {
+      emit("update-time", props.segment.id, editingTimeField.value, finalSeconds)
+    }
   }
   editingTimeField.value = null
 }
@@ -156,25 +298,33 @@ function handleTimeEditKeydown(e: KeyboardEvent) {
 
 // Text edit functions
 function startEdit() {
+  if (isEditingText.value) return
   originalText.value = props.segment.text
-  editText.value = props.segment.text
+  editText.value = props.draft ?? props.segment.text
   isEditingText.value = true
 }
 
 function saveEdit() {
   if (editText.value !== props.segment.text) {
-    emit("update-text", props.segment.id, editText.value)
+    // v3.0.3 M1-3: track rows emit the track entry (parent attaches the
+    // track id); main rows keep update-text.
+    if (isTrackVariant.value) emit("track-text", editText.value)
+    else emit("update-text", props.segment.id, editText.value)
   }
+  clearDraft()
   isEditingText.value = false
 }
 
 function cancelEdit() {
   editText.value = originalText.value
+  clearDraft()
   isEditingText.value = false
 }
 
-// Enter edit mode when globalEditMode turns on, save when it turns off
-
+// Enter edit mode when globalEditMode turns on, save when it turns off.
+// v3.0.4 M3-1: track rows join the global-edit sweep (R3.1 -- reverses the
+// 3.0.3 M1-3 opt-out after one release of user feedback read the button as
+// broken in track view). The save path stays variant-split (saveEdit).
 onMounted(() => {
   if (props.globalEditMode) startEdit()
 })
@@ -213,8 +363,9 @@ function handleTextEditKeydown(e: KeyboardEvent) {
 // Row click: in selection mode toggle selection; otherwise seek to segment.
 function handleRowClick(e: MouseEvent) {
   if (editingTimeField.value) return
-  // v2.1.1 M4-1: selection mode intercepts the click
-  if (props.selectionMode) {
+  // v3.0.3 M1-3: track rows never join selection mode (M1-1 boundary:
+  // selection stays main-track-only).
+  if (props.selectionMode && !isTrackVariant.value) {
     emit("segment-click", props.segment.id, e)
     return
   }
@@ -222,6 +373,13 @@ function handleRowClick(e: MouseEvent) {
     saveEdit()
   }
   emit("seek", props.segment.start)
+}
+
+// v3.0.3 M1-3: double-click a track row to edit its text (R1.3 entry).
+function handleRowDblclick() {
+  if (!isTrackVariant.value) return
+  if (editingTimeField.value) return
+  startEdit()
 }
 
 function handleRowKeydown(e: KeyboardEvent) {
@@ -244,6 +402,10 @@ const statusClass = computed(() => {
       return ""
   }
 })
+
+// v3.0.3 M1-2: track-row duration label (same format utilities as the
+// main row; the backend clamp keeps end >= start).
+const durationLabel = computed(() => formatTimeShort(Math.max(0, props.segment.end - props.segment.start)))
 </script>
 
 <template>
@@ -258,6 +420,7 @@ const statusClass = computed(() => {
     }]" 
     :data-segment-id="segment.id"
     @click="handleRowClick"
+    @dblclick="handleRowDblclick"
     @keydown="handleRowKeydown"
     @contextmenu="handleContextMenu"
   >
@@ -267,7 +430,8 @@ const statusClass = computed(() => {
       class="absolute left-0 top-0 bottom-0 w-1"
       :class="isMultiSelected ? 'bg-blue-500' : 'bg-transparent'"
     ></div>
-    <!-- Time column: fixed width, no overlap -->
+    <!-- Time column: fixed width, no overlap. Track variant (v3.0.3
+         M1-3): same click-to-edit stamps, routed via track-time. -->
     <div class="w-[150px] shrink-0 overflow-hidden whitespace-nowrap pt-0.5 font-mono text-xs text-ink-muted">
       <template v-if="editingTimeField === 'start'">
         <input
@@ -278,6 +442,9 @@ const statusClass = computed(() => {
           @blur="applyTimeEdit"
           @click.stop
         />
+      </template>
+      <template v-else-if="isTrackVariant">
+        <span data-test="track-start" class="cursor-pointer hover:text-blue-500 hover:underline" title="点击编辑开始时间（±0.1s）" @mousedown="onTimeMouseDown('start', $event)">{{ formatTime(segment.start) }}</span>
       </template>
       <template v-else>
         <span class="cursor-pointer hover:text-blue-500 hover:underline" title="Click to edit (Arrows = ±0.1s)" @mousedown="onTimeMouseDown('start', $event)">{{ formatTime(segment.start) }}</span>
@@ -292,6 +459,9 @@ const statusClass = computed(() => {
           @blur="applyTimeEdit"
           @click.stop
         />
+      </template>
+      <template v-else-if="isTrackVariant">
+        <span data-test="track-end" class="cursor-pointer hover:text-blue-500 hover:underline" title="点击编辑结束时间（±0.1s）" @mousedown="onTimeMouseDown('end', $event)">{{ formatTime(segment.end) }}</span>
       </template>
       <template v-else>
         <span class="cursor-pointer hover:text-blue-500 hover:underline" title="Click to edit (Arrows = ±0.1s)" @mousedown="onTimeMouseDown('end', $event)">{{ formatTime(segment.end) }}</span>
@@ -312,8 +482,9 @@ const statusClass = computed(() => {
       <span v-else class="block truncate text-base leading-6">{{ segment.text }}</span>
     </div>
 
-    <!-- Edit/Save button -->
-    <div class="flex items-center gap-1 shrink-0">
+    <!-- Edit/Save button (main variant only; track rows enter editing via
+         their own entry in M1-3) -->
+    <div v-if="!isTrackVariant" class="flex items-center gap-1 shrink-0">
       <template v-if="isEditingText">
         <span
           class="rounded bg-primary-soft px-1.5 py-0.5 text-xs text-primary transition-colors hover:bg-primary/15"
@@ -341,8 +512,25 @@ const statusClass = computed(() => {
       </template>
     </div>
 
-    <!-- Status column -->
-    <div class="flex items-center gap-1 shrink-0">
+    <!-- Status column (main) / duration + binding mark (track, M1-2) -->
+    <div v-if="isTrackVariant" class="flex items-center gap-1 shrink-0">
+      <span
+        data-test="track-duration"
+        class="rounded bg-parchment px-1.5 py-0.5 text-xs text-ink-muted"
+        :title="`时长 ${durationLabel}`"
+      >{{ durationLabel }}</span>
+      <span
+        v-if="isBound"
+        data-test="track-bound-mark"
+        class="flex items-center rounded bg-primary-soft px-1 py-0.5 text-primary"
+        title="与主轨字幕联动绑定（时间编辑会同步偏移）"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 010 5.656l-3 3a4 4 0 01-5.656-5.656l1.5-1.5m7.5-1.5l1.5-1.5a4 4 0 015.656 0 4 4 0 010 5.656l-3 3a4 4 0 01-5.656 0" />
+        </svg>
+      </span>
+    </div>
+    <div v-else class="flex items-center gap-1 shrink-0">
       <template v-if="displayStatus === 'pending'">
         <span
           class="rounded bg-status-pending px-1.5 py-0.5 text-xs text-yellow-700 transition-colors hover:bg-yellow-100"
@@ -387,56 +575,34 @@ const statusClass = computed(() => {
         </span>
       </template>
     </div>
-    <!-- Context Menu -->
+    <!-- Context Menu (v3.0.3 M3: config-driven; kbd badges annotate REAL
+         shortcuts only -- no badge node when `kbd` is absent) -->
     <Teleport to="body">
       <div
         v-if="contextMenu"
-        class="fixed z-[9999] bg-white rounded-md shadow-lg border border-gray-200 py-1 min-w-[140px]"
+        class="fixed z-dropdown bg-white rounded-md shadow-lg border border-gray-200 py-1 min-w-[140px]"
         :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
         @click="closeContextMenu"
       >
-        <button
-          class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-          @click="startEdit"
-        >
-          编辑文本
-        </button>
-        <button
-          class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-          @click="emit('toggle-status')"
-        >
-          {{ displayStatus === 'confirmed' ? '取消删除' : '标记删除' }}
-        </button>
-        <div class="border-t border-gray-100 my-1" />
-        <button
-          v-if="isPlayheadInside"
-          class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-          title="在时间指针位置分割"
-          @click="handleSplitAtPointer"
-        >
-          从时间指针分割
-        </button>
-        <button
-          class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-          title="从此段中间分为两段"
-          @click="handleSplitAtMidpoint"
-        >
-          从中点分割
-        </button>
-        <div class="border-t border-gray-100 my-1" />
-        <button
-          class="w-full text-left px-3 py-1.5 text-sm text-blue-600 hover:bg-blue-50 transition-colors"
-          @click="emit('add-to-highlight', segment.id); closeContextMenu()"
-        >
-          加入精华
-        </button>
-        <div class="border-t border-gray-100 my-1" />
-        <button
-          class="w-full text-left px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
-          @click="handleDeleteSegment"
-        >
-          删除段落
-        </button>
+        <template v-for="item in activeMenuItems" :key="item.id">
+          <!-- hidden items render nothing, divider included (no orphan lines) -->
+          <div v-if="item.dividerBefore && item.show !== false" class="border-t border-gray-100 my-1" />
+          <button
+            v-if="item.show !== false"
+            :data-test="item.id === 'track-delete' ? 'track-menu-delete' : undefined"
+            :title="item.title"
+            class="w-full flex items-center justify-between gap-3 text-left px-3 py-1.5 text-sm transition-colors"
+            :class="toneClass[item.tone ?? 'default']"
+            @click="item.action()"
+          >
+            <span>{{ item.label }}</span>
+            <kbd
+              v-if="item.kbd"
+              data-test="menu-kbd"
+              class="rounded border border-gray-200 bg-gray-50 px-1 font-mono text-[10px] leading-4 text-gray-400"
+            >{{ item.kbd }}</kbd>
+          </button>
+        </template>
       </div>
     </Teleport>
   </div>

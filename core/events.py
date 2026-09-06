@@ -42,6 +42,9 @@ LLM_HIGHLIGHT_COMPLETED = "llm:highlight_completed"
 # P3: Semantic search
 LLM_SEMANTIC_SEARCH_COMPLETED = "llm:semantic_search_completed"
 
+# v3.0.4 M1: AI translation track completed
+LLM_TRANSLATION_COMPLETED = "llm:translation_completed"
+
 # Workflow (v2.1.0 Phase 3)
 WORKFLOW_STARTED = "workflow:started"
 WORKFLOW_STEP_STARTED = "workflow:step_started"
@@ -50,5 +53,7 @@ WORKFLOW_STEP_COMPLETED = "workflow:step_completed"
 WORKFLOW_STEP_FAILED = "workflow:step_failed"
 WORKFLOW_COMPLETED = "workflow:completed"
 WORKFLOW_CANCELLED = "workflow:cancelled"
+# v3.0.0 M3-6: failure rollback finished (layers restored via apply_undo)
+WORKFLOW_ROLLED_BACK = "workflow:rolled_back"
 WORKFLOW_CONFLICTS_DETECTED = "workflow:conflicts_detected"
 WORKFLOW_HEARTBEAT = "workflow:heartbeat"

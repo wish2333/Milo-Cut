@@ -99,6 +99,7 @@ Task types are defined in `core/models.py:TaskType`.
 | `timeline_utils.py` | Timeline helpers, partial_delete hint collection |
 | `diff_service.py` | Subtitle correction diff generation |
 | `task_manager.py` | Background task execution with progress + cancellation |
+| `track_constraints.py` | Stacked-timeline constraint kernel (overlap/linkage/reconcile; TS twin in `frontend/src/utils/trackConstraints.ts`) |
 | `bridge_service.py` | HTTP bridge API (health, analyze endpoints) |
 | `media_server.py` | Local HTTP server for streaming video to `<video>` element |
 | `asr_service.py` | ASR plugin abstraction (faster-whisper, qwen3-asr) |

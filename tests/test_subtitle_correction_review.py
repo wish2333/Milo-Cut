@@ -52,7 +52,7 @@ class TestStoreCorrections:
         svc = _service_with_project(monkeypatch, tmp_dir, segs)
         corrs = _corrections(segs)
 
-        res = svc.store_subtitle_corrections(corrs, "default")
+        res = svc.correction.store_subtitle_corrections(corrs, "default")
         assert res["success"]
         assert res["data"]["stored_count"] == 2
 
@@ -71,15 +71,15 @@ class TestStoreCorrections:
             {"segment_id": segs[0].id, "corrected_text": segs[0].text, "category": "none", "confidence": 1.0},
             {"segment_id": segs[1].id, "corrected_text": segs[1].text + "!", "category": "punctuation", "confidence": 0.8},
         ]
-        res = svc.store_subtitle_corrections(corrs, "default")
+        res = svc.correction.store_subtitle_corrections(corrs, "default")
         assert res["data"]["stored_count"] == 1  # only the changed one
 
     def test_store_clears_previous_corrections(self, tmp_dir, monkeypatch):
         """Re-running P1 replaces pending corrections, avoiding duplicates."""
         segs = make_segments(2)
         svc = _service_with_project(monkeypatch, tmp_dir, segs)
-        svc.store_subtitle_corrections(_corrections(segs), "default")
-        svc.store_subtitle_corrections(_corrections(segs), "default")
+        svc.correction.store_subtitle_corrections(_corrections(segs), "default")
+        svc.correction.store_subtitle_corrections(_corrections(segs), "default")
 
         tl = svc.active_timeline
         corr_results = [r for r in tl.analysis.results if r.type == "llm_subtitle_correction"]
@@ -95,7 +95,7 @@ class TestStoreCorrections:
             analysis=tl.analysis.model_copy(update={"results": [filler]})
         )
 
-        svc.store_subtitle_corrections(_corrections(segs), "default")
+        svc.correction.store_subtitle_corrections(_corrections(segs), "default")
         tl_after = svc.active_timeline
         types = [r.type for r in tl_after.analysis.results]
         assert "llm_smart_delete" in types
@@ -103,7 +103,7 @@ class TestStoreCorrections:
 
     def test_store_unknown_timeline_fails(self, tmp_dir, monkeypatch):
         svc = _service_with_project(monkeypatch, tmp_dir)
-        res = svc.store_subtitle_corrections([], "nonexistent")
+        res = svc.correction.store_subtitle_corrections([], "nonexistent")
         assert not res["success"]
 
 
@@ -116,9 +116,9 @@ class TestGetCorrections:
     def test_get_returns_parsed_detail(self, tmp_dir, monkeypatch):
         segs = make_segments(2)
         svc = _service_with_project(monkeypatch, tmp_dir, segs)
-        svc.store_subtitle_corrections(_corrections(segs), "default")
+        svc.correction.store_subtitle_corrections(_corrections(segs), "default")
 
-        res = svc.get_subtitle_corrections("default")
+        res = svc.correction.get_subtitle_corrections("default")
         assert res["success"]
         data = res["data"]
         assert len(data) == 2
@@ -132,7 +132,7 @@ class TestGetCorrections:
 
     def test_get_empty_when_none(self, tmp_dir, monkeypatch):
         svc = _service_with_project(monkeypatch, tmp_dir)
-        res = svc.get_subtitle_corrections("default")
+        res = svc.correction.get_subtitle_corrections("default")
         assert res["success"]
         assert res["data"] == []
 
@@ -147,12 +147,12 @@ class TestAcceptReject:
         segs = make_segments(2)
         svc = _service_with_project(monkeypatch, tmp_dir, segs)
         corrs = _corrections(segs)
-        svc.store_subtitle_corrections(corrs, "default")
+        svc.correction.store_subtitle_corrections(corrs, "default")
 
-        corrections = svc.get_subtitle_corrections("default")["data"]
+        corrections = svc.correction.get_subtitle_corrections("default")["data"]
         target = corrections[0]
 
-        res = svc.accept_subtitle_correction(target["id"])
+        res = svc.correction.accept_subtitle_correction(target["id"])
         assert res["success"]
         assert res["data"]["segment_id"] == segs[0].id
 
@@ -170,10 +170,10 @@ class TestAcceptReject:
         segs = make_segments(2)
         svc = _service_with_project(monkeypatch, tmp_dir, segs)
         original_text = segs[0].text
-        svc.store_subtitle_corrections(_corrections(segs), "default")
+        svc.correction.store_subtitle_corrections(_corrections(segs), "default")
 
-        corrections = svc.get_subtitle_corrections("default")["data"]
-        res = svc.reject_subtitle_correction(corrections[0]["id"])
+        corrections = svc.correction.get_subtitle_corrections("default")["data"]
+        res = svc.correction.reject_subtitle_correction(corrections[0]["id"])
         assert res["success"]
 
         tl = svc.active_timeline
@@ -184,12 +184,12 @@ class TestAcceptReject:
 
     def test_accept_unknown_id_fails(self, tmp_dir, monkeypatch):
         svc = _service_with_project(monkeypatch, tmp_dir)
-        res = svc.accept_subtitle_correction("corr-nonexistent")
+        res = svc.correction.accept_subtitle_correction("corr-nonexistent")
         assert not res["success"]
 
     def test_reject_unknown_id_fails(self, tmp_dir, monkeypatch):
         svc = _service_with_project(monkeypatch, tmp_dir)
-        res = svc.reject_subtitle_correction("corr-nonexistent")
+        res = svc.correction.reject_subtitle_correction("corr-nonexistent")
         assert not res["success"]
 
 
@@ -203,9 +203,9 @@ class TestBatchAccept:
         segs = make_segments(2)
         svc = _service_with_project(monkeypatch, tmp_dir, segs)
         corrs = _corrections(segs)  # confidences 0.9 and 0.6
-        svc.store_subtitle_corrections(corrs, "default")
+        svc.correction.store_subtitle_corrections(corrs, "default")
 
-        res = svc.accept_high_confidence_corrections("default", threshold=0.8)
+        res = svc.correction.accept_high_confidence_corrections("default", threshold=0.8)
         assert res["success"]
         assert res["data"]["accepted_count"] == 1  # only the 0.9 one
         assert res["data"]["remaining_count"] == 1  # the 0.6 one stays
@@ -221,9 +221,9 @@ class TestBatchAccept:
         """D-68: default threshold is 0.8."""
         segs = make_segments(2)
         svc = _service_with_project(monkeypatch, tmp_dir, segs)
-        svc.store_subtitle_corrections(_corrections(segs), "default")
+        svc.correction.store_subtitle_corrections(_corrections(segs), "default")
 
-        res = svc.accept_high_confidence_corrections("default")  # no threshold
+        res = svc.correction.accept_high_confidence_corrections("default")  # no threshold
         assert res["data"]["accepted_count"] == 1  # 0.9 >= 0.8
 
     def test_batch_all_high_confidence(self, tmp_dir, monkeypatch):
@@ -234,9 +234,9 @@ class TestBatchAccept:
             {"segment_id": segs[0].id, "corrected_text": segs[0].text + " A", "category": "homophone", "confidence": 0.95},
             {"segment_id": segs[1].id, "corrected_text": segs[1].text + " B", "category": "homophone", "confidence": 0.88},
         ]
-        svc.store_subtitle_corrections(corrs, "default")
+        svc.correction.store_subtitle_corrections(corrs, "default")
 
-        res = svc.accept_high_confidence_corrections("default", threshold=0.8)
+        res = svc.correction.accept_high_confidence_corrections("default", threshold=0.8)
         assert res["data"]["accepted_count"] == 2
         assert res["data"]["remaining_count"] == 0
 
@@ -250,18 +250,18 @@ class TestClearCorrections:
     def test_clear_removes_all_pending(self, tmp_dir, monkeypatch):
         segs = make_segments(2)
         svc = _service_with_project(monkeypatch, tmp_dir, segs)
-        svc.store_subtitle_corrections(_corrections(segs), "default")
+        svc.correction.store_subtitle_corrections(_corrections(segs), "default")
 
-        res = svc.clear_subtitle_corrections("default")
+        res = svc.correction.clear_subtitle_corrections("default")
         assert res["success"]
         assert res["data"]["cleared_count"] == 2
 
-        remaining = svc.get_subtitle_corrections("default")["data"]
+        remaining = svc.correction.get_subtitle_corrections("default")["data"]
         assert remaining == []
 
     def test_clear_when_empty(self, tmp_dir, monkeypatch):
         svc = _service_with_project(monkeypatch, tmp_dir)
-        res = svc.clear_subtitle_corrections("default")
+        res = svc.correction.clear_subtitle_corrections("default")
         assert res["success"]
         assert res["data"]["cleared_count"] == 0
 
@@ -274,9 +274,9 @@ class TestClearCorrections:
         svc._update_active_timeline(
             analysis=tl.analysis.model_copy(update={"results": [filler]})
         )
-        svc.store_subtitle_corrections(_corrections(segs), "default")
+        svc.correction.store_subtitle_corrections(_corrections(segs), "default")
 
-        svc.clear_subtitle_corrections("default")
+        svc.correction.clear_subtitle_corrections("default")
         tl_after = svc.active_timeline
         types = [r.type for r in tl_after.analysis.results]
         assert "llm_smart_delete" in types

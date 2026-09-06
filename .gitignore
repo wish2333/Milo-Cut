@@ -222,9 +222,6 @@ dist/
 build/
 frontend_dist/
 
-# Test Files
-/test/
-
 # Claude
 settings.local.json
 .omo
@@ -243,3 +240,6 @@ project.json
 .DS_Store
 .codegraph/
 .reasonix/
+
+# Reference
+/_competitor/

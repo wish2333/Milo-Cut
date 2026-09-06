@@ -130,14 +130,42 @@ class App:
             # ``window.pywebview.api`` to avoid the pywebview race where
             # js_api calls issued before the ``loaded`` event are silently
             # dropped by WebKit (see pywebview issue #431).
+            #
+            # v3.0.0 M4: inject the batch event dispatcher BEFORE the ready
+            # flag so the backend can drain the queue in one evaluate_js
+            # per batch (512KB budget, order-preserving, see bridge.py).
+            # Injecting here (instead of bundling in the frontend) means
+            # old frontend_dist bundles get the fast path too; the backend
+            # dispatch JS still carries a typeof fallback for safety.
+            window.evaluate_js(
+                "window.__pywebvueDispatchEvents = function (events) {"
+                "  for (var i = 0; i < events.length; i++) {"
+                "    document.dispatchEvent(new CustomEvent(events[i].name,"
+                "      { detail: events[i].detail, bubbles: true }));"
+                "  }"
+                "};"
+            )
             window.evaluate_js("window.__BRIDGE_READY__ = true;")
 
+            # v3.0.0 M4: adaptive tick. tick() returns the remaining event
+            # queue depth; after 40 consecutive idle ticks the loop drops
+            # from 50ms to 250ms (idle IPC < 4/s). Any pending event or a
+            # fresh task snaps it back to the fast cadence. Interaction
+            # calls go through call() and are unaffected.
             window.evaluate_js(
-                f"(function loop() {{"
-                f"  window.pywebview.api.tick()"
-                f"    .catch(e => console.error('pywebvue.tick error:', e))"
-                f"    .finally(() => setTimeout(loop, {self._tick_interval}));"
-                f"}})();"
+                "(function () {"
+                "  var idle = 0;"
+                "  function loop() {"
+                "    window.pywebview.api.tick()"
+                "      .then(function (r) {"
+                "        var p = (r && r.data && r.data.pending) || 0;"
+                "        idle = p > 0 ? 0 : idle + 1;"
+                "      })"
+                "      .catch(function (e) { console.error('pywebvue.tick error:', e); })"
+                "      .finally(function () { setTimeout(loop, idle >= 40 ? 250 : 50); });"
+                "  }"
+                "  loop();"
+                "})();"
             )
 
         window.events.loaded += on_loaded

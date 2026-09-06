@@ -9,13 +9,17 @@ import ConflictResolutionView from "@/components/workspace/ConflictResolutionVie
 import { waitForPyWebView, call, onEvent, isDemoMode } from "./bridge"
 import { resetDemoRuntime } from "@/demo/demoBridge"
 import { useUvAvailability } from "@/composables/useUvAvailability"
+import { useToast } from "@/composables/useToast"
 import { EVENT_DEMO_PROJECT_UPDATED, EVENT_TASK_COMPLETED } from "@/utils/events"
 import type { Project, MediaInfo, ProjectResponse } from "@/types/project"
 import { isProjectPatch } from "@/types/project"
 import { applyProjectPatch, isStalePatch } from "@/utils/projectPatch"
+// v3.0.0 M5: shared tracker (App.vue is the single writer; useUndoRedo reads).
+import { lastSeenRevision, noteRevision } from "@/utils/revision"
 
 const ready = ref(false)
 const bridgeError = ref("")
+const { showToast } = useToast()
 const { checkUvAvailable } = useUvAvailability()
 const project = ref<Project | null>(null)
 // v2.3.2 stage 2: monotonic revision tracker. Backend includes ``revision``
@@ -23,7 +27,7 @@ const project = ref<Project | null>(null)
 // strictly greater than this value, defending against out-of-order bridge
 // responses (e.g. user clicks toggle twice rapidly and the older response
 // lands after the newer one).
-const lastSeenRevision = ref(0)
+// v3.0.0 M5: moved to utils/revision.ts as a module-level shared ref.
 const showExportPage = ref(false)
 const isDragging = ref(false)
 const showRelinkDialog = ref(false)
@@ -76,11 +80,21 @@ function triggerWaveformGeneration() {
   })
 }
 
-onEvent<{ task_id: string; task_type?: string; result?: { project?: Project } }>(
+onEvent<{
+  task_id: string
+  task_type?: string
+  result?: { project?: Project }
+  result_meta?: { project_stripped?: boolean }
+}>(
   EVENT_TASK_COMPLETED,
-  (data) => {
-    if (data.task_type === "waveform_generation" && data.result?.project) {
+  async (data) => {
+    if (data.task_type !== "waveform_generation") return
+    // v3.0.0 M4: pull the project when the event payload is stripped.
+    if (data.result?.project) {
       project.value = data.result.project
+    } else if (data.result_meta?.project_stripped) {
+      const res = await call<Project>("get_project")
+      if (res.success && res.data) project.value = res.data
     }
   },
 )
@@ -114,7 +128,7 @@ function onProjectUpdated(data: ProjectResponse) {
       // Drop stale patch; current state is newer than this response.
       return
     }
-    lastSeenRevision.value = data.revision
+    noteRevision(data.revision)
     project.value = applyProjectPatch(project.value, data)
   } else {
     project.value = data
@@ -185,6 +199,11 @@ async function handleWindowDrop(e: DragEvent) {
     // Open existing project from project.json
     const openRes = await call<Project>("open_project", filePath)
     if (openRes.success && openRes.data) {
+      // v3.0.0 fix (macOS smoke): surface backup recovery on the drop path
+      const recoveredFrom = (openRes as unknown as { recovered_from?: string }).recovered_from
+      if (recoveredFrom) {
+        showToast("项目文件损坏，已从备份恢复", "info", 5000)
+      }
       setDirection(pageOrder(), 1)
       project.value = openRes.data
       triggerWaveformGeneration()
@@ -192,6 +211,11 @@ async function handleWindowDrop(e: DragEvent) {
       const data = openRes.data as unknown as { path: string }
       relinkLostPath.value = data.path
       showRelinkDialog.value = true
+    } else if (openRes.error === "MEDIA_NOT_FOUND") {
+      showToast("媒体文件缺失，无法打开项目", "error", 5000)
+    } else {
+      // v3.0.0 fix (macOS smoke): never fail silently on the drop path
+      showToast(openRes.error || "打开项目失败", "error", 5000)
     }
   } else if (!project.value && isMedia) {
     const probeRes = await call<MediaInfo>("probe_media", filePath)
@@ -239,7 +263,7 @@ function handleRelinkCancel() {
   >
     <div
       v-if="demoMode"
-      class="demo-mode-badge fixed right-4 top-3 z-[100] flex items-center gap-2 rounded-[var(--radius-control)] bg-surface-tile-1 px-3 py-1.5 text-xs text-white shadow-lg max-[1199px]:top-14"
+      class="demo-mode-badge fixed right-4 top-3 z-base flex items-center gap-2 rounded-[var(--radius-control)] bg-surface-tile-1 px-3 py-1.5 text-xs text-white shadow-lg max-[1199px]:top-14"
     >
       <span class="text-white/70">浏览器演示模式</span>
       <button class="mc-button mc-button-secondary min-h-7 border-white/20 bg-transparent px-2 py-0.5 text-white hover:bg-white/10" @click="resetDemo">
@@ -249,7 +273,7 @@ function handleRelinkCancel() {
     <!-- Full-window drag overlay -->
     <div
       v-if="isDragging"
-      class="fixed inset-0 z-[9999] flex items-center justify-center bg-blue-500/10 backdrop-blur-sm pointer-events-none"
+      class="fixed inset-0 z-modal flex items-center justify-center bg-blue-500/10 backdrop-blur-sm pointer-events-none"
     >
       <div class="rounded-2xl border-2 border-dashed border-blue-400 bg-white/90 px-16 py-12 text-center shadow-2xl">
         <p class="text-xl font-semibold text-blue-600">

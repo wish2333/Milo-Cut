@@ -1,23 +1,33 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue"
-import type { Project, Segment, EditDecision, ModelInfo, Timeline as TimelineData, ProjectResponse } from "@/types/project"
+import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from "vue"
+import type { Project, Segment, EditDecision, Timeline as TimelineData, ProjectResponse, ProjectPatch } from "@/types/project"
 import { formatTimeShort } from "@/utils/format"
 import { call, onEvent, isDemoMode } from "@/bridge"
 import { useAnalysis } from "@/composables/useAnalysis"
 import { useExport } from "@/composables/useExport"
 import { useEdit } from "@/composables/useEdit"
 import { useSegmentEdit } from "@/composables/useSegmentEdit"
+import { useTrackEdit } from "@/composables/useTrackEdit"
+import { useSettings } from "@/composables/useSettings"
 import { useToast } from "@/composables/useToast"
 import { useUndoRedo } from "@/composables/useUndoRedo"
-import { usePluginManager } from "@/composables/usePluginManager"
+import { useAsrEngines } from "@/composables/useAsrEngines"
+import { createWorkspaceActions, provideWorkspaceActions } from "@/composables/useWorkspaceActions"
 import { useUvAvailability } from "@/composables/useUvAvailability"
 import { useLlmTasks } from "@/composables/useLlmTasks"
 import { useEditedPlayback } from "@/composables/useEditedPlayback"
+import {
+  computeListCreateRange,
+  useListTrackSelector,
+} from "@/composables/useListTrackSelector"
+import { createPlaybackClock } from "@/composables/usePlaybackClock"
+import { PLAYBACK_CLOCK_KEY } from "@/components/waveform/injectionKeys"
 import {
   EVENT_TASK_COMPLETED,
   EVENT_TASK_CANCELLED,
   EVENT_PROJECT_DIRTY,
   EVENT_PROJECT_SAVED,
+  EVENT_WORKFLOW_ROLLED_BACK,
 } from "@/utils/events"
 import ProgressBar from "@/components/common/ProgressBar.vue"
 import SplitPanel from "@/components/common/SplitPanel.vue"
@@ -28,9 +38,13 @@ import SearchReplaceBar from "@/components/workspace/SearchReplaceBar.vue"
 import VideoControls from "@/components/workspace/VideoControls.vue"
 import SubtitleOverlay from "@/components/workspace/SubtitleOverlay.vue"
 import SettingsModal from "@/components/workspace/SettingsModal.vue"
+import TranscribeSettingsPopover from "@/components/workspace/popovers/TranscribeSettingsPopover.vue"
+import SilenceSettingsPopover from "@/components/workspace/popovers/SilenceSettingsPopover.vue"
+import SubtitleTrimSettingsPopover from "@/components/workspace/popovers/SubtitleTrimSettingsPopover.vue"
 import DemoPreviewSurface from "@/components/demo/DemoPreviewSurface.vue"
 import DemoResponsiveWorkspace from "@/components/demo/DemoResponsiveWorkspace.vue"
 import { useDemoPlayback } from "@/composables/useDemoPlayback"
+import type { TranslationNotice } from "@/utils/translationLanguages"
 
 interface Props {
   project: Project
@@ -75,8 +89,19 @@ const {
   startSmartDelete,
   startSubtitleCorrection,
   startHighlight,
+  // v3.0.4 M1-6: translation closed loop
+  startTranslation,
+  lastTranslationCompletion,
   hydrateHighlightsFromProject,
+  coverageGap,
 } = useLlmTasks()
+
+// v3.0.0 M3-1: surface batch coverage gaps from LLM tasks (never silent)
+watch(coverageGap, (n) => {
+  if (n > 0) {
+    showToast(`本次分析未覆盖 ${n} 段（批次失败，已跳过），建议重试`, "error", 5000)
+  }
+})
 
 // P1 fullscreen diff view state (D-16)
 const showSubtitleFullscreen = ref(false)
@@ -111,21 +136,41 @@ watch(subtitleCorrectionResult, async (result) => {
 const highConfidenceCorrections = computed(() =>
   pendingCorrections.value.filter((c) => c.confidence >= 0.8),
 )
+// v3.0.4 smoke-fix 3: persistent open state for the low-confidence
+// review section (default expanded -- sequential confirming is the
+// whole point of the section).
+const lowConfidenceOpen = ref(true)
 const lowConfidenceCorrections = computed(() =>
   pendingCorrections.value.filter((c) => c.confidence < 0.8),
 )
+
+// v3.0.4 M2-4 D: source-track badge for one review entry. The backend get
+// (P2-3) already resolves text/times against the entry's own scope
+// (track_id), so the render side just consumes the returned values; the
+// badge names the source track when the entry is track-scoped. "" / absent
+// = main track -> no badge (empty means main, no noise). The local
+// SubtitleCorrection type in useLlmTasks predates the scope fields (this
+// step's red line keeps useLlmTasks to the start-formal-param change), so
+// the runtime-present track_name is read through this narrow extension --
+// same pattern as useWorkspaceActions' CorrectionReviewEntry.
+type CorrectionEntryWithTrack = (typeof pendingCorrections.value)[number] & {
+  track_name?: string
+}
+function correctionTrackName(
+  corr: (typeof pendingCorrections.value)[number],
+): string {
+  return (corr as CorrectionEntryWithTrack).track_name ?? ""
+}
 
 const projectRef = computed({
   get: () => props.project,
   set: (val) => emit("project-updated", val),
 })
 
-const {
-  pushSnapshot,
-  undo,
-  redo,
-  clearHistory,
-} = useUndoRedo()
+// v3.0.0 M5: layered undo via the backend apply_undo channel. The legacy
+// full-JSON snapshot path was removed after the beta.2 smoke (rollback
+// anchor: tag pre-undo-cleanup).
+const { pushSnapshot, undo, redo, canUndo, canRedo, clearHistory } = useUndoRedo()
 
 const {
   isDetecting,
@@ -158,9 +203,14 @@ const {
   deleteSubtitleTrimEdits,
 } = useEdit(projectRef, pushSnapshot)
 
+const { showToast } = useToast()
+
 const {
   selectedSegmentId: editSelectedSegmentId,
   selectRange: selectEditRange,
+  // v3.0.4 M4-2 (P3-6): the previously write-only dead ref is activated as
+  // the waveform range bubble's data source (框选区间暂存).
+  selectedRange: editSelectedRange,
   updateSegmentTime,
   updateSegmentText,
   toggleEditStatus,
@@ -177,10 +227,60 @@ const {
   projectRef as any,
   (val: ProjectResponse) => emit("project-updated", val),
   pushSnapshot,
+  // v3.0.1 R7.5: destructive reconcile is never silent -- counters toast.
+  (c) =>
+    showToast(
+      `联动消解：挤压 ${c.squeezed} · 移除 ${c.removed} · 解绑 ${c.unbound}`,
+      "info",
+      4000,
+    ),
 )
 
-const { showToast } = useToast()
-const { listPlugins, checkEngineReady, listModels } = usePluginManager()
+// v3.0.4 M4-2 (P3-6): templates auto-unwrap top-level refs, so the
+// selectedRange REF travels inside a plain-object sink -- the waveform
+// bubble stages/clears the sweep by writing .value in place.
+const rangeSelectionSink = { ref: editSelectedRange }
+
+// v3.0.1 M5-2: extension-track editing (optimistic + debounced, separate
+// composable by design -- see SPEC M5-2 ruling).
+// v3.0.3 M1-3: the list-side entries share the SAME kernel; backend
+// rejections surface as toasts (错误原文) while the waveform trim path
+// keeps its silent rollback.
+function trackEditErrorToast(error: string) {
+  showToast(error, "error", 4000)
+}
+const {
+  updateTrackSegmentTime,
+  editTrackSegmentText,
+  editTrackSegmentTime,
+  flushPendingTrackUpdates,
+} = useTrackEdit(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  projectRef as any,
+  (val: ProjectResponse) => emit("project-updated", val),
+  pushSnapshot,
+)
+
+// v3.0.3 M1-3: list-side wrappers for the Timeline track rows.
+function handleUpdateTrackText(trackId: string, segmentId: string, text: string) {
+  editTrackSegmentText(trackId, segmentId, text, trackEditErrorToast)
+}
+function handleUpdateTrackTime(
+  trackId: string,
+  segmentId: string,
+  field: "start" | "end",
+  value: number,
+) {
+  editTrackSegmentTime(trackId, segmentId, field, value, trackEditErrorToast)
+}
+
+// v3.0.1 M6-2: secondary subtitle overlay setting; reloaded when the
+// settings modal closes so flips take effect immediately.
+const { settings: appSettings, loadSettings: reloadAppSettings } = useSettings()
+const showSecondarySubtitle = computed(() => appSettings.value?.show_secondary_subtitle !== false)
+const activeBindings = computed(
+  () => activeTimeline.value?.transcript?.bindings ?? [],
+)
 
 const statusMessage = ref("")
 const errorMessage = ref("")
@@ -190,7 +290,18 @@ const showTranscribeSettings = ref(false)
 const videoUrl = ref("")
 const waveformUrl = ref("")
 const videoRef = ref<HTMLVideoElement | null>(null)
-const currentTime = ref(0)
+// v3.0.0 M6-3: per-frame media time lives in the playback clock (non-reactive)
+// and reaches the playhead overlay imperatively. `currentTime` below is the
+// clock's COARSE reactive mirror (<=10 writes/s while playing, immediate on
+// pause/seek) -- the template consumers (controls text, segment highlight,
+// follow logic) intentionally never see per-frame updates, so playback no
+// longer re-renders the WorkspacePage tree at 60Hz.
+const playbackClock = createPlaybackClock({
+  getVideoTime: () => videoRef.value?.currentTime ?? 0,
+  isPlaying: () => videoRef.value !== null && !videoRef.value.paused,
+})
+provide(PLAYBACK_CLOCK_KEY, playbackClock)
+const currentTime = playbackClock.coarseTime
 const videoPaused = ref(true)
 const videoVolume = ref(0.75)
 const { uvAvailable } = useUvAvailability()
@@ -212,6 +323,8 @@ const activeTimeline = computed<TimelineData | null>(() =>
 )
 const segments = computed<Segment[]>(() => activeTimeline.value?.transcript?.segments ?? [])
 const edits = computed<EditDecision[]>(() => activeTimeline.value?.edits ?? [])
+// v3.0.0 M11-2: read-only extension tracks for the Timeline bottom lane
+const activeTracks = computed(() => activeTimeline.value?.transcript?.tracks ?? [])
 
 const deleteRanges = computed(() => {
   return edits.value
@@ -229,8 +342,25 @@ const {
   previewMode,
   paused: videoPaused,
   rawDeleteRanges: deleteRanges,
-  onTimeUpdate: (time) => { currentTime.value = time },
+  // M6-3: raw samples feed the clock (imperative playhead), not the ref.
+  onTimeUpdate: (time) => { playbackClock.ingest(time) },
 })
+
+// M6-3: original-mode playback has no controller rAF loop (its skip logic is
+// edited-only); the clock runs its own loop there. Edited mode feeds the
+// clock through the controller's publish path above.
+watch([previewMode, videoPaused], ([mode, paused]) => {
+  if (!paused && mode === "original") playbackClock.start()
+  else playbackClock.stop()
+}, { immediate: true })
+
+// M6-3 demo bridge: useDemoPlayback writes the coarse ref directly (no video
+// element exists). Ingest mirrors each write into the raw domain so the
+// imperative playhead stays smooth in demo; identical-value coarse writes are
+// skipped inside ingest, so this watch cannot loop.
+if (demoMode) {
+  watch(currentTime, (t) => { playbackClock.ingest(t) })
+}
 
 const demoPlayback = useDemoPlayback({
   currentTime,
@@ -244,101 +374,24 @@ function togglePreviewMode() {
   previewMode.value = previewMode.value === "edited" ? "original" : "edited"
 }
 
-// ASR Transcription settings - per-engine storage so switching preserves settings
-const asrSettingsPerEngine = ref<Record<string, {
-  model_size: string
-  language: string
-  device: "cpu" | "cuda" | "auto" | "mps"
-  compute_type: string
-  vad_filter: boolean
-  vad_threshold: number
-  vad_min_silence_ms: number
-}>>({
-  "faster-whisper": {
-    model_size: "large-v3-turbo",
-    language: "zh",
-    device: "cuda" as "cpu" | "cuda" | "auto" | "mps",
-    compute_type: "int8_float16",
-    vad_filter: true,
-    vad_threshold: 0.5,
-    vad_min_silence_ms: 500,
-  },
-  "qwen3-asr": {
-    model_size: "Qwen/Qwen3-ASR-0.6B",
-    language: "auto",
-    device: "cuda" as "cpu" | "cuda" | "auto" | "mps",
-    compute_type: "bfloat16",
-    vad_filter: false,
-    vad_threshold: 0.5,
-    vad_min_silence_ms: 500,
-  },
-})
-
-// Compute type options per engine (MLX: none; macOS CPU: no int8_float16/float16/bfloat16)
-const computeTypeOptions = computed(() => {
-  if (isMlx.value) return []
-  if (asrEngine.value === 'faster-whisper') {
-    const gpuOptions = [
-      { value: 'int8', label: 'INT8 (fastest)' },
-      { value: 'int8_float16', label: 'INT8 FP16 (balanced)' },
-      { value: 'float16', label: 'FP16' },
-      { value: 'float32', label: 'FP32 (highest quality)' },
-    ]
-    const cpuOptions = [
-      { value: 'int8', label: 'INT8 (fastest)' },
-      { value: 'float32', label: 'FP32 (highest quality)' },
-    ]
-    return (supportsGpu.value || asrSettingsPerEngine.value[asrEngine.value]?.device === 'auto') ? gpuOptions : cpuOptions
-  }
-  if (isDarwin) {
-    return [
-      { value: 'float16', label: 'FP16' },
-      { value: 'float32', label: 'FP32' },
-    ]
-  }
-  return [
-    { value: 'bfloat16', label: 'BF16 (recommended)' },
-    { value: 'float16', label: 'FP16' },
-    { value: 'float32', label: 'FP32' },
-  ]
-})
-
-// Current engine's pluginId for device filtering - use asrPluginId directly
-// since it tracks the exact selected variant (CPU vs GPU)
-const currentEnginePluginId = computed(() => {
-  return asrPluginId.value
-})
-
-// Whether current engine supports GPU (CUDA) — macOS has no NVIDIA CUDA
-const isDarwin = navigator.platform.toLowerCase().includes('mac')
-const isMlx = computed(() => asrPluginId.value.includes('-mlx'))
-const supportsGpu = computed(() => {
-  if (isDarwin) return false
-  const pid = currentEnginePluginId.value
-  // CPU-only plugins have "-cpu" suffix in pluginId
-  return pid.length > 0 && !pid.includes('-cpu')
-})
-
-const asrEngine = ref<"faster-whisper" | "qwen3-asr">("faster-whisper")
-const asrPluginId = ref("")  // Tracks which specific plugin variant is selected (CPU vs GPU)
-
-// Installed ASR engines (filtered from plugin list)
-interface InstalledEngine {
-  engine: string
-  displayName: string
-  pluginId: string
-  ready: boolean
-}
-const installedEngines = ref<InstalledEngine[]>([])
-const hasInstalledEngines = computed(() => installedEngines.value.length > 0)
-
-// Available ASR models (loaded from plugin manager)
-const modelList = ref<ModelInfo[]>([])
-const availableModels = computed(() => {
-  return modelList.value
-    .filter(m => m.engine === asrEngine.value && !m.model_id.includes("ForcedAligner"))
-    .filter((m, i, arr) => arr.findIndex(x => x.model_id === m.model_id) === i)
-})
+// v3.0.0 M8-2b: ASR engine domain unified in useAsrEngines (single source
+// shared with the settings tabs -- plugin discovery, per-engine settings,
+// GPU/compute derivation, persistence). State is a module-level singleton.
+const {
+  asrEngine,
+  asrPluginId,
+  asrSettingsPerEngine,
+  installedEngines,
+  hasInstalledEngines,
+  availableModels,
+  isDarwin,
+  isMlx,
+  supportsGpu,
+  computeTypeOptions,
+  ensureLoaded: ensureAsrEnginesLoaded,
+  saveAsrSettings,
+  checkEngineReady,
+} = useAsrEngines()
 
 const silenceThreshold = ref(-30)
 const silenceMinDuration = ref(0.5)
@@ -375,6 +428,21 @@ const isDirty = ref(false)
 const isSaving = ref(false)
 const lastSavedAt = ref<number | null>(null)
 
+// v3.0.0 M3-6: workflow failure rollback restored layers on the backend --
+// pull the updated project and surface the outcome.
+onEvent<{ workflow_instance_id: string; rolled_back_to_step: number; total_steps: number }>(
+  EVENT_WORKFLOW_ROLLED_BACK,
+  async (data) => {
+    const res = await call<Project>("get_project")
+    if (res.success && res.data) emit("project-updated", res.data)
+    if (data.rolled_back_to_step >= 0) {
+      showToast(`已回滚到步骤 ${data.rolled_back_to_step + 1} 前，工作流已结束`, "info", 4000)
+    } else {
+      showToast("回滚失败：快照缺少层级数据，请手动检查项目状态", "error", 5000)
+    }
+  },
+)
+
 onEvent<void>(EVENT_PROJECT_DIRTY, () => {
   isDirty.value = true
 })
@@ -408,6 +476,27 @@ const analysisResults = computed(() => activeTimeline.value?.analysis?.results ?
 // See tests/test_segment_sort_invariant.py and core/project_service.py.
 const mergedSegments = computed<Segment[]>(() => segments.value)
 
+// v3.0.3 M1-1: subtitle-list track selector (pure session view state --
+// no patch, no undo, no persistence). listSegments is THE list data
+// source: null -> mergedSegments (v3.0.2 path, byte-identical), an
+// extension track id -> that track's segments.
+const {
+  activeListTrackId,
+  selectTrack: selectListTrack,
+  options: listTrackOptions,
+  listSegments,
+} = useListTrackSelector(activeTracks, mergedSegments)
+
+// v3.0.4 M1-6 (M0-3 constraint 2): display name of the selected list track
+// (null = main track). Source = the SAME selector state that drives the
+// list; this is the WorkspacePage hop of the active-track-name chain that
+// M2-4 consumes in AIAssistantPanel.
+const activeListTrackName = computed(() => {
+  const id = activeListTrackId.value
+  if (id === null) return null
+  return activeTracks.value.find(t => t.id === id)?.name ?? null
+})
+
 const silenceCount = computed(() => segments.value.filter(s => s.type === "silence").length)
 const subtitleCount = computed(() => segments.value.filter(s => s.type === "subtitle").length)
 const isTranscribing = computed(() => {
@@ -428,40 +517,7 @@ async function loadVideoUrl() {
   }
 }
 
-let regenPollTimer: ReturnType<typeof setInterval> | null = null
-
-async function handleRegenerateWaveform() {
-  if (demoMode) {
-    showToast("演示波形由浏览器即时生成", "info", 2500)
-    return
-  }
-  statusMessage.value = "Regenerating waveform..."
-  const res = await call<{ task_id: string }>("regenerate_waveform")
-  if (!res.success) {
-    showToast(res.error ?? "Failed to regenerate waveform", "error", 3000)
-    statusMessage.value = ""
-    return
-  }
-  // Poll get_waveform_url until regeneration completes
-  if (regenPollTimer) clearInterval(regenPollTimer)
-  const start = Date.now()
-  regenPollTimer = setInterval(async () => {
-    const urlRes = await call<{ url: string }>("get_waveform_url")
-    if (urlRes.success && urlRes.data) {
-      clearInterval(regenPollTimer!)
-      regenPollTimer = null
-      // Cache-bust: append timestamp so WaveformCanvas re-fetches
-      waveformUrl.value = urlRes.data.url + "?t=" + Date.now()
-      statusMessage.value = ""
-      showToast("Waveform regenerated", "success", 2000)
-    } else if (Date.now() - start > 120000) {
-      clearInterval(regenPollTimer!)
-      regenPollTimer = null
-      statusMessage.value = ""
-      showToast("Waveform regeneration timed out", "error", 3000)
-    }
-  }, 500)
-}
+const regenPoll = { current: null as ReturnType<typeof setInterval> | null }  // M8-2c: polled from useWorkspaceActions
 
 async function resolveWaveformUrl() {
   if (demoMode) return
@@ -491,10 +547,9 @@ onMounted(async () => {
 
   runIdle(async () => {
     await loadSilenceSettings()
-    await loadInstalledEngines()  // Must run BEFORE loadAsrSettings
-    await loadAsrSettings()
-    modelList.value = await listModels()
-    validateModelSize()
+    // M8-2b: engine discovery -> settings hydration contract lives inside
+    // ensureLoaded (single-flight, shared with the settings tabs).
+    await ensureAsrEnginesLoaded()
     // Phase 2: load LLM config status for AI assistant panel
     await loadLlmConfig()
   })
@@ -507,16 +562,20 @@ watch(() => props.project.media?.waveform_path, () => {
 // When waveform generation task completes, the backend updates the project's
 // waveform_path which triggers the watcher above. But as a safety net, also
 // listen for the task completed event and retry the URL resolution.
-onEvent<{ task_id: string; task_type?: string; result?: { project?: Project } }>(
+onEvent<{ task_id: string; task_type?: string; result?: { project?: Project }; result_meta?: { project_stripped?: boolean } }>(
   EVENT_TASK_COMPLETED,
-  (data) => {
+  async (data) => {
     if (data.task_type === "waveform_generation") {
       resolveWaveformUrl()
     }
     if (data.task_type === "proxy_generation") {
       isGeneratingProxy.value = false
+      // v3.0.0 M4: pull the project when the event payload is stripped.
       if (data.result?.project) {
         emit("project-updated", data.result.project)
+      } else if (data.result_meta?.project_stripped) {
+        const res = await call<Project>("get_project")
+        if (res.success && res.data) emit("project-updated", res.data)
       }
       loadVideoUrl()
       showToast("Proxy video ready", "success", 2000)
@@ -525,10 +584,16 @@ onEvent<{ task_id: string; task_type?: string; result?: { project?: Project } }>
     if (
       data.task_type === "llm_smart_delete" ||
       data.task_type === "llm_subtitle_correction" ||
-      data.task_type === "llm_highlight"
+      data.task_type === "llm_highlight" ||
+      // v3.0.4 M1-6: translation writes the new track on the background
+      // thread; same stripped-payload -> get_project refresh as correction.
+      data.task_type === "llm_translation"
     ) {
       if (data.result?.project) {
         emit("project-updated", data.result.project)
+      } else if (data.result_meta?.project_stripped) {
+        const res = await call<Project>("get_project")
+        if (res.success && res.data) emit("project-updated", res.data)
       }
     }
   },
@@ -549,23 +614,6 @@ onEvent<{ task_id: string; task_type?: string }>(
     }
   },
 )
-async function handleRequestProxy() {
-  if (isGeneratingProxy.value) return
-  isGeneratingProxy.value = true
-  try {
-    const res = await call<{ task_id: string }>("request_proxy")
-    if (!res.success) {
-      showToast(res.error ?? "Failed to start proxy generation", "error", 3000)
-      isGeneratingProxy.value = false
-      return
-    }
-    if (res.data) {
-      call("start_task", res.data.task_id)
-    }
-  } catch {
-    isGeneratingProxy.value = false
-  }
-}
 
 // When proxy_path or media path changes, reload video URL
 watch(() => props.project.media?.proxy_path, () => {
@@ -597,164 +645,14 @@ async function loadSilenceSettings() {
   }
 }
 
-async function loadAsrSettings() {
-  const res = await call<Record<string, unknown>>("get_settings")
-  if (res.success && res.data) {
-    const engine = (res.data.asr_engine as "faster-whisper" | "qwen3-asr") || "faster-whisper"
-    asrEngine.value = engine
-
-    // Restore pluginId from saved settings, or auto-select first matching engine
-    const savedPluginId = res.data.asr_plugin_id as string
-    if (savedPluginId && installedEngines.value.find(e => e.pluginId === savedPluginId)) {
-      asrPluginId.value = savedPluginId
-    } else {
-      // Auto-select first installed engine for this engine type
-      const firstEng = installedEngines.value.find(e => e.engine === engine)
-      if (firstEng) asrPluginId.value = firstEng.pluginId
-    }
-
-    // Shared settings
-    const vadFilter = res.data.asr_vad_filter !== false
-
-    // Determine per-engine device based on plugin capabilities
-    const whisperPluginId = installedEngines.value.find(e => e.engine === "faster-whisper")?.pluginId ?? ""
-    const qwenPluginId = installedEngines.value.find(e => e.engine === "qwen3-asr")?.pluginId ?? ""
-    const whisperSupportsGpu = !isDarwin && whisperPluginId.length > 0 && !whisperPluginId.includes("-cpu")
-    const qwenSupportsGpu = !isDarwin && qwenPluginId.length > 0 && !qwenPluginId.includes("-cpu")
-
-    // Load faster-whisper settings (engine-prefixed keys from config.py)
-    const whisperModelSize = (res.data.asr_model_size as string) || "large-v3-turbo"
-    const whisperDevice = (res.data.asr_device as "cpu" | "cuda" | "auto" | "mps") || (whisperSupportsGpu ? "cuda" : isDarwin ? "auto" : "cpu")
-    asrSettingsPerEngine.value["faster-whisper"] = {
-      model_size: whisperModelSize,
-      language: (res.data.asr_language as string) || "zh",
-      device: whisperDevice,
-      compute_type: (res.data.whisper_compute_type as string) || (whisperSupportsGpu ? "int8_float16" : "int8"),
-      vad_filter: vadFilter,
-      vad_threshold: Number(res.data.whisper_vad_threshold ?? 0.5),
-      vad_min_silence_ms: Number(res.data.whisper_vad_min_silence_ms ?? 500),
-    }
-
-    // Load qwen3-asr settings
-    const qwenModelSize = (res.data.asr_model_size as string) || "Qwen/Qwen3-ASR-0.6B"
-    const qwenDevice = qwenSupportsGpu ? "cuda" : isDarwin ? "mps" : "cpu"
-    asrSettingsPerEngine.value["qwen3-asr"] = {
-      model_size: qwenModelSize,
-      language: (res.data.qwen_language as string) || "auto",
-      device: qwenDevice,
-      compute_type: (res.data.qwen_compute_type as string) || (qwenSupportsGpu ? "bfloat16" : "float16"),
-      vad_filter: false,
-      vad_threshold: 0.5,
-      vad_min_silence_ms: 500,
-    }
+// M8-2b: persistence logic moved into useAsrEngines.saveAsrSettings; the
+// page wrapper keeps the original UI side effect of closing the popover.
+async function handleSaveAsrSettings(): Promise<boolean> {
+  const ok = await saveAsrSettings()
+  if (ok) {
+    showTranscribeSettings.value = false
   }
-}
-
-async function loadInstalledEngines() {
-  const plugins = await listPlugins()
-  const engines: InstalledEngine[] = []
-
-  for (const p of plugins) {
-    if (p.status === "installed") {
-      const status = await checkEngineReady(p.engine)
-      engines.push({
-        engine: p.engine,
-        displayName: p.display_name,
-        pluginId: p.plugin_id,
-        ready: status.ready,
-      })
-    }
-  }
-
-  installedEngines.value = engines
-
-  // If current selected engine is not installed, switch to first available
-  if (engines.length > 0 && !engines.find(e => e.engine === asrEngine.value)) {
-    asrEngine.value = engines[0].engine as "faster-whisper" | "qwen3-asr"
-  }
-}
-
-function validateModelSize() {
-  const models = availableModels.value
-  const current = asrSettingsPerEngine.value[asrEngine.value]
-  if (current && models.length > 0 && !models.find(m => m.model_id === current.model_size)) {
-    asrSettingsPerEngine.value[asrEngine.value].model_size = models[0].model_id
-  }
-}
-
-// Derive engine from selected pluginId, and update device/compute when plugin changes
-watch(asrPluginId, (newPluginId) => {
-  if (!newPluginId) return
-  const eng = installedEngines.value.find(e => e.pluginId === newPluginId)
-  if (eng) {
-    const prevEngine = asrEngine.value
-    asrEngine.value = eng.engine as "faster-whisper" | "qwen3-asr"
-    // If engine type didn't change (e.g. CPU->GPU within same engine),
-    // watch(asrEngine) won't fire, so we must update device/compute here
-    if (prevEngine === eng.engine) {
-      const gpu = !isDarwin && !newPluginId.includes('-cpu')
-      const settings = asrSettingsPerEngine.value[eng.engine]
-      if (settings) {
-        settings.device = gpu ? 'cuda' : 'cpu'
-        if (eng.engine === 'qwen3-asr') {
-          settings.compute_type = gpu ? 'bfloat16' : 'float16'
-        }
-        // faster-whisper keeps int8_float16 for both CPU and GPU
-      }
-    }
-  }
-})
-
-// Engine defaults by type
-function getEngineDefaults(engine: "faster-whisper" | "qwen3-asr") {
-  const gpu = !isDarwin && asrPluginId.value.length > 0 && !asrPluginId.value.includes('-cpu')
-  if (engine === 'qwen3-asr') {
-    return { model_size: "Qwen/Qwen3-ASR-0.6B", language: "auto", device: gpu ? "cuda" as const : isDarwin ? "mps" as const : "cpu" as const, compute_type: gpu ? "bfloat16" as const : isDarwin ? "float16" as const : "float16" as const, vad_filter: false, vad_threshold: 0.5, vad_min_silence_ms: 500 }
-  }
-  return { model_size: "large-v3-turbo", language: "zh", device: gpu ? "cuda" as const : isDarwin ? "auto" as const : "cpu" as const, compute_type: gpu ? "int8_float16" as const : "int8" as const, vad_filter: true, vad_threshold: 0.5, vad_min_silence_ms: 500 }
-}
-
-// When engine changes, only create defaults if not yet populated.
-// Device/compute are always updated based on selected plugin's GPU capability.
-// User preferences (model_size, language, vad_*) are preserved from loadAsrSettings().
-watch(asrEngine, (newEngine) => {
-  const defaults = getEngineDefaults(newEngine)
-  const existing = asrSettingsPerEngine.value[newEngine]
-  if (!existing) {
-    asrSettingsPerEngine.value[newEngine] = { ...defaults }
-  } else {
-    // Only update device/compute based on plugin capability (these are plugin-dependent, not user preference)
-    existing.device = defaults.device
-    existing.compute_type = defaults.compute_type
-  }
-  validateModelSize()
-})
-
-async function saveAsrSettings(): Promise<boolean> {
-  const current = asrSettingsPerEngine.value[asrEngine.value]
-  const payload: Record<string, unknown> = {
-    asr_engine: asrEngine.value,
-    asr_plugin_id: asrPluginId.value,
-    asr_model_size: current.model_size,
-    asr_language: current.language,
-    asr_device: current.device,
-    asr_vad_filter: current.vad_filter,
-  }
-
-  // Engine-prefixed keys for settings persistence
-  if (asrEngine.value === "qwen3-asr") {
-    payload.qwen_compute_type = current.compute_type
-    payload.qwen_language = current.language
-  } else {
-    payload.whisper_compute_type = current.compute_type
-    payload.whisper_vad_threshold = current.vad_threshold
-    payload.whisper_vad_min_silence_ms = current.vad_min_silence_ms
-  }
-
-  const res = await call("update_settings", payload)
-  if (!res.success) return false
-  showTranscribeSettings.value = false
-  return true
+  return ok
 }
 
 async function saveSilenceSettings() {
@@ -768,107 +666,7 @@ async function saveSilenceSettings() {
   showSilenceSettings.value = false
 }
 
-function handleSeek(time: number) {
-  if (demoMode) demoPlayback.seek(time, true)
-  else seekPlayback(time, true)
-}
-
-// v2.1.1 A-03: move playhead without playing (arrow keys, selection mode)
-function handleSetTime(time: number) {
-  if (demoMode) demoPlayback.seek(time)
-  else seekPlayback(time)
-}
-
-function handleVideoLoaded() {
-  if (videoRef.value) {
-    videoRef.value.volume = 0.25
-  }
-}
-
-function handleTimeUpdate() {
-  handlePlaybackTimeUpdate()
-}
-
-function handleTogglePlay() {
-  if (demoMode) {
-    demoPlayback.toggle()
-    return
-  }
-  if (!videoRef.value) return
-  if (videoRef.value.paused) {
-    videoRef.value.play()
-  } else {
-    videoRef.value.pause()
-  }
-}
-
-function handleSeekTo(time: number) {
-  if (demoMode) demoPlayback.seek(time)
-  else seekPlayback(time)
-}
-
-function handleVolumeChange(vol: number) {
-  if (demoMode) {
-    videoVolume.value = vol
-    return
-  }
-  if (!videoRef.value) return
-  videoRef.value.volume = vol
-  videoVolume.value = vol
-}
-
-function handleRateChange(rate: number) {
-  if (demoMode) {
-    videoPlaybackRate.value = rate
-    return
-  }
-  if (!videoRef.value) return
-  videoRef.value.playbackRate = rate
-  videoPlaybackRate.value = rate
-}
-
-function handleFullscreen() {
-  if (demoMode) return
-  const container = videoRef.value?.parentElement
-  if (!container) return
-  if (document.fullscreenElement) {
-    document.exitFullscreen()
-  } else {
-    container.requestFullscreen()
-  }
-}
-
 // -- Timeline operations ----------------------------------------------
-
-async function handleSwitchTimeline(timelineId: string) {
-  await flushPendingUpdates()
-  const res = await call<Project>("switch_timeline", timelineId)
-  if (res.success && res.data) {
-    emit("project-updated", res.data)
-  } else {
-    showToast(res.error ?? "Failed to switch timeline", "error")
-  }
-}
-
-async function handleCreateTimeline() {
-  await flushPendingUpdates()
-  const label = window.prompt("Timeline name:", "新 Timeline")
-  if (!label) return
-  const fork = window.confirm("Fork from current timeline? (Cancel = blank timeline)")
-  const res = await call<Project>(
-    "create_timeline",
-    label,
-    "manual",
-    fork ? props.project.active_timeline_id : null,
-  )
-  if (res.success && res.data) {
-    emit("project-updated", res.data)
-    isDirty.value = true  // trigger auto-save
-    showToast(`Created timeline: ${label}`, "success")
-  } else {
-    showToast(res.error ?? "Failed to create timeline", "error")
-  }
-}
 
 // v2.1.1 A-4: in-app modal replacement for window.confirm.
 // window.confirm is a blocking native dialog that steals focus from the
@@ -902,233 +700,7 @@ function resolveConfirm(value: boolean) {
   }
 }
 
-async function handleDeleteTimeline(timelineId: string) {
-  const ok = await confirmAction({
-    title: "删除 Timeline",
-    message: "确认删除此 Timeline？该操作无法撤销。",
-    confirmText: "删除",
-    danger: true,
-  })
-  if (!ok) return
-  const res = await call<Project>("delete_timeline", timelineId)
-  if (res.success && res.data) {
-    emit("project-updated", res.data)
-    isDirty.value = true  // trigger auto-save
-    showToast("Timeline deleted", "success")
-  } else {
-    showToast(res.error ?? "Failed to delete timeline", "error")
-  }
-}
-
-async function handleToggleEditStatus(segment: Segment, nextStatus?: string) {
-  const ok = await toggleEditStatus(segment, nextStatus)
-  if (!ok) {
-    // v2.3.2 阶段 1.1: toggleEditStatus now reports total failure (write + refresh).
-    showToast("Failed to update segment status", "error", 3000)
-  }
-}
-
-async function handleImportSrt() {
-  errorMessage.value = ""
-  statusMessage.value = "Selecting file..."
-  const fileRes = await call<string>("select_file")
-  if (!fileRes.success || !fileRes.data) {
-    statusMessage.value = ""
-    return
-  }
-  statusMessage.value = "Importing SRT..."
-  if (projectRef.value) pushSnapshot(projectRef.value)
-  const importRes = await call<Project>("import_srt", fileRes.data)
-  if (importRes.success && importRes.data) {
-    emit("project-updated", importRes.data)
-    statusMessage.value = ""
-  } else {
-    errorMessage.value = importRes.error ?? "Failed to import SRT"
-    statusMessage.value = ""
-  }
-}
-
-async function handleDetectSilence() {
-  errorMessage.value = ""
-  await runSilenceDetection()
-}
-
-async function handleClearSubtitles() {
-  if (!window.confirm("Are you sure you want to delete all subtitles? This cannot be undone.")) return
-  errorMessage.value = ""
-  const res = await call<Project>("clear_subtitles")
-  if (res.success && res.data) {
-    emit("project-updated", res.data)
-  } else {
-    errorMessage.value = res.error ?? "Failed to clear subtitles"
-  }
-}
-
-async function handleTranscribe() {
-  errorMessage.value = ""
-
-  // Check if any ASR engine is installed
-  if (!hasInstalledEngines.value) {
-    showToast("No ASR engine installed. Please install an engine in Settings > AI Engine.", "error", 5000)
-    return
-  }
-
-  // Get selected engine — use asrPluginId to find the exact variant (CPU vs GPU)
-  const engine = asrEngine.value
-  const engineInfo = installedEngines.value.find(e => e.pluginId === asrPluginId.value)
-    ?? installedEngines.value.find(e => e.engine === engine)
-
-  if (!engineInfo) {
-    showToast("Selected ASR engine not found", "error", 3000)
-    return
-  }
-
-  // Check if engine is ready (plugin installed + model downloaded)
-  const status = await checkEngineReady(engine)
-  if (!status.ready) {
-    showToast(`ASR engine "${engineInfo.displayName}" is not ready. Please download the model in Settings > AI Engine.`, "error", 5000)
-    return
-  }
-
-  // Persist current ASR settings to backend before transcription
-  const settingsSaved = await saveAsrSettings()
-  if (!settingsSaved) {
-    showToast("Failed to save transcription settings", "error", 3000)
-    return
-  }
-
-  try {
-    // Pass ASR settings as payload to transcription task
-    const settings = asrSettingsPerEngine.value[asrEngine.value]
-    const started = await runTranscription({
-      engine: asrEngine.value,
-      plugin_id: asrPluginId.value,
-      model_size: settings.model_size,
-      asr_model_size: settings.model_size,
-      language: settings.language,
-      device: settings.device,
-      compute_type: settings.compute_type,
-      vad_filter: settings.vad_filter,
-      vad_threshold: settings.vad_threshold,
-      vad_min_silence_ms: settings.vad_min_silence_ms,
-    })
-    if (!started) {
-      showToast("Failed to start transcription task", "error", 3000)
-    }
-  } catch (err) {
-    showToast(`Transcription failed: ${err instanceof Error ? err.message : String(err)}`, "error", 5000)
-  }
-}
-
-async function handleConfirmAllSuggestions() {
-  errorMessage.value = ""
-  await confirmAllSuggestions()
-}
-
-async function handleRejectAllSuggestions() {
-  errorMessage.value = ""
-  await rejectAllSuggestions()
-}
-
 // ===== Phase 2: LLM task handlers =====
-
-async function handleStartSmartDelete() {
-  if (!llmConfig.value.configured) {
-    showToast("请先配置 LLM", "error", 3000)
-    return
-  }
-  await startSmartDelete()
-  showToast("智能分析已启动", "info", 2000)
-}
-
-async function handleStartSubtitleCorrection(referenceText: string) {
-  if (!llmConfig.value.configured) {
-    showToast("请先配置 LLM", "error", 3000)
-    return
-  }
-  await startSubtitleCorrection(referenceText)
-  showToast("字幕修正已启动", "info", 2000)
-}
-
-async function handleStartHighlight(targetMinutes: number) {
-  if (!llmConfig.value.configured) {
-    showToast("请先配置 LLM", "error", 3000)
-    return
-  }
-  // v2.1.1: Warn if re-running (Bug D -- old data will be replaced)
-  if (highlightResults.value.length > 0) {
-    if (!window.confirm(
-      "重新提取精华将清除当前所有精华片段数据。\n\n确认继续？",
-    )) {
-      return
-    }
-  }
-  await startHighlight(targetMinutes)
-  showToast("精华提取已启动", "info", 2000)
-}
-
-async function handleCancelSingle() {
-  await call("cancel_llm_tasks")
-  // v2.1.1 M1-2c: don't claim success yet -- the in-flight HTTP request may
-  // still be running. The TASK_CANCELLED event confirms the actual stop.
-  showToast("取消中...", "info", 2000)
-}
-
-// v2.1.1 M4-1: segment click in selection mode (toggle / ctrl / shift range)
-function handleSegmentClickInSelection(segId: string, event: MouseEvent) {
-  const orderedIds = mergedSegments.value
-    .filter(s => s.type === "subtitle")
-    .map(s => s.id)
-  handleSegmentClick(segId, event, orderedIds)
-}
-
-// v2.1.1 M4-1: merge currently-selected segments
-async function handleMergeSelected() {
-  const ids = Array.from(selectedSegmentIds.value)
-  if (ids.length < 2) return
-  const ok = await mergeSegments(ids)
-  if (ok) {
-    clearMultiSelection()
-    showToast(`已合并 ${ids.length} 段`, "success", 2000)
-  } else {
-    showToast("合并失败 (需选中连续的字幕段)", "error", 3000)
-  }
-}
-
-// v2.1.1 M4-3: split a segment at its midpoint
-async function handleSplitSegment(segmentId: string, position?: number) {
-  const seg = mergedSegments.value.find(s => s.id === segmentId)
-  if (!seg) return
-  // If position is provided (from waveform context menu split), use it;
-  // otherwise use midpoint (from TranscriptRow right-click).
-  const pos = position !== undefined ? position : (seg.start + seg.end) / 2
-  const ok = await splitSegment(segmentId, pos)
-  if (ok) {
-    showToast(position !== undefined ? "已按时间指针分割" : "已从中点分割", "success", 1500)
-  } else {
-    showToast("分割失败", "error", 3000)
-  }
-}
-
-// v2.1.1 M4-1: toggle selection mode (clear selection on exit)
-function handleToggleSelectionMode() {
-  toggleSelectionMode()
-}
-
-// v2.1.1 M4-1: batch mark selected segments for deletion (toggle-status)
-async function markSelectedForDeletion() {
-  const ids = Array.from(selectedSegmentIds.value)
-  if (ids.length === 0) return
-  const res = await call<Project>("mark_segments", ids, "delete")
-  if (res.success && res.data) {
-    pushSnapshot(res.data)
-    emit("project-updated", res.data)
-    showToast(`已标记 ${ids.length} 段删除`, "info", 2000)
-    clearMultiSelection()
-  } else {
-    showToast(res.error ?? "批量标记失败", "error", 3000)
-  }
-}
 
 // v2.1.1 M4-4: toggle search bar visibility (toolbar button)
 function handleToggleSearchBar() {
@@ -1167,172 +739,6 @@ function cancelRenameTimeline() {
   renameValue.value = ""
 }
 
-async function handleOpenSubtitleFullscreen() {
-  showSubtitleFullscreen.value = true
-  // v2.1.0 Phase 2: load pending corrections from backend on open
-  const tlId = props.project.active_timeline_id
-  if (tlId) {
-    await loadCorrections(tlId)
-  }
-}
-
-// v2.1.0 Phase 2: diff token aggregation (D-69) + accept/reject handlers
-interface DiffToken { text: string; type: "equal" | "delete" | "insert" }
-interface AggregatedToken {
-  type: "equal" | "delete" | "insert" | "replace"
-  text?: string
-  deleteText?: string
-  insertText?: string
-}
-
-function aggregateDiffTokens(tokens: DiffToken[]): AggregatedToken[] {
-  // D-69: merge adjacent delete+insert (gap <2 equal chars) into replace blocks
-  const result: AggregatedToken[] = []
-  for (let i = 0; i < tokens.length; i++) {
-    const tok = tokens[i]
-    const prev = result[result.length - 1]
-    if ((prev?.type === "delete" && tok.type === "insert") ||
-        (prev?.type === "insert" && tok.type === "delete")) {
-      result[result.length - 1] = {
-        type: "replace",
-        deleteText: prev.type === "delete" ? prev.text : tok.text,
-        insertText: prev.type === "insert" ? prev.text : tok.text,
-      }
-    } else {
-      result.push({ type: tok.type, text: tok.text })
-    }
-  }
-  return result
-}
-
-// Cache computed diffs per correction id to avoid recompute
-const diffCache = ref<Record<string, AggregatedToken[]>>({})
-
-function renderDiff(corr: { id: string; original_text: string; corrected_text: string }): string {
-  const cached = diffCache.value[corr.id]
-  if (!cached) {
-    // Fallback: simple original -> corrected display while diff computes
-    return `<span class="text-gray-400 line-through">${escapeHtml(corr.original_text)}</span>` +
-      ` <span class="text-gray-400">→</span> ` +
-      `<span class="text-green-700">${escapeHtml(corr.corrected_text)}</span>`
-  }
-  return cached.map(tok => {
-    if (tok.type === "equal") return `<span>${escapeHtml(tok.text ?? "")}</span>`
-    if (tok.type === "delete") return `<span class="line-through bg-red-100 text-red-700">${escapeHtml(tok.text ?? "")}</span>`
-    if (tok.type === "insert") return `<span class="bg-green-100 text-green-700">${escapeHtml(tok.text ?? "")}</span>`
-    // replace (aggregated D-69)
-    return `<span class="line-through bg-red-100 text-red-700">${escapeHtml(tok.deleteText ?? "")}</span>` +
-      `<span class="bg-green-100 text-green-700">${escapeHtml(tok.insertText ?? "")}</span>`
-  }).join("")
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-}
-
-// Preload diffs whenever the pending corrections list changes
-watch(pendingCorrections, async (list) => {
-  for (const corr of list) {
-    if (!diffCache.value[corr.id]) {
-      await ensureDiff(corr)
-    }
-  }
-}, { immediate: true })
-
-async function ensureDiff(corr: { id: string; original_text: string; corrected_text: string }) {
-  if (diffCache.value[corr.id]) return
-  const diff = await computeDiff(corr.original_text, corr.corrected_text)
-  if (diff?.tokens) {
-    diffCache.value[corr.id] = aggregateDiffTokens(diff.tokens as DiffToken[])
-  }
-}
-
-function categoryLabel(category: string): string {
-  const labels: Record<string, string> = {
-    homophone: "同音错字",
-    proper_noun: "专有名词",
-    punctuation: "标点断句",
-    reference_aligned: "参考稿对齐",
-    none: "无变更",
-  }
-  return labels[category] ?? category
-}
-
-async function handleAcceptCorrection(resultId: string) {
-  const ok = await acceptCorrection(resultId)
-  if (ok) {
-    delete diffCache.value[resultId]
-    // Refresh project so transcript reflects the applied correction
-    const res = await call<Project>("switch_timeline", props.project.active_timeline_id)
-    if (res.success && res.data) emit("project-updated", res.data)
-  }
-}
-
-async function handleRejectCorrection(resultId: string) {
-  const ok = await rejectCorrection(resultId)
-  if (ok) {
-    delete diffCache.value[resultId]
-  }
-}
-
-async function handleAcceptHighConfidence() {
-  const tlId = props.project.active_timeline_id
-  if (!tlId) return
-  const res = await acceptHighConfidenceCorrections(tlId, 0.8)
-  if (res) {
-    diffCache.value = {}
-    const projRes = await call<Project>("switch_timeline", tlId)
-    if (projRes.success && projRes.data) emit("project-updated", projRes.data)
-    showToast(`已接受 ${res.accepted} 条高置信度修正`, "success", 2000)
-  }
-}
-
-async function handleClearCorrections() {
-  if (!window.confirm("确认清除所有待审阅的修正？")) return
-  const tlId = props.project.active_timeline_id
-  if (!tlId) return
-  const ok = await clearCorrections(tlId)
-  if (ok) {
-    diffCache.value = {}
-    showToast("已清除全部修正", "info", 2000)
-  }
-}
-
-function handleGoToSettings() {
-  showSettingsModal.value = true
-}
-
-// §11.5.2: Remove highlight via context menu (right-click on highlight card).
-// Issue 5: hydrate highlight state in real time from returned project.
-async function handleRemoveHighlight(segmentId: string) {
-  if (!window.confirm("确认移除此精华片段？")) return
-  const res = await call<{ removed_count?: number; project?: Project }>("remove_highlight_segment", segmentId)
-  if (res.success) {
-    if (res.data?.project) {
-      emit("project-updated", res.data.project)
-      await hydrateHighlightsFromProject(res.data.project)
-    }
-    showToast("精华片段已移除", "success", 2000)
-  } else {
-    showToast("移除失败: " + (res.error ?? "未知错误"), "error", 3000)
-  }
-}
-
-// §11.5.2: Add segment to highlights via right-click "加入精华".
-// Issue 5: hydrate highlight state in real time from returned project.
-async function handleAddToHighlight(segmentId: string) {
-  const res = await call<{ result?: unknown; project?: Project }>("add_highlight_segment", segmentId)
-  if (res.success) {
-    if (res.data?.project) {
-      emit("project-updated", res.data.project)
-      await hydrateHighlightsFromProject(res.data.project)
-    }
-    showToast("已加入精华", "success", 2000)
-  } else {
-    showToast("加入失败: " + (res.error ?? "未知错误"), "error", 3000)
-  }
-}
-
 // ESC key closes P1 fullscreen diff view (D-16 UX补齐)
 function handleKeydown(e: KeyboardEvent) {
   if (e.key === "Escape" && showSubtitleFullscreen.value) {
@@ -1348,111 +754,6 @@ onUnmounted(() => {
   window.removeEventListener("keydown", handleKeydown)
 })
 
-async function handleSettingsClosed() {
-  showSettingsModal.value = false
-  // Refresh LLM config status after settings change
-  await loadLlmConfig()
-}
-
-async function handleSaveProject() {
-  if (isSaving.value) return
-  isSaving.value = true
-  try {
-    const res = await call("save_project")
-    if (res.success) {
-      isDirty.value = false
-      lastSavedAt.value = Date.now()
-      showToast("Project saved", "success", 2000)
-    } else {
-      showToast("Save failed", "error", 3000)
-    }
-  } finally {
-    isSaving.value = false
-  }
-}
-
-async function handleSubtitleTrim() {
-  errorMessage.value = ""
-  statusMessage.value = "Generating subtitle-based trim ranges..."
-  const result = await generateSubtitleKeepRanges(subtitleTrimPadding.value)
-  statusMessage.value = ""
-  if (result) {
-    showToast(`Generated ${result.new_edits} delete ranges from ${result.keep_ranges} subtitle groups`, "success", 5000)
-  } else {
-    showToast("Failed to generate subtitle trim ranges", "error", 5000)
-  }
-}
-
-async function handleDeleteSubtitleTrimEdits() {
-  const ok = await deleteSubtitleTrimEdits()
-  if (ok) {
-    showToast("All subtitle trim markers cleared", "success", 3000)
-  } else {
-    showToast("Failed to clear subtitle trim markers", "error", 3000)
-  }
-}
-
-async function handleConfirmDeleteSilence() {
-  showConfirmDeleteSilence.value = false
-  const ok = await deleteSilenceSegments()
-  if (ok) {
-    showToast("All silence markers deleted", "success", 3000)
-  } else {
-    showToast("Failed to delete silence markers", "error", 3000)
-  }
-}
-
-async function handleUpdateText(segmentId: string, text: string) {
-  await updateSegmentText(segmentId, text)
-}
-
-async function handleUpdateTime(segmentId: string, field: "start" | "end", value: number) {
-  await updateSegmentTime(segmentId, field, value)
-}
-
-
-
-async function handleSearchReplace(query: string, replacement: string, scope: string) {
-  const result = await searchReplace(query, replacement, scope)
-  if (result) {
-    statusMessage.value = `Replaced ${result.count} occurrences`
-  }
-}
-
-function handleSelectRange(start: number, end: number) {
-  selectEditRange(start, end)
-}
-
-async function handleAddSegment(start: number, end: number) {
-  if (projectRef.value) pushSnapshot(projectRef.value)
-  const res = await call<Project>("add_segment", start, end, "", "subtitle")
-  if (res.success && res.data) {
-    emit("project-updated", res.data)
-  } else {
-    errorMessage.value = res.error ?? "Failed to add segment"
-  }
-}
-
-async function handleDeleteSegment(segmentId: string) {
-  errorMessage.value = ""
-  const err = await deleteSegment(segmentId)
-  if (err) {
-    errorMessage.value = err
-  }
-}
-
-function handleSeekSegment(seg: Segment) {
-  editSelectedSegmentId.value = seg.id
-  seekPlayback(seg.start)
-}
-
-
-async function handleCloseProject() {
-  await call("close_project")
-  videoUrl.value = ""
-  emit("project-closed")
-}
-
 function isTextInput(el: EventTarget | null): boolean {
   if (!(el instanceof HTMLElement)) return false
   const tag = el.tagName
@@ -1464,6 +765,9 @@ function isTextInput(el: EventTarget | null): boolean {
 function handleGlobalKeydown(e: KeyboardEvent) {
   if (isTextInput(e.target)) return
 
+  // v3.0.0 fix (macOS smoke): Cmd is the primary modifier on macOS
+  const mod = e.ctrlKey || e.metaKey
+
   if (e.shiftKey && e.code === "Space") {
     e.preventDefault()
     previewMode.value = previewMode.value === "original" ? "edited" : "original"
@@ -1474,23 +778,23 @@ function handleGlobalKeydown(e: KeyboardEvent) {
     handleTogglePlay()
     return
   }
-  if (e.ctrlKey && e.key === "s") {
+  if (mod && e.key === "s") {
     e.preventDefault()
     handleSaveProject()
     return
   }
-  if (e.ctrlKey && e.key === "z" && !e.shiftKey) {
+  if (mod && e.key === "z" && !e.shiftKey) {
     e.preventDefault()
     handleUndo()
     return
   }
-  if (e.ctrlKey && (e.key === "y" || (e.key === "z" && e.shiftKey))) {
+  if (mod && (e.key === "y" || (e.key === "z" && e.shiftKey))) {
     e.preventDefault()
     handleRedo()
     return
   }
-  // §8: Ctrl+F toggle search/replace bar
-  if (e.ctrlKey && e.key === "f") {
+  // §8: Ctrl/Cmd+F toggle search/replace bar
+  if (mod && e.key === "f") {
     e.preventDefault()
     handleToggleSearchBar()
     return
@@ -1562,23 +866,252 @@ function handleClickOutside(e: MouseEvent) {
 
 async function handleUndo() {
   await flushPendingUpdates()
+  await flushPendingTrackUpdates()
   if (!projectRef.value) return
-  const restored = undo(projectRef.value)
-  if (restored) {
-    emit("project-updated", restored)
+  const res = await undo(projectRef.value)
+  if (res.ok) {
+    if (res.patch) {
+      // Apply the backend ProjectPatch through the standard channel
+      // (App.vue updates lastSeenRevision, no full-project emit).
+      emit("project-updated", res.patch)
+    }
     showToast("Undo", "success", 1500)
+  } else if (res.error !== "empty") {
+    await recoverFromUndoFailure()
   }
 }
 
 async function handleRedo() {
   await flushPendingUpdates()
+  await flushPendingTrackUpdates()
   if (!projectRef.value) return
-  const restored = redo(projectRef.value)
-  if (restored) {
-    emit("project-updated", restored)
+  const res = await redo(projectRef.value)
+  if (res.ok) {
+    if (res.patch) {
+      emit("project-updated", res.patch)
+    }
     showToast("Redo", "success", 1500)
+  } else if (res.error !== "empty") {
+    await recoverFromUndoFailure()
   }
 }
+
+/**
+ * v3.0.0 M5 red line: a failed apply_undo (e.g. stale revision) must never
+ * leave the UI stuck. Refresh the full project from the backend and drop
+ * the history stacks.
+ */
+async function recoverFromUndoFailure() {
+  clearHistory()
+  const res = await call<Project>("get_project")
+  if (res.success && res.data) {
+    emit("project-updated", res.data)
+  }
+  showToast("撤销失败，已刷新项目状态", "error", 2500)
+}
+
+// v3.0.0 M8-2c: handler bodies grouped in useWorkspaceActions (five domains:
+// playback / timeline / edit / llm / project) and provided to the component
+// tree via WORKSPACE_ACTIONS_KEY. Undo/redo, global keydown, outside-click
+// and search/popover UI state intentionally stay in the page.
+const workspaceActions = createWorkspaceActions({
+  emit, showToast,
+  getProject: () => props.project,
+  errorMessage, statusMessage,
+  videoRef, videoUrl, waveformUrl, videoVolume, videoPlaybackRate,
+  isGeneratingProxy, demoMode, regenPoll,
+  subtitleTrimPadding, showConfirmDeleteSilence, showSettingsModal, showSubtitleFullscreen,
+  isDirty, isSaving, lastSavedAt, mergedSegments,
+  seekPlayback, demoPlayback, handlePlaybackTimeUpdate,
+  runTranscription, runSilenceDetection, toggleEditStatus,
+  updateSegmentText, updateSegmentTime, searchReplace, mergeSegments, splitSegment,
+  deleteSegment, selectEditRange, generateSubtitleKeepRanges, deleteSubtitleTrimEdits,
+  deleteSilenceSegments, confirmAllSuggestions, rejectAllSuggestions,
+  selectedSegmentIds, editSelectedSegmentId,
+  toggleSelectionMode, clearMultiSelection, handleSegmentClick,
+  pushSnapshot, projectRef, flushPendingUpdates,
+  llmConfig, loadLlmConfig,
+  // v3.0.4 M2-4 C: correction in track mode targets the VIEWED track. The
+  // injection point is this deps literal (the page's call site) so P2-4's
+  // useWorkspaceActions stays byte-identical (red line): the hub keeps
+  // calling startSubtitleCorrection(referenceText), and the wrapper appends
+  // activeListTrackId ?? "" ("" = main track, v3.0.3 path unchanged).
+  startSmartDelete,
+  startSubtitleCorrection: (referenceText: string) =>
+    startSubtitleCorrection(referenceText, activeListTrackId.value ?? ""),
+  startHighlight,
+  highlightResults, hydrateHighlightsFromProject,
+  pendingCorrections, loadCorrections, computeDiff,
+  acceptCorrection, rejectCorrection, acceptHighConfidenceCorrections, clearCorrections,
+  asr: { asrEngine, asrPluginId, asrSettingsPerEngine, installedEngines, checkEngineReady },
+  handleSaveAsrSettings,
+  confirmAction,
+})
+provideWorkspaceActions(workspaceActions)
+
+// v3.0.4 M4-3 (P3-7): the suggestion panel's timecode popover shares the
+// M4-2 bubble's range-creation handler (snapshot ["edits"] -> add_range_
+// decision -> project-updated patch). SuggestionPanel sits inside
+// Timeline's subtree and Timeline stays untouched (red line), so the
+// callback travels by injection instead of a new relayed event -- the
+// WORKSPACE_ACTIONS_KEY pattern for page -> deep-child wiring.
+provide("suggestion:add-range-decision", handleRangeDecision)
+
+// v3.0.2 M5-3: Shift-marquee hits on the multi-row waveform merge into the
+// SAME global selection set the subtitle list uses (M3-2 ownership ruling).
+function handleWaveformSelectSegments(ids: string[]) {
+  if (ids.length === 0) return
+  const next = new Set(selectedSegmentIds.value)
+  for (const id of ids) next.add(id)
+  selectedSegmentIds.value = next
+}
+
+// v3.0.2 smoke fix: whole-track deletion from the lane menu (确认后删除轨道及其全部字幕)。
+async function handleDeleteTrackWaveform(trackId: string) {
+  // 撤销可恢复（M5-1 快照），无需确认弹窗。
+  await handleDeleteTrack(trackId)
+}
+
+// v3.0.2 smoke fix 3rd round: clear a track = ONE backend call.
+async function handleClearTrack(trackId: string) {
+  await handleClearTrackSegments(trackId)
+}
+
+// v3.0.2 smoke fix 3rd round: 建段模式 + lane click/drag -> add to that track.
+function handleTrackCreate(trackId: string, start: number, end: number) {
+  void handleAddTrackSegment(trackId, start, end)
+}
+
+// v3.0.4 M4-2 (P3-6): waveform range bubble confirm -> manual range edit.
+// Snapshot BEFORE the write (edits layer, useWorkspaceActions.ts:652
+// precedent), then the expose returns the edits ProjectPatch envelope which
+// flows through the standard project-updated patch path (App.vue
+// applyProjectPatch). Cancel never reaches here (editor-side cleanup).
+async function handleRangeDecision(payload: { start: number; end: number; action: "delete" | "keep" }) {
+  if (!projectRef.value) return
+  pushSnapshot(projectRef.value, ["edits"], "手动范围")
+  const res = await call<ProjectPatch>("add_range_decision", payload.start, payload.end, payload.action)
+  if (res.success && res.data) {
+    emit("project-updated", res.data)
+  } else {
+    showToast(`手动范围创建失败: ${res.error ?? "未知错误"}`, "error", 3000)
+  }
+}
+
+// v3.0.2 M6-1: subtitle-list navigation jumps share the waveform's reveal
+// semantics (REVEAL_BIAS + comfort skip + follow cooldown) so the playing
+// row is actually in view after a list click. No-op in basic mode.
+const waveformEditorRef = ref<InstanceType<typeof WaveformEditor> | null>(null)
+
+// v3.0.2 smoke fix: surface a stale Python process EARLY -- the track
+// deletion methods only exist after a full app restart (pywebview freezes
+// the API surface at launch; the frontend hot-reloads, the backend does not).
+onMounted(() => {
+  window.setTimeout(() => {
+    const api = (window as { pywebview?: { api?: Record<string, unknown> } }).pywebview?.api
+    if (api && typeof api.delete_track !== "function") {
+      showToast("检测到后端进程为旧版本（无轨道删除能力）：请完全退出 Milo-Cut 后重新运行 dev.py", "error", 10000)
+    }
+  }, 3000)
+})
+/** M5-3: true while the waveform playhead is scrubbed (list follow skips). */
+const waveformScrubbing = ref(false)
+function handleListSeek(time: number) {
+  handleSeek(time)
+  waveformEditorRef.value?.revealTime(time)
+}
+
+// v3.0.3 M1-2: track-list empty-state create entry -- same expose and toast
+// as the waveform lane create (handleAddTrackSegment), at = playback time.
+function handleListCreateTrackSegment(trackId: string, at: number) {
+  const { start, end } = computeListCreateRange(at, duration.value)
+  void handleAddTrackSegment(trackId, start, end)
+}
+
+// v3.0.3 M1-3: flush-on-switch -- pending list debounces commit BEFORE the
+// view switches track (flushScrollTopSave same pattern; no lost edits).
+async function handleSelectListTrack(trackId: string | null) {
+  await flushPendingTrackUpdates()
+  selectListTrack(trackId)
+}
+
+// ---------------------------------------------------------------------------
+// v3.0.4 M1-6: "translate to a new secondary track" closed loop.
+//
+// Snapshot BEFORE the task starts (PRD R1.4): the writes land on the
+// background thread at completion, so this is the only place the pre-state
+// can be captured. A failed/cancelled task leaves one no-op snapshot entry
+// (SPEC ruling: accepted, no extra complexity).
+// ---------------------------------------------------------------------------
+async function handleStartTranslation(payload: { targetLanguage: string }) {
+  if (!llmConfig.value.configured) {
+    showToast("请先配置 LLM", "error", 3000)
+    return
+  }
+  pushSnapshot(projectRef.value, ["tracks", "bindings"], "AI翻译副轨")
+  const started = await startTranslation(payload.targetLanguage)
+  if (!started) return
+  // Remember the last successfully STARTED language (dialog default; same
+  // update_settings channel as the settings modal, key outside AppSettings
+  // typing follows the ExportPage partial-write precedent).
+  await call("update_settings", {
+    llm_translation_target_language: payload.targetLanguage,
+  })
+  showToast("翻译已启动", "info", 2000)
+}
+
+// Completion switch-track watcher: useLlmTasks is a module-level singleton
+// while activeListTrackId lives in the page's selector instance, so the
+// completion travels via lastTranslationCompletion and is consumed here.
+// handleSelectListTrack flushes pending track edits before switching; the
+// uncovered id list is surfaced via toast + the panel notice prop.
+const translationNotice = ref<TranslationNotice | null>(null)
+watch(lastTranslationCompletion, (completion) => {
+  if (!completion) return
+  void handleSelectListTrack(completion.track_id)
+  if (completion.uncovered_ids.length > 0) {
+    translationNotice.value = {
+      trackName: completion.track_name,
+      language: completion.language,
+      uncoveredIds: completion.uncovered_ids,
+    }
+    showToast(
+      `翻译完成：${completion.uncovered_ids.length} 段未覆盖（主轨已变更），详见 AI 助手面板`,
+      "error",
+      5000,
+    )
+  } else {
+    showToast(`翻译完成，已切换到译文轨「${completion.track_name}」`, "success", 3000)
+  }
+  // Clear so a consecutive identical completion re-triggers this watch.
+  lastTranslationCompletion.value = null
+})
+
+const {
+  handleRegenerateWaveform, handleRequestProxy, handleSeek, handleSetTime,
+  handleVideoLoaded, handleTimeUpdate, handleTogglePlay, handleSeekTo,
+  handleVolumeChange, handleRateChange, handleFullscreen,
+  handleSwitchTimeline, handleCreateTimeline, handleDeleteTimeline,
+  handleImportSrt, handleImportSrtAsTrack, handleDetectSilence, handleClearSubtitles, handleTranscribe,
+  handleDeleteTrackSegment,
+  handleDeleteTrack,
+  handleAddTrack,
+  handleAddTrackSegment,
+  handleClearTrackSegments,
+  handleToggleEditStatus, handleSegmentClickInSelection, handleToggleSelectionMode,
+  handleMergeSelected, handleSplitSegment, handleUpdateText, handleUpdateTime,
+  handleSelectRange, handleAddSegment, handleDeleteSegment, handleSeekSegment,
+  handleSubtitleTrim, handleDeleteSubtitleTrimEdits, handleConfirmDeleteSilence,
+  markSelectedForDeletion,
+  handleConfirmAllSuggestions, handleRejectAllSuggestions,
+  handleStartSmartDelete, handleStartSubtitleCorrection, handleStartHighlight,
+  handleCancelSingle, handleOpenSubtitleFullscreen,
+  handleAcceptCorrection, handleRejectCorrection, handleAcceptHighConfidence,
+  handleClearCorrections, handleRemoveHighlight, handleAddToHighlight,
+  renderDiff, categoryLabel,
+  handleCloseProject, handleSaveProject, handleSettingsClosed,
+  handleGoToSettings, handleSearchReplace,
+} = workspaceActions
 
 onMounted(() => {
   document.addEventListener("keydown", handleGlobalKeydown)
@@ -1591,7 +1124,7 @@ onUnmounted(() => {
   document.removeEventListener("keydown", handleGlobalKeydown)
   document.removeEventListener("mousedown", handleClickOutside)
   window.removeEventListener("resize", syncCompactDemo)
-  if (regenPollTimer) clearInterval(regenPollTimer)
+  if (regenPoll.current) clearInterval(regenPoll.current)
 })
 </script>
 
@@ -1678,6 +1211,23 @@ onUnmounted(() => {
         <span v-if="isSaving" class="text-xs text-blue-300">保存中…</span>
         <span v-else-if="isDirty" class="text-xs text-gray-400">●</span>
         <span v-else-if="lastSavedAt" class="text-xs text-green-400">已保存</span>
+        <!-- v3.0.0 fix (macOS smoke): explicit undo/redo buttons -->
+        <button
+          class="mc-button mc-button-quiet min-h-8 px-2 py-1 text-xs hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+          :disabled="!canUndo"
+          title="撤销（⌘/Ctrl+Z）"
+          @click="handleUndo"
+        >
+          ↩ 撤销
+        </button>
+        <button
+          class="mc-button mc-button-quiet min-h-8 px-2 py-1 text-xs hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+          :disabled="!canRedo"
+          title="重做（⌘/Ctrl+Shift+Z / Ctrl+Y）"
+          @click="handleRedo"
+        >
+          ↪ 重做
+        </button>
         <button
           class="mc-button mc-button-quiet min-h-8 px-2 py-1 text-xs hover:bg-white/10 hover:text-white"
           title="保存项目（⌘/Ctrl+S）"
@@ -1697,6 +1247,23 @@ onUnmounted(() => {
       >
         <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
         导入 SRT
+      </button>
+      <!-- v3.0.0 M11-2: import an SRT as a read-only extension track -->
+      <button
+        class="mc-button mc-button-secondary"
+        :disabled="isDetecting || isExporting"
+        title="作为只读副轨导入 SRT（与主轨自动对齐绑定）"
+        @click="handleImportSrtAsTrack"
+      >
+        导入副轨
+      </button>
+      <button
+        class="mc-button"
+        data-test="add-track-button"
+        title="新建一条空的副轨（建段模式下在其上点击即可添加字幕）"
+        @click="handleAddTrack"
+      >
+        新建副轨
       </button>
       <button
         class="mc-button"
@@ -1728,130 +1295,26 @@ onUnmounted(() => {
         >
           <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
         </button>
-        <div
+        <TranscribeSettingsPopover
           v-if="showTranscribeSettings && uvAvailable !== false"
-          class="absolute top-full left-0 mt-1 w-72 rounded-md border border-gray-200 bg-white shadow-lg z-20 p-3"
-        >
-          <div class="mb-2 text-xs font-semibold text-ink">转写设置</div>
-
-          <!-- No engines installed warning -->
-          <div v-if="!hasInstalledEngines" class="text-xs text-amber-600 mb-2 p-2 bg-amber-50 rounded">
-            No ASR engine installed. Please install an engine in Settings > AI Engine.
-          </div>
-
-          <template v-else>
-            <!-- Engine selector -->
-            <label class="block mb-2">
-              <span class="text-xs text-gray-500">Engine</span>
-              <select
-                v-model="asrPluginId"
-                class="w-full mt-1 rounded border-gray-300 text-xs"
-              >
-                <option v-for="eng in installedEngines" :key="eng.pluginId" :value="eng.pluginId">
-                  {{ eng.displayName }} {{ eng.ready ? '' : '(model not downloaded)' }}
-                </option>
-              </select>
-            </label>
-
-            <!-- Model selector -->
-            <label class="block mb-2">
-              <span class="text-xs text-gray-500">Model</span>
-              <select
-                v-model="asrSettingsPerEngine[asrEngine].model_size"
-                class="w-full mt-1 rounded border-gray-300 text-xs"
-              >
-                <option v-for="m in availableModels" :key="m.model_id" :value="m.model_id">
-                  {{ m.display_name }} {{ m.status === 'downloaded' ? '' : '(not downloaded)' }}
-                </option>
-              </select>
-            </label>
-
-            <!-- Language -->
-            <label class="block mb-2">
-              <span class="text-xs text-gray-500">Language</span>
-              <select v-model="asrSettingsPerEngine[asrEngine].language" class="w-full mt-1 rounded border-gray-300 text-xs">
-                <option value="auto">Auto-detect</option>
-                <option value="zh">Chinese</option>
-                <option value="en">English</option>
-                <option value="ja">Japanese</option>
-                <option value="ko">Korean</option>
-              </select>
-            </label>
-
-            <!-- Device (hidden for MLX -- always uses Apple Silicon) -->
-            <label v-if="!isMlx" class="block mb-2">
-              <span class="text-xs text-gray-500">Device</span>
-              <select v-model="asrSettingsPerEngine[asrEngine].device" class="w-full mt-1 rounded border-gray-300 text-xs">
-                <option v-if="!isDarwin" value="cpu">CPU</option>
-                <option v-if="supportsGpu" value="cuda">CUDA (GPU)</option>
-                <option v-if="asrEngine === 'faster-whisper'" value="auto">Auto</option>
-                <option v-if="isDarwin && asrEngine === 'qwen3-asr'" value="mps">MPS</option>
-              </select>
-              <span v-if="isDarwin && asrEngine === 'faster-whisper'" class="text-xs text-gray-400 mt-0.5 block">MPS (Metal Performance Shaders)</span>
-              <span v-else-if="isDarwin && asrEngine === 'qwen3-asr'" class="text-xs text-gray-400 mt-0.5 block">Metal Performance Shaders (Apple GPU)</span>
-              <span v-else-if="!supportsGpu" class="text-xs text-gray-400 mt-0.5 block">GPU not available for this engine plugin</span>
-            </label>
-            <div v-else class="text-xs text-gray-400 mb-2">Apple Silicon (Metal)</div>
-
-            <!-- Compute type (hidden for MLX) -->
-            <label v-if="!isMlx && computeTypeOptions.length > 0" class="block mb-2">
-              <span class="text-xs text-gray-500">Compute Type</span>
-              <select v-model="asrSettingsPerEngine[asrEngine].compute_type" class="w-full mt-1 rounded border-gray-300 text-xs">
-                <option v-for="opt in computeTypeOptions" :key="opt.value" :value="opt.value">
-                  {{ opt.label }}
-                </option>
-              </select>
-            </label>
-
-            <!-- VAD filter -->
-            <label class="flex items-center gap-2 mb-2 cursor-pointer">
-              <input
-                type="checkbox"
-                v-model="asrSettingsPerEngine[asrEngine].vad_filter"
-                class="w-4 h-4 accent-blue-600"
-              />
-              <span class="text-xs text-gray-500">VAD filter (reduce hallucinations)</span>
-            </label>
-
-            <!-- VAD sliders (visible when vad_filter is on) -->
-            <template v-if="asrSettingsPerEngine[asrEngine].vad_filter">
-              <label class="block mb-2">
-                <span class="text-xs text-gray-500">
-                  VAD Threshold: {{ asrSettingsPerEngine[asrEngine].vad_threshold.toFixed(2) }}
-                </span>
-                <input
-                  type="range"
-                  v-model.number="asrSettingsPerEngine[asrEngine].vad_threshold"
-                  min="0.0"
-                  max="1.0"
-                  step="0.05"
-                  class="w-full mt-1"
-                />
-              </label>
-              <label class="block mb-3">
-                <span class="text-xs text-gray-500">
-                  Min Silence (ms): {{ asrSettingsPerEngine[asrEngine].vad_min_silence_ms }}
-                </span>
-                <input
-                  type="range"
-                  v-model.number="asrSettingsPerEngine[asrEngine].vad_min_silence_ms"
-                  min="100"
-                  max="2000"
-                  step="50"
-                  class="w-full mt-1"
-                />
-              </label>
-            </template>
-
-            <!-- Save button -->
-            <button
-              class="mc-button mc-button-secondary w-full px-2 text-xs"
-              @click="saveAsrSettings"
-            >
-             保存为默认设置
-            </button>
-          </template>
-        </div>
+          v-model:asr-plugin-id="asrPluginId"
+          v-model:model-size="asrSettingsPerEngine[asrEngine].model_size"
+          v-model:language="asrSettingsPerEngine[asrEngine].language"
+          v-model:device="asrSettingsPerEngine[asrEngine].device"
+          v-model:compute-type="asrSettingsPerEngine[asrEngine].compute_type"
+          v-model:vad-filter="asrSettingsPerEngine[asrEngine].vad_filter"
+          v-model:vad-threshold="asrSettingsPerEngine[asrEngine].vad_threshold"
+          v-model:vad-min-silence-ms="asrSettingsPerEngine[asrEngine].vad_min_silence_ms"
+          :has-installed-engines="hasInstalledEngines"
+          :installed-engines="installedEngines"
+          :available-models="availableModels"
+          :asr-engine="asrEngine"
+          :is-mlx="isMlx"
+          :is-darwin="isDarwin"
+          :supports-gpu="supportsGpu"
+          :compute-type-options="computeTypeOptions"
+          @save="handleSaveAsrSettings"
+        />
       </div>
       <button
         class="mc-button mc-button-danger"
@@ -1879,84 +1342,15 @@ onUnmounted(() => {
         >
           <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
         </button>
-        <div
+        <SilenceSettingsPopover
           v-if="showSilenceSettings"
-          class="absolute top-full left-0 mt-1 w-64 rounded-md border border-gray-200 bg-white shadow-lg z-20 p-3"
-        >
-          <div class="mb-2 text-xs font-semibold text-ink">静音检测设置</div>
-          <label class="block mb-2">
-            <span class="text-xs text-gray-500">Threshold (dB): {{ silenceThreshold }}</span>
-            <input
-              type="range"
-              v-model.number="silenceThreshold"
-              min="-60"
-              max="-10"
-              step="1"
-              class="w-full mt-1"
-            />
-          </label>
-          <label class="block mb-3">
-            <span class="text-xs text-gray-500">Min Duration (s): {{ silenceMinDuration.toFixed(2) }}</span>
-            <input
-              type="range"
-              v-model.number="silenceMinDuration"
-              min="0.05"
-              max="2.0"
-              step="0.05"
-              class="w-full mt-1"
-            />
-            <p v-if="silenceMinDuration < 0.2" class="text-xs text-amber-600 mt-1">
-              Very short durations (&lt;0.2s) may generate many clips and affect performance.
-            </p>
-          </label>
-          <label class="block mb-2">
-            <span class="text-xs text-gray-500">
-              Margin (s): {{ silenceMargin.toFixed(2) }}
-            </span>
-            <input
-              type="range"
-              v-model.number="silenceMargin"
-              min="0"
-              max="0.5"
-              step="0.01"
-              class="w-full mt-1"
-            />
-            <p v-if="silenceMargin > 0 && silenceMargin * 2 >= silenceMinDuration"
-               class="text-xs text-amber-600 mt-1">
-              High margin may consume small silence intervals entirely.
-            </p>
-          </label>
-          <label class="block mb-2">
-            <span class="text-xs text-gray-500">
-              Subtitle Padding (s): {{ silenceSubtitlePadding.toFixed(2) }}
-            </span>
-            <input
-              type="range"
-              v-model.number="silenceSubtitlePadding"
-              min="0"
-              max="1.0"
-              step="0.05"
-              class="w-full mt-1"
-            />
-            <p v-if="silenceSubtitlePadding > 0" class="text-xs text-gray-400 mt-0.5">
-              Silence ranges will be trimmed to stay this far from subtitles.
-            </p>
-          </label>
-          <label class="flex items-center gap-2 mb-3 cursor-pointer">
-            <input
-              type="checkbox"
-              v-model="trimSubtitlesOnOverlap"
-              class="rounded border-gray-300"
-            />
-            <span class="text-xs text-gray-500">Trim overlapping subtitles</span>
-          </label>
-          <button
-            class="mc-button mc-button-primary w-full px-2 text-xs"
-            @click="saveSilenceSettings"
-          >
-           保存设置
-          </button>
-        </div>
+          v-model:threshold="silenceThreshold"
+          v-model:min-duration="silenceMinDuration"
+          v-model:margin="silenceMargin"
+          v-model:subtitle-padding="silenceSubtitlePadding"
+          v-model:trim-subtitles="trimSubtitlesOnOverlap"
+          @save="saveSilenceSettings"
+        />
       </div>
 
       <!-- Delete all silence markers -->
@@ -1990,23 +1384,10 @@ onUnmounted(() => {
         >
           <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
         </button>
-        <div
+        <SubtitleTrimSettingsPopover
           v-if="showSubtitleTrimSettings"
-          class="absolute top-full left-0 mt-1 w-56 rounded-md border border-gray-200 bg-white shadow-lg z-20 p-3"
-        >
-          <div class="mb-2 text-xs font-semibold text-ink">字幕间隙设置</div>
-          <label class="block mb-3">
-            <span class="text-xs text-gray-500">Padding (s): {{ subtitleTrimPadding.toFixed(2) }}</span>
-            <input
-              type="range"
-              v-model.number="subtitleTrimPadding"
-              min="0"
-              max="2.0"
-              step="0.05"
-              class="w-full mt-1"
-            />
-          </label>
-        </div>
+          v-model:padding="subtitleTrimPadding"
+        />
       </div>
 
       <!-- Clear subtitle trim markers -->
@@ -2089,11 +1470,13 @@ onUnmounted(() => {
             <SubtitleOverlay
               :segments="mergedSegments"
               :video-ref="videoRef"
+              :secondary="{ tracks: activeTracks, bindings: activeBindings }"
+              :show-secondary="showSecondarySubtitle"
             />
             <!-- Proxy generation overlay -->
             <div
               v-if="isGeneratingProxy"
-              class="absolute inset-0 z-10 flex flex-col items-center justify-center rounded-[var(--radius-control)] bg-black/60"
+              class="absolute inset-0 z-raised flex flex-col items-center justify-center rounded-[var(--radius-control)] bg-black/60"
             >
               <svg class="animate-spin h-8 w-8 text-white mb-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
@@ -2130,11 +1513,22 @@ onUnmounted(() => {
           <!-- Right: Timeline (transcript editor + suggestion panel) -->
           <div class="relative flex flex-1 flex-col overflow-hidden bg-canvas">
           <Timeline
-            :segments="mergedSegments"
+            :segments="listSegments"
             :edits="edits"
             :analysis-results="analysisResults"
             :subtitle-count="subtitleCount"
             :silence-count="silenceCount"
+            :tracks="listTrackOptions"
+            :active-track-id="activeListTrackId"
+            :active-track-name="activeListTrackName"
+            :main-segments="segments"
+            :translation-notice="translationNotice"
+            :bindings="activeBindings"
+            @select-track="handleSelectListTrack"
+            @create-track-segment="handleListCreateTrackSegment"
+            @update-track-text="handleUpdateTrackText"
+            @update-track-time="handleUpdateTrackTime"
+            @delete-track-segment="handleDeleteTrackSegment"
             :selected-segment-id="editSelectedSegmentId"
             :global-edit-mode="globalEditMode"
             :selection-mode="selectionMode"
@@ -2142,6 +1536,7 @@ onUnmounted(() => {
             :selected-count="selectedCount"
             :show-search-bar="showSearchBar"
             :current-time="currentTime"
+            :scrubbing="waveformScrubbing"
             :llm-configured="llmConfig.configured"
             :llm-model="llmConfig.model"
             :llm-is-running="llmIsRunning"
@@ -2153,7 +1548,7 @@ onUnmounted(() => {
             :highlight-total-duration="highlightTotalDuration"
             :highlight-target-duration="highlightTargetDuration"
             :jump-cuts="jumpCuts"
-            @seek="handleSeek"
+            @seek="handleListSeek"
             @update-text="handleUpdateText"
             @update-time="handleUpdateTime"
             @toggle-status="(seg) => handleToggleEditStatus(seg)"
@@ -2165,10 +1560,11 @@ onUnmounted(() => {
             @confirm-suggestion-batch="(ids: string[]) => batchUpdateEdits(ids, 'confirmed')"
             @reject-suggestion-batch="(ids: string[]) => batchUpdateEdits(ids, 'rejected')"
             @delete-suggestion-batch="(ids: string[]) => deleteEdits(ids)"
-            @seek-suggestion="handleSeek"
+            @seek-suggestion="handleListSeek"
             @toggle-edit-mode="globalEditMode = !globalEditMode"
             @start-smart-delete="handleStartSmartDelete"
             @start-subtitle-correction="handleStartSubtitleCorrection"
+            @start-translation="handleStartTranslation"
             @open-subtitle-fullscreen="handleOpenSubtitleFullscreen"
             @start-highlight="handleStartHighlight"
             @go-to-settings="handleGoToSettings"
@@ -2191,15 +1587,19 @@ onUnmounted(() => {
 
     <!-- Bottom: Waveform editor -->
     <WaveformEditor
+      ref="waveformEditorRef"
       :segments="mergedSegments"
       :edits="edits"
       :duration="duration"
       :current-time="currentTime"
       :waveform-path="demoMode ? undefined : waveformUrl"
       :demo-mode="demoMode"
+      :tracks="activeTracks"
       :update-time="updateSegmentTime"
+      :update-track-time="updateTrackSegmentTime"
       :global-edit-mode="globalEditMode"
       :selection-mode="selectionMode"
+      :range-selection="rangeSelectionSink.ref"
       @seek="handleSeek"
       @set-time="handleSetTime"
       @select-range="handleSelectRange"
@@ -2209,13 +1609,22 @@ onUnmounted(() => {
       @regenerate-waveform="handleRegenerateWaveform"
       @split-segment="handleSplitSegment"
       @toast="(msg) => showToast(msg, 'info', 3000)"
+      @toggle-play="handleTogglePlay"
+      @select-segments="handleWaveformSelectSegments"
+      @clear-selection="clearMultiSelection"
+      @delete-track-segment="handleDeleteTrackSegment"
+      @clear-track="handleClearTrack"
+      @delete-track="handleDeleteTrackWaveform"
+      @track-create="handleTrackCreate"
+      @range-decision="handleRangeDecision"
+      @scrubbing="waveformScrubbing = $event"
     />
 
     <!-- Delete silence confirmation dialog -->
     <Teleport to="body">
       <div
         v-if="showConfirmDeleteSilence"
-        class="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40"
+        class="fixed inset-0 z-modal flex items-center justify-center bg-black/40"
         @click.self="showConfirmDeleteSilence = false"
       >
         <div class="rounded-lg bg-white p-5 shadow-xl max-w-sm w-full mx-4">
@@ -2245,7 +1654,8 @@ onUnmounted(() => {
     <SettingsModal
       v-if="showSettingsModal"
       :visible="showSettingsModal"
-      @close="handleSettingsClosed"
+      initial-tab="llm"
+      @close="handleSettingsClosed(); reloadAppSettings()"
     />
 
     <!-- Phase 2: P1 subtitle correction fullscreen diff view (D-16) -->
@@ -2253,7 +1663,7 @@ onUnmounted(() => {
       <Transition name="fade">
         <div
           v-if="showSubtitleFullscreen"
-          class="fixed inset-0 z-[9998] bg-white flex flex-col"
+          class="fixed inset-0 z-modal bg-white flex flex-col"
         >
           <div class="flex items-center justify-between border-b border-gray-200 px-6 py-4">
             <h2 class="text-base font-semibold text-gray-800">字幕修正审阅</h2>
@@ -2309,9 +1719,19 @@ onUnmounted(() => {
                   <div class="mb-1 flex items-center gap-2 text-xs text-gray-500">
                     <span>{{ formatTimeShort(corr.start) }}</span>
                     <span class="rounded bg-blue-50 px-1.5 py-0.5 text-blue-700">{{ categoryLabel(corr.category) }}</span>
+                    <!-- v3.0.4 M2-4 D: source-track badge (track-scoped
+                         entries only; main track adds no noise). -->
+                    <span
+                      v-if="correctionTrackName(corr)"
+                      data-test="correction-track-badge"
+                      class="rounded bg-gray-100 px-1.5 py-0.5 text-gray-600"
+                    >来源轨：{{ correctionTrackName(corr) }}</span>
                     <span>置信度 {{ corr.confidence.toFixed(2) }}</span>
                   </div>
                   <!-- Inline diff -->
+                  <!-- M9-3: content is built by renderDiff() which escapes all text via
+         escapeHtml() before wrapping in fixed, code-controlled spans. -->
+                  <!-- eslint-disable-next-line vue/no-v-html -->
                   <div class="leading-relaxed" v-html="renderDiff(corr)"></div>
                   <!-- Actions -->
                   <div class="mt-2 flex gap-2">
@@ -2327,8 +1747,16 @@ onUnmounted(() => {
                 </div>
               </div>
 
-              <!-- Low confidence section (collapsed) -->
-              <details v-if="lowConfidenceCorrections.length > 0" class="mb-4">
+              <!-- Low confidence section. v3.0.4 smoke-fix 3: the open
+                   state is a controlled ref -- the uncontrolled <details>
+                   lost its DOM state on every accept (patch refresh remounts
+                   the section), forcing a re-open before each next confirm. -->
+              <details
+                v-if="lowConfidenceCorrections.length > 0"
+                class="mb-4"
+                :open="lowConfidenceOpen"
+                @toggle="lowConfidenceOpen = ($event.target as HTMLDetailsElement).open"
+              >
                 <summary class="cursor-pointer text-xs font-semibold text-amber-700">
                   低置信度修正 ({{ lowConfidenceCorrections.length }}) -- 需手动确认
                 </summary>
@@ -2340,8 +1768,18 @@ onUnmounted(() => {
                   <div class="mb-1 flex items-center gap-2 text-xs text-gray-500">
                     <span>{{ formatTimeShort(corr.start) }}</span>
                     <span class="rounded bg-blue-50 px-1.5 py-0.5 text-blue-700">{{ categoryLabel(corr.category) }}</span>
+                    <!-- v3.0.4 M2-4 D: source-track badge (low-confidence
+                         section, same rendering as the high section). -->
+                    <span
+                      v-if="correctionTrackName(corr)"
+                      data-test="correction-track-badge"
+                      class="rounded bg-gray-100 px-1.5 py-0.5 text-gray-600"
+                    >来源轨：{{ correctionTrackName(corr) }}</span>
                     <span>置信度 {{ corr.confidence.toFixed(2) }}</span>
                   </div>
+                  <!-- M9-3: content is built by renderDiff() which escapes all text via
+         escapeHtml() before wrapping in fixed, code-controlled spans. -->
+                  <!-- eslint-disable-next-line vue/no-v-html -->
                   <div class="leading-relaxed" v-html="renderDiff(corr)"></div>
                   <div class="mt-2 flex gap-2">
                     <button

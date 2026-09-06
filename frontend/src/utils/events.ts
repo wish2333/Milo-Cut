@@ -32,6 +32,9 @@ export const EVENT_LLM_HIGHLIGHT_COMPLETED = "llm:highlight_completed"
 // P3: Semantic search
 export const EVENT_LLM_SEMANTIC_SEARCH_COMPLETED = "llm:semantic_search_completed"
 
+// v3.0.4 M1: AI translation track completed
+export const EVENT_LLM_TRANSLATION_COMPLETED = "llm:translation_completed"
+
 // Workflow (v2.1.0 Phase 3)
 export const EVENT_WORKFLOW_STARTED = "workflow:started"
 export const EVENT_WORKFLOW_STEP_STARTED = "workflow:step_started"
@@ -40,6 +43,8 @@ export const EVENT_WORKFLOW_STEP_COMPLETED = "workflow:step_completed"
 export const EVENT_WORKFLOW_STEP_FAILED = "workflow:step_failed"
 export const EVENT_WORKFLOW_COMPLETED = "workflow:completed"
 export const EVENT_WORKFLOW_CANCELLED = "workflow:cancelled"
+// v3.0.0 M3-6: failure rollback finished (layers restored via apply_undo)
+export const EVENT_WORKFLOW_ROLLED_BACK = "workflow:rolled_back"
 export const EVENT_WORKFLOW_CONFLICTS_DETECTED = "workflow:conflicts_detected"
 export const EVENT_WORKFLOW_HEARTBEAT = "workflow:heartbeat"
 

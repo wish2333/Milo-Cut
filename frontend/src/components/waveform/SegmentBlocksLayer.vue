@@ -3,8 +3,10 @@ import { computed, inject, ref, onMounted, onUnmounted } from "vue"
 import type { Segment, EditDecision } from "@/types/project"
 import { buildSegmentStateMap } from "@/utils/segmentHelpers"
 import type { SegmentState } from "@/utils/segmentHelpers"
+import { openContextMenu } from "@/utils/contextMenuManager"
 import { TIMELINE_METRICS_KEY } from "./injectionKeys"
 import type { TimelineMetrics } from "@/composables/useTimelineMetrics"
+import SegmentBlock from "./SegmentBlock.vue"
 
 const props = defineProps<{
   segments: Segment[]
@@ -14,6 +16,34 @@ const props = defineProps<{
   duration?: number
   /** v2.1.1 A-03: edit mode interception for structural ops */
   globalEditMode?: boolean
+  /**
+   * v3.0.2 M3-2: row window (multi-row mode). When set, cross-row blocks
+   * get continuesFrom/continuesTo markers and trim handles render only
+   * for edges inside the row. Undefined = single-window (basic) behavior.
+   */
+  rowStart?: number
+  rowEnd?: number
+  /** v3.0.2 M3-2 (③): frozen pointer->time converter (multi-row trim). */
+  getTimeFromPointer?: (clientX: number) => number
+  /**
+   * v3.0.2 M5-3: empty-area click semantics. "add" (default, basic) keeps
+   * the v3.0.1 add-segment behavior EXACTLY; "seek" (multi, injected by
+   * WaveformRow) clears selection and hands the press to the orchestrator
+   * (scrub / Ctrl-create / Shift-marquee via empty-press). Undefined = "add".
+   *
+   * v3.0.4 M4-2 (P3-6): "range" (basic direct-child path) hands the press
+   * to the orchestrator as `range-press` -- the editor runs the range
+   * marquee + confirmation bubble. Payload shape = empty-press.
+   */
+  emptyAreaMode?: "add" | "seek" | "range"
+  /**
+   * v3.0.2 smoke fix: when the PARENT already owns the badge clearance
+   * (multi-row main-area wrapper sits at top-6), the layer fills its
+   * container (inset-0) instead of re-applying top-6 bottom-0 -- the
+   * double 24px offset crushed the blocks area at small row heights
+   * (64/80px showed nothing). Default false = basic unchanged.
+   */
+  fillContainer?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -26,13 +56,22 @@ const emit = defineEmits<{
   "set-time": [time: number]
   /** v2.1.1 A-03: edit mode toast notification */
   toast: [msg: string]
+  /** v3.0.1 M4-3: forwarded from SegmentBlock (Phase 3 linkage consumes). */
+  "trim-end": [payload: { segmentId: string; field: "start" | "end"; value: number; altKey: boolean }]
+  /** v3.0.2 M5-3: seek-mode empty press (row forwards to the editor). */
+  "empty-press": [
+    payload: { clientX: number; clientY: number; ctrlKey: boolean; shiftKey: boolean; time: number },
+  ]
+  /** v3.0.2 M5-3: seek-mode empty double click (play/pause). */
+  "empty-double-click": []
+  /** v3.0.4 M4-2 (P3-6): range-mode empty press (payload shape = empty-press). */
+  "range-press": [
+    payload: { clientX: number; clientY: number; ctrlKey: boolean; shiftKey: boolean; time: number },
+  ]
 }>()
 
 const metrics = inject<TimelineMetrics>(TIMELINE_METRICS_KEY)!
 
-const MIN_SEGMENT_DURATION = 0.1
-const hoverEdge = ref<"left" | "right" | "body" | null>(null)
-const EDGE_HANDLE_HIT_PX = 16
 const selectedBlockId = ref<string | null>(null)
 const contextMenu = ref<{ x: number; y: number; segmentId: string } | null>(null)
 const containerRef = ref<HTMLElement | null>(null)
@@ -51,10 +90,18 @@ interface Block {
   leftPercent: number
   widthPercent: number
   state: SegmentState
+  /** v3.0.2: cross-row continuation markers (row-window mode only). */
+  continuesFrom?: boolean
+  continuesTo?: boolean
 }
 
 interface EditRangeBlock {
   edit: EditDecision
+  /** v3.0.4 M4-3 (P3-8): three-state inputs -- action drives the stripe
+   * color axis (red delete / blue keep), status drives the opacity axis
+   * (pending dims). Rejected is NOT filtered here (status quo kept). */
+  action: EditDecision["action"]
+  status: EditDecision["status"]
   leftPercent: number
   widthPercent: number
 }
@@ -83,6 +130,10 @@ const visibleBlocks = computed<Block[]>(() => {
         leftPercent: ((clampStart - vs) / vd) * 100,
         widthPercent: ((clampEnd - clampStart) / vd) * 100,
         state,
+        continuesFrom:
+          props.rowStart !== undefined ? seg.start < props.rowStart - 1e-6 : undefined,
+        continuesTo:
+          props.rowEnd !== undefined ? seg.end > props.rowEnd + 1e-6 : undefined,
       }
     })
 })
@@ -100,127 +151,93 @@ const visibleEditRanges = computed<EditRangeBlock[]>(() => {
       const clampEnd = Math.min(e.end, ve)
       return {
         edit: e,
+        action: e.action,
+        status: e.status,
         leftPercent: ((clampStart - vs) / vd) * 100,
         widthPercent: ((clampEnd - clampStart) / vd) * 100,
       }
     })
 })
 
-function statusColor(block: Block): string {
-  if (block.state.styleClass === "masked") return "bg-red-200/60 border-red-400"
-  if (block.state.styleClass === "kept") return "bg-green-200/60 border-green-400"
-  if (block.seg.type === "silence") return "bg-gray-200/50 border-gray-300"
-  return "bg-blue-100/60 border-blue-300"
+// v3.0.4 M4-3 (P3-8): overlay three-state styling. Two orthogonal axes:
+// color = action (red delete / blue keep), opacity = status (pending dims
+// to 50%). The confirmed-delete string below is BYTE-IDENTICAL to the
+// v3.0.3 stripe -- it must stay that way (SPEC M4-3 hard requirement).
+const EDIT_RANGE_RED_BOX = "border border-red-400/60 bg-red-300/30"
+const EDIT_RANGE_BLUE_BOX = "border border-blue-400/60 bg-blue-300/30"
+const EDIT_RANGE_RED_HATCH = "rgba(239,68,68,0.15)"
+const EDIT_RANGE_BLUE_HATCH = "rgba(59,130,246,0.15)"
+
+function editRangeClasses(block: EditRangeBlock): string {
+  const box = block.action === "keep" ? EDIT_RANGE_BLUE_BOX : EDIT_RANGE_RED_BOX
+  return block.status === "pending"
+    ? `absolute top-0 bottom-0 ${box} pointer-events-none opacity-50`
+    : `absolute top-0 bottom-0 ${box} pointer-events-none`
+}
+
+function editRangeHatchStyle(block: EditRangeBlock): { backgroundImage: string } {
+  const hatch = block.action === "keep" ? EDIT_RANGE_BLUE_HATCH : EDIT_RANGE_RED_HATCH
+  return {
+    backgroundImage:
+      `repeating-linear-gradient(45deg, transparent, transparent 3px, ${hatch} 3px, ${hatch} 6px)`,
+  }
 }
 
 function handleEmptyClick(e: MouseEvent) {
+  // v3.0.2 M5-3: dual empty-area semantics. "seek" (multi) clears the
+  // row-local selection and forwards the press (modifiers included) so the
+  // orchestrator can route scrub / Ctrl-create / Shift-marquee; "add"
+  // (default/basic) is the untouched v3.0.1 path.
+  // v3.0.4 M4-2 (P3-6): "range" (basic direct-child) forwards the press the
+  // same way as "seek" but as `range-press` -- the editor owns the range
+  // marquee + bubble. Branch sits BEFORE "seek" (SPEC wiring point 2).
+  if (props.emptyAreaMode === "range") {
+    selectedBlockId.value = null
+    closeContextMenu()
+    emit("range-press", {
+      clientX: e.clientX,
+      clientY: e.clientY,
+      ctrlKey: e.ctrlKey,
+      shiftKey: e.shiftKey,
+      time: metrics.getTimeFromX(e.clientX),
+    })
+    return
+  }
+  if (props.emptyAreaMode === "seek") {
+    selectedBlockId.value = null
+    closeContextMenu()
+    emit("empty-press", {
+      clientX: e.clientX,
+      clientY: e.clientY,
+      ctrlKey: e.ctrlKey,
+      shiftKey: e.shiftKey,
+      time: metrics.getTimeFromX(e.clientX),
+    })
+    return
+  }
   const time = metrics.getTimeFromX(e.clientX)
   emit("add-segment", time, time + 0.5)
 }
 
-function snapToFrame(time: number): number {
-  // Snap to nearest 0.01s boundary
-  return Math.round(time * 100) / 100
+/** v3.0.2 M5-3: double-click empty area in seek mode toggles playback. */
+function handleEmptyDoubleClick() {
+  if (props.emptyAreaMode === "seek") emit("empty-double-click")
 }
 
-function clampTime(
-  raw: number,
-  edge: "left" | "right",
-  seg: Segment,
-): number {
-  if (edge === "left") {
-    return Math.min(raw, seg.end - MIN_SEGMENT_DURATION)
-  }
-  return Math.max(raw, seg.start + MIN_SEGMENT_DURATION)
-}
-
-function detectEdge(e: MouseEvent): "left" | "right" | "body" {
-  const el = e.currentTarget as HTMLElement
-  const rect = el.getBoundingClientRect()
-  const x = e.clientX - rect.left
-  if (x < EDGE_HANDLE_HIT_PX) return "left"
-  if (x > rect.width - EDGE_HANDLE_HIT_PX) return "right"
-  return "body"
-}
-
-function handleBlockMouseMove(e: MouseEvent) {
-  hoverEdge.value = detectEdge(e)
-}
-
-function handleBlockMouseLeave() {
-  hoverEdge.value = null
-}
-
-function handleBlockMouseDown(
-  block: Block,
-  e: MouseEvent,
-) {
-  focusContainer()
-  selectedBlockId.value = block.seg.id
-  const edge = detectEdge(e)
-  if (edge === "body") {
-    emit("select-range", block.seg.start, block.seg.end)
-    return
-  }
-  if (!props.updateTime) return
-
-  e.stopPropagation()
-  const initialValue = edge === "left" ? block.seg.start : block.seg.end
-  const offset = initialValue - metrics.getTimeFromX(e.clientX)
-
-  const onMove = (e: MouseEvent) => {
-    const raw = metrics.getTimeFromX(e.clientX) + offset
-    const clamped = clampTime(raw, edge, block.seg)
-    props.updateTime!(block.seg.id, edge === "left" ? "start" : "end", clamped)
-  }
-
-  const onUp = (e: MouseEvent) => {
-    const raw = metrics.getTimeFromX(e.clientX) + offset
-    const snapped = snapToFrame(clampTime(raw, edge, block.seg))
-    props.updateTime!(block.seg.id, edge === "left" ? "start" : "end", snapped)
-    document.removeEventListener("mousemove", onMove)
-    document.removeEventListener("mouseup", onUp)
-    document.body.style.cursor = ""
-  }
-
-  document.body.style.cursor = edge === "left" ? "w-resize" : "e-resize"
-  document.addEventListener("mousemove", onMove)
-  document.addEventListener("mouseup", onUp)
-}
-
-function handleBlockContextMenu(block: Block, e: MouseEvent) {
+function handleBlockContextMenu(segmentId: string, e: MouseEvent) {
   e.preventDefault()
   e.stopPropagation()
-  // v2.1.1 A-01: broadcast close to Timeline menu before opening own
-  window.dispatchEvent(new CustomEvent("closeallcontextmenus"))
-  selectedBlockId.value = block.seg.id
-  contextMenu.value = { x: e.clientX, y: e.clientY, segmentId: block.seg.id }
-  // Use local document listener (not shared contextMenuManager) to avoid
-  // cross-component state leaks that prevent re-opening after outside-click.
-  const close = () => { contextMenu.value = null }
-  const onDocClick = (ce: MouseEvent) => {
-    // Only close if the click is outside the menu itself
-    const target = ce.target as HTMLElement
-    if (!target.closest(".fixed.z-\\[9999\\]")) {
-      close()
-      cleanup()
-    }
-  }
-  const onDocContext = () => { close(); cleanup() }
-  const cleanup = () => {
-    document.removeEventListener("click", onDocClick)
-    document.removeEventListener("contextmenu", onDocContext)
-  }
-  // Delay adding listeners so the current right-click event finishes propagation
-  setTimeout(() => {
-    document.addEventListener("click", onDocClick)
-    document.addEventListener("contextmenu", onDocContext)
-  }, 0)
+  // Mutex FIRST: the previous menu's close fn nulls this SAME ref -- if we
+  // set the new state before registering, the close wiped it (reported:
+  // right-click-close then the next right-click opened nothing).
+  openContextMenu(() => { contextMenu.value = null })
+  selectedBlockId.value = segmentId
+  contextMenu.value = { x: e.clientX, y: e.clientY, segmentId }
 }
 
-function handleBlockClick(block: Block) {
+function handleBlockClick(seg: Segment) {
   selectedBlockId.value = null
-  emit("seek-segment", block.seg)
+  emit("seek-segment", seg)
 }
 
 function closeContextMenu() {
@@ -310,21 +327,12 @@ function handleDocKeyCapture(e: KeyboardEvent) {
   }
 }
 
-// v2.1.1 A-01: listen for Timeline menu close broadcasts
-const handleGlobalClose = () => {
-  if (contextMenu.value) {
-    contextMenu.value = null
-  }
-}
-
 onMounted(() => {
   document.addEventListener("keydown", handleDocKeyCapture, { capture: true })
-  window.addEventListener("closeallcontextmenus", handleGlobalClose)
 })
 
 onUnmounted(() => {
   document.removeEventListener("keydown", handleDocKeyCapture, { capture: true })
-  window.removeEventListener("closeallcontextmenus", handleGlobalClose)
 })
 
 </script>
@@ -332,91 +340,89 @@ onUnmounted(() => {
 <template>
   <div
     ref="containerRef"
-    class="absolute inset-x-0 top-6 bottom-0 focus:outline-none"
+    class="absolute inset-x-0 focus:outline-none"
+    :class="fillContainer ? 'inset-0' : 'top-6 bottom-0'"
     tabindex="0"
     @mousedown="focusContainer"
     @mousedown.self="handleEmptyClick"
+    @dblclick.self="handleEmptyDoubleClick"
     @keydown="handleKeyDown"
     @click.self="selectedBlockId = null; closeContextMenu()"
   >
-    <div
+    <SegmentBlock
       v-for="block in visibleBlocks"
       :key="block.seg.id"
-      class="absolute top-1 bottom-1 rounded border select-none group"
-      :class="[
-        statusColor(block),
-        hoverEdge === 'left' || hoverEdge === 'right' ? 'cursor-ew-resize' : 'cursor-grab',
-        selectedBlockId === block.seg.id ? 'ring-2 ring-blue-500' : '',
-      ]"
-      :style="{
-        left: block.leftPercent + '%',
-        width: block.widthPercent + '%',
-      }"
-      :title="block.seg.text || `[${block.seg.type}]`"
-      @mousemove="handleBlockMouseMove"
-      @mouseleave="handleBlockMouseLeave"
-      @mousedown="handleBlockMouseDown(block, $event)"
-      @contextmenu="handleBlockContextMenu(block, $event)"
-      @click="handleBlockClick(block)"
-    >
-      <!-- Left edge handle -->
-      <div
-        class="absolute left-0 top-0 bottom-0 w-2 opacity-0 group-hover:opacity-100 transition-opacity bg-blue-400 rounded-l"
-        style="pointer-events: none"
-      />
-      <!-- Right edge handle -->
-      <div
-        class="absolute right-0 top-0 bottom-0 w-2 opacity-0 group-hover:opacity-100 transition-opacity bg-blue-400 rounded-r"
-        style="pointer-events: none"
-      />
-      <!-- Content -->
-      <div class="flex h-full items-center overflow-hidden px-2">
-        <span class="truncate text-[10px] leading-tight text-gray-700">
-          {{ block.seg.text || (block.seg.type === 'silence' ? '...' : '') }}
-        </span>
-      </div>
-    </div>
+      :seg="block.seg"
+      :left-percent="block.leftPercent"
+      :width-percent="block.widthPercent"
+      :state="block.state"
+      :segments="segments"
+      :selected="selectedBlockId === block.seg.id"
+      :update-time="updateTime"
+      :current-time="currentTime"
+      :duration="duration"
+      :global-edit-mode="globalEditMode"
+      :continues-from="block.continuesFrom"
+      :continues-to="block.continuesTo"
+      :row-start="rowStart"
+      :row-end="rowEnd"
+      :get-time-from-pointer="getTimeFromPointer"
+      @select-range="(s, e) => emit('select-range', s, e)"
+      @seek-segment="handleBlockClick"
+      @contextmenu="handleBlockContextMenu"
+      @trim-end="emit('trim-end', $event)"
+      @toast="emit('toast', $event)"
+    />
 
-    <!-- Edit range overlays (e.g., subtitle trim delete ranges) -->
+    <!-- Edit range overlays (e.g., subtitle trim delete ranges).
+         v3.0.4 M4-3 (P3-8): three-state -- color axis = action (red
+         delete / blue keep), opacity axis = status (pending dims to
+         opacity-50). confirmed delete renders the v3.0.3 red stripe
+         byte-for-byte; rejected is NOT filtered (status quo kept). -->
     <div
       v-for="rangeBlock in visibleEditRanges"
       :key="rangeBlock.edit.id"
-      class="absolute top-0 bottom-0 border border-red-400/60 bg-red-300/30 pointer-events-none"
+      :class="editRangeClasses(rangeBlock)"
       :style="{
         left: rangeBlock.leftPercent + '%',
         width: rangeBlock.widthPercent + '%',
       }"
       :title="`Delete range: ${rangeBlock.edit.start.toFixed(1)}s - ${rangeBlock.edit.end.toFixed(1)}s`"
     >
-      <div class="h-full w-full" style="background-image: repeating-linear-gradient(45deg, transparent, transparent 3px, rgba(239,68,68,0.15) 3px, rgba(239,68,68,0.15) 6px);" />
+      <div class="h-full w-full" :style="editRangeHatchStyle(rangeBlock)" />
     </div>
 
-    <!-- Context Menu -->
+    <!-- Context Menu (R9.4: kbd badges turn the menu into a cheat sheet --
+         only shortcuts that actually exist get a badge) -->
     <Teleport to="body">
       <div
         v-if="contextMenu"
-        class="fixed z-[9999] bg-white rounded-md shadow-lg border border-gray-200 py-1 min-w-[140px]"
+        class="fixed z-dropdown bg-white rounded-md shadow-lg border border-gray-200 py-1 min-w-[140px]"
         :style="{ left: contextMenu.x + 'px', top: Math.min(contextMenu.y, menuMaxY) + 'px' }"
         @click="closeContextMenu"
       >
         <button
-          class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+          class="w-full flex items-center justify-between gap-3 text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
           @click="splitSelectedAtCursor"
         >
-          按时间指针分割
+          <span>按时间指针分割</span>
         </button>
         <button
-          class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+          class="w-full flex items-center justify-between gap-3 text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
           @click="splitSelectedAtMidpoint"
         >
-          从中点分割
+          <span>从中点分割</span>
         </button>
         <div class="border-t border-gray-100 my-1" />
         <button
-          class="w-full text-left px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
+          class="w-full flex items-center justify-between gap-3 text-left px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
           @click="deleteSelected"
         >
-          删除
+          <span>删除</span>
+          <kbd
+            data-test="menu-kbd-delete"
+            class="rounded border border-gray-200 bg-gray-50 px-1 font-mono text-[10px] leading-4 text-gray-400"
+          >Del</kbd>
         </button>
       </div>
     </Teleport>

@@ -41,6 +41,8 @@ class TestSmartDeleteConcurrency:
         config = _configured_llm()
 
         # Each call returns that chunk's segment ids marked for deletion.
+        # v3.0.0 M3-5: prompts now carry opaque ids (t1..tN); the fake mirrors
+        # them back like a model would -- the service reverse-maps to real ids.
         call_order: list[int] = []
 
         def fake_call_llm(prompt, system="", **kwargs):
@@ -49,7 +51,8 @@ class TestSmartDeleteConcurrency:
 
             payload = json.loads(prompt)
             ids = [s["id"] for s in payload["segments"]]
-            call_order.append(int(ids[0].split("-")[1]) if ids else -1)
+            # opaque ids "tN" -> N; batches restart at t1
+            call_order.append(int(ids[0][1:]) if ids and ids[0].startswith("t") else -1)
             results = [
                 {"segment_id": sid, "action": "delete", "reason": "dup", "category": "filler", "confidence": 0.9}
                 for sid in ids

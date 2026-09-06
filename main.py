@@ -22,6 +22,23 @@ _SUBPROCESS_KWARGS: dict = (
     else {"start_new_session": True}
 )
 
+# v3.0.4 M1-1/M1-5: supported translation target languages (BCP-47 short
+# codes = the SubtitleTrack.language fill-value convention) mapped to the
+# English display name injected into the {{target_language}} prompt slot.
+# start_translation validates against the keys; the handler resolves the
+# display name for the final replacement (SPEC M1-3).
+_TRANSLATION_LANGUAGES: dict[str, str] = {
+    "en": "English",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "zh-CN": "Simplified Chinese",
+    "zh-TW": "Traditional Chinese",
+    "fr": "French",
+    "de": "German",
+    "es": "Spanish",
+    "ru": "Russian",
+}
+
 
 def _fix_macos_path() -> None:
     """Inject shell PATH into the macOS .app bundle environment.
@@ -56,7 +73,15 @@ from core.config import load_settings
 from core.events import EDIT_SUMMARY_UPDATED, ENCODER_FALLBACK, PROJECT_DIRTY, PROJECT_SAVED
 from core.export_service import export_audio, export_srt, export_video, export_vtt
 from core.ffmpeg_presets import ENCODER_METADATA, get_fallback_codec
-from core.ffmpeg_service import _find_ffmpeg, detect_silence, generate_waveform, probe_media
+from core.ffmpeg_service import (
+    _find_ffmpeg,
+    detect_silence,
+    generate_waveform,
+    load_waveform_cache,
+    probe_media,
+    read_peaks_file,
+    write_waveform_cache,
+)
 from core.logging import get_logger, setup_frontend_sink, setup_logging
 from core.media_server import MediaServer
 from core.models import SegmentType, TaskStatus, TaskType
@@ -156,6 +181,9 @@ class MiloCutApi(Bridge):
         )
         self._task_manager.register_handler(
             TaskType.LLM_SEMANTIC_SEARCH, self._handle_semantic_search
+        )
+        self._task_manager.register_handler(
+            TaskType.LLM_TRANSLATION, self._handle_translation
         )
 
     def _handle_silence_detection(self, task, cancel_event, progress_cb):
@@ -282,6 +310,57 @@ class MiloCutApi(Bridge):
             raise ValueError("No media in project")
         project = self._project.current
         timeline = project.active_timeline
+
+        # v3.0.1 M6-1: track exports ride the confirmed-deletion mapping
+        # (same functions as the main track); payload adds format and the
+        # bilingual merged mode.
+        track_id = task.payload.get("track_id")
+        if track_id:
+            from core.export_service import (
+                export_bilingual_subtitle,
+                export_track_subtitle,
+            )
+
+            fmt = task.payload.get("format", "srt")
+            if fmt not in ("srt", "vtt"):
+                fmt = "srt"
+            merge_bilingual = bool(task.payload.get("merge_bilingual"))
+            media_duration = project.media.duration if project.media else 0.0
+            base = os.path.splitext(project.media.path)[0]
+            track = next(
+                (t for t in timeline.transcript.tracks if t.id == track_id), None
+            )
+            if track is None:
+                return {"success": False, "error": f"Track {track_id} not found"}
+            suffix = f"_{track.name}" if track.name else f"_{track_id}"
+            if merge_bilingual:
+                segments_data, edits_data = self._get_export_segments_and_edits(
+                    task, timeline
+                )
+                output_path = task.payload.get(
+                    "output_path", f"{base}_bilingual.{fmt}"
+                )
+                return export_bilingual_subtitle(
+                    segments_data,
+                    track.model_dump(mode="json"),
+                    [b.model_dump(mode="json") for b in timeline.transcript.bindings],
+                    edits_data,
+                    output_path,
+                    media_duration=media_duration,
+                    fmt=fmt,
+                )
+            output_path = task.payload.get("output_path", f"{base}{suffix}.{fmt}")
+            _segments_data, edits_data = self._get_export_segments_and_edits(
+                task, timeline
+            )
+            return export_track_subtitle(
+                track.model_dump(mode="json"),
+                edits_data,
+                output_path,
+                media_duration=media_duration,
+                fmt=fmt,
+            )
+
         segments_data, edits_data = self._get_export_segments_and_edits(task, timeline)
         output_path = task.payload.get("output_path", "")
         if not output_path:
@@ -435,21 +514,39 @@ class MiloCutApi(Bridge):
         def progress_cb(percent: float, message: str = "") -> None:
             self._task_manager._update_progress(task.id, percent, message)
 
+        def _finalize_and_save(final_waveform_path: str) -> None:
+            progress_cb(90.0, "Updating project...")
+            # Update media info with waveform path
+            self._project.update_media_waveform(final_waveform_path)
+            # Make waveform available via HTTP
+            self._media_server.set_waveform(final_waveform_path)
+            # Persist waveform_path to disk so it survives restart
+            try:
+                self._project.save_project()
+            except Exception:
+                logger.exception("Failed to auto-save project after waveform generation")
+
+        # v3.0.0 M11-3: sidecar cache probe -- a {size, mtime_ms} signature
+        # hit serves the peaks instantly and skips the ffmpeg extraction.
+        cached = load_waveform_cache(media_path)
+        if cached:
+            progress_cb(100.0, "Waveform cache hit")
+            _finalize_and_save(cached)
+            return {
+                "cached": True,
+                "project": self._project.current.model_dump() if self._project.current else None,
+            }
+
         progress_cb(10.0, "Extracting audio peaks...")
         result = generate_waveform(media_path, duration, waveform_path)
         if not result["success"]:
             raise RuntimeError(result["error"])
 
-        progress_cb(90.0, "Updating project...")
-        # Update media info with waveform path
-        self._project.update_media_waveform(waveform_path)
-        # Make waveform available via HTTP
-        self._media_server.set_waveform(waveform_path)
-        # Persist waveform_path to disk so it survives restart
-        try:
-            self._project.save_project()
-        except Exception:
-            logger.exception("Failed to auto-save project after waveform generation")
+        # Write the sidecar cache next to the media (best effort: a read-only
+        # media dir keeps the legacy project-dir waveform as the source).
+        peaks = read_peaks_file(waveform_path)
+        final_waveform_path = write_waveform_cache(media_path, peaks) if peaks else None
+        _finalize_and_save(final_waveform_path or waveform_path)
 
         progress_cb(100.0, "Waveform generated")
         return {"project": self._project.current.model_dump() if self._project.current else None}
@@ -597,6 +694,19 @@ class MiloCutApi(Bridge):
         if not update_result["success"]:
             raise RuntimeError(update_result.get("error", "Failed to update transcript"))
 
+        # v3.0.0 M1-1: transcript metadata (engine/language) is persisted here;
+        # the structured update_transcript data is the single source of truth.
+        meta_result = self._project.update_transcript_meta(
+            engine=engine, language=transcript_data["language"]
+        )
+        project_data = (
+            meta_result["data"] if meta_result.get("success") else update_result["data"]
+        )
+        # v3.0.0 fix (macOS smoke): transcription must trigger auto-save.
+        # Before M1-1 the SRT round-trip's import_srt/_mark_dirty incidentally
+        # emitted PROJECT_DIRTY; now we emit it explicitly.
+        self._emit(PROJECT_DIRTY)
+
         # Auto-save SRT to project directory
         srt_path = None
         try:
@@ -645,15 +755,12 @@ class MiloCutApi(Bridge):
             logger.warning("Failed to auto-save SRT: {}", e)
             srt_path = None
 
-        # Import the auto-saved SRT back into the project
-        if srt_path:
-            try:
-                self.import_srt(srt_path)
-            except Exception as e:
-                logger.warning("Failed to import auto-saved SRT: {}", e)
+        # v3.0.0 M1-1: the auto-saved SRT is an archive deliverable only.
+        # It is no longer imported back into the project, so ASR-produced
+        # words/speaker data and seg_{start} ids survive intact.
 
         return {
-            "project": update_result["data"],
+            "project": project_data,
             "segment_count": len(result["data"].get("segments", [])),
             "word_count": result["data"].get("word_count", 0),
             "srt_path": srt_path,
@@ -737,6 +844,7 @@ class MiloCutApi(Bridge):
 
         all_results = result["data"]["results"]
         token_usage = result["data"]["token_usage"]
+        ledger = result["data"].get("ledger")  # M3-1 batch ledger
 
         # Convert results to EditDecisions with source="llm_smart"
         from datetime import datetime as _dt
@@ -784,13 +892,17 @@ class MiloCutApi(Bridge):
                 if not store["success"]:
                     raise RuntimeError(store.get("error", "Failed to store smart-delete results"))
 
-        self._emit("llm:smart_delete_completed", {"results": all_results, "edits": edits})
+        self._emit(
+            "llm:smart_delete_completed",
+            {"results": all_results, "edits": edits, "ledger": ledger},
+        )
         self._emit("llm:token_usage", token_usage)
 
         return {
             "results": all_results,
             "edits": edits,
             "token_usage": token_usage,
+            "ledger": ledger,
             "project": self._project.current.model_dump() if self._project.current else None,
         }
 
@@ -814,19 +926,60 @@ class MiloCutApi(Bridge):
 
         # Audit #8: filter out confirmed-deleted segments before LLM correction
         deleted_seg_ids = collect_confirmed_deleted_seg_ids(timeline)
-        # v2.2.0: collect partial_delete hints from prior smart-delete analysis
-        # so the subtitle correction LLM can leverage them (e.g. intra-sentence
-        # errors that cannot be wholesale deleted but should be textually fixed).
-        partial_hints = collect_partial_delete_hints(timeline)
-        segments = []
-        for s in timeline.transcript.segments:
-            if s.type != SegmentType.SUBTITLE or s.id in deleted_seg_ids:
-                continue
-            seg_dict = s.model_dump()
-            hint = partial_hints.get(s.id)
-            if hint:
-                seg_dict["edit_hint"] = hint
-            segments.append(seg_dict)
+
+        # v3.0.4 M2-1 (P2-2): non-empty track_id -> the correction source is
+        # the extension track itself. Track resolution stays timeline-scoped
+        # in the handler (_get_target_timeline is untouched); a missing track
+        # fails the task.
+        track_id = task.payload.get("track_id", "")
+        if track_id:
+            track = next(
+                (t for t in timeline.transcript.tracks if t.id == track_id),
+                None,
+            )
+            if track is None:
+                raise RuntimeError(f"Track not found: {track_id}")
+            # Confirmed-deletion mapping aligned with the track-aware export:
+            # reverse-map this track's bindings (ext_id -> main_id) and skip
+            # bound track segments whose MAIN partner is confirmed-deleted;
+            # unbound track segments ride through (a main-track deletion
+            # never touched them). Partial hints are skipped on purpose --
+            # they are a main-track EditDecision concept (SPEC M2-1 ruling).
+            ext_to_main = {
+                b.extension_segment_id: b.main_segment_id
+                for b in timeline.transcript.bindings
+                if b.track_id == track_id
+            }
+            # v3.0.4 M2-5 (P2-6, R2.5): bound track segments carry the
+            # aligned main-track text as a reference row; unbound segments
+            # ride through with no context (auto-degradation).
+            main_text_by_id = {s.id: s.text for s in timeline.transcript.segments}
+            segments = []
+            for s in track.segments:
+                main_id = ext_to_main.get(s.id)
+                if main_id is not None and main_id in deleted_seg_ids:
+                    continue
+                seg_dict = s.model_dump()
+                if main_id is not None:
+                    main_text = main_text_by_id.get(main_id)
+                    if main_text:
+                        seg_dict["aligned_main_text"] = main_text
+                segments.append(seg_dict)
+        else:
+            # v2.2.0: collect partial_delete hints from prior smart-delete
+            # analysis so the subtitle correction LLM can leverage them
+            # (e.g. intra-sentence errors that cannot be wholesale deleted
+            # but should be textually fixed).
+            partial_hints = collect_partial_delete_hints(timeline)
+            segments = []
+            for s in timeline.transcript.segments:
+                if s.type != SegmentType.SUBTITLE or s.id in deleted_seg_ids:
+                    continue
+                seg_dict = s.model_dump()
+                hint = partial_hints.get(s.id)
+                if hint:
+                    seg_dict["edit_hint"] = hint
+                segments.append(seg_dict)
         if not segments:
             raise ValueError("No subtitle segments to correct")
 
@@ -860,6 +1013,7 @@ class MiloCutApi(Bridge):
 
         corrections = result["data"]["corrections"]
         token_usage = result["data"]["token_usage"]
+        ledger = result["data"].get("ledger")  # M3-1 batch ledger
 
         # v2.1.0 Phase 3: workflow accumulation mode -- skip project write,
         # return raw corrections for the engine to accumulate.
@@ -869,11 +1023,15 @@ class MiloCutApi(Bridge):
                 "corrections": corrections,
                 "stored_count": len(corrections),
                 "token_usage": token_usage,
+                "ledger": ledger,
             }
 
         # v2.1.0 Phase 2: store corrections for review instead of auto-applying.
+        # v3.0.4 M2-1: track_id rides along (empty = main track scope).
         store_result = self._mark_dirty(
-            self._project.store_subtitle_corrections(corrections, timeline_id)
+            self._project.correction.store_subtitle_corrections(
+                corrections, timeline_id, track_id=track_id
+            )
         )
 
         if not store_result["success"]:
@@ -881,13 +1039,17 @@ class MiloCutApi(Bridge):
                 store_result.get("error", "Failed to store subtitle corrections")
             )
 
-        self._emit("llm:subtitle_correction_completed", store_result["data"])
+        store_data = store_result["data"]
+        if isinstance(store_data, dict) and ledger:
+            store_data = {**store_data, "ledger": ledger}
+        self._emit("llm:subtitle_correction_completed", store_data)
         self._emit("llm:token_usage", token_usage)
 
         return {
             "corrections": corrections,
             "stored_count": store_result["data"].get("stored_count", 0),
             "token_usage": token_usage,
+            "ledger": ledger,
             "project": self._project.current.model_dump() if self._project.current else None,
         }
 
@@ -1026,6 +1188,160 @@ class MiloCutApi(Bridge):
         )
 
         return {"results": search_results, "query": query}
+
+    def _handle_translation(self, task, cancel_event, progress_cb):
+        """Run LLM translation and write a bound translation track (v3.0.4 M1-5).
+
+        Five-step flow mirroring ``_handle_subtitle_correction`` (background
+        thread, payload-driven segment source, cancel/progress wiring):
+
+        1. Main-track subtitle segments, confirmed-deleted excluded.
+        2. Effective translation prompt + the final ``{{target_language}}``
+           replacement (English display name); any residual ``{{`` fails
+           fast so a mis-spelled system_override cannot silently degrade.
+        3. ``analyze_subtitle_translation`` -- any failure raises (task
+           failed, zero writes; full-output conservation lives there).
+        4. Completion-time timeline pinning: the task pinned the timeline it
+           started on; if the user switched timelines during the 1-3 min
+           run, the result is discarded with zero writes (SPEC M1-5 ruling).
+        5. ``create_translation_track`` single-patch write (its own guards:
+           duplicate language / timeline pinning double-check / idempotent
+           reconciliation with ``uncovered_ids`` reporting), then the
+           ``llm:translation_completed`` + ``llm:token_usage`` events.
+        """
+        if self._project.current is None:
+            raise ValueError("No project open")
+
+        from core.llm_service import analyze_subtitle_translation
+        from core.timeline_utils import collect_confirmed_deleted_seg_ids
+
+        timeline = self._get_target_timeline(task)
+        timeline_id = task.payload.get("timeline_id", "") or self._project.current.active_timeline_id
+
+        target_language = task.payload.get("target_language", "")
+        display_name = _TRANSLATION_LANGUAGES.get(target_language, target_language)
+        # Step 3 of the M1-1 flow: default track name = language display name.
+        track_name = task.payload.get("track_name", "") or display_name
+
+        # Step 1: main-track subtitle segments, confirmed-deleted excluded
+        # (same semantics as export mapping, correction-handler precedent).
+        deleted_seg_ids = collect_confirmed_deleted_seg_ids(timeline)
+        segments = [
+            s.model_dump()
+            for s in timeline.transcript.segments
+            if s.type == SegmentType.SUBTITLE and s.id not in deleted_seg_ids
+        ]
+        if not segments:
+            raise ValueError("No subtitle segments to translate")
+
+        # Step 2: resolve effective prompt, then the {{target_language}}
+        # final replacement with the English display name (M1-3 ruling:
+        # the placeholder passes through all three layers untouched).
+        from core.llm_prompts import get_effective_prompt
+
+        project_prompts = (
+            timeline.llm_prompts if hasattr(timeline, "llm_prompts") else None
+        )
+        system_prompt = get_effective_prompt("translation", project_prompts)
+        system_prompt = system_prompt.replace("{{target_language}}", display_name)
+        if "{{" in system_prompt:
+            # Fail fast: a user system_override carrying some OTHER
+            # {{placeholder}} would silently degrade the prompt contract.
+            raise RuntimeError(
+                "Translation system prompt still contains {{...}} placeholders "
+                "after the {{target_language}} replacement; check the prompt "
+                "override for mis-spelled placeholders"
+            )
+
+        # Step 3: the pipeline. ``target_language`` only feeds its internal
+        # semantics (never the prompt -- that is the system_prompt above).
+        result = analyze_subtitle_translation(
+            segments,
+            target_language,
+            cancel_event=cancel_event,
+            progress_cb=progress_cb,
+            system_prompt=system_prompt,
+        )
+
+        if not result.get("success"):
+            error = result.get("error", "Translation failed")
+            self._emit("llm:analysis_failed", {"error": error})
+            raise RuntimeError(error)
+
+        translations = result["data"]["translations"]
+        token_usage = result["data"]["token_usage"]
+        ledger = result["data"].get("ledger")
+
+        # Step 4: completion-time timeline pinning -- zero writes when the
+        # user switched timelines while the task ran (M1-5 / M1-4 contract 6).
+        if timeline_id != self._project.current.active_timeline_id:
+            raise RuntimeError(
+                "翻译期间已切换时间轴，结果已丢弃，请回到原时间轴重新发起"
+            )
+
+        # Step 5: assemble handler-snapshot items ({segment_id, start, end,
+        # text}) and batch-write the bound track in ONE patch. Reconciliation
+        # against the CURRENT main track (segment deleted mid-run goes to
+        # uncovered_ids, never silent) lives in create_translation_track.
+        source_by_id = {seg.get("id", ""): seg for seg in segments}
+        items = []
+        for t in translations:
+            source = source_by_id.get(str(t.get("segment_id", "")))
+            if source is None:
+                continue
+            items.append(
+                {
+                    "segment_id": str(t["segment_id"]),
+                    "start": source["start"],
+                    "end": source["end"],
+                    "text": str(t.get("translated_text", "")),
+                }
+            )
+
+        store_result = self._mark_dirty(
+            self._project.create_translation_track(
+                timeline_id=timeline_id,
+                name=track_name,
+                language=target_language,
+                items=items,
+                bind=True,
+            )
+        )
+        if not store_result["success"]:
+            # Duplicate language / all-vanished ids / write-side pinning:
+            # pass the guidance error through (task failed, zero writes).
+            raise RuntimeError(
+                store_result.get("error", "Failed to create translation track")
+            )
+
+        report = store_result["data"].get("meta", {}).get("translation", {})
+        from core.events import LLM_TRANSLATION_COMPLETED
+
+        self._emit(
+            LLM_TRANSLATION_COMPLETED,
+            {
+                "track_id": report.get("track_id", ""),
+                "track_name": track_name,
+                "language": target_language,
+                "written_count": report.get("written_count", 0),
+                "target_count": report.get("target_count", len(items)),
+                "uncovered_ids": report.get("uncovered_ids", []),
+                "ledger": ledger,
+            },
+        )
+        self._emit("llm:token_usage", token_usage)
+
+        return {
+            "track_id": report.get("track_id", ""),
+            "track_name": track_name,
+            "language": target_language,
+            "written_count": report.get("written_count", 0),
+            "target_count": report.get("target_count", len(items)),
+            "uncovered_ids": report.get("uncovered_ids", []),
+            "token_usage": token_usage,
+            "ledger": ledger,
+            "project": self._project.current.model_dump() if self._project.current else None,
+        }
 
     # ================================================================
     # region System
@@ -1191,6 +1507,15 @@ class MiloCutApi(Bridge):
         # SRT import mutates transcript -- signal auto-save
         self._mark_dirty(update_result)
         return update_result
+
+    @expose
+    def import_srt_as_track(
+        self, file_path: str, language: str = "", role: str = "extension"
+    ) -> dict:
+        """Import an SRT file as a read-only extension track (v3.0.0 M11-2)."""
+        result = self._project.import_srt_as_track(file_path, language, role)
+        # Track import mutates the transcript -- signal auto-save
+        return self._mark_dirty(result)
 
     # ================================================================
     # endregion Subtitle
@@ -1442,6 +1767,22 @@ class MiloCutApi(Bridge):
         return self._mark_dirty(self._project.delete_edit_decisions_batch(edit_ids))
 
     @expose
+    def add_range_decision(
+        self, start: float, end: float, action: str = "delete", source: str = "manual"
+    ) -> dict:
+        """Add a manual range edit decision (v3.0.4 M4-1, R4.1).
+
+        Thin passthrough: the service owns clamping / action validation /
+        +-0.05s idempotent dedup and returns the ProjectPatch envelope
+        (or the duplicate idempotent payload). Wrapped in _mark_dirty per
+        the mutating-expose convention (same cluster as
+        delete_edit_decisions_batch / add_analysis_results).
+        """
+        return self._mark_dirty(
+            self._project.add_range_decision(start, end, action, source)
+        )
+
+    @expose
     def add_analysis_results(self, results: list, source: str = "manual") -> dict:
         """Add analysis results and generate EditDecisions from them.
 
@@ -1555,16 +1896,65 @@ class MiloCutApi(Bridge):
         return self._mark_dirty(self._project.update_segment(segment_id, updates))
 
     @expose
+    def update_track_segment(self, track_id: str, segment_id: str, updates: dict) -> dict:
+        """v3.0.1 M2-2: edit an extension-track segment (offsets rebuild)."""
+        return self._mark_dirty(
+            self._project.update_track_segment(track_id, segment_id, updates)
+        )
+
+    @expose
     def update_segment_text(self, segment_id: str, text: str) -> dict:
         return self._mark_dirty(self._project.update_segment_text(segment_id, text))
+
+    @expose
+    def delete_track_segment(self, track_id: str, segment_id: str) -> dict:
+        """v3.0.2: delete an extension-track segment (bindings dropped)."""
+        return self._mark_dirty(
+            self._project.delete_track_segment(track_id, segment_id)
+        )
+
+    @expose
+    def add_track(self, name: str, language: str = "", role: str = "extension") -> dict:
+        """v3.0.2: create an empty extension track."""
+        return self._mark_dirty(self._project.add_track(name, language, role))
+
+    @expose
+    def delete_track(self, track_id: str) -> dict:
+        """v3.0.2: delete a whole extension track (bindings dropped)."""
+        return self._mark_dirty(self._project.delete_track(track_id))
+
+    @expose
+    def add_track_segment(
+        self, track_id: str, start: float, end: float, text: str = ""
+    ) -> dict:
+        """v3.0.2: add a segment to an extension track (unbound)."""
+        return self._mark_dirty(
+            self._project.add_track_segment(track_id, start, end, text)
+        )
+
+    @expose
+    def clear_track_segments(self, track_id: str) -> dict:
+        """v3.0.2: clear all segments of a track in one operation."""
+        return self._mark_dirty(self._project.clear_track_segments(track_id))
 
     @expose
     def merge_segments(self, segment_ids: list[str]) -> dict:
         return self._mark_dirty(self._project.merge_segments(segment_ids))
 
     @expose
-    def split_segment(self, segment_id: str, position: float) -> dict:
-        return self._mark_dirty(self._project.split_segment(segment_id, position))
+    def split_segment(
+        self, segment_id: str, position: float, snap_to_word: bool = False
+    ) -> dict:
+        return self._mark_dirty(
+            self._project.split_segment(segment_id, position, snap_to_word)
+        )
+
+    @expose
+    def apply_undo(self, layers_payload: dict, base_revision: int) -> dict:
+        """Layered undo/redo entry point (v3.0.0 M5)."""
+        return self._mark_dirty(
+            self._project.apply_undo(layers_payload, base_revision)
+        )
 
     @expose
     def add_segment(
@@ -2082,6 +2472,12 @@ class MiloCutApi(Bridge):
 
         config = _get_cfg()
         data = config.model_dump()
+        # v3.0.4 smoke-fix 1a: expose provider-resolved base_url/model so the
+        # frontend "configured" judgment matches backend is_configured()
+        # (empty fields legitimately fall back to provider defaults -- the
+        # settings-page test button always worked on this path).
+        data["resolved_base_url"] = config.resolved_base_url()
+        data["resolved_model"] = config.resolved_model()
         if data.get("api_key"):
             key = data["api_key"]
             data["api_key_masked"] = (
@@ -2324,7 +2720,7 @@ class MiloCutApi(Bridge):
             {"success": True, "data": [correction, ...]}
         """
         tid = self._resolve_timeline_id(timeline_id)
-        return self._project.get_subtitle_corrections(tid)
+        return self._project.correction.get_subtitle_corrections(tid)
 
     @expose
     def compute_diff(self, original: str, corrected: str) -> dict:
@@ -2344,7 +2740,7 @@ class MiloCutApi(Bridge):
         Returns:
             {"success": True, "data": {"segment_id": str}}
         """
-        return self._mark_dirty(self._project.accept_subtitle_correction(result_id))
+        return self._mark_dirty(self._project.correction.accept_subtitle_correction(result_id))
 
     @expose
     def reject_correction(self, result_id: str) -> dict:
@@ -2353,7 +2749,7 @@ class MiloCutApi(Bridge):
         Returns:
             {"success": True, "data": {"segment_id": str}}
         """
-        return self._mark_dirty(self._project.reject_subtitle_correction(result_id))
+        return self._mark_dirty(self._project.correction.reject_subtitle_correction(result_id))
 
     @expose
     def accept_high_confidence_corrections(
@@ -2369,7 +2765,7 @@ class MiloCutApi(Bridge):
             {"success": True, "data": {"accepted_count", "remaining_count"}}
         """
         tid = self._resolve_timeline_id(timeline_id)
-        return self._mark_dirty(self._project.accept_high_confidence_corrections(tid, threshold))
+        return self._mark_dirty(self._project.correction.accept_high_confidence_corrections(tid, threshold))
 
     @expose
     def clear_subtitle_corrections(self, timeline_id: str = "") -> dict:
@@ -2379,7 +2775,7 @@ class MiloCutApi(Bridge):
             {"success": True, "data": {"cleared_count": int}}
         """
         tid = self._resolve_timeline_id(timeline_id)
-        return self._mark_dirty(self._project.clear_subtitle_corrections(tid))
+        return self._mark_dirty(self._project.correction.clear_subtitle_corrections(tid))
 
     @expose
     def start_smart_delete(self, timeline_id: str = "") -> dict:
@@ -2413,6 +2809,7 @@ class MiloCutApi(Bridge):
         reference_text: str = "",
         timeline_id: str = "",
         context_window: int = 3,
+        track_id: str = "",
     ) -> dict:
         """Start LLM subtitle correction as a background task.
 
@@ -2421,6 +2818,8 @@ class MiloCutApi(Bridge):
                 Empty string = mode A (LLM self-correction).
             timeline_id: Target timeline (defaults to active_timeline_id).
             context_window: Number of adjacent segments for context.
+            track_id: Optional secondary track id (v3.0.4 M2-1). Empty
+                string = main track (default, v3.0.3 behavior unchanged).
 
         Returns:
             {"success": True, "data": {"task_id": str}}
@@ -2441,6 +2840,7 @@ class MiloCutApi(Bridge):
                 "timeline_id": tl_id,
                 "reference_text": reference_text,
                 "context_window": context_window,
+                "track_id": track_id,
             },
         )
         return task
@@ -2543,6 +2943,77 @@ class MiloCutApi(Bridge):
             system_prompt=effective_prompt,
         )
         return result
+
+    @expose
+    def start_translation(
+        self,
+        target_language: str = "",
+        timeline_id: str = "",
+        track_name: str = "",
+    ) -> dict:
+        """Start LLM translation into a new secondary track (v3.0.4 M1-1).
+
+        Validation order (SPEC M1-1, short-circuits with
+        ``{"success": False, "error": ...}``): LLM configured -> project
+        open -> target language valid -> main track has subtitle segments
+        -> no same-language translation track yet -> create_task.
+
+        Args:
+            target_language: BCP-47 short code (key of _TRANSLATION_LANGUAGES).
+            timeline_id: Target timeline (defaults to active_timeline_id).
+            track_name: Name for the new track (defaults to the language
+                display name).
+
+        Returns:
+            {"success": True, "data": {"task_id": str}}
+        """
+        from core.llm_service import get_llm_config as _get_cfg
+
+        config = _get_cfg()
+        if not config.is_configured():
+            return {"success": False, "error": "LLM not configured"}
+
+        if self._project.current is None:
+            return {"success": False, "error": "No project open"}
+
+        if not target_language or target_language not in _TRANSLATION_LANGUAGES:
+            return {
+                "success": False,
+                "error": f"Unsupported target language: {target_language or '(empty)'}",
+            }
+
+        tl_id = timeline_id or self._project.current.active_timeline_id
+        timeline = self._project.current.get_timeline(tl_id)
+        if timeline is None:
+            return {"success": False, "error": f"Timeline {tl_id} not found"}
+
+        has_subtitle = any(
+            s.type == SegmentType.SUBTITLE for s in timeline.transcript.segments
+        )
+        if not has_subtitle:
+            return {"success": False, "error": "No subtitle segments to translate"}
+
+        if any(
+            t.role == "translation" and t.language == target_language
+            for t in timeline.transcript.tracks
+        ):
+            return {
+                "success": False,
+                "error": (
+                    f"同语言翻译轨已存在（{target_language}），"
+                    "可清空或删除该轨后重试"
+                ),
+            }
+
+        task = self._task_manager.create_task(
+            "llm_translation",
+            {
+                "timeline_id": tl_id,
+                "target_language": target_language,
+                "track_name": track_name,
+            },
+        )
+        return task
 
     @expose
     def detect_highlight_jump_cuts(self, timeline_id: str = "") -> dict:

@@ -134,6 +134,21 @@ _SEARCH_SYSTEM = """你是内容检索助手。用户以 JSON 格式提供转录
 只输出最相关的前 K 个片段，K 由用户指定。relevance 为 1.0 表示完全匹配，0.0 表示不相关。
 """
 
+# v3.0.4 M1-3: {{target_language}} 不走 params 参数注入 -- 语言名由 handler
+# 拿到 effective prompt 后用目标语言清单的英文显示名终替换 (占位符原样穿透
+# get_effective_prompt 三层，见注册处注释)。
+_TRANSLATION_SYSTEM = """You are a professional subtitle translator. The user provides a JSON payload containing a "segments" array (each item has an "id" and a source-language "text") and a "target_segment_ids" list naming the segments to translate. Translate the text of every target segment into {{target_language}}.
+
+Rules:
+- Translate exactly the segments whose ids appear in target_segment_ids. Segments outside that list are context only: use them to keep terminology and tone consistent, and never include them in the output.
+- Output exactly one entry per target id -- as many entries as there are ids in target_segment_ids, in the same order. Do not add, drop, merge, or split entries.
+- Echo each input id back unchanged in the "segment_id" field of its output entry. Never invent, alter, or reformat ids.
+- Translate naturally and idiomatically for {{target_language}}, preserving the original meaning, tone, and register. Keep numbers, proper nouns, and technical terms accurate.
+
+Output format: JSON array only -- no markdown fences, no explanations, no extra text of any kind.
+[{"segment_id": "the unchanged input id", "translated_text": "the translation in {{target_language}}"}]
+"""
+
 
 # ------------------------------------------------------------------
 # Default prompt registry
@@ -167,6 +182,14 @@ DEFAULT_PROMPTS: dict[str, dict[str, Any]] = {
     "search": {
         "system": _SEARCH_SYSTEM,
         "params": {},  # 无参数化
+    },
+    "translation": {
+        "system": _TRANSLATION_SYSTEM,
+        # v3.0.4 M1-3 关键裁决: params 必须为 {} -- _inject_placeholders 只遍历
+        # 注册 params 的 key，_format_param 对未注册 key 返回空串；若把
+        # target_language 注册进 params，{{target_language}} 会被替换成空串、
+        # 语言信息丢失。留空则占位符原样穿透三层覆盖，由 handler 终替换注入。
+        "params": {},
     },
 }
 

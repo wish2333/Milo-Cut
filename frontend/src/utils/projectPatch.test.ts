@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import type {
   AnalysisData,
   EditDecision,
@@ -6,7 +6,9 @@ import type {
   Project,
   ProjectPatch,
   Segment,
+  SubtitleTrack,
   Timeline,
+  TrackBinding,
 } from "@/types/project"
 import {
   PatchApplicationError,
@@ -14,6 +16,8 @@ import {
   applyProjectResponse,
   describePatchLayers,
   isStalePatch,
+  mergeBindingsInPlace,
+  mergeTracksInPlace,
 } from "@/utils/projectPatch"
 import { isProjectPatch } from "@/types/project"
 
@@ -132,6 +136,86 @@ describe("applyProjectPatch", () => {
     })
   })
 
+  describe("M7-1 in-place segment merge", () => {
+    it("keeps unchanged segment references stable (toBe) after a single-segment text change", () => {
+      const segA = makeSegment({ id: "a", start: 0, end: 1, text: "a" })
+      const segB = makeSegment({ id: "b", start: 2, end: 3, text: "b" })
+      const segC = makeSegment({ id: "c", start: 4, end: 5, text: "c" })
+      const project = makeProject()
+      project.timelines[0].transcript.segments = [segA, segB, segC]
+      const patch: ProjectPatch = {
+        revision: 1,
+        segments: [
+          makeSegment({ id: "a", start: 0, end: 1, text: "a" }),
+          makeSegment({ id: "b", start: 2, end: 3, text: "b-changed" }),
+          makeSegment({ id: "c", start: 4, end: 5, text: "c" }),
+        ],
+      }
+      const result = applyProjectPatch(project, patch)
+      const out = result.timelines[0].transcript.segments
+      expect(out[0]).toBe(segA) // unchanged: identity preserved
+      expect(out[2]).toBe(segC) // unchanged: identity preserved
+      expect(out[1].text).toBe("b-changed")
+      expect(out[1]).not.toBe(segB)
+    })
+
+    it("removes deleted ids and inserts new ids in start order", () => {
+      const segA = makeSegment({ id: "a", start: 0, end: 1 })
+      const segB = makeSegment({ id: "b", start: 2, end: 3 })
+      const project = makeProject()
+      project.timelines[0].transcript.segments = [segA, segB]
+      const patch: ProjectPatch = {
+        revision: 1,
+        segments: [
+          makeSegment({ id: "a", start: 0, end: 1 }),
+          makeSegment({ id: "new", start: 1.5, end: 1.8 }),
+          makeSegment({ id: "b", start: 2, end: 3 }),
+        ],
+      }
+      const result = applyProjectPatch(project, patch)
+      const out = result.timelines[0].transcript.segments
+      expect(out.map(s => s.id)).toEqual(["a", "new", "b"])
+      expect(out[0]).toBe(segA)
+      expect(out[2]).toBe(segB)
+    })
+
+    it("preserves words identity for unchanged segments with words", () => {
+      const words = [{ word: "hello", start: 0, end: 0.5, confidence: 0.9 }]
+      const seg = makeSegment({ id: "a", words })
+      const project = makeProject()
+      project.timelines[0].transcript.segments = [seg]
+      const patch: ProjectPatch = {
+        revision: 1,
+        segments: [makeSegment({ id: "a", words: [{ word: "hello", start: 0, end: 0.5, confidence: 0.9 }] })],
+      }
+      const result = applyProjectPatch(project, patch)
+      expect(result.timelines[0].transcript.segments[0]).toBe(seg)
+    })
+
+    it("falls back to wholesale replace with console.warn on id-sequence mismatch", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+      // Old array has a,b sharing start=1 (in a,b order); the backend
+      // array claims b,a -- the stable start-sort cannot derive that,
+      // so the gate must trip and fall back to wholesale replacement.
+      const segA = makeSegment({ id: "a", start: 1, end: 2, text: "old-a" })
+      const segB = makeSegment({ id: "b", start: 1, end: 2, text: "old-b" })
+      const project = makeProject()
+      project.timelines[0].transcript.segments = [segA, segB]
+      const patch: ProjectPatch = {
+        revision: 1,
+        segments: [
+          makeSegment({ id: "b", start: 1, end: 2 }),
+          makeSegment({ id: "a", start: 1, end: 2 }),
+        ],
+      }
+      const result = applyProjectPatch(project, patch)
+      const out = result.timelines[0].transcript.segments
+      expect(out.map(s => s.id)).toEqual(["b", "a"])
+      expect(warnSpy).toHaveBeenCalled()
+      warnSpy.mockRestore()
+    })
+  })
+
   describe("edits layer", () => {
     it("replaces active timeline edits", () => {
       const project = makeProject()
@@ -195,6 +279,165 @@ describe("applyProjectPatch", () => {
       const patch: ProjectPatch = { revision: 1, analysis: newAnalysis }
       const result = applyProjectPatch(project, patch)
       expect(result.timelines[0].analysis).toBe(newAnalysis)
+    })
+  })
+
+  // v3.0.0 M11-2: subtitle-track layers
+  describe("M11-2 track layers", () => {
+    const makeTrack = (id = "trk_1"): SubtitleTrack => ({
+      id,
+      role: "extension",
+      name: "en",
+      language: "en",
+      segments: [
+        {
+          id: `track_${id}_seg_1.000`,
+          version: 1,
+          type: "subtitle",
+          start: 1,
+          end: 2,
+          text: "hello",
+          speaker: "",
+        },
+      ],
+    })
+    const makeBinding = (trackId = "trk_1"): TrackBinding => ({
+      id: "bind-1",
+      track_id: trackId,
+      main_segment_id: "seg-1",
+      extension_segment_id: `track_${trackId}_seg_1.000`,
+      start_offset: 0.05,
+      end_offset: 0,
+    })
+
+    it("replaces active timeline tracks wholesale", () => {
+      const project = makeProject()
+      const track = makeTrack()
+      const patch: ProjectPatch = { revision: 1, tracks: [track] }
+      const result = applyProjectPatch(project, patch)
+      expect(result.timelines[0].transcript.tracks).toEqual([track])
+      // segments layer untouched by a tracks-only patch
+      expect(result.timelines[0].transcript.segments).toBe(
+        project.timelines[0].transcript.segments,
+      )
+    })
+
+    it("replaces active timeline bindings wholesale", () => {
+      const project = makeProject()
+      const binding = makeBinding()
+      const patch: ProjectPatch = { revision: 1, bindings: [binding] }
+      const result = applyProjectPatch(project, patch)
+      expect(result.timelines[0].transcript.bindings).toEqual([binding])
+    })
+
+    it("throws when a tracks patch targets a missing timeline", () => {
+      const project = makeProject()
+      const patch: ProjectPatch = {
+        revision: 1,
+        timeline_id: "missing",
+        tracks: [makeTrack()],
+      }
+      expect(() => applyProjectPatch(project, patch)).toThrow(PatchApplicationError)
+    })
+
+    it("describePatchLayers reports tracks and bindings", () => {
+      const patch: ProjectPatch = {
+        revision: 1,
+        tracks: [makeTrack()],
+        bindings: [makeBinding()],
+      }
+      expect(describePatchLayers(patch)).toEqual(["tracks", "bindings"])
+    })
+
+    // v3.0.2 M1-2 (S2): the update_segment linkage path now ships the
+    // resolved tracks+bindings layers alongside segments+meta. The
+    // frontend merge path must surface the squeezed extension geometry
+    // with zero frontend changes (R2.3).
+    it("surfaces squeezed extension segments after a combined linkage patch", () => {
+      const base = makeProject()
+      const project = makeProject({
+        timelines: [
+          {
+            ...base.timelines[0],
+            transcript: {
+              engine: "srt",
+              language: "zh-CN",
+              segments: [
+                makeSegment({ id: "seg-1", start: 0, end: 5 }),
+                makeSegment({ id: "seg-2", start: 10, end: 15 }),
+              ],
+              tracks: [
+                {
+                  id: "trk_1",
+                  role: "extension",
+                  name: "en",
+                  language: "en",
+                  segments: [
+                    makeSegment({ id: "track_trk_1_a", start: 0.2, end: 4.8 }),
+                    makeSegment({ id: "track_trk_1_c", start: 12, end: 16, text: "free" }),
+                  ],
+                },
+              ],
+              bindings: [
+                {
+                  id: "bind_a",
+                  track_id: "trk_1",
+                  main_segment_id: "seg-1",
+                  extension_segment_id: "track_trk_1_a",
+                  start_offset: 0.2,
+                  end_offset: -0.2,
+                },
+              ],
+            },
+            edits: [],
+          },
+        ],
+      })
+
+      // The exact patch shape the backend linkage path emits after
+      // moving seg-2 to [11, 15]: segments + resolved tracks (free
+      // segment c squeezed to [15, 16]) + bindings + meta.linkage.
+      const squeezedTrack: SubtitleTrack = {
+        id: "trk_1",
+        role: "extension",
+        name: "en",
+        language: "en",
+        segments: [
+          makeSegment({ id: "track_trk_1_a", start: 0.2, end: 4.8 }),
+          makeSegment({ id: "track_trk_1_c", start: 15, end: 16, text: "free" }),
+        ],
+      }
+      const patch: ProjectPatch = {
+        revision: 2,
+        segments: [
+          makeSegment({ id: "seg-1", start: 0, end: 5 }),
+          makeSegment({ id: "seg-2", start: 11, end: 15 }),
+        ],
+        tracks: [squeezedTrack],
+        bindings: [
+          {
+            id: "bind_a",
+            track_id: "trk_1",
+            main_segment_id: "seg-1",
+            extension_segment_id: "track_trk_1_a",
+            start_offset: 0.2,
+            end_offset: -0.2,
+          },
+        ],
+        meta: { linkage: { squeezed: 1, removed: 0, unbound: 0 } },
+      }
+
+      const result = applyProjectPatch(project, patch)
+      const tl = result.timelines.find(t => t.id === result.active_timeline_id)!
+      // main layer moved atomically with the track layer
+      expect(tl.transcript.segments[1].start).toBe(11)
+      // the squeezed extension segment is immediately visible
+      const c = tl.transcript.tracks![0].segments.find(s => s.id === "track_trk_1_c")!
+      expect(c.start).toBe(15)
+      expect(c.end).toBe(16)
+      // unchanged sibling keeps reference identity (mergeTracksInPlace)
+      const a = tl.transcript.tracks![0].segments.find(s => s.id === "track_trk_1_a")!
+      expect(a).toBe(project.timelines[0].transcript.tracks![0].segments[0])
     })
   })
 
@@ -370,5 +613,109 @@ describe("describePatchLayers", () => {
   })
   it("returns empty array for revision-only patch", () => {
     expect(describePatchLayers({ revision: 1 })).toEqual([])
+  })
+})
+
+// ------------------------------------------------------------------
+// v3.0.1 M3 (P1-4): tracks/bindings in-place merge
+// ------------------------------------------------------------------
+
+describe("mergeTracksInPlace", () => {
+  const makeTrack = (
+    id: string,
+    segOverrides: Partial<Segment>[] = [{ start: 1, end: 2 }],
+  ): SubtitleTrack => ({
+    id,
+    role: "extension",
+    name: id,
+    language: "en",
+    segments: segOverrides.map((o, i) =>
+      makeSegment({ id: `track_${id}_seg_${i}`, ...o }),
+    ),
+  })
+
+  it("reuses the track reference when nothing changed", () => {
+    const oldTracks = [makeTrack("trk_1"), makeTrack("trk_2")]
+    const newTracks = [makeTrack("trk_1"), makeTrack("trk_2")]
+    const out = mergeTracksInPlace(oldTracks, newTracks)
+    expect(out[0]).toBe(oldTracks[0])
+    expect(out[1]).toBe(oldTracks[1])
+  })
+
+  it("reuses unchanged segment references inside a changed track", () => {
+    const oldTracks = [
+      makeTrack("trk_1", [
+        { start: 1, end: 2 },
+        { start: 3, end: 4 },
+      ]),
+    ]
+    const changed = [
+      makeTrack("trk_1", [
+        { start: 1.5, end: 2 }, // changed
+        { start: 3, end: 4 }, // untouched
+      ]),
+    ]
+    const out = mergeTracksInPlace(oldTracks, changed)
+    expect(out[0]).not.toBe(oldTracks[0]) // track object replaced
+    expect(out[0].segments[0]).not.toBe(oldTracks[0].segments[0])
+    expect(out[0].segments[1]).toBe(oldTracks[0].segments[1]) // stable ref
+  })
+
+  it("drops deleted tracks and appends new ones in backend order", () => {
+    const oldTracks = [makeTrack("trk_1"), makeTrack("trk_2")]
+    const newTracks = [makeTrack("trk_2"), makeTrack("trk_3")]
+    const out = mergeTracksInPlace(oldTracks, newTracks)
+    expect(out.map(t => t.id)).toEqual(["trk_2", "trk_3"])
+    expect(out[0]).toBe(oldTracks[1])
+  })
+
+  it("falls back to wholesale replacement on id-sequence mismatch", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const oldTracks = [makeTrack("trk_1"), makeTrack("trk_2")]
+    // Backend order swapped -> merged order cannot match without reorder.
+    const newTracks = [makeTrack("trk_2"), makeTrack("trk_1")]
+    const out = mergeTracksInPlace(oldTracks, newTracks)
+    expect(out).toEqual(newTracks)
+    expect(out[0]).toBe(newTracks[0])
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
+  })
+})
+
+describe("mergeBindingsInPlace", () => {
+  const makeBinding = (id: string, offset = 0): TrackBinding => ({
+    id,
+    track_id: "trk_1",
+    main_segment_id: "seg-1",
+    extension_segment_id: `track_trk_1_seg_${id}`,
+    start_offset: offset,
+    end_offset: offset,
+  })
+
+  it("reuses unchanged bindings, replaces changed ones by id", () => {
+    const oldBindings = [makeBinding("b1"), makeBinding("b2", 0.5)]
+    const newBindings = [makeBinding("b1"), makeBinding("b2", 0.7)]
+    const out = mergeBindingsInPlace(oldBindings, newBindings)
+    expect(out[0]).toBe(oldBindings[0])
+    expect(out[1]).not.toBe(oldBindings[1])
+    expect(out[1].start_offset).toBe(0.7)
+  })
+
+  it("drops dissolved bindings and appends new ones", () => {
+    const oldBindings = [makeBinding("b1"), makeBinding("b2")]
+    const newBindings = [makeBinding("b2"), makeBinding("b3")]
+    const out = mergeBindingsInPlace(oldBindings, newBindings)
+    expect(out.map(b => b.id)).toEqual(["b2", "b3"])
+    expect(out[0]).toBe(oldBindings[1])
+  })
+
+  it("falls back to wholesale replacement on id-sequence mismatch", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const oldBindings = [makeBinding("b1"), makeBinding("b2")]
+    const newBindings = [makeBinding("b2"), makeBinding("b1")]
+    const out = mergeBindingsInPlace(oldBindings, newBindings)
+    expect(out).toEqual(newBindings)
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
   })
 })

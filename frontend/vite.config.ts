@@ -34,5 +34,10 @@ export default defineConfig({
   test: {
     environment: "happy-dom",
     include: ["src/**/*.{test,spec}.ts"],
+    // Perf-gate files (projectPatch.perf / undoScale.perf / useRowLayout.perf)
+    // assert wall-clock p50/p95 -- parallel file workers add CPU contention
+    // noise that flips them. The suite is seconds-scale, so serial files are
+    // the cheap, deterministic option.
+    fileParallelism: false,
   },
 });

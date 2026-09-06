@@ -10,7 +10,7 @@
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
         </svg>
       </summary>
-      <ul class="dropdown-content z-50 menu p-2 shadow-lg bg-base-100 rounded-box w-64 border border-base-300">
+      <ul class="dropdown-content z-dropdown menu p-2 shadow-lg bg-base-100 rounded-box w-64 border border-base-300">
         <li v-for="tl in timelines" :key="tl.id">
           <a
             class="flex items-center justify-between"
@@ -65,7 +65,7 @@
     <Teleport to="body">
       <div
         v-if="contextMenu"
-        class="fixed z-[9999] bg-white rounded-md shadow-lg border border-gray-200 py-1 min-w-[140px]"
+        class="fixed z-dropdown bg-white rounded-md shadow-lg border border-gray-200 py-1 min-w-[140px]"
         :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
         @click.stop="contextMenu = null"
       >
