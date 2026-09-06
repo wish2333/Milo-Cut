@@ -136,6 +136,10 @@ watch(subtitleCorrectionResult, async (result) => {
 const highConfidenceCorrections = computed(() =>
   pendingCorrections.value.filter((c) => c.confidence >= 0.8),
 )
+// v3.0.4 smoke-fix 3: persistent open state for the low-confidence
+// review section (default expanded -- sequential confirming is the
+// whole point of the section).
+const lowConfidenceOpen = ref(true)
 const lowConfidenceCorrections = computed(() =>
   pendingCorrections.value.filter((c) => c.confidence < 0.8),
 )
@@ -1650,6 +1654,7 @@ onUnmounted(() => {
     <SettingsModal
       v-if="showSettingsModal"
       :visible="showSettingsModal"
+      initial-tab="llm"
       @close="handleSettingsClosed(); reloadAppSettings()"
     />
 
@@ -1742,8 +1747,16 @@ onUnmounted(() => {
                 </div>
               </div>
 
-              <!-- Low confidence section (collapsed) -->
-              <details v-if="lowConfidenceCorrections.length > 0" class="mb-4">
+              <!-- Low confidence section. v3.0.4 smoke-fix 3: the open
+                   state is a controlled ref -- the uncontrolled <details>
+                   lost its DOM state on every accept (patch refresh remounts
+                   the section), forcing a re-open before each next confirm. -->
+              <details
+                v-if="lowConfidenceCorrections.length > 0"
+                class="mb-4"
+                :open="lowConfidenceOpen"
+                @toggle="lowConfidenceOpen = ($event.target as HTMLDetailsElement).open"
+              >
                 <summary class="cursor-pointer text-xs font-semibold text-amber-700">
                   低置信度修正 ({{ lowConfidenceCorrections.length }}) -- 需手动确认
                 </summary>

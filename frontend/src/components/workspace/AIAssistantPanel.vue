@@ -419,14 +419,25 @@ function handleSearchSeek(time: number) {
           {{ llmModel }}
         </span>
       </div>
+      <!-- v3.0.4 smoke-fix 2: persistent model-settings shortcut (jumps to
+           the LLM tab) -- previously only shown while unconfigured. -->
       <button
-        v-if="!llmConfigured"
-        class="text-xs text-blue-600 hover:text-blue-800 underline"
+        data-test="open-model-settings"
+        class="rounded-md border border-gray-200 bg-white px-2 py-0.5 text-[11px] text-blue-600 transition-colors hover:bg-blue-50 hover:text-blue-800"
+        title="打开设置并定位到 LLM 模型配置"
         @click="emit('go-to-settings')"
       >
-        去设置
+        模型设置
       </button>
     </div>
+
+    <!-- v3.0.4 smoke-fix 1: ONE whole-block scroll region. Previously the
+         workflow config view and the per-feature detail view each had their
+         own overflow area while the header stack stayed frozen -- on short
+         viewports (multi-row mode) the start buttons could be pushed out of
+         view. Only the compact LLM status row stays fixed; everything else
+         (mode switch, cards, progress, results, forms) scrolls together. -->
+    <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
 
     <!-- Error message -->
     <div v-if="errorMsg" class="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">
@@ -612,7 +623,7 @@ function handleSearchSeek(time: number) {
       </div>
 
       <!-- Config view (when not active and no instance) -->
-      <div v-else class="flex flex-1 flex-col gap-3 overflow-y-auto">
+      <div v-else class="flex flex-col gap-3">
         <!-- Big "启动" button at top -->
         <button
           class="w-full rounded-md bg-blue-600 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
@@ -864,7 +875,7 @@ function handleSearchSeek(time: number) {
     </button>
 
     <!-- Operation area (selected feature detail) -->
-    <div v-if="selectedFeature" class="flex flex-1 flex-col gap-2 overflow-y-auto">
+    <div v-if="selectedFeature" class="flex flex-col gap-2">
       <!-- Smart delete (P0) -->
       <div v-if="selectedFeature === 'smart_delete'" class="flex flex-col gap-2">
         <p class="text-xs text-gray-600">{{ features[0].description }}</p>
@@ -982,12 +993,14 @@ function handleSearchSeek(time: number) {
     <!-- Empty state -->
     <div
       v-else
-      class="flex flex-1 items-center justify-center text-xs text-gray-400"
+      class="flex items-center justify-center py-8 text-xs text-gray-400"
     >
       选择一个功能开始
     </div>
     </template>
     <!-- ============ End Single Function Mode ============ -->
+    </div>
+    <!-- ============ End whole-block scroll region (smoke-fix 1) ============ -->
 
   </div>
 </template>

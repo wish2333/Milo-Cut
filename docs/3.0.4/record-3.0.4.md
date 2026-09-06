@@ -49,7 +49,8 @@
 | P4-3 | （总记录 §7/§7.1 即本步落盘处，无独立分步文件） | 已完成（README_zh 3.0.x 特性段集中回填 + 3.0.4 新特性段与 Q8 级联删除说明 / README.md 增 v3.0.4 英文段【对齐 3.0.3 先例位置】/ 版本池 6 新增 + 7 维持 + 1 出池登记 / §10.1 副轨删除确认策略结论落盘；`gates-v3.0.4.sh redline` exit 0 零代码扰动；record-3.0.3 §5 遗留 #2/#4 销账） | 已合入（merge P4-3） |
 | P4-1 | （本表 + §3 核对记录 + record-3.0.4-P4-1 终检留痕见下） | 已完成 | 门禁终检 exit 0（pytest 829 / vitest 827 collected·826 passed / build / lint / ruff / 红线 R0-1~R0-5 全过）；后端 diff = 8 文件全在白名单、禁改面与 dev.py/build.py 零命中、登记表逐文件 8/8 有登记行 |
 | P4-2 | （§6 性能对账段） | 已完成 | 千段单 patch / accept patch 化两项测试固化；真机观测待用户冒烟 |
-| P4-4 | （★ 用户节点） | 待用户执行 | 双平台真机全量回归 M5 清单 1-7 + 3.0.3 顺延债 |
+| P4-4 | （★ 用户节点） | 第一轮反馈 3 项已修（[smokefix-1](./record-3.0.4-P4-smokefix-1.md)）；第二轮反馈 3 项已修（[smokefix-2](./record-3.0.4-P4-smokefix-2.md)：整块滚动/模型设置跳转/低置信度持续展开） | 待用户第三轮复测 |
+| P4-smokefix-2 | [record-3.0.4-P4-smokefix-2.md](./record-3.0.4-P4-smokefix-2.md) | 已完成（纯前端三处：整块滚动重构 / SettingsModal initialTab+常驻「模型设置」按钮直达 LLM 标签 / 低置信度 details 受控展开默认展开） | 门禁 exit 0（pytest 833 / vitest 840-839） |
 | P4-5 | 版本 bump 已完成（66f46fd，门禁复跑全绿） | rc.1 / 主干合并 / v3.0.4 tag **待用户签字** | ★ tag 落地签字节点 |
 | P4-4/smoke-fix-1 | [record-3.0.4-P4-smokefix-1.md](./record-3.0.4-P4-smokefix-1.md) | 已完成（冒烟第一轮 3 项缺陷 = 5 子缺陷修复：1a 配置判定 resolved 化 / 1b task:progress 监听 / 1c 取消轮询化 / 2 手动范围两入口删除 / 3 副轨块顶距比例化；后端 4 例 + 前端 13 例回归；门禁 exit 0：pytest 833 / vitest 840-839 / build / lint / ruff / 红线全过；真机手感待用户复测） | 本 commit 直合 `dev-3.0.4`（smoke-fix 流程，tag 不动） |
 

@@ -20,6 +20,10 @@ import ShortcutsSettingsTab from "./settings/ShortcutsSettingsTab.vue"
  */
 const props = defineProps<{
   visible: boolean
+  /** v3.0.4 smoke-fix: open directly on a given tab (AI assistant
+      "模型设置" shortcut lands on the LLM tab). Optional -- defaults to
+      "general" for the generic toolbar entry. */
+  initialTab?: "general" | "ai-engine" | "llm" | "export" | "shortcuts"
 }>()
 
 const emit = defineEmits<{
@@ -36,7 +40,7 @@ onUnmounted(() => window.removeEventListener("keydown", handleEsc))
 const settings = ref<AppSettings | null>(null)
 const saving = ref(false)
 const statusMsg = ref("")
-const activeTab = ref<"general" | "ai-engine" | "llm" | "export" | "shortcuts">("general")
+const activeTab = ref<"general" | "ai-engine" | "llm" | "export" | "shortcuts">(props.initialTab ?? "general")
 
 onMounted(async () => {
   const res = await call<AppSettings>("get_settings")
