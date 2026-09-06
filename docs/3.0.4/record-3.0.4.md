@@ -15,8 +15,9 @@
 - **tag `v3.0.4-beta.2`** 已打在 P2-6 合入 commit。★ beta.2 双平台真机冒烟**待用户执行**（同 beta.1 后置先例）：清单 = 纠错双轨（轨徽门控 / 主轨待审集不丢 / 审阅来源轨标注 / accept patch 无全量刷新 / undo）+ 主轨纠错回归；异常走 smoke-fix。
 - **P3 完成（2026-09）**：S3 前端顺带批 + S4 手动剪辑范围全链交付——P3-1 golden 基线（v3.0.3 worktree 采集，M0-3 约束 1）/ P3-2 编辑扫掠副轨（断言反转白名单唯一一处执行）/ P3-3 lane 建段接线 X1 / P3-4 语义搜索 X2 / P3-5 add_range_decision expose / P3-6 范围标记手势与气泡 / P3-7 面板手动范围分组 + 时间码 / P3-8 覆层三态 / P3-9 keep 闭环（受控改点①，golden 对拍逐字节一致）。P3 末门禁：pytest 829（期望 ≥762）/ vitest 827 collected·826 passed（期望 ≥779·778）/ build / lint / ruff / 红线全过。
 - **tag `v3.0.4-beta.3`** 已打在 P3-9 合入 commit。★ beta.3 双平台真机冒烟**待用户执行**（后置先例同前）：清单 = M5 清单 3-6（编辑扫掠副轨 / lane 建段 / 语义搜索 / 手动范围 toggle·气泡·面板·keep 重跑·时间码·Ctrl-create 回归）；异常走 smoke-fix。
-- **P4 进行中（2026-09）**：P4-1 门禁终检全绿 + R0-5 登记核对 8/8；P4-2 性能对账回填（两项测试固化、真机观测待用户）；P4-3 README_zh/README 回写 + 版本池 6+1+7 登记 + §10.1 结论落盘（record-3.0.3 §5 遗留 #2/#4 销账）；P4-5 前半版本 bump 3.0.4 完成（66f46fd，门禁复跑全绿）。剩余 = P4-4 ★ 双平台真机全量回归与 P4-5 ★ RC 签字（用户节点）。
-- **tag 链现状**：`v3.0.4-base`（55c68da）→ `v3.0.4-beta.1`（P1 末）→ `v3.0.4-beta.2`（P2 末）→ `v3.0.4-beta.3`（P3 末）→（待）`v3.0.4-rc.1` →（待）`v3.0.4`。
+- **P4 完成（2026-09）**：P4-1 门禁终检 + R0-5 登记核对 8/8；P4-2 性能对账（§6）；P4-3 README_zh/README 回写 + 版本池 6+1+7 登记 + §10.1 结论落盘（record-3.0.3 §5 遗留 #2/#4 销账）；P4-5 前半版本 bump 3.0.4（66f46fd）。**P4-4 真机冒烟三轮用户执行**：第一轮 3 项缺陷 → smoke-fix-1（5 子缺陷，翻译配置判定/进度/取消/手动范围删除/副轨顶距）；第二轮 3 项缺陷 → smoke-fix-2（面板整块滚动/模型设置直达/低置信度持续展开）；**第三轮复测通过（用户签字 2026-09）**。
+- **发布终态门禁（v3.0.4-rc.1 打 tag 前，HEAD 归档提交）**：pytest 833 passed / vitest 840 collected·839 passed（唯一失败 = useRowLayout.perf 环境例）/ vue-tsc + vite build 通过 / eslint 0/0 / ruff 0 / 红线 R0-1~R0-5 全过（exit 0）。后端终态 diff：8 白名单文件 +1329/−42，禁改面与 dev.py/build.py 零命中。
+- **tag 链终态**：`v3.0.4-base`(55c68da) → `v3.0.4-beta.1`(152a446) → `v3.0.4-beta.2`(139a693) → `v3.0.4-beta.3`(bad019b) → `v3.0.4-rc.1`(发布态) → `v3.0.4`(主干合并点)。
 - **P4-4 冒烟第一轮结果（用户执行）**：3 项缺陷（翻译入口误报未配置/进度恒 0/取消卡顿【拆 1a/1b/1c 三子缺陷】、手动范围无法删除、副轨块顶距过大不缩放）→ **smoke-fix-1 修复**（5 子缺陷，[record-3.0.4-P4-smokefix-1.md](./record-3.0.4-P4-smokefix-1.md)；门禁复跑 exit 0：pytest 833 / vitest 840-839，唯一失败 = useRowLayout.perf 环境例），**待用户复测**；tag 不动，P4-4 冒烟继续。
 
 ## 1. 分步记录索引
@@ -49,9 +50,9 @@
 | P4-3 | （总记录 §7/§7.1 即本步落盘处，无独立分步文件） | 已完成（README_zh 3.0.x 特性段集中回填 + 3.0.4 新特性段与 Q8 级联删除说明 / README.md 增 v3.0.4 英文段【对齐 3.0.3 先例位置】/ 版本池 6 新增 + 7 维持 + 1 出池登记 / §10.1 副轨删除确认策略结论落盘；`gates-v3.0.4.sh redline` exit 0 零代码扰动；record-3.0.3 §5 遗留 #2/#4 销账） | 已合入（merge P4-3） |
 | P4-1 | （本表 + §3 核对记录 + record-3.0.4-P4-1 终检留痕见下） | 已完成 | 门禁终检 exit 0（pytest 829 / vitest 827 collected·826 passed / build / lint / ruff / 红线 R0-1~R0-5 全过）；后端 diff = 8 文件全在白名单、禁改面与 dev.py/build.py 零命中、登记表逐文件 8/8 有登记行 |
 | P4-2 | （§6 性能对账段） | 已完成 | 千段单 patch / accept patch 化两项测试固化；真机观测待用户冒烟 |
-| P4-4 | （★ 用户节点） | 第一轮反馈 3 项已修（[smokefix-1](./record-3.0.4-P4-smokefix-1.md)）；第二轮反馈 3 项已修（[smokefix-2](./record-3.0.4-P4-smokefix-2.md)：整块滚动/模型设置跳转/低置信度持续展开） | 待用户第三轮复测 |
+| P4-4 | （★ 用户节点） | **已完成**：三轮用户执行（两轮缺陷 → smoke-fix-1/2 → 第三轮复测通过，签字 2026-09） | M5 清单 1-7 + 3.0.3 顺延债全绿 |
 | P4-smokefix-2 | [record-3.0.4-P4-smokefix-2.md](./record-3.0.4-P4-smokefix-2.md) | 已完成（纯前端三处：整块滚动重构 / SettingsModal initialTab+常驻「模型设置」按钮直达 LLM 标签 / 低置信度 details 受控展开默认展开） | 门禁 exit 0（pytest 833 / vitest 840-839） |
-| P4-5 | 版本 bump 已完成（66f46fd，门禁复跑全绿） | rc.1 / 主干合并 / v3.0.4 tag **待用户签字** | ★ tag 落地签字节点 |
+| P4-5 | 已完成 | 终检全绿（pytest 833 / vitest 840-839）→ `v3.0.4-rc.1` → 合并主干（v2.4.0 后首次回并，版本行取 3.0.4）→ `v3.0.4` | 用户签字 2026-09 |
 | P4-4/smoke-fix-1 | [record-3.0.4-P4-smokefix-1.md](./record-3.0.4-P4-smokefix-1.md) | 已完成（冒烟第一轮 3 项缺陷 = 5 子缺陷修复：1a 配置判定 resolved 化 / 1b task:progress 监听 / 1c 取消轮询化 / 2 手动范围两入口删除 / 3 副轨块顶距比例化；后端 4 例 + 前端 13 例回归；门禁 exit 0：pytest 833 / vitest 840-839 / build / lint / ruff / 红线全过；真机手感待用户复测） | 本 commit 直合 `dev-3.0.4`（smoke-fix 流程，tag 不动） |
 
 ## 2. 门禁基线（P0 首跑登记，零改动干净起点）
@@ -160,4 +161,20 @@
 
 ## 8. 遗留清单（P4 归档：本版未尽事项 + 3.0.5 候选登记）
 
-（待回填）
+### 8.1 3.0.5 候选（本版登记）
+| 项 | 来源 |
+|---|---|
+| 纠错管线取消延迟（as_completed + with 退出 wait 与翻译同款；本轮仅修翻译=新增代码，纠错为既有行为不动） | smoke-fix-1 |
+| `accept_high_confidence_corrections` / `clear_subtitle_corrections` 的 track 作用域化 | SPEC M2-3 边界 |
+| SuggestionPanel→WorkspacePage provide/inject 键类型化（InjectionKey） | P3-7 |
+| Timeline 编辑按钮 `:title` 英文 tooltip 未随轨视图文案 | P3-2 |
+| prompt `aligned_main_text` 字段的系统 prompt 语义说明 | P2-6 |
+| 悬空 pending 纠错仅 get 过滤、不物理清理 | P2-3 |
+| `useRowLayout.perf.test.ts` 环境例根修（清债池维持） | record-3.0.3 顺延 |
+| T4b 其余测试缺口（detect_silence 本体/端到端串测/padding=0 交叠/basic 空白点击建重叠段） | PRD §10.3 |
+
+### 8.2 本版登记的其他事项
+- 本执行环境 `bun run` 不可用 → 门禁脚本内置 node 回落（P0-1/P0-2 登记）；真机不受影响。
+- `main` 主干自 v2.4.0 起未随 3.0.x 更新（3.0.0~3.0.3 发布均未回并）；**v3.0.4 为 3.0.x 首次回并主干**（合并唯一冲突 = v2.4.0 版本行 3 文件，取 3.0.4 值）。
+- 真机千段翻译耗时/token 具体观测值未随冒烟回报（§6 ③），维持「通过未记录数值」口径。
+- 副轨删除确认策略观察期起算：自本轮真机冒烟通过始（§7.1）。
