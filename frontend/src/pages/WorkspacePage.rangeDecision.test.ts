@@ -30,9 +30,15 @@ const eventHandlers = new Map<string, EventHandler[]>()
 const orderLog: string[] = []
 const callMock = vi.fn()
 const pushSnapshotMock = vi.fn()
+const popSnapshotMock = vi.fn()
 const showToastMock = vi.fn()
 /** The activated dead ref handed down as the editor's rangeSelection sink. */
 const selectedRangeRef = ref<{ start: number; end: number } | null>(null)
+/**
+ * v3.0.5 R5.0: observable undo stack handed to the useUndoRedo mock so the
+ * rollback cases can assert "stack length restored" against push/pop wiring.
+ */
+const undoStackRef = ref<unknown[]>([])
 
 vi.mock("@/bridge", () => ({
   call: (...args: unknown[]) => callMock(...args),
@@ -52,10 +58,11 @@ vi.mock("@/bridge", () => ({
 vi.mock("@/composables/useUndoRedo", () => ({
   useUndoRedo: () => ({
     pushSnapshot: pushSnapshotMock,
+    popSnapshot: popSnapshotMock,
     undo: vi.fn(async () => ({ ok: false, error: "empty" })),
     redo: vi.fn(async () => ({ ok: false, error: "empty" })),
     clearHistory: vi.fn(),
-    undoStack: ref([]),
+    undoStack: undoStackRef,
     redoStack: ref([]),
     canUndo: ref(false),
     canRedo: ref(false),
@@ -257,9 +264,11 @@ async function mountWorkspacePage(): Promise<VueWrapper> {
 beforeEach(() => {
   callMock.mockReset()
   pushSnapshotMock.mockReset()
+  popSnapshotMock.mockReset()
   showToastMock.mockReset()
   orderLog.length = 0
   selectedRangeRef.value = null
+  undoStackRef.value = []
   callMock.mockImplementation(async () => ({ success: true, data: {} }))
 })
 
@@ -335,6 +344,90 @@ describe("WorkspacePage range decision (M4-2)", () => {
     expect(showToastMock).toHaveBeenCalledTimes(1)
     expect(showToastMock).toHaveBeenCalledWith("手动范围创建失败: Invalid range", "error", 3000)
     expect((wrapper.emitted("project-updated") ?? []).length).toBe(before)
+    wrapper.unmount()
+  })
+})
+
+describe("WorkspacePage range decision duplicate idempotency (v3.0.5 R5.0 / M5.0)", () => {
+  it("duplicate branch: the non-patch envelope never enters project-updated; auto-dismissing info toast + popSnapshot rollback", async () => {
+    callMock.mockImplementation(async (method: string) => {
+      if (method === "add_range_decision") {
+        // project_service.py duplicate envelope: edit_id + duplicate, no
+        // revision / no patch -- isProjectPatch would reject it, the legacy
+        // fallback would misreplace the whole project (F1).
+        return { success: true, data: { edit_id: "edit-manual-ab12cd34", duplicate: true } }
+      }
+      return { success: true, data: {} }
+    })
+    const wrapper = await mountWorkspacePage()
+    await flushPromises()
+
+    const editor = wrapper.findComponent(WaveformEditorStub)
+    const before = (wrapper.emitted("project-updated") ?? []).length
+    editor.vm.$emit("range-decision", { start: 2, end: 6, action: "delete" })
+    await flushPromises()
+
+    expect(callMock).toHaveBeenCalledWith("add_range_decision", 2, 6, "delete")
+    // In-memory state untouched: nothing is emitted.
+    expect((wrapper.emitted("project-updated") ?? []).length).toBe(before)
+    // Light reuse notice, auto-dismisses (2500), not an error toast.
+    expect(showToastMock).toHaveBeenCalledTimes(1)
+    expect(showToastMock).toHaveBeenCalledWith("该范围已存在，已复用原条目", "info", 2500)
+    // The just-pushed snapshot is rolled back.
+    expect(popSnapshotMock).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it("duplicate path restores the undo stack length (push then rollback leaves prior history intact)", async () => {
+    callMock.mockImplementation(async (method: string) => {
+      if (method === "add_range_decision") {
+        return { success: true, data: { edit_id: "edit-manual-ffffffff", duplicate: true } }
+      }
+      return { success: true, data: {} }
+    })
+    // Wire the mock onto the observable stack so length is real.
+    pushSnapshotMock.mockImplementation(() => {
+      undoStackRef.value = [...undoStackRef.value, { label: "手动范围" }]
+    })
+    popSnapshotMock.mockImplementation(() => undoStackRef.value.pop() ?? null)
+    const wrapper = await mountWorkspacePage()
+    await flushPromises()
+
+    // One prior undo record exists before the duplicate attempt.
+    undoStackRef.value = [{ label: "prior" }]
+    const before = undoStackRef.value.length
+    const editor = wrapper.findComponent(WaveformEditorStub)
+    editor.vm.$emit("range-decision", { start: 3, end: 7, action: "keep" })
+    await flushPromises()
+
+    expect(pushSnapshotMock).toHaveBeenCalledTimes(1)
+    expect(popSnapshotMock).toHaveBeenCalledTimes(1)
+    expect(undoStackRef.value.length).toBe(before)
+    wrapper.unmount()
+  })
+
+  it("failure path restores the undo stack length (F-B-10: no phantom undo step after a failed write)", async () => {
+    callMock.mockImplementation(async (method: string) => {
+      if (method === "add_range_decision") return { success: false, error: "Invalid range" }
+      return { success: true, data: {} }
+    })
+    pushSnapshotMock.mockImplementation(() => {
+      undoStackRef.value = [...undoStackRef.value, { label: "手动范围" }]
+    })
+    popSnapshotMock.mockImplementation(() => undoStackRef.value.pop() ?? null)
+    const wrapper = await mountWorkspacePage()
+    await flushPromises()
+
+    undoStackRef.value = [{ label: "prior" }, { label: "prior-2" }]
+    const before = undoStackRef.value.length
+    const editor = wrapper.findComponent(WaveformEditorStub)
+    editor.vm.$emit("range-decision", { start: 9, end: 4, action: "delete" })
+    await flushPromises()
+
+    expect(popSnapshotMock).toHaveBeenCalledTimes(1)
+    expect(undoStackRef.value.length).toBe(before)
+    // The error toast itself keeps its existing form (M5.0 ruling 1 branch 3).
+    expect(showToastMock).toHaveBeenCalledWith("手动范围创建失败: Invalid range", "error", 3000)
     wrapper.unmount()
   })
 })

@@ -170,7 +170,7 @@ const projectRef = computed({
 // v3.0.0 M5: layered undo via the backend apply_undo channel. The legacy
 // full-JSON snapshot path was removed after the beta.2 smoke (rollback
 // anchor: tag pre-undo-cleanup).
-const { pushSnapshot, undo, redo, canUndo, canRedo, clearHistory } = useUndoRedo()
+const { pushSnapshot, popSnapshot, undo, redo, canUndo, canRedo, clearHistory } = useUndoRedo()
 
 const {
   isDetecting,
@@ -991,9 +991,24 @@ async function handleRangeDecision(payload: { start: number; end: number; action
   if (!projectRef.value) return
   pushSnapshot(projectRef.value, ["edits"], "手动范围")
   const res = await call<ProjectPatch>("add_range_decision", payload.start, payload.end, payload.action)
+  // v3.0.5 R5.0 (M5.0): idempotent duplicate return -- the backend reused
+  // the existing entry (zero write, no revision, no patch). The envelope
+  // is NOT a ProjectPatch (no revision key), so it must never enter the
+  // project-updated channel (App.vue would fall back to the legacy
+  // whole-project replacement and corrupt in-memory state); roll the
+  // just-pushed snapshot back so undo has no phantom step (F1).
+  const duplicate = (res.data as { duplicate?: boolean } | undefined)?.duplicate === true
+  if (res.success && duplicate) {
+    popSnapshot()
+    showToast("该范围已存在，已复用原条目", "info", 2500)
+    return
+  }
   if (res.success && res.data) {
     emit("project-updated", res.data)
   } else {
+    // v3.0.5 R5.0 (F-B-10): failed write -- roll the snapshot back too so
+    // Ctrl+Z does not replay a step that changed nothing.
+    popSnapshot()
     showToast(`手动范围创建失败: ${res.error ?? "未知错误"}`, "error", 3000)
   }
 }
