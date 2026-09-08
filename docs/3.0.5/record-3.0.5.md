@@ -10,7 +10,8 @@
 ## 0. 交付概览
 
 - **P0 完成（2026-09）**：分支/tag/基线/门禁脚本（P0-1、P0-2）——`dev-3.0.5` 自 `v3.0.4` 拉出，`v3.0.5-base` 打在拉出点；立项文档套件 7 文件入库（commit `f850ae6`，2321 行）；基线首跑全绿登记（§2）；门禁脚本 `gates-v3.0.5.sh` 三段 dry-run（P0-2）。
-- **P1-P5**：未开始（步骤索引见 §1；R5.0 duplicate 防呆 = P1-1 全版首个代码合入步）。
+- **P1-1 完成（R5.0，全版首个代码合入步——序 1）**：duplicate 幂等返回防呆——handleRangeDecision 三分支化（duplicate 不 emit + 快照回滚 + info 轻提示 / 成功逐字节不变 / 失败补回滚）+ useUndoRedo 纯新增 `popSnapshot()`（SG-6 不变量 docstring）；后端零改动；前端 +6 例（M-gate ≥3 达标）；全套门禁 exit 0（vitest 846/845，唯一失败 = perf 环境例）。
+- **P1-2 起**：未开始（步骤索引见 §1；下一序 = P1-2 R5.1，序 4 起步）。
 
 ## 1. 分步记录索引
 
@@ -18,7 +19,7 @@
 |---|---|---|---|
 | P0-1 | （本文件 §0/§2 即落盘处） | 已完成（分支/tag/文档入库/基线首跑） | 文档入库 `f850ae6`（自 `v3.0.4`=`f369f62` 拉出，tag `v3.0.5-base` 先于入库） |
 | P0-2 | （本文件 §2 执行环境偏差 + scripts/gates-v3.0.5.sh） | 已完成（复制改基线非重写；三段 dry-run exit 0） | 本 commit（脚本随 P0-2 入库） |
-| P1-1 | record-3.0.5-P1-1.md | 未开始 | （R5.0 duplicate 防呆——**全版首个代码合入步，序 1**） |
+| P1-1 | record-3.0.5-P1-1.md | 已完成（R5.0 duplicate 防呆；后端零改动；门禁 exit 0） | `94c4c91` → merge `ba5a78c`（**全版首个代码合入步，序 1**） |
 | P1-2 | record-3.0.5-P1-2.md | 未开始 | （R5.1 翻译失败/取消成本可见） |
 | P1-3 | record-3.0.5-P1-3.md | 未开始 | （R5.2 行级兜底 + 中文出路指引） |
 | P1-4 | record-3.0.5-P1-4.md | 未开始 | （R5.3 增量补译 + 对账可读化——序 7 落点） |
@@ -58,5 +59,10 @@
 | phase | 文件 | hunk 摘要 | R 编号 | 红线类别（只增/受控改点②/受控改点①/登记改点） |
 |---|---|---|---|---|
 | P0 | （无——零改动基线；文档入库与门禁脚本不涉后端白名单面） | | | |
+| P1-1 | （后端无——零改动；以下为前端面登记，record-3.0.5-P1-1.md §2 逐 hunk） | | | |
+| P1-1 | frontend/src/composables/useUndoRedo.ts | :60-79 纯新增 popSnapshot()（SG-6 不变量 docstring）+ return 导出一行 | R5.0 | 只增（前端面） |
+| P1-1 | frontend/src/pages/WorkspacePage.vue | :173 解构增 popSnapshot；:994-1013 handleRangeDecision 三分支化（duplicate 不 emit + popSnapshot + info 轻提示 2500 / 成功分支逐字节不变 / 失败分支补 popSnapshot） | R5.0 | 受控改点 (c) |
+| P1-1 | frontend/src/pages/WorkspacePage.rangeDecision.test.ts | mock 脚手架增 popSnapshot 键 + 可观测 undoStackRef（基建，非 expect 行）+ 新 describe 3 例 | R5.0 | 只增（测试） |
+| P1-1 | frontend/src/composables/useUndoRedo.test.ts | 新 describe「popSnapshot (v3.0.5 R5.0)」3 单元例 | R5.0 | 只增（测试） |
 
 （后续 phase 按 SPEC M5.0-M5.8 触点表逐 hunk 登记；每条 diff 必须对应一个 R5.x 编号，无对应者补登记或回退。）

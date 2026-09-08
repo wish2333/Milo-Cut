@@ -139,10 +139,12 @@ P5: 门禁终检 → 文档回写 → 真机全量回归 → RC → 正式
 
 ### P1-1 R5.0 duplicate 幂等返回防呆（前端；SPEC M5.0；**全版首个代码合入步——序 1**）
 
-- [ ] **序 1 顺序强制**：本步先于一切 llm/correction 族改动合入；本步 diff 不触 llm/correction 族，与 P1 其余项零冲突（后端零改动）
-- [ ] `WorkspacePage.vue` handleRangeDecision（:990-999）三分支化（受控改点 (c)）：duplicate → 不 emit project-updated + `popSnapshot()` + info 轻提示「该范围已存在，已复用原条目」自动消退；成功 → :994-995 现状形态逐字节不变；失败 → toast + `popSnapshot()`（消除 F-B-10 undo 空步）
-- [ ] `useUndoRedo.ts` 纯新增 `popSnapshot()`（不触碰 redoStack；docstring 写明「本次 push 后、响应返回前的同步窗口」不变量，SG-6 / M5.0 裁决 2）；后端不补 revision（N3：防带 revision 非 patch 对象误入 isProjectPatch 通道）
-- [ ] 用例 ≥3：duplicate 态第三例（宿主 `WorkspacePage.rangeDecision.test.ts`，既有 2 例 :271/:321 零改动全绿）+ duplicate/失败路径 undo 栈长度恢复
+- [x] **序 1 顺序强制**：本步先于一切 llm/correction 族改动合入；本步 diff 不触 llm/correction 族，与 P1 其余项零冲突（后端零改动）
+- [x] `WorkspacePage.vue` handleRangeDecision（:990-999）三分支化（受控改点 (c)）：duplicate → 不 emit project-updated + `popSnapshot()` + info 轻提示「该范围已存在，已复用原条目」自动消退；成功 → :994-995 现状形态逐字节不变；失败 → toast + `popSnapshot()`（消除 F-B-10 undo 空步）
+- [x] `useUndoRedo.ts` 纯新增 `popSnapshot()`（不触碰 redoStack；docstring 写明「本次 push 后、响应返回前的同步窗口」不变量，SG-6 / M5.0 裁决 2）；后端不补 revision（N3：防带 revision 非 patch 对象误入 isProjectPatch 通道）
+- [x] 用例 ≥3：duplicate 态第三例（宿主 `WorkspacePage.rangeDecision.test.ts`，既有 2 例 :271/:321 零改动全绿）+ duplicate/失败路径 undo 栈长度恢复
+
+**实际结果（2026-09，record-3.0.5-P1-1.md）**：+6 例（宿主 3 = duplicate 第三例 + 回滚 ×2；useUndoRedo.test.ts 单元 3 = 末条弹出/空栈 null/SG-6 redoStack 不变量直证）；全套门禁 exit 0（pytest 833 / vitest 846·845 唯一失败 = perf 环境例 / build / lint 0/0 / 红线 R0-1~R0-5 零命中，后端 diff 为空实证）；`94c4c91` → merge `ba5a78c`，短分支已删。
 
 **验收方式**: M-gate 前端 R5.0 ≥3；全套门禁全绿（红线自此步起按白名单口径核对）。
 **验收标准**: duplicate 返回不进 project-updated（内存态不变）、undo 栈零新增；`core/` 与 `main.py` diff 为空。
