@@ -170,6 +170,40 @@ describe("useUndoRedo -- shared state", () => {
 })
 
 // ------------------------------------------------------------------
+// v3.0.5 R5.0 (M5.0): popSnapshot rollback API
+// ------------------------------------------------------------------
+
+describe("popSnapshot (v3.0.5 R5.0)", () => {
+  it("pops the last pushed record, returns it and leaves the stack one shorter", () => {
+    const { pushSnapshot, popSnapshot, undoStack } = useUndoRedo()
+    pushSnapshot(makeProject("v1"), ["segments"], "a")
+    pushSnapshot(makeProject("v2"), ["edits"], "手动范围")
+    const popped = popSnapshot()
+    expect(undoStack.value).toHaveLength(1)
+    expect(popped?.label).toBe("手动范围")
+    // Only the edits layer was captured for the popped record.
+    expect(Object.keys(popped?.records ?? {}).sort()).toEqual(["edits"])
+    // The surviving record is the earlier push.
+    expect(undoStack.value[0].label).toBe("a")
+  })
+
+  it("returns null on an empty stack (defensive path)", () => {
+    const { popSnapshot } = useUndoRedo()
+    expect(popSnapshot()).toBeNull()
+  })
+
+  it("does not touch redoStack (SG-6: pop only runs in the post-push pre-response window where redo is already empty)", () => {
+    const { pushSnapshot, popSnapshot, undoStack, redoStack } = useUndoRedo()
+    pushSnapshot(makeProject("v1"), ["edits"], "x")
+    // Sanctioned window precondition: pushSnapshot already cleared redo.
+    expect(redoStack.value).toHaveLength(0)
+    popSnapshot()
+    expect(undoStack.value).toHaveLength(0)
+    expect(redoStack.value).toHaveLength(0)
+  })
+})
+
+// ------------------------------------------------------------------
 // v3.0.1 M5-1: tracks/bindings capture layers
 // ------------------------------------------------------------------
 

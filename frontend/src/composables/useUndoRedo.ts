@@ -57,6 +57,29 @@ export function useUndoRedo() {
     redoStack.value = []
   }
 
+  /**
+   * v3.0.5 R5.0 (M5.0): pop the just-pushed before-snapshot and return it.
+   *
+   * Rollback API for idempotent/no-op consumers: the caller pushed a
+   * snapshot, the bridge write then turned out to be a duplicate reuse or
+   * a failure (nothing landed in the project), so the record must not
+   * survive as a phantom undo step (F1 / F-B-10).
+   *
+   * Invariant (SG-6): does NOT touch redoStack. popSnapshot is only ever
+   * called inside the synchronous window after the caller's own
+   * pushSnapshot and before the awaited response is consumed -- within
+   * that window redoStack is already empty (pushSnapshot cleared it) and
+   * no re-entry path can refill it, so no redundant cleanup is needed.
+   * Returns null on an empty stack (defensive; not expected on the
+   * sanctioned call path).
+   */
+  function popSnapshot(): UndoRecord | null {
+    const record = undoStack.value[undoStack.value.length - 1] ?? null
+    if (!record) return null
+    undoStack.value = undoStack.value.slice(0, -1)
+    return record
+  }
+
   async function applyThroughBackend(
     record: UndoRecord,
   ): Promise<UndoOutcome> {
@@ -112,6 +135,7 @@ export function useUndoRedo() {
     undoStack,
     redoStack,
     pushSnapshot,
+    popSnapshot,
     undo,
     redo,
     clearHistory,
