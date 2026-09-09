@@ -1234,6 +1234,19 @@ class MiloCutApi(Bridge):
         if not segments:
             raise ValueError("No subtitle segments to translate")
 
+        # v3.0.5 R5.3 (M5.3 ruling 2): resumable route -- start_translation
+        # derived the runtime gap set (main ids minus confirmed-deleted
+        # minus the target track's bindings) and routed the task as a
+        # patch-up. The pipeline source narrows to that subset; completion
+        # writes go through merge_translation_track (same track, single
+        # patch).
+        resumable_track_id = str(task.payload.get("resumable_track_id", "") or "")
+        if resumable_track_id:
+            gap_set = {str(g) for g in task.payload.get("gap_segment_ids") or []}
+            segments = [s for s in segments if str(s.get("id", "")) in gap_set]
+            if not segments:
+                raise ValueError("No gap segments to translate")
+
         # Step 2: resolve effective prompt, then the {{target_language}}
         # final replacement with the English display name (M1-3 ruling:
         # the placeholder passes through all three layers untouched).
@@ -1325,15 +1338,29 @@ class MiloCutApi(Bridge):
                 }
             )
 
-        store_result = self._mark_dirty(
-            self._project.create_translation_track(
-                timeline_id=timeline_id,
-                name=track_name,
-                language=target_language,
-                items=items,
-                bind=True,
+        # v3.0.5 R5.3: the write side follows the route -- a resumable task
+        # merges into the existing track; a fresh task creates one. Both
+        # are single-patch writes reconciling against the CURRENT main
+        # track (vanished ids -> uncovered report, never silent).
+        if resumable_track_id:
+            store_result = self._mark_dirty(
+                self._project.merge_translation_track(
+                    timeline_id=timeline_id,
+                    track_id=resumable_track_id,
+                    items=items,
+                    bind=True,
+                )
             )
-        )
+        else:
+            store_result = self._mark_dirty(
+                self._project.create_translation_track(
+                    timeline_id=timeline_id,
+                    name=track_name,
+                    language=target_language,
+                    items=items,
+                    bind=True,
+                )
+            )
         if not store_result["success"]:
             # Duplicate language / all-vanished ids / write-side pinning:
             # pass the guidance error through (task failed, zero writes).
@@ -1342,6 +1369,18 @@ class MiloCutApi(Bridge):
             )
 
         report = store_result["data"].get("meta", {}).get("translation", {})
+        # v3.0.5 R5.3 (M5.3 ruling 4, MF2-2 registered point): the
+        # completion gap = write-side reconciliation UNION the pipeline-side
+        # ledger gap (failed batches), deduped order-stable. Without the
+        # union, a 33/34 run whose items all hit the current main track
+        # reports an EMPTY gap (write side has nothing to complain about),
+        # the frontend notice never fires and the readable list plus the
+        # one-click resume have no render entry.
+        write_side_ids = list(report.get("uncovered_ids", []))
+        pipeline_gap: list[str] = []
+        if isinstance(ledger, dict):
+            pipeline_gap = list(ledger.get("uncovered_segment_ids", []))
+        merged_uncovered = list(dict.fromkeys([*write_side_ids, *pipeline_gap]))
         from core.events import LLM_TRANSLATION_COMPLETED
 
         self._emit(
@@ -1352,7 +1391,7 @@ class MiloCutApi(Bridge):
                 "language": target_language,
                 "written_count": report.get("written_count", 0),
                 "target_count": report.get("target_count", len(items)),
-                "uncovered_ids": report.get("uncovered_ids", []),
+                "uncovered_ids": merged_uncovered,
                 "ledger": ledger,
             },
         )
@@ -1364,7 +1403,7 @@ class MiloCutApi(Bridge):
             "language": target_language,
             "written_count": report.get("written_count", 0),
             "target_count": report.get("target_count", len(items)),
-            "uncovered_ids": report.get("uncovered_ids", []),
+            "uncovered_ids": merged_uncovered,
             "token_usage": token_usage,
             "ledger": ledger,
             "project": self._project.current.model_dump() if self._project.current else None,
@@ -3020,16 +3059,53 @@ class MiloCutApi(Bridge):
         if not has_subtitle:
             return {"success": False, "error": "No subtitle segments to translate"}
 
-        if any(
-            t.role == "translation" and t.language == target_language
-            for t in timeline.transcript.tracks
-        ):
-            return {
-                "success": False,
-                "error": (
-                    f"同语言翻译轨已存在（{target_language}），"
-                    "可清空或删除该轨后重试"
-                ),
+        # v3.0.5 R5.3 (M5.3 rulings 1-2, controlled point (e)): a
+        # same-language track no longer refuses outright. Derive the
+        # runtime gap set -- main-track subtitle ids (confirmed-deleted
+        # excluded) minus that track's bindings (coverage judged on the
+        # binding difference ONLY, same口径 as the export mapping; the
+        # extension-side survival is not examined). Non-empty gap -> the
+        # task routes as a PATCH-UP (payload adds resumable_track_id +
+        # gap_segment_ids; no new expose, no new task type); empty gap ->
+        # the v3.0.4 refusal copy stays verbatim (a complete same-language
+        # track is never retranslated). The derivation is runtime-only,
+        # never persisted.
+        from core.timeline_utils import collect_confirmed_deleted_seg_ids
+
+        payload_extra: dict = {}
+        existing_track = next(
+            (
+                t
+                for t in timeline.transcript.tracks
+                if t.role == "translation" and t.language == target_language
+            ),
+            None,
+        )
+        if existing_track is not None:
+            bound_main_ids = {
+                b.main_segment_id
+                for b in timeline.transcript.bindings
+                if b.track_id == existing_track.id
+            }
+            deleted_ids = collect_confirmed_deleted_seg_ids(timeline)
+            gap_ids = [
+                s.id
+                for s in timeline.transcript.segments
+                if s.type == SegmentType.SUBTITLE
+                and s.id not in deleted_ids
+                and s.id not in bound_main_ids
+            ]
+            if not gap_ids:
+                return {
+                    "success": False,
+                    "error": (
+                        f"同语言翻译轨已存在（{target_language}），"
+                        "可清空或删除该轨后重试"
+                    ),
+                }
+            payload_extra = {
+                "resumable_track_id": existing_track.id,
+                "gap_segment_ids": gap_ids,
             }
 
         task = self._task_manager.create_task(
@@ -3038,6 +3114,7 @@ class MiloCutApi(Bridge):
                 "timeline_id": tl_id,
                 "target_language": target_language,
                 "track_name": track_name,
+                **payload_extra,
             },
         )
         return task

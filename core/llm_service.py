@@ -1996,19 +1996,21 @@ def analyze_subtitle_translation(
             uncovered.extend(sorted(batch_payloads[batch_idx][0]))
     ledger.uncovered_segment_ids = sorted(set(uncovered))
 
-    # M1-2 key difference vs correction: full-output conservation -- a batch
-    # that still fails after its retry fails the WHOLE task (zero persistence
-    # upstream), instead of returning partial results.
-    if ledger.failed:
+    # v3.0.5 R5.3 (M5.3 ruling 3, controlled point (d)): the old
+    # whole-task conservation ("a batch that still fails after its retry
+    # fails the WHOLE task, zero persistence upstream") survives ONLY in
+    # the all-batches-failed branch. A partial failure now lands the
+    # completed batches (1/N degraded landing: 33/34 batches persist) with
+    # the failed ids recorded in the ledger.
+    if ledger.failed and len(ledger.failed) >= total_batches:
+        # ALL batches failed -> refuse with zero writes. Chinese way-out
+        # copy (M5.2 ruling 3 text (i); MUST contain 「补译」 -- the M0-3
+        # :217 assertion keyword anchor).
         if ledger.uncovered_segment_ids:
             logger.warning(
                 f"Translation coverage gap: {len(ledger.uncovered_segment_ids)} segment(s) "
                 f"in failed batches {sorted(ledger.failed)}"
             )
-        # v3.0.5 R5.2: Chinese refusal copy with an actionable way out
-        # (M5.2 ruling 3 text (i); MUST contain 「补译」 -- the M0-3 :217
-        # assertion keyword anchor). The English technical string is gone;
-        # batch ids and counts stay for the cost surface.
         error = (
             f"翻译失败：{len(ledger.failed)}/{total_batches} 批处理失败"
             f"（批 {sorted(ledger.failed)}），本次未写入任何译文；"
@@ -2019,6 +2021,20 @@ def analyze_subtitle_translation(
             "error": error,
             "data": {"ledger": ledger.to_dict(), "token_usage": total_usage},
         }
+
+    if ledger.failed:
+        # PARTIAL success (some batches survived their retry): completed
+        # batches flow through the merge below; the failed batch ids and
+        # their uncovered targets stay in the ledger for the completion
+        # gap merge (MF2-2) and the resumable route (start_translation
+        # derives the gap set from bindings, which naturally includes
+        # these).
+        logger.warning(
+            f"Translation partial success: {len(ledger.failed)}/{total_batches} "
+            f"batch(es) failed (batches {sorted(ledger.failed)}), "
+            f"{len(ledger.uncovered_segment_ids)} segment(s) uncovered -- "
+            f"completed batches will be returned"
+        )
 
     # Merge in original segment order (conservation guarantees each target
     # id appears exactly once, so the index sort is total and stable).

@@ -429,7 +429,8 @@ class TestTranslationRateLimitFallback:
     def test_sustained_429_switches_to_serial(self, monkeypatch):
         """Three consecutive rate-limited batch failures (after their retry)
         switch the remaining batches to serial processing (AR-2 semantics);
-        the exhausted batches stay failed -> the whole task fails."""
+        the exhausted batches stay failed while the serial survivor lands
+        (v3.0.5 R5.3 partial-success semantics)."""
         monkeypatch.setattr(
             llm_service,
             "load_settings",
@@ -463,8 +464,16 @@ class TestTranslationRateLimitFallback:
         assert calls["n"] in (7, 8)
         assert served_after_fallback
         assert served_after_fallback[-1] == ["text 6", "text 7"]
-        # task fails: batches 0-2 exhausted their single retry
-        assert result["success"] is False
+        # v3.0.5 R5.3 (M5.3 ruling 3; inversion registered in the P1-4
+        # record): batches 0-2 exhausted their single retry but batch 3
+        # survived serially -> PARTIAL success now lands batch 3 (the
+        # whole-task refusal only applies when EVERY batch failed); the
+        # failed ids ride the ledger for the completion gap merge (MF2-2)
+        # and the resume route.
+        assert result["success"] is True
+        assert [
+            t["segment_id"] for t in result["data"]["translations"]
+        ] == ["seg-006", "seg-007"]
         ledger = result["data"]["ledger"]
         assert ledger["total"] == 4
         assert ledger["failed"] == [0, 1, 2]
@@ -852,3 +861,123 @@ class TestTranslatedTextLineFallback:
         assert "更换模型" in result["error"]
         assert set(result["data"].keys()) >= {"token_usage", "ledger"}
         assert result["data"]["ledger"]["failed"] == [0]
+
+
+# ================================================================
+# v3.0.5 R5.3 (M5.3): partial-success landing + conservation invariants
+# ================================================================
+
+
+class TestPartialSuccessSemantics:
+    def _run(self, monkeypatch, fail_texts=frozenset({"text 2", "text 3"})):
+        """4 batches (window 2); the batch whose source texts intersect
+        fail_texts violates coverage on both attempts (content-based
+        targeting -- deterministic regardless of dispatch order), all
+        other batches echo perfectly."""
+        monkeypatch.setattr(
+            llm_service,
+            "load_settings",
+            lambda: {"llm_correction_batch_size": 2, "llm_concurrency": 1},
+        )
+
+        def flaky(prompt, system="", **kwargs):
+            payload = _parse_payload(prompt)
+            if fail_texts & set(_target_texts(payload)):
+                tids = payload["target_segment_ids"]
+                results = [
+                    {"segment_id": t, "translated_text": f"EN[{t}]"}
+                    for t in tids[:-1]
+                ]
+                return {
+                    "success": True,
+                    "data": {"content": json.dumps(results), "usage": {}},
+                }
+            return _perfect_translator()(prompt, system, **kwargs)
+
+        monkeypatch.setattr("core.llm_service.call_llm", flaky)
+        return analyze_subtitle_translation(
+            _segments(8), "English", config=_configured_llm()
+        )
+
+    def test_partial_failure_lands_completed_batches(self, monkeypatch):
+        """1/N degraded landing (M5.3 ruling 3): the failed batch's ids go
+        to the ledger gap, the completed batches land in original order."""
+        result = self._run(monkeypatch)
+
+        assert result["success"] is True
+        translations = result["data"]["translations"]
+        assert [t["segment_id"] for t in translations] == [
+            "seg-000", "seg-001",
+            "seg-004", "seg-005", "seg-006", "seg-007",
+        ]
+        ledger = result["data"]["ledger"]
+        assert ledger["failed"] == [1]
+        assert ledger["succeeded"] == 3
+        # SG-1 conservation invariant, both directions (no more, no less):
+        target_ids = {f"seg-{i:03d}" for i in range(8)}
+        covered = {t["segment_id"] for t in translations}
+        assert set(ledger["uncovered_segment_ids"]) == target_ids - covered
+        assert covered == target_ids - set(ledger["uncovered_segment_ids"])
+
+    def test_all_batches_failed_still_refuses_zero_write(self, monkeypatch):
+        """Every batch violating coverage (after retry) keeps the M1-2
+        whole-task refusal: Chinese way-out copy, cost report riding data,
+        no translations key."""
+        monkeypatch.setattr(
+            llm_service,
+            "load_settings",
+            lambda: {"llm_correction_batch_size": 2},
+        )
+
+        def dropper(prompt, system="", **kwargs):
+            payload = _parse_payload(prompt)
+            results = [
+                {"segment_id": t, "translated_text": "x"}
+                for t in payload["target_segment_ids"][:-1]
+            ]
+            return {
+                "success": True,
+                "data": {"content": json.dumps(results), "usage": {}},
+            }
+
+        monkeypatch.setattr("core.llm_service.call_llm", dropper)
+
+        result = analyze_subtitle_translation(
+            _segments(6), "English", config=_configured_llm()
+        )
+
+        assert result["success"] is False
+        assert "补译" in result["error"]
+        assert set(result["data"].keys()) == {"ledger", "token_usage"}
+        assert result["data"]["ledger"]["failed"] == [0, 1, 2]
+
+    def test_no_failure_path_returns_full_key_shape(self, monkeypatch):
+        """Equivalence guard (M5.3 ruling 3): with zero failures the
+        envelope shape, key sets and ledger contents are exactly the
+        pre-R5.3 success form."""
+        monkeypatch.setattr(
+            llm_service,
+            "load_settings",
+            lambda: {"llm_correction_batch_size": 2, "llm_concurrency": 2},
+        )
+        monkeypatch.setattr("core.llm_service.call_llm", _perfect_translator())
+
+        result = analyze_subtitle_translation(
+            _segments(4), "English", config=_configured_llm()
+        )
+
+        assert set(result.keys()) == {"success", "data"}
+        assert result["success"] is True
+        assert set(result["data"].keys()) == {
+            "translations", "token_usage", "ledger",
+        }
+        assert [t["segment_id"] for t in result["data"]["translations"]] == [
+            f"seg-{i:03d}" for i in range(4)
+        ]
+        ledger = result["data"]["ledger"]
+        assert ledger["failed"] == []
+        assert ledger["uncovered_segment_ids"] == []
+        assert ledger["succeeded"] == 2
+        assert set(result["data"]["token_usage"].keys()) == {
+            "prompt_tokens", "completion_tokens", "total_tokens",
+        }

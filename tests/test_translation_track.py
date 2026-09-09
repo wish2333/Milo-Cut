@@ -322,3 +322,111 @@ class TestNamespaceTimesAndBindings:
         assert res["data"]["bindings"] == []
         meta = res["data"]["meta"]["translation"]
         assert meta["written_count"] == 4
+
+
+# ---------------------------------------------------------------------------
+# v3.0.5 R5.3 (M5.3 ruling 5): merge_translation_track (resumable write side)
+# ---------------------------------------------------------------------------
+
+
+def _install_existing_track(svc, bound: list[Segment], language: str = "en") -> str:
+    """Create a translation track via the production write path, binding
+    the `bound` main segments (the resume-target state)."""
+    res = svc.create_translation_track(
+        svc.active_timeline.id, "English", language, _items(bound)
+    )
+    assert res["success"]
+    return res["data"]["meta"]["translation"]["track_id"]
+
+
+class TestMergeTranslationTrack:
+    def test_single_patch_revision_plus_one_and_meta(self, svc):
+        segs = _main_segments(5)
+        _install_main_segments(svc, segs)
+        track_id = _install_existing_track(svc, segs[:3])
+        rev_before = svc._revision
+
+        res = svc.merge_translation_track(
+            svc.active_timeline.id, track_id, _items(segs[3:])
+        )
+
+        assert res["success"]
+        data = res["data"]
+        # ONE patch for the whole merge batch (never per-segment).
+        assert data["revision"] == rev_before + 1
+        assert svc._revision == rev_before + 1
+        track = next(t for t in data["tracks"] if t["id"] == track_id)
+        assert len(track["segments"]) == 5  # 3 existing + 2 merged
+        assert len(data["bindings"]) == 5
+        meta = data["meta"]["translation"]
+        assert meta["track_id"] == track_id
+        assert meta["merged_count"] == 2
+        assert meta["written_count"] == 2
+        assert meta["target_count"] == 2
+        assert meta["uncovered_ids"] == []
+        # merged segment ids live in the track namespace, times verbatim
+        merged_ids = {s["id"] for s in track["segments"]}
+        assert merged_ids >= {
+            f"track_{track_id}_seg_{s.start:.3f}" for s in segs[3:]
+        }
+        # persisted state matches the patch
+        persisted = next(
+            t for t in svc.active_timeline.transcript.tracks if t.id == track_id
+        )
+        assert len(persisted.segments) == 5
+
+    def test_timeline_pinning_rejected_zero_write(self, svc):
+        segs = _main_segments(3)
+        _install_main_segments(svc, segs)
+        track_id = _install_existing_track(svc, segs[:1])
+        rev_before = svc._revision
+
+        res = svc.merge_translation_track(
+            "other-timeline", track_id, _items(segs[1:])
+        )
+
+        assert not res["success"]
+        assert "已切换时间轴" in res["error"]
+        assert svc._revision == rev_before
+
+    def test_missing_track_rejected(self, svc):
+        segs = _main_segments(3)
+        _install_main_segments(svc, segs)
+
+        res = svc.merge_translation_track(
+            svc.active_timeline.id, "trk_nope", _items(segs)
+        )
+
+        assert not res["success"]
+        assert "翻译轨不存在" in res["error"]
+
+    def test_binding_collision_rejected_zero_write(self, svc):
+        segs = _main_segments(4)
+        _install_main_segments(svc, segs)
+        track_id = _install_existing_track(svc, segs[:2])
+        rev_before = svc._revision
+
+        # items include an ALREADY-bound main id: gap derivation makes this
+        # a "should not happen" -- defensive refusal beats silent overwrite.
+        res = svc.merge_translation_track(
+            svc.active_timeline.id, track_id, _items([segs[2], segs[0]])
+        )
+
+        assert not res["success"]
+        assert "已绑定" in res["error"]
+        assert svc._revision == rev_before
+
+    def test_uncovered_reported_for_vanished_ids(self, svc):
+        segs = _main_segments(3)
+        # segs[1] is deleted mid-run: the main track only keeps 0 and 2.
+        _install_main_segments(svc, [segs[0], segs[2]])
+        track_id = _install_existing_track(svc, [segs[0]])
+
+        res = svc.merge_translation_track(
+            svc.active_timeline.id, track_id, _items([segs[2], segs[1]])
+        )
+
+        assert res["success"]
+        meta = res["data"]["meta"]["translation"]
+        assert meta["merged_count"] == 1
+        assert meta["uncovered_ids"] == [segs[1].id]
