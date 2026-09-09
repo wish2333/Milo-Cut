@@ -2819,29 +2819,39 @@ class MiloCutApi(Bridge):
 
     @expose
     def accept_high_confidence_corrections(
-        self, timeline_id: str = "", threshold: float = 0.8
+        self, timeline_id: str = "", threshold: float = 0.8,
+        track_id: str | None = None,
     ) -> dict:
         """Batch-accept corrections with confidence >= threshold (D-52).
+
+        v3.0.5 R5.4 (registered change): ``track_id`` passes the three-state
+        scope through (None = timeline level, "" = main track, non-empty =
+        that extension track); the batch now returns ONE aggregated patch.
 
         Args:
             timeline_id: Target timeline (defaults to active).
             threshold: Minimum confidence (default 0.8 per D-68).
+            track_id: Optional three-state scope (R5.4).
 
         Returns:
-            {"success": True, "data": {"accepted_count", "remaining_count"}}
+            {"success": True, "data": {"accepted_count", "remaining_count",
+             "patch"?}}
         """
         tid = self._resolve_timeline_id(timeline_id)
-        return self._mark_dirty(self._project.correction.accept_high_confidence_corrections(tid, threshold))
+        return self._mark_dirty(self._project.correction.accept_high_confidence_corrections(tid, threshold, track_id))
 
     @expose
-    def clear_subtitle_corrections(self, timeline_id: str = "") -> dict:
-        """Clear all pending P1 corrections for a timeline (D-50).
+    def clear_subtitle_corrections(
+        self, timeline_id: str = "", track_id: str | None = None
+    ) -> dict:
+        """Clear pending P1 corrections for a timeline (D-50), optionally
+        scoped (v3.0.5 R5.4 three-state ``track_id``).
 
         Returns:
-            {"success": True, "data": {"cleared_count": int}}
+            {"success": True, "data": {"cleared_count": int, "patch"?}}
         """
         tid = self._resolve_timeline_id(timeline_id)
-        return self._mark_dirty(self._project.correction.clear_subtitle_corrections(tid))
+        return self._mark_dirty(self._project.correction.clear_subtitle_corrections(tid, track_id))
 
     @expose
     def start_smart_delete(self, timeline_id: str = "") -> dict:
