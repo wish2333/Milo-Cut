@@ -239,11 +239,13 @@ P5: 门禁终检 → 文档回写 → 真机全量回归 → RC → 正式
 
 ### P2-2 R5.4 前端：批量 undo 三态层 + patch 消费驱动 + 确认文案（useWorkspaceActions.ts + WorkspacePage.vue）+ beta.2 节点
 
-- [ ] `correctionUndoLayers(entry, scopeTrackId)` 扩展第二形参（MF-1 三态：null = `["segments","tracks","analysis"]` 三层并集 / `""` = 主轨两层 / 非空 = 副轨两层）；handleAcceptHighConfidence 调用前按三态 pushSnapshot（现状无快照 :993-1003）
-- [ ] 消费链改造（D7c）：res.data.patch 存在 → 单次 applyProjectPatch 驱动刷新（diffCache 失效 :998 保留在前），**移除** switch_timeline 全量替换（:999-1000；无 patch 键回落旧行为防御）；handleClearCorrections 同构
-- [ ] 确认文案作用域化（SG-4）：确认框 N = 前端按 scope 过滤 pendingCorrections 计数、完成 toast N = 后端 accepted_count/cleared_count 如实展示（逐条静默跳过偏差由两处口径分工消化）；「全部」文案明示「含全部轨道 N 条」；window.confirm 沿用，不加弹窗组件
-- [ ] 用例 ≥3：确认文案三态 / 快照三态各一次回退（含三层并集例）/ patch 消费（无全量刷新）
-- [ ] ★ beta.2 节点：P2 末全套门禁（期望 ≥859 / ≥854·853）+ 打 tag `v3.0.5-beta.2` + record；★ 真机冒烟按 beta.2 轮清单（后置先例同前）
+- [x] `correctionUndoLayers(entry, scopeTrackId)` 扩展第二形参（MF-1 三态：null = `["segments","tracks","analysis"]` 三层并集 / `""` = 主轨两层 / 非空 = 副轨两层）；handleAcceptHighConfidence 调用前按三态 pushSnapshot（现状无快照 :993-1003）
+- [x] 消费链改造（D7c）：res.data.patch 存在 → 单次 applyProjectPatch 驱动刷新（diffCache 失效 :998 保留在前），**移除** switch_timeline 全量替换（:999-1000；无 patch 键回落旧行为防御）；handleClearCorrections 同构
+- [x] 确认文案作用域化（SG-4）：确认框 N = 前端按 scope 过滤 pendingCorrections 计数、完成 toast N = 后端 accepted_count/cleared_count 如实展示（逐条静默跳过偏差由两处口径分工消化）；「全部」文案明示「含全部轨道 N 条」；window.confirm 沿用，不加弹窗组件
+- [x] 用例 ≥3：确认文案三态 / 快照三态各一次回退（含三层并集例）/ patch 消费（无全量刷新）
+- [x] ★ beta.2 节点：P2 末全套门禁（期望 ≥859 / ≥854·853）+ 打 tag `v3.0.5-beta.2` + record；★ 真机冒烟按 beta.2 轮清单（后置先例同前）
+
+**实际结果（2026-09，record-3.0.5-P2-2.md）**：前端 +7（F1-F3 确认文案+快照三态含 null 三层并集直测 / F4-F5 patch 消费与回落 / F6 clear 作用域 / F7 空集 no-op）；clear 改 reload（作用域清除不吞他轨待审）；「全部」入口随 R5.11（机制全通，getReviewScope 覆盖注入已测）；零反转；beta.2 期望达标（pytest **862** ≥859 / vitest **866·865** ≥854·853）；tag `v3.0.5-beta.2` 落于 `77d2827`；冒烟后置（record §5）；`481780a` → merge `77d2827`，短分支已删。**P2 收官。**
 
 **验收方式**: M-gate 前端 R5.4 ≥3；beta.2 期望总数达标。
 **验收标准**: undo 一次整体回退（三态各验证）；确认文案含轨名/「全部」与条数。

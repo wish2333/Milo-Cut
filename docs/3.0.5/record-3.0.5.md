@@ -17,7 +17,8 @@
 - **P1-5 完成（R5.8，序 2 落点）**：质量模式开关——config 1 键行只增 + 管线读第 5 键（不增形参）+ quality 强制串行（concurrency=1）+ (f) 预构建跳过/派发内惰性构建 + 批 N 携批 N-1 定稿译文滑动窗（不透明 id 空间、源段序、窗口 1 批）+ future 反查逐 submit 注册消除竞态；默认关路径逐字节等价（payload 键集逐键锁定）；后端 +4 例（含 SG2-7 组合与取消 1s 栅栏）；零反转；门禁 exit 0（pytest 855 / vitest 持平）。
 - **P1-6 完成（R5.13）+ beta.1 节点（P1 收官）**：token 量级预估——前端同式复刻管线切批算法（批窗 30 + 字符预算 4000）+ token = 总字符 × 0.75（万单位，恒标「约」，SG-5）；两显示点动态刷新；:301 断言按 M0-3 白名单改写 + 新增预算切批例；**tag `v3.0.5-beta.1`**（`34fba34`）；beta.1 期望达标（pytest 855 ≥853 / vitest 859·858 ≥851·850）；beta.1 真机冒烟后置（清单登记 record-3.0.5-P1-6.md §5）。
 - **P2-1 完成（R5.4 后端半，序 3 同 commit 族兑现）**：三态作用域（track_id: str | None，None 逐字节等价/""主轨/非空副轨）+ `_apply_one` 应用核心抽取 + 批量聚合单 patch（revision 恰 +1，MF-3 超集纯增 patch 键）+ clear 同构 + 两 expose 透传（登记改点）；后端 +7 例；追认反转 1 行（spy 例随 M5.4 裁决 2 重写，门禁 R0-3 排除面首次扩充并注明）；门禁 exit 0（pytest 862 / 前端持平）。
-- **P2-2 起**：未开始（R5.4 前端：批量 undo 三态层 + patch 消费 + 确认文案 + beta.2 节点）。
+- **P2-2 完成（R5.4 前端半）+ beta.2 节点（P2 收官）**：undo 三态层（correctionUndoLayers 第二形参，null 三层并集）+ D7c patch 消费（移除 switch_timeline 全量替换，无 patch 回落防御）+ SG-4 确认文案三态（前端 scope 计数/后端如实计数分工）；clear 改 reload 不吞他轨待审；「全部」入口随 R5.11（机制全通 F3 直测）；前端 +7 例；零反转；**tag `v3.0.5-beta.2`**（`77d2827`）；beta.2 期望达标（pytest 862 ≥859 / vitest 866·865 ≥854·853）；冒烟后置登记 record §5。
+- **P3 起**：未开始（下一序 = P3-1 R5.5 纠错取消轮询化——序 5 独立成相，可并行已无窗口、按序执行；受控改点 (a)）。
 
 ## 1. 分步记录索引
 
@@ -32,7 +33,7 @@
 | P1-5 | record-3.0.5-P1-5.md | 已完成（R5.8 质量模式；序 2 兑现；零反转；门禁 exit 0） | `241ebb9` → merge `7f4b7ac` |
 | P1-6 | record-3.0.5-P1-6.md | 已完成（R5.13 预估；beta.1 tag 落地；冒烟后置） | `7b2323c` → merge `34fba34`（tag `v3.0.5-beta.1`） |
 | P2-1 | record-3.0.5-P2-1.md | 已完成（R5.4 后端半；序 3 兑现；追认 1 行 + R0-3 排除面扩充登记） | `bd19577` → merge `81feae8` |
-| P2-2 | record-3.0.5-P2-2.md | 未开始 | （R5.4 前端批量 undo + patch 消费 + beta.2 节点） |
+| P2-2 | record-3.0.5-P2-2.md | 已完成（R5.4 前端半；零反转；beta.2 tag 落地） | `481780a` → merge `77d2827`（tag `v3.0.5-beta.2`） |
 | P3-1 | record-3.0.5-P3-1.md | 未开始 | （R5.5 纠错取消轮询化——序 5 独立成相） |
 | P4-1 | record-3.0.5-P4-1.md | 未开始 | （R5.6 keep 可感知收口） |
 | P4-2 | record-3.0.5-P4-2.md | 未开始 | （R5.7+R5.9+R5.10+R5.14 覆层/文案/守卫族——约束③ 同 commit 族） |
@@ -88,5 +89,6 @@
 | P2-1 | core/correction_service.py | :241-407 _apply_one 抽取 + 逐条薄壳；:409-434 scope 辅助 2 只增；:491-585 批量三态 + 聚合单 patch；:587-645 clear 三态 + patch(analysis) 超集 | R5.4 | 受控改点 (b) 族 |
 | P2-1 | main.py | :2822-2852 两 expose 增 track_id 透传（登记改点） | R5.4 | 登记改点 |
 | P2-1 | scripts/gates-v3.0.5.sh + tests/test_correction_accept_patch.py | R0-3 排除面 +test_correction_accept_patch.py（追认 1 行：M5.4 裁决 2 废除 batch 逐条委托契约）；+7 例（三态互扰 ×2 / 三层并集聚合 / 零命中旧形 / clear ×3） | R5.4 | 工具修订 + 只增 + 追认反转 1 行 |
+| P2-2 | frontend（4 文件） | useWorkspaceActions：correctionUndoLayers 三态 + getReviewScope dep + 两 handler（快照/patch 消费/SG-4 文案/空集 no-op）；useLlmTasks：两包装三态透传 + patch 返回 + clear reload；WorkspacePage：getReviewScope 装配 | R5.4 | 受控改点 (b) 前端面 + 只增 |
 
 （后续 phase 按 SPEC M5.0-M5.8 触点表逐 hunk 登记；每条 diff 必须对应一个 R5.x 编号，无对应者补登记或回退。）
