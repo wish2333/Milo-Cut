@@ -225,11 +225,13 @@ P5: 门禁终检 → 文档回写 → 真机全量回归 → RC → 正式
 
 ### P2-1 R5.4 后端：三态作用域 + 聚合 patch（core/correction_service.py + main.py；SPEC M5.4；**序 3 落点**）
 
-- [ ] **序 3 同 commit 族（硬约束）**：三态作用域形参与聚合 patch 不拆分交付——聚合返回形状就是作用域改形的消费面，拆开必产生中间破形；D7 第三项不是独立交付物
-- [ ] `accept_high_confidence_corrections` / `clear_subtitle_corrections`（受控改点 (b)，:446-502 / :504-532）：形参 `track_id: str | None = None` 三态——None = 既有 timeline 级逐字节等价、`""` = 主轨作用域、非空 = 副轨作用域（★B-1）
-- [ ] 逐条应用核心抽内部无 patch 方法 `_apply_one(result_id) -> (bool, set[Layer])`（复用 :269-301 钉扎/时间断言/置信度），批量循环消化脏层并集后一次 `_success_patch(segments=?/tracks=?/analysis=?)`，revision 恰 +1；返回 data = 旧键保留 + **纯增 `patch` 键**（MF-3 超集兼容）；clear 返回 `{cleared_count, patch(analysis)}` 同口径；逐条 accept/reject 返回零改动
-- [ ] main.py 两 expose 透传 `track_id`（:2755-2768 / :2771-2778，**登记改点**）
-- [ ] 用例 ≥6：主轨视图不动副轨待审集（三态 `""` 回归锁）/ 副轨不动主轨 /「全部」= None 兼容（既有断言零改动即证）/ 聚合单 patch revision+1 且含 patch 键 / 逐条路径返回形状零改动 / undo 三层并集例（后端半边）
+- [x] **序 3 同 commit 族（硬约束）**：三态作用域形参与聚合 patch 不拆分交付——聚合返回形状就是作用域改形的消费面，拆开必产生中间破形；D7 第三项不是独立交付物
+- [x] `accept_high_confidence_corrections` / `clear_subtitle_corrections`（受控改点 (b)，:446-502 / :504-532）：形参 `track_id: str | None = None` 三态——None = 既有 timeline 级逐字节等价、`""` = 主轨作用域、非空 = 副轨作用域（★B-1）
+- [x] 逐条应用核心抽内部无 patch 方法 `_apply_one(result_id) -> (bool, set[Layer])`（复用 :269-301 钉扎/时间断言/置信度），批量循环消化脏层并集后一次 `_success_patch(segments=?/tracks=?/analysis=?)`，revision 恰 +1；返回 data = 旧键保留 + **纯增 `patch` 键**（MF-3 超集兼容）；clear 返回 `{cleared_count, patch(analysis)}` 同口径；逐条 accept/reject 返回零改动
+- [x] main.py 两 expose 透传 `track_id`（:2755-2768 / :2771-2778，**登记改点**）
+- [x] 用例 ≥6：主轨视图不动副轨待审集（三态 `""` 回归锁）/ 副轨不动主轨 /「全部」= None 兼容（既有断言零改动即证）/ 聚合单 patch revision+1 且含 patch 键 / 逐条路径返回形状零改动 / undo 三层并集例（后端半边）
+
+**实际结果（2026-09，record-3.0.5-P2-1.md）**：后端 +7（B1/B2 三态互扰 / B3 三层并集聚合单 patch revision+1 / B4 零命中旧形 / B5-B7 clear 三态与超集）+ spy 例按 M5.4 裁决 2 重写（**追认反转 1 行**：逐条 patch 契约被 SPEC 废除，门禁 R0-3 排除面按「SPEC 为准当场修脚本」扩 test_correction_accept_patch.py 并在脚本内注明——**R0-3 排除面首次扩充，P5-1 终检核对项**）；None 兼容与逐条形状由既有 20+ 例零改动全绿证明；remaining/cleared 作用域计数与 clear 跨轴边界两处口径登记 record §5；全套门禁 exit 0（pytest 862 / 前端持平 859·858）；`bd19577` → merge `81feae8`，短分支已删。
 
 **验收方式**: M-gate 后端 R5.4 ≥6；门禁全绿。
 **验收标准**: 默认 None 路径逐字节等价；correction_service diff 落 (b) 区间、expose hunk 落登记改点并在附录 A 登记。
