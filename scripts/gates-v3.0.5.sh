@@ -142,10 +142,10 @@ gates_redline() {
     bad "R0-2 events 出现改动 (py=${n_py} ts=${n_ts}; 本版白名单不含 events, 若确有需求须先修 SPEC/脚本)"
   fi
 
-  echo "--- R0-3 后端断言零删改 (期望 = 0; 反转白名单文件 = tests/test_llm_translation.py, 行粒度 :217/:614 由 diff 审查制人工核对): git diff ${BASELINE} -- tests/ ---"
+  echo "--- R0-3 后端断言零删改 (期望 = 0; 反转白名单文件 = tests/test_llm_translation.py + test_correction_accept_patch.py [P2-1 追认: M5.4 裁决 2 废除 batch 逐条委托契约, 1 行], 行粒度由 diff 审查制人工核对): git diff ${BASELINE} -- tests/ ---"
   local n_a; n_a=$(git diff "${BASELINE}" -- tests/ | awk '
     /^\+\+\+ b\// { f = $2 }
-    /^-[[:space:]]*(assert |self\.assert)/ && f !~ /test_llm_translation\.py$/ { c++ }
+    /^-[[:space:]]*(assert |self\.assert)/ && f !~ /test_llm_translation\.py$/ && f !~ /test_correction_accept_patch\.py$/ { c++ }
     END { print c + 0 }')
   echo "  白名单外后端断言删除行数 = ${n_a}"
   [ "$n_a" -eq 0 ] && ok "后端断言白名单外零删改" || bad "白名单外断言删改命中"

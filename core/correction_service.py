@@ -238,27 +238,19 @@ class CorrectionService:
         except (ValueError, TypeError):
             return None
 
-    def accept_subtitle_correction(self, result_id: str) -> dict:
-        """Accept one correction: apply to segment.text + remove AnalysisResult.
+    def _apply_one(self, result_id: str) -> tuple[bool, set[str], dict]:
+        """v3.0.5 R5.4 (M5.4 ruling 2): the patch-free apply core.
 
-        v3.0.4 M2-3 (P2-4): the success payload is a superset -- it keeps
-        the ``segment_id`` key (legacy compat, review UI reads it) and
-        adds a ``patch`` key carrying a ProjectPatch envelope (main track
-        = segments + analysis layers, extension track = tracks + analysis
-        layers) so the frontend applies the write through applyProjectPatch
-        instead of an O(project) full refresh.
-
-        Args:
-            result_id: The AnalysisResult id (``corr-<seg>-<hex>``).
-
-        Returns:
-            {"success": True, "data": {"segment_id": str,
-             "track_id": str (extension track only), "patch": ProjectPatch}}
-            {"success": False, "error": str} if not found / pinned to
-            another timeline.
+        ALL of the v3.0.4 M2-3 per-item logic lives here unchanged
+        (timeline pinning, parse, confidence flag, reattach_words,
+        timestamp assertion, track/main write-back, result removal) -- the
+        caller owns the patch emission. Returns ``(ok, dirty_layers,
+        info)``; failures carry the guidance error in ``info`` with ZERO
+        writes. Shared by the per-item accept (one patch per item) and the
+        batch accept (ONE aggregated patch for the whole loop).
         """
         if self._project._current is None:
-            return {"success": False, "error": "No project is open"}
+            return (False, set(), {"error": "No project is open"})
 
         from core.llm_service import (
             TimestampCorruptionError,
@@ -271,11 +263,11 @@ class CorrectionService:
             (r for r in tl.analysis.results if r.id == result_id), None
         )
         if target is None or target.type != "llm_subtitle_correction":
-            return {"success": False, "error": f"Correction {result_id} not found"}
+            return (False, set(), {"error": f"Correction {result_id} not found"})
 
         payload = self._parse_correction_result(target)
         if payload is None:
-            return {"success": False, "error": "Malformed correction detail"}
+            return (False, set(), {"error": "Malformed correction detail"})
 
         # v3.0.4 M2-3 (R3): timeline pinning. The detail records the
         # timeline that owned the correction at store time; a non-empty id
@@ -285,7 +277,7 @@ class CorrectionService:
         # Legacy details without the key parse as "" and pass (compat).
         pinned_timeline = _detail_timeline_scope(target.detail)
         if pinned_timeline and pinned_timeline != self._project._current.active_timeline_id:
-            return {"success": False, "error": "该结果属于其他时间轴，请切换后审阅"}
+            return (False, set(), {"error": "该结果属于其他时间轴，请切换后审阅"})
 
         seg_id = target.segment_ids[0] if target.segment_ids else ""
         scope_track_id = str(payload.get("track_id", ""))
@@ -302,10 +294,10 @@ class CorrectionService:
                 (t for t in tl.transcript.tracks if t.id == scope_track_id), None
             )
             if track is None:
-                return {"success": False, "error": f"Track {scope_track_id} not found"}
+                return (False, set(), {"error": f"Track {scope_track_id} not found"})
             seg = next((s for s in track.segments if s.id == seg_id), None)
             if seg is None:
-                return {"success": False, "error": f"Segment {seg_id} not found"}
+                return (False, set(), {"error": f"Segment {seg_id} not found"})
 
             corrected_text = str(payload.get("corrected_text", seg.text))
             conf = _check_correction_confidence(seg.text, corrected_text)
@@ -348,21 +340,15 @@ class CorrectionService:
                 "Accepted subtitle correction {} (seg {} on track {})",
                 result_id, seg_id, scope_track_id,
             )
-            patch = self._project._success_patch(
-                tracks=new_tracks, analysis=new_analysis
-            )["data"]
-            return {
-                "success": True,
-                "data": {
-                    "segment_id": seg_id,
-                    "track_id": scope_track_id,
-                    "patch": patch,
-                },
-            }
+            return (
+                True,
+                {"tracks", "analysis"},
+                {"segment_id": seg_id, "track_id": scope_track_id},
+            )
 
         seg = next((s for s in tl.transcript.segments if s.id == seg_id), None)
         if seg is None:
-            return {"success": False, "error": f"Segment {seg_id} not found"}
+            return (False, set(), {"error": f"Segment {seg_id} not found"})
 
         corrected_text = str(payload.get("corrected_text", seg.text))
         conf = _check_correction_confidence(seg.text, corrected_text)
@@ -398,10 +384,44 @@ class CorrectionService:
             analysis=new_analysis,
         )
         logger.info("Accepted subtitle correction {} (seg {})", result_id, seg_id)
-        patch = self._project._success_patch(
-            segments=new_segments, analysis=new_analysis
-        )["data"]
-        return {"success": True, "data": {"segment_id": seg_id, "patch": patch}}
+        return (True, {"segments", "analysis"}, {"segment_id": seg_id})
+
+    def accept_subtitle_correction(self, result_id: str) -> dict:
+        """Accept one correction: apply to segment.text + remove AnalysisResult.
+
+        v3.0.4 M2-3 (P2-4): the success payload is a superset -- it keeps
+        the ``segment_id`` key (legacy compat, review UI reads it) and
+        adds a ``patch`` key carrying a ProjectPatch envelope (main track
+        = segments + analysis layers, extension track = tracks + analysis
+        layers) so the frontend applies the write through applyProjectPatch
+        instead of an O(project) full refresh.
+
+        v3.0.5 R5.4: the apply core lives in ``_apply_one`` (shared with
+        the batch path); the per-item return shape is byte-identical.
+
+        Args:
+            result_id: The AnalysisResult id (``corr-<seg>-<hex>``).
+
+        Returns:
+            {"success": True, "data": {"segment_id": str,
+             "track_id"?: str, "patch": ProjectPatch}} on success.
+        """
+        ok, layers, info = self._apply_one(result_id)
+        if not ok:
+            return {"success": False, "error": info.get("error", "accept failed")}
+        tl = self._project.active_timeline
+        layer_kwargs: dict = {}
+        if "segments" in layers:
+            layer_kwargs["segments"] = tl.transcript.segments
+        if "tracks" in layers:
+            layer_kwargs["tracks"] = tl.transcript.tracks
+        if "analysis" in layers:
+            layer_kwargs["analysis"] = tl.analysis
+        patch = self._project._success_patch(**layer_kwargs)["data"]
+        data: dict = {"segment_id": info["segment_id"], "patch": patch}
+        if "track_id" in info:
+            data["track_id"] = info["track_id"]
+        return {"success": True, "data": data}
 
     def reject_subtitle_correction(self, result_id: str) -> dict:
         """Reject one correction: remove AnalysisResult without touching text.
@@ -443,8 +463,28 @@ class CorrectionService:
         patch = self._project._success_patch(analysis=new_analysis)["data"]
         return {"success": True, "data": {"segment_id": seg_id, "patch": patch}}
 
+    def _correction_track_scope(self, result: AnalysisResult) -> str:
+        """v3.0.5 R5.4: track affiliation of a stored correction (""
+        means main track). Malformed details parse to "" (main-track
+        assumption, same fallback the per-item accept uses)."""
+        payload = self._parse_correction_result(result)
+        if payload is None:
+            return ""
+        return str(payload.get("track_id", ""))
+
+    def _scope_filter(self, track_id: str | None):
+        """Three-state scope predicate (M5.4 ruling 1, B-1): None = no
+        filter (timeline level, v3.0.4 behavior); "" = main track only;
+        non-empty = that extension track only."""
+        if track_id is None:
+            return lambda result: True
+        return lambda result: self._correction_track_scope(result) == track_id
+
     def accept_high_confidence_corrections(
-        self, timeline_id: str, threshold: float = 0.8
+        self,
+        timeline_id: str,
+        threshold: float = 0.8,
+        track_id: str | None = None,
     ) -> dict:
         """Batch-accept all corrections with confidence >= threshold (D-52).
 
@@ -466,48 +506,89 @@ class CorrectionService:
         if tl is None:
             return {"success": False, "error": f"Timeline {timeline_id} not found"}
 
-        # Gather qualifying ids, then reuse the single-accept path so the
-        # apply logic (confidence flag, timestamp assertion) stays unified.
+        # v3.0.5 R5.4 (M5.4 ruling 1): three-state scope narrows the
+        # qualifying filter ONLY -- threshold semantics untouched. None =
+        # timeline level (v3.0.4 behavior, byte-equivalent).
+        in_scope = self._scope_filter(track_id)
         qualifying = [
             r.id for r in tl.analysis.results
-            if r.type == "llm_subtitle_correction" and r.confidence >= threshold
+            if r.type == "llm_subtitle_correction"
+            and r.confidence >= threshold
+            and in_scope(r)
         ]
 
-        # Ensure the target timeline is active so accept_subtitle_correction
-        # (which operates on active_timeline) hits the right timeline.
+        # Ensure the target timeline is active so _apply_one (which
+        # operates on active_timeline) hits the right timeline.
         if self._project._current.active_timeline_id != timeline_id:
             self._project._current = self._project._current.model_copy(
                 update={"active_timeline_id": timeline_id}
             )
 
+        # v3.0.5 R5.4 (M5.4 ruling 2): the batch drives the patch-free
+        # apply core and emits ONE aggregated patch -- revision advances
+        # exactly +1 for the whole batch (one undo step reverts it), the
+        # dirty-layer union rides that single envelope. Per-item failures
+        # are skipped silently (existing semantics).
         accepted = 0
+        dirty: set[str] = set()
         for rid in qualifying:
-            res = self.accept_subtitle_correction(rid)
-            if res.get("success"):
+            ok, layers, _info = self._apply_one(rid)
+            if ok:
                 accepted += 1
+                dirty |= layers
 
-        # Count remaining (active timeline may have changed during accepts).
+        # Remaining is scope-consistent: the scoped modes count the SAME
+        # scope's pending items (a main-track view must not report another
+        # track's leftovers as its own); None counts everything (compat).
         tl_after = self._project._current.get_timeline(timeline_id)
         remaining = sum(
             1 for r in tl_after.analysis.results
-            if r.type == "llm_subtitle_correction"
+            if r.type == "llm_subtitle_correction" and in_scope(r)
         ) if tl_after else 0
         logger.info(
             "Batch-accepted {} high-confidence corrections (threshold {}, {})",
             accepted, threshold, "remaining" if remaining else "clean",
         )
+        if not dirty:
+            # zero accepted -> no write -> no revision bump, old keys only
+            # (byte-equal to the pre-R5.4 return for this case).
+            return {
+                "success": True,
+                "data": {"accepted_count": accepted, "remaining_count": remaining},
+            }
+        layer_kwargs: dict = {}
+        if "segments" in dirty:
+            layer_kwargs["segments"] = tl_after.transcript.segments
+        if "tracks" in dirty:
+            layer_kwargs["tracks"] = tl_after.transcript.tracks
+        if "analysis" in dirty:
+            layer_kwargs["analysis"] = tl_after.analysis
+        # MF-3 superset: old keys kept verbatim, patch key added.
         return {
             "success": True,
-            "data": {"accepted_count": accepted, "remaining_count": remaining},
+            "data": {
+                "accepted_count": accepted,
+                "remaining_count": remaining,
+                "patch": self._project._success_patch(**layer_kwargs)["data"],
+            },
         }
 
-    def clear_subtitle_corrections(self, timeline_id: str) -> dict:
-        """Clear all pending P1 corrections for a timeline (D-50).
+    def clear_subtitle_corrections(
+        self, timeline_id: str, track_id: str | None = None
+    ) -> dict:
+        """Clear pending P1 corrections for a timeline (D-50), optionally
+        scoped (v3.0.5 R5.4 / M5.4 ruling 1: None = every correction as in
+        v3.0.4; "" = main-track corrections only; non-empty = that track's
+        only).
 
-        Used when the user dismisses the review without per-item action.
+        v3.0.5 R5.4 (ruling 2): the success payload is a MF-3 superset --
+        ``cleared_count`` stays and ``patch`` (analysis layer) joins so the
+        frontend refreshes via applyProjectPatch; the zero-clear fast path
+        returns the old shape verbatim (no write, no revision bump).
 
         Returns:
-            {"success": True, "data": {"cleared_count": int}}
+            {"success": True, "data": {"cleared_count": int,
+             "patch"?: ProjectPatch}}
         """
         if self._project._current is None:
             return {"success": False, "error": "No project is open"}
@@ -516,20 +597,33 @@ class CorrectionService:
         if tl is None:
             return {"success": False, "error": f"Timeline {timeline_id} not found"}
 
-        cleared = sum(1 for r in tl.analysis.results if r.type == "llm_subtitle_correction")
-        if cleared == 0:
+        in_scope = self._scope_filter(track_id)
+        to_clear = [
+            r for r in tl.analysis.results
+            if r.type == "llm_subtitle_correction" and in_scope(r)
+        ]
+        if not to_clear:
             return {"success": True, "data": {"cleared_count": 0}}
 
+        cleared_ids = {r.id for r in to_clear}
         new_results = [
-            r for r in tl.analysis.results
-            if r.type != "llm_subtitle_correction"
+            r for r in tl.analysis.results if r.id not in cleared_ids
         ]
+        new_analysis = tl.analysis.model_copy(update={"results": new_results})
         self._project._update_timeline_by_id(
-            timeline_id,
-            analysis=tl.analysis.model_copy(update={"results": new_results}),
+            timeline_id, analysis=new_analysis
         )
-        logger.info("Cleared {} subtitle corrections (timeline {})", cleared, timeline_id)
-        return {"success": True, "data": {"cleared_count": cleared}}
+        logger.info(
+            "Cleared {} subtitle corrections (timeline {}, scope={!r})",
+            len(to_clear), timeline_id, track_id,
+        )
+        data: dict = {"cleared_count": len(to_clear)}
+        # The patch envelope targets the ACTIVE timeline (_success_patch
+        # contract); emit it when the cleared timeline is the active one
+        # (the sanctioned frontend flow) so the refresh stays consistent.
+        if timeline_id == self._project._current.active_timeline_id:
+            data["patch"] = self._project._success_patch(analysis=new_analysis)["data"]
+        return {"success": True, "data": data}
 
     def apply_subtitle_corrections(self, corrections: list[dict]) -> dict:
         """Apply LLM subtitle corrections to the active timeline.
