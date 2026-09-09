@@ -13,7 +13,8 @@
 - **P1-1 完成（R5.0，全版首个代码合入步——序 1）**：duplicate 幂等返回防呆——handleRangeDecision 三分支化（duplicate 不 emit + 快照回滚 + info 轻提示 / 成功逐字节不变 / 失败补回滚）+ useUndoRedo 纯新增 `popSnapshot()`（SG-6 不变量 docstring）；后端零改动；前端 +6 例（M-gate ≥3 达标）；全套门禁 exit 0（vitest 846/845，唯一失败 = perf 环境例）。
 - **P1-2 完成（R5.1，序 4 起步）**：翻译失败/取消成本可见——管线三处取消返回附 data（token_usage+ledger 键级只增）+ handler 事件优先取消判据（取消 emit llm:token_usage(status=cancelled) 且不再 emit analysis_failed；失败先上报 status=failed+failed_batches 再报错）+ 前端三处（取消中性 toast「翻译已取消，已消耗约 X tokens」/ errorMsg 清空限 llm_translation (SG2-2) / progressMessage+"(serial)"串行降级提示）；后端 +5 前端 +7 例；:614 断言反转按 M0-3 白名单落地；门禁 exit 0（pytest 838 / vitest 853·852）。
 - **P1-3 完成（R5.2，纯后端环）**：行级解析兜底 + 失败中文出路指引——Layer 4 第三正则 translated_text 模式（relevance/action 后互斥只增，救回批照走 coverage 校验）+ 全批失败文案中文化（含「补译」锚定关键词）；后端 +4 例（前端零改动 vitest 持平）；:217 断言反转按 M0-3 白名单落地；门禁 exit 0（pytest 840 / vitest 853·852）。
-- **P1-4 起**：未开始（步骤索引见 §1；下一序 = P1-4 R5.3 增量补译 + uncovered 对账可读化——本模块最高风险步，序 7 内部序硬约束）。
+- **P1-4 完成（R5.3，本模块最高风险步，序 7 落点）**：管线 (d) 两分支改判（全批拒/部分成功落盘）+ MF2-2 completion 缺口合流（写侧 ∪ ledger 并集，事件与返回同口径）+ start_translation 补译自动路由（缺口差集推导，payload 纯增两键）+ project_service 纯新增 merge_translation_track（零删行，单 patch revision+1）+ 前端对账可读化（mm:ss+20 字定位 + 一键补译同路由）与 SG2-1 双保险；后端 +11 前端 +5 例；追认反转 4 处登记 record §3；门禁 exit 0（pytest 851 / vitest 858·857）。
+- **P1-5 起**：未开始（下一序 = P1-5 R5.8 质量模式开关——序 2 落点，前置 P1-4 已合入 ✓）。
 
 ## 1. 分步记录索引
 
@@ -24,7 +25,7 @@
 | P1-1 | record-3.0.5-P1-1.md | 已完成（R5.0 duplicate 防呆；后端零改动；门禁 exit 0） | `94c4c91` → merge `ba5a78c`（**全版首个代码合入步，序 1**） |
 | P1-2 | record-3.0.5-P1-2.md | 已完成（R5.1 成本可见；:614 反转落白名单；门禁 exit 0） | `4ea180e` → merge `b5694ef` |
 | P1-3 | record-3.0.5-P1-3.md | 已完成（R5.2 行级兜底 + 中文指引；纯后端环；门禁 exit 0） | `3df0f4f` → merge `3b037ca` |
-| P1-4 | record-3.0.5-P1-4.md | 未开始 | （R5.3 增量补译 + 对账可读化——序 7 落点） |
+| P1-4 | record-3.0.5-P1-4.md | 已完成（R5.3 增量补译 + 对账可读化；序 7 同 commit 兑现；门禁 exit 0） | `a6ec740` → merge `d91dbf2` |
 | P1-5 | record-3.0.5-P1-5.md | 未开始 | （R5.8 质量模式开关——序 2 落点，须在 R5.3 之后） |
 | P1-6 | record-3.0.5-P1-6.md | 未开始 | （R5.13 token 预估 + beta.1 节点） |
 | P2-1 | record-3.0.5-P2-1.md | 未开始 | （R5.4 后端三态作用域 + 聚合 patch——序 3 落点） |
@@ -72,5 +73,10 @@
 | P1-2 | tests/（2 文件） | test_llm_translation.py 新 TestCancelCostReport 2 例 + :614 白名单反转；test_translation_expose.py 新 TestR51CostReporting 3 例 + import threading | R5.1 | 只增（测试）+ 白名单反转 1 行 |
 | P1-3 | core/llm_service.py | :636-652 Layer 4 第三正则 translated_text 模式（只增）；:2010-2019 全批失败文案中文化（含「补译」，(d) 文案面） | R5.2 | 白名单内只增 + 受控改点 (d) 文案面 |
 | P1-3 | tests/（2 文件） | test_llm_translation.py 新 TestTranslatedTextLineFallback 2 例 + :217 白名单改写；test_llm_phase4b.py 解析直测 2 例 | R5.2 | 只增（测试）+ 白名单反转 1 行 |
+| P1-4 | core/llm_service.py | :1999-2037 失败语义两分支改判（全批拒/部分成功落盘） | R5.3 | 受控改点 (d) |
+| P1-4 | main.py | :1319-1333 MF2-2 缺口合流（登记改点）；:1230-1245 + :1336-1362 handler 补译分支与路由分派；:3052-3100 start 自动路由（缺口差集 + payload 两键） | R5.3 | 登记改点 + 受控改点 (e) |
+| P1-4 | core/project_service.py | :871-1038 纯新增 merge_translation_track（零删行；双保险/撞配拒/命名空间查重/单 patch/merged_count） | R5.3 | 只增（单一 hunk） |
+| P1-4 | frontend（4 文件） | useLlmTasks written_count 透传；WorkspacePage pendingResumable + watcher 比对 toast + failed/cancelled 双保险清理；AIAssistantPanel 对账可读化 + 定位 + 一键补译 | R5.3 | 只增 + 裁决 8 渲染改造 |
+| P1-4 | tests/（3+2 文件） | 后端 11 例（管线 3/merge 5/expose 3）+ 前端 5 例；追认反转 4 处（429 例翻转 / expose 夹具补全 / 面板裸 join 断言改写 / useLlmTasks toEqual 纯增键）见 record-3.0.5-P1-4.md §3 | R5.3 | 只增（测试）+ 追认登记 |
 
 （后续 phase 按 SPEC M5.0-M5.8 触点表逐 hunk 登记；每条 diff 必须对应一个 R5.x 编号，无对应者补登记或回退。）

@@ -180,12 +180,14 @@ P5: 门禁终检 → 文档回写 → 真机全量回归 → RC → 正式
 
 ### P1-4 R5.3 翻译增量补译 + uncovered 对账可读化（本模块最高风险；SPEC M5.3；**序 7 落点**）
 
-- [ ] **序 7 内部序（硬约束）**：先落（或同 commit 落）main.py completion payload 缺口合流 hunk——:1317-1331 区 `uncovered_ids` 改「写侧对账 ∪ ledger.uncovered_segment_ids」去重并集 + 返回 dict :1340 同口径（MF2-2 登记改点）——后落消费端改造（AIAssistantPanel :455-467 / WorkspacePage watcher :1069-1087），防中间态假绿
-- [ ] 管线失败语义改判（受控改点 (d)，:1957-1982 两分支）：部分成功 = 失败批 id 并入 ledger.uncovered_segment_ids + 已完成批正常建轨；**全批失败仍拒零写入**（中文文案与 P1-3 同源）；无失败路径逐字节等价（断言全键）
-- [ ] start_translation 补译自动路由（受控改点 (e)，main.py:2996-3006）：缺口集 = 主轨段（排除 confirmed-deleted）− 目标轨 bindings 差集、运行时推导不持久化；非空转补译（payload 纯增 `resumable_track_id`/`gap_segment_ids` 两键）；为空维持拒绝原文案
-- [ ] `core/project_service.py` 仅新增 `merge_translation_track`（:716 后插入，单一 hunk 零删改；SG2-3 自含实现**不抽**共享 helper；入口双保险再查 + 撞号显式失败 + 单 `_success_patch(tracks, bindings)` revision+1，meta 携带 merged_count；禁止逐段 patch）
-- [ ] 前端：pendingResumable 标记 + completion.track_id 比对命中才 toast「本次补译 N 段」+ task:failed/cancelled 显式清（SG2-1 双保险）；对账清单逐条「mm:ss + 文本前 20 字」、点击定位主轨段、尾部一键「补译这些段」（走同一路由）
-- [ ] 用例 ≥10：1/N 降级落盘 + SG-1 守恒不变量 + MF2-2 合流断言 + 全批拒 + 等价断言 + 缺口推导 mock + merge 单 patch（revision+1 双层）+ 写侧双保险两拒例 + 对账数据结构 + 补译走 merge 非 create
+- [x] **序 7 内部序（硬约束）**：先落（或同 commit 落）main.py completion payload 缺口合流 hunk——:1317-1331 区 `uncovered_ids` 改「写侧对账 ∪ ledger.uncovered_segment_ids」去重并集 + 返回 dict :1340 同口径（MF2-2 登记改点）——后落消费端改造（AIAssistantPanel :455-467 / WorkspacePage watcher :1069-1087），防中间态假绿
+- [x] 管线失败语义改判（受控改点 (d)，:1957-1982 两分支）：部分成功 = 失败批 id 并入 ledger.uncovered_segment_ids + 已完成批正常建轨；**全批失败仍拒零写入**（中文文案与 P1-3 同源）；无失败路径逐字节等价（断言全键）
+- [x] start_translation 补译自动路由（受控改点 (e)，main.py:2996-3006）：缺口集 = 主轨段（排除 confirmed-deleted）− 目标轨 bindings 差集、运行时推导不持久化；非空转补译（payload 纯增 `resumable_track_id`/`gap_segment_ids` 两键）；为空维持拒绝原文案
+- [x] `core/project_service.py` 仅新增 `merge_translation_track`（:716 后插入，单一 hunk 零删改；SG2-3 自含实现**不抽**共享 helper；入口双保险再查 + 撞号显式失败 + 单 `_success_patch(tracks, bindings)` revision+1，meta 携带 merged_count；禁止逐段 patch）
+- [x] 前端：pendingResumable 标记 + completion.track_id 比对命中才 toast「本次补译 N 段」+ task:failed/cancelled 显式清（SG2-1 双保险）；对账清单逐条「mm:ss + 文本前 20 字」、点击定位主轨段、尾部一键「补译这些段」（走同一路由）
+- [x] 用例 ≥10：1/N 降级落盘 + SG-1 守恒不变量 + MF2-2 合流断言 + 全批拒 + 等价断言 + 缺口推导 mock + merge 单 patch（revision+1 双层）+ 写侧双保险两拒例 + 对账数据结构 + 补译走 merge 非 create
+
+**实际结果（2026-09，record-3.0.5-P1-4.md）**：序 7 以「同 commit」兑现（`a6ec740` 单提交含合流 hunk 与全部消费端）；后端 +11（含 SG-1 双向守恒、MF2-2 写侧空并集、merge 单 patch/四拒例/对账结构、缺口推导恰为差集、merge 非 create spy）+ 前端 +5；project_service 零删行实测；**追认反转 4 处**登记 record §3（429 多批例 success 翻转 / expose 完整轨夹具（拒绝断言零改动）/ 面板裸 join 断言随裁决 8 改逐 id / useLlmTasks 两处 toEqual 纯增 written_count 键——expect 行零删）；全套门禁 exit 0（pytest 851 / vitest 858·857 / 红线全 PASS）。
 
 **验收方式**: M-gate 后端 R5.3 ≥10 + 前端 ≥4；门禁全绿。
 **验收标准**: 1/34 场景 33 批落盘且缺口可读可定位可一键补译（notice 必触发）；合并 undo 一次回退；同语言完整轨重译仍拒；project_service diff = 单一方法纯新增。
