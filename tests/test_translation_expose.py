@@ -23,6 +23,8 @@ real ProjectService) and tests/test_task_cancel.py (synchronous
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from core.events import LLM_TRANSLATION_COMPLETED, TASK_COMPLETED, TASK_FAILED
@@ -593,3 +595,133 @@ class TestLanguageCatalog:
         }
         assert _TRANSLATION_LANGUAGES["en"] == "English"
         assert _TRANSLATION_LANGUAGES["zh-CN"] == "Simplified Chinese"
+
+
+# ================================================================
+# v3.0.5 R5.1 (M5.1): cancel/failure cost reporting from the handler
+# ================================================================
+
+
+class TestR51CostReporting:
+    """Cancel = neutral stop (token report, NO failure event, still raises);
+    failure = cost first (status "failed" + failed_batches), then the
+    failure event; cancel judging is event-first with the string as
+    fallback (task_manager dual-channel isomorph)."""
+
+    def test_cancel_emits_token_usage_and_suppresses_failure_event(
+        self, api, llm_configured, monkeypatch
+    ):
+        def cancelled_with_cost(segments, target_language, **kwargs):
+            return {
+                "success": False,
+                "error": "Cancelled",
+                "data": {
+                    "token_usage": dict(_TOKEN_USAGE),
+                    "ledger": dict(_LEDGER),
+                },
+            }
+
+        monkeypatch.setattr(
+            "core.llm_service.analyze_subtitle_translation", cancelled_with_cost
+        )
+        tm = TaskManager(lambda *a: None)
+        api.instance._task_manager = tm
+        api.instance._register_task_handlers()
+
+        task_id = _seed_translation_task(
+            tm, {"timeline_id": "default", "target_language": "en"}
+        )
+        tm._execute_task(task_id, tm._tasks[task_id])
+
+        task = tm._tasks[task_id]
+        assert task.status.value == "cancelled"  # not failed
+        usage_events = [e for e in api.events if e[0] == "llm:token_usage"]
+        assert len(usage_events) == 1
+        payload = usage_events[0][1]
+        assert payload["status"] == "cancelled"
+        assert payload["total_tokens"] == _TOKEN_USAGE["total_tokens"]
+        # no failure red box on the cancel path
+        assert all(e[0] != "llm:analysis_failed" for e in api.events)
+        assert _all_tracks(api.service) == []  # zero writes
+
+    def test_failure_emits_cost_before_failure_event_with_failed_batches(
+        self, api, llm_configured, monkeypatch
+    ):
+        ledger = {
+            **_LEDGER,
+            "total": 2,
+            "failed": [1],
+            "uncovered_segment_ids": ["seg-001"],
+        }
+
+        def failing_with_cost(segments, target_language, **kwargs):
+            return {
+                "success": False,
+                "error": (
+                    "Translation incomplete: 1/2 batch(es) failed after "
+                    "retry (batches [1]), 1 segment(s) uncovered"
+                ),
+                "data": {
+                    "token_usage": dict(_TOKEN_USAGE),
+                    "ledger": ledger,
+                },
+            }
+
+        monkeypatch.setattr(
+            "core.llm_service.analyze_subtitle_translation", failing_with_cost
+        )
+        tm = TaskManager(lambda *a: None)
+        api.instance._task_manager = tm
+        api.instance._register_task_handlers()
+
+        task_id = _seed_translation_task(
+            tm, {"timeline_id": "default", "target_language": "en"}
+        )
+        tm._execute_task(task_id, tm._tasks[task_id])
+
+        task = tm._tasks[task_id]
+        assert task.status.value == "failed"
+        names = [e[0] for e in api.events]
+        assert names.count("llm:token_usage") == 1
+        assert names.count("llm:analysis_failed") == 1
+        # cost is surfaced BEFORE the failure event (cost-first ruling)
+        assert names.index("llm:token_usage") < names.index("llm:analysis_failed")
+        payload = [e for e in api.events if e[0] == "llm:token_usage"][0][1]
+        assert payload["status"] == "failed"
+        assert payload["failed_batches"] == [1]
+        assert payload["total_tokens"] == _TOKEN_USAGE["total_tokens"]
+        assert _all_tracks(api.service) == []  # zero writes
+
+    def test_event_first_judging_set_event_beats_failure_string(
+        self, api, llm_configured, monkeypatch
+    ):
+        """A set cancel_event classifies a real failure string as CANCELLED
+        (event-first, MF-2/焦点 5): no failure red box, no cost event when
+        the envelope carries no data, raises "Cancelled" so task_manager
+        still sees its dual channel."""
+
+        def failing_no_data(segments, target_language, **kwargs):
+            return {"success": False, "error": "Rate limited (attempt 3)"}
+
+        monkeypatch.setattr(
+            "core.llm_service.analyze_subtitle_translation", failing_no_data
+        )
+        tm = TaskManager(lambda *a: None)
+        api.instance._task_manager = tm
+        api.instance._register_task_handlers()
+
+        task_id = _seed_translation_task(
+            tm, {"timeline_id": "default", "target_language": "en"}
+        )
+        cancel_event = threading.Event()
+        cancel_event.set()
+
+        with pytest.raises(RuntimeError, match="^Cancelled$"):
+            api.instance._handle_translation(
+                tm._tasks[task_id], cancel_event, lambda pct, msg="": None
+            )
+
+        names = [e[0] for e in api.events]
+        assert names.count("llm:token_usage") == 0  # envelope had no data
+        assert all(n != "llm:analysis_failed" for n in names)
+        assert _all_tracks(api.service) == []  # zero writes

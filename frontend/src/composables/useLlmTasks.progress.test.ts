@@ -16,6 +16,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import {
   EVENT_TASK_PROGRESS,
+  EVENT_TASK_CANCELLED,
+  EVENT_LLM_ANALYSIS_FAILED,
   EVENT_LLM_TRANSLATION_COMPLETED,
 } from "@/utils/events"
 
@@ -179,5 +181,61 @@ describe("useLlmTasks.loadLlmConfig resolved-field judgment (smoke-fix 1a)", () 
     expect(tasks.llmConfig.value.configured).toBe(true)
     expect(tasks.llmConfig.value.model).toBe("my-model")
     expect(tasks.llmConfig.value.baseUrl).toBe("https://my.example/v1")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// v3.0.5 R5.1 (M5.1): progress message twin + translation cancel error reset
+// ---------------------------------------------------------------------------
+
+describe("useLlmTasks progressMessage + cancel error clearing (v3.0.5 R5.1)", () => {
+  beforeEach(() => {
+    callMock.mockReset()
+  })
+
+  it("stores detail.message into progressMessage while running (serial-downgrade signal source)", async () => {
+    callMock.mockResolvedValue({ success: true, data: { task_id: "t1", type: "llm_translation" } })
+    const tasks = await freshLlmTasks()
+    await tasks.startTranslation("en")
+    expect(tasks.progressMessage.value).toBeNull() // reset at task start
+
+    fire(EVENT_TASK_PROGRESS, {
+      task_id: "t1",
+      percent: 40,
+      message: "Translation batch 3/8 (serial)...",
+    })
+    expect(tasks.progress.value).toBe(40)
+    expect(tasks.progressMessage.value).toBe("Translation batch 3/8 (serial)...")
+
+    // plain messages overwrite the serial one (no sticky notice)
+    fire(EVENT_TASK_PROGRESS, { task_id: "t1", percent: 55, message: "Translation batch 4/8..." })
+    expect(tasks.progressMessage.value).toBe("Translation batch 4/8...")
+  })
+
+  it("translation cancel clears errorMsg (SG2-2: task_type-scoped)", async () => {
+    callMock.mockResolvedValue({ success: true, data: { task_id: "t2", type: "llm_translation" } })
+    const tasks = await freshLlmTasks()
+    await tasks.startTranslation("en")
+
+    // a failed earlier run left the error behind
+    fire(EVENT_LLM_ANALYSIS_FAILED, { error: "Translation incomplete: boom" })
+    expect(tasks.errorMsg.value).toBe("Translation incomplete: boom")
+
+    fire(EVENT_TASK_CANCELLED, { task_id: "t2", task_type: "llm_translation" })
+    expect(tasks.isRunning.value).toBe(false)
+    expect(tasks.progress.value).toBe(0)
+    expect(tasks.errorMsg.value).toBeNull() // residual cleared
+  })
+
+  it("non-translation cancel keeps errorMsg (existing defect, out of scope)", async () => {
+    callMock.mockResolvedValue({ success: true, data: { task_id: "t3", type: "llm_subtitle_correction" } })
+    const tasks = await freshLlmTasks()
+    await tasks.startSubtitleCorrection()
+
+    fire(EVENT_LLM_ANALYSIS_FAILED, { error: "correction failed" })
+    fire(EVENT_TASK_CANCELLED, { task_id: "t3", task_type: "llm_subtitle_correction" })
+
+    expect(tasks.errorMsg.value).toBe("correction failed") // untouched (record §8 legacy)
+    expect(tasks.isRunning.value).toBe(false)
   })
 })

@@ -1265,6 +1265,33 @@ class MiloCutApi(Bridge):
 
         if not result.get("success"):
             error = result.get("error", "Translation failed")
+            # v3.0.5 R5.1 (M5.1): event-first cancel judging -- the same
+            # dual channel as task_manager (event OR message), with the
+            # event authoritative and the "Cancelled" string as fallback
+            # only. The pipeline attaches the cost report (token_usage +
+            # ledger) to every cancel envelope (llm_service
+            # :1871/:1903/:1939).
+            cancelled = cancel_event.is_set() or error == "Cancelled"
+            result_data = result.get("data") or {}
+            token_usage = result_data.get("token_usage")
+            ledger = result_data.get("ledger")
+            if cancelled:
+                # Neutral stop: report the consumed cost, do NOT raise the
+                # failure red box (no llm:analysis_failed), still raise so
+                # task_manager classifies the task as cancelled.
+                if token_usage is not None:
+                    self._emit(
+                        "llm:token_usage",
+                        {**token_usage, "status": "cancelled"},
+                    )
+                raise RuntimeError("Cancelled")
+            # Real failure: surface the cost first (status + failed batch
+            # ids), then the failure event, then raise as before.
+            if token_usage is not None:
+                failure_payload = {**token_usage, "status": "failed"}
+                if isinstance(ledger, dict):
+                    failure_payload["failed_batches"] = ledger.get("failed", [])
+                self._emit("llm:token_usage", failure_payload)
             self._emit("llm:analysis_failed", {"error": error})
             raise RuntimeError(error)
 

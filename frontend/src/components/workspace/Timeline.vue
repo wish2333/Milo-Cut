@@ -67,6 +67,8 @@ const props = defineProps<{
   llmModel?: string
   llmIsRunning?: boolean
   llmProgress?: number
+  // v3.0.5 R5.1: latest task:progress message ("(serial)" -> downgrade notice)
+  llmProgressMessage?: string | null
   llmErrorMsg?: string | null
   subtitleCorrectionCount?: number | null
   /** v2.1.0 Phase 2: pending P1 corrections count for SuggestionPanel banner */
@@ -798,6 +800,7 @@ watch(playheadSegmentId, (id) => {
               :llm-model="llmModel ?? ''"
               :is-running="llmIsRunning ?? false"
               :progress="llmProgress ?? 0"
+              :progress-message="llmProgressMessage ?? null"
               :error-msg="llmErrorMsg ?? null"
               :subtitle-correction-count="subtitleCorrectionCount ?? null"
               @start-smart-delete="emit('start-smart-delete')"
