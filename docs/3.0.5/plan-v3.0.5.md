@@ -195,11 +195,13 @@ P5: 门禁终检 → 文档回写 → 真机全量回归 → RC → 正式
 
 ### P1-5 R5.8 质量模式开关（core/config.py + core/llm_service.py；SPEC M5.8；**序 2 落点**）
 
-- [ ] **序 2 顺序强制**：P1-4（R5.3）合入后方可开工——同 `analyze_subtitle_translation` 函数族，(d) :1957-1982 与 (f) :1774-1790 同段相邻，乱序必冲突；P1 内一次改透禁止跨 phase 交错
-- [ ] config DEFAULTS 追加 `"llm_translation_quality_mode": False` 1 行（:82 后；白名单内只增；开关为全局设置，handler 零改动不增形参）
-- [ ] 管线增读第 5 键 + 串行分支一行裁决（quality_mode → concurrency 有效值 1，:1743 后）；取消约 1s 不受影响（wait(1.0) :1865-1868 与串行循环 cancel 检查 :1938 在位）
-- [ ] 受控改点 (f)：质量模式分支预构建跳过 prompt 组装（仅保留 target_windows/id_map 结构）、串行派发循环内逐批构建 + 上一批定稿译文经 `_build_structured_user_message` 增 `finalized_translations` 受控转发增行（:518-563）；**默认关路径预构建原样保留**（逐字节等价判据面）；补译组合（Q7）= 补译批同受开关约束，「上一批」= 本轮补译序列内上一批
-- [ ] 用例：关闭路径 payload 逐键等价 / 批 2 prompt 含批 1 定稿译文 / 批 1 无该键（窗口边界）/ 串行 × 取消 1s（复用栅栏法）/ quality_mode × 429 组合无双重 shutdown（SG2-7）
+- [x] **序 2 顺序强制**：P1-4（R5.3）合入后方可开工——同 `analyze_subtitle_translation` 函数族，(d) :1957-1982 与 (f) :1774-1790 同段相邻，乱序必冲突；P1 内一次改透禁止跨 phase 交错
+- [x] config DEFAULTS 追加 `"llm_translation_quality_mode": False` 1 行（:82 后；白名单内只增；开关为全局设置，handler 零改动不增形参）
+- [x] 管线增读第 5 键 + 串行分支一行裁决（quality_mode → concurrency 有效值 1，:1743 后）；取消约 1s 不受影响（wait(1.0) :1865-1868 与串行循环 cancel 检查 :1938 在位）
+- [x] 受控改点 (f)：质量模式分支预构建跳过 prompt 组装（仅保留 target_windows/id_map 结构）、串行派发循环内逐批构建 + 上一批定稿译文经 `_build_structured_user_message` 增 `finalized_translations` 受控转发增行（:518-563）；**默认关路径预构建原样保留**（逐字节等价判据面）；补译组合（Q7）= 补译批同受开关约束，「上一批」= 本轮补译序列内上一批
+- [x] 用例：关闭路径 payload 逐键等价 / 批 2 prompt 含批 1 定稿译文 / 批 1 无该键（窗口边界）/ 串行 × 取消 1s（复用栅栏法）/ quality_mode × 429 组合无双重 shutdown（SG2-7）
+
+**实际结果（2026-09，record-3.0.5-P1-5.md）**：后端 +4（B1 关闭路径键集逐键等价 / B2 滑窗批 2 携批 1 定稿 + 批 1 边界无键 + concurrency 强制 1 / B3 串行取消 1s 栅栏 / B4 quality×429 降级无双重 shutdown）；实现补强两处登记 record §5——future 反查表改逐 submit 注册（归纳消除即时 mock 下的注册竞态）、窗口数据源取 prev future result（工作者序列保证）而非主线程消费态；零反转；门禁 exit 0（pytest 855 / vitest 持平 858·857 / config diff 恰 1 键行）；`241ebb9` → merge `7f4b7ac`，短分支已删。
 
 **验收方式**: M-gate 后端 R5.8 ≥2；门禁全绿。
 **验收标准**: 开关关闭与 v3.0.4 并发行为逐字节等价（既有断言零改动）；config diff = 1 行；(f) hunk 在登记表与 (d) 分行登记。
