@@ -152,11 +152,13 @@ P5: 门禁终检 → 文档回写 → 真机全量回归 → RC → 正式
 
 ### P1-2 R5.1 翻译失败/取消成本可见（core/llm_service.py + main.py + 前端三处；SPEC M5.1；序 4 起步）
 
-- [ ] 管线三处取消返回附 data：:1871 / :1903 / :1939（E-1 三处全覆盖；键级只增、`error` 串不变——test_translation_smoke_fix.py:169 既有断言零改动）
-- [ ] handler 失败/取消分支（受控改点 (e)，main.py:1266-1269）：取消判据 = `cancel_event.is_set()` 事件优先、字符串仅兜底（MF-2/焦点 5，与 task_manager :299-301 双通道同构）；取消路径 emit `llm:token_usage`（payload 增 `status: "cancelled"` 纯增键）且**不再** emit `llm:analysis_failed`，仍 raise（保 task_manager 判别）
-- [ ] 失败路径：handler 从 result.data 提取 ledger/token_usage（:1978-1982 数据源已在）→ 先 emit `llm:token_usage`（`status: "failed"` + failed_batches）再报错
-- [ ] 前端三处：WorkspacePage :604-616 补 `llm_translation` 中性提示「翻译已取消，已消耗约 X tokens」；useLlmTasks :245-248 补 errorMsg 清空（**task_type 判据限定 llm_translation**，SG2-2；其余类型残留登记 record §8 不修）；:256-264 增 progressMessage + AIAssistantPanel「(serial)」子串映射「限流中，已切串行，剩余批次处理中」（零后端改动）
-- [ ] 用例：后端 ≥4（取消/失败上报 + status 键 + 事件判据）；前端 ≥3（中性态 / errorMsg 清理 / serial 消费）；**断言反转登记：test_llm_translation.py:614 反转随本步落 record 反转清单**（:608/:612 保留）
+- [x] 管线三处取消返回附 data：:1871 / :1903 / :1939（E-1 三处全覆盖；键级只增、`error` 串不变——test_translation_smoke_fix.py:169 既有断言零改动）
+- [x] handler 失败/取消分支（受控改点 (e)，main.py:1266-1269）：取消判据 = `cancel_event.is_set()` 事件优先、字符串仅兜底（MF-2/焦点 5，与 task_manager :299-301 双通道同构）；取消路径 emit `llm:token_usage`（payload 增 `status: "cancelled"` 纯增键）且**不再** emit `llm:analysis_failed`，仍 raise（保 task_manager 判别）
+- [x] 失败路径：handler 从 result.data 提取 ledger/token_usage（:1978-1982 数据源已在）→ 先 emit `llm:token_usage`（`status: "failed"` + failed_batches）再报错
+- [x] 前端三处：WorkspacePage :604-616 补 `llm_translation` 中性提示「翻译已取消，已消耗约 X tokens」；useLlmTasks :245-248 补 errorMsg 清空（**task_type 判据限定 llm_translation**，SG2-2；其余类型残留登记 record §8 不修）；:256-264 增 progressMessage + AIAssistantPanel「(serial)」子串映射「限流中，已切串行，剩余批次处理中」（零后端改动）
+- [x] 用例：后端 ≥4（取消/失败上报 + status 键 + 事件判据）；前端 ≥3（中性态 / errorMsg 清理 / serial 消费）；**断言反转登记：test_llm_translation.py:614 反转随本步落 record 反转清单**（:608/:612 保留）
+
+**实际结果（2026-09，record-3.0.5-P1-2.md）**：后端 +5（预置取消/串行取消附 data + handler 取消上报/失败上报顺序/事件优先判据）、前端 +7（progressMessage 存取/errorMsg 三态/串行提示渲染两例/取消中性 toast 两例）；:614 反转按 M0-3 落 record-3.0.5-P1-2.md §2 反转清单（含 docstring 同步改写与「无合并输出」不变量延续）；全套门禁 exit 0（pytest 838 / vitest 853·852 唯一失败 = perf 环境例 / 红线白名单外零命中，后端 diff = llm_service+main.py 恰两白名单文件）；`4ea180e` → merge `b5694ef`，短分支已删。
 
 **验收方式**: M-gate 后端 R5.1 ≥4 + 前端 ≥3；门禁全绿。
 **验收标准**: 取消/失败均 token 上报且「已消耗 X tokens、失败批 [n]/N」可见；无英文 "Cancelled" 红框、errorMsg 不残留；成功路径消费链零改动。
