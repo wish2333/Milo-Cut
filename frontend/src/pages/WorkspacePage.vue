@@ -975,6 +975,13 @@ const workspaceActions = createWorkspaceActions({
   highlightResults, hydrateHighlightsFromProject,
   pendingCorrections, loadCorrections, computeDiff,
   acceptCorrection, rejectCorrection, acceptHighConfidenceCorrections, clearCorrections,
+  // v3.0.5 R5.4 (P2-2): the review view's batch scope -- the active list
+  // track IS the review scope (null id = main track view -> ""); the
+  // 「全部」(null) entry arrives with R5.11's review filtering toggle.
+  getReviewScope: () => ({
+    trackId: activeListTrackId.value ?? "",
+    trackName: activeListTrackName.value,
+  }),
   asr: { asrEngine, asrPluginId, asrSettingsPerEngine, installedEngines, checkEngineReady },
   handleSaveAsrSettings,
   confirmAction,
