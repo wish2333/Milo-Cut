@@ -633,6 +633,22 @@ def _parse_json_response_layers(content: str) -> list[dict] | None:
     if items:
         return items
 
+    # v3.0.5 R5.2: Try segment_id + translated_text (translation pattern).
+    # Third regex AFTER relevance/action -- their outputs never carry a
+    # translated_text key, so the patterns are mutually exclusive and the
+    # two existing Layer-4 paths keep returning first (zero regression).
+    # Catches non-json_mode providers emitting near-JSON line output
+    # ("..."-quoted pairs that fail Layers 1-3 but regex cleanly per line).
+    pattern_translated = re.compile(
+        r'"segment_id"\s*:\s*"([^"]+)".*?"translated_text"\s*:\s*"((?:[^"\\]|\\.)*)"'
+    )
+    for match in pattern_translated.finditer(content):
+        items.append(
+            {"segment_id": match.group(1), "translated_text": match.group(2)}
+        )
+    if items:
+        return items
+
     # Layer 5 (v3.0.0 M3-3): sanitize think-blocks/fences/noise, retry JSON.
     # Purely subtractive fallback after the 4 structural layers all failed.
     sanitized = _sanitize_response(content)
@@ -1989,10 +2005,14 @@ def analyze_subtitle_translation(
                 f"Translation coverage gap: {len(ledger.uncovered_segment_ids)} segment(s) "
                 f"in failed batches {sorted(ledger.failed)}"
             )
+        # v3.0.5 R5.2: Chinese refusal copy with an actionable way out
+        # (M5.2 ruling 3 text (i); MUST contain 「补译」 -- the M0-3 :217
+        # assertion keyword anchor). The English technical string is gone;
+        # batch ids and counts stay for the cost surface.
         error = (
-            f"Translation incomplete: {len(ledger.failed)}/{total_batches} batch(es) "
-            f"failed after retry (batches {sorted(ledger.failed)}), "
-            f"{len(ledger.uncovered_segment_ids)} segment(s) uncovered"
+            f"翻译失败：{len(ledger.failed)}/{total_batches} 批处理失败"
+            f"（批 {sorted(ledger.failed)}），本次未写入任何译文；"
+            f"可直接重试补译；反复失败建议更换模型或检查网络"
         )
         return {
             "success": False,

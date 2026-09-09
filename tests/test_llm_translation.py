@@ -214,7 +214,9 @@ class TestTranslationReverseCoverage:
             )
 
         assert result["success"] is False
-        assert "uncovered" in result["error"]
+        # v3.0.5 R5.2 (M0-3 :217 inversion): the refusal copy is Chinese
+        # now; 「补译」 is the M0-3 keyword anchor (M5.2 ruling 3).
+        assert "补译" in result["error"]
         # exactly one retry, still violated
         assert calls["n"] == 2
         assert any("missing ids" in w for w in warnings)
@@ -775,3 +777,78 @@ class TestTranslationOpaqueIdsAndContext:
         assert middle_all - middle_target_texts == {
             "text 0", "text 1", "text 2", "text 3", "text 8", "text 9",
         }
+
+
+# ================================================================
+# v3.0.5 R5.2 (M5.2): Layer-4 translated_text line rescue + Chinese refusal
+# ================================================================
+
+
+class TestTranslatedTextLineFallback:
+    def test_near_json_line_output_rescued_with_full_conservation(self, monkeypatch):
+        """Non-json_mode provider emitting near-JSON lines (quoted pairs,
+        no array/object wrapper -> Layers 1-3 fail) is rescued by the
+        Layer-4 translated_text regex; the rescued batch still walks the
+        reverse coverage validation (full conservation, original order)."""
+        monkeypatch.setattr(llm_service, "load_settings", lambda: {})
+        served: list[list[str]] = []
+
+        def line_translator(prompt, system="", **kwargs):
+            payload = _parse_payload(prompt)
+            # opaque target ids as served by the pipeline (reverse-mapped
+            # back to real ids only after parsing)
+            tids = list(payload["target_segment_ids"])
+            served.append(tids)
+            lines = [
+                f'第 {i + 1} 行："segment_id": "{t}", "translated_text": "译文-{t}"'
+                for i, t in enumerate(tids)
+            ]
+            return {
+                "success": True,
+                "data": {"content": "\n".join(lines), "usage": {}},
+            }
+
+        monkeypatch.setattr("core.llm_service.call_llm", line_translator)
+
+        result = analyze_subtitle_translation(
+            _segments(3), "English", config=_configured_llm()
+        )
+
+        assert result["success"] is True
+        translations = result["data"]["translations"]
+        # reverse map restored the real ids, original order (conservation)
+        assert [t["segment_id"] for t in translations] == [
+            "seg-000",
+            "seg-001",
+            "seg-002",
+        ]
+        # translated_text rides verbatim from the provider output
+        assert translations[0]["translated_text"] == f"译文-{served[0][0]}"
+        assert result["data"]["ledger"]["failed"] == []
+
+    def test_unrescuable_output_returns_chinese_guidance_with_cost_report(
+        self, monkeypatch,
+    ):
+        """Garbage output (no layer matches) -> retry -> whole-task refusal
+        with the Chinese way-out copy (contains 「补译」) and the R5.1 cost
+        report riding data (ledger + token_usage)."""
+        monkeypatch.setattr(llm_service, "load_settings", lambda: {})
+
+        def garbage(prompt, system="", **kwargs):
+            return {
+                "success": True,
+                "data": {"content": "完全不是 JSON 的垃圾输出", "usage": {}},
+            }
+
+        monkeypatch.setattr("core.llm_service.call_llm", garbage)
+
+        result = analyze_subtitle_translation(
+            _segments(2), "English", config=_configured_llm()
+        )
+
+        assert result["success"] is False
+        assert "补译" in result["error"]
+        assert "批" in result["error"]
+        assert "更换模型" in result["error"]
+        assert set(result["data"].keys()) >= {"token_usage", "ledger"}
+        assert result["data"]["ledger"]["failed"] == [0]
