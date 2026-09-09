@@ -1868,7 +1868,14 @@ def analyze_subtitle_translation(
                 )
                 if cancel_event and cancel_event.is_set():
                     executor.shutdown(wait=False, cancel_futures=True)
-                    return {"success": False, "error": "Cancelled"}
+                    # v3.0.5 R5.1: cancel carries the cost report (keys-only
+                    # addition; the "Cancelled" string is unchanged so the
+                    # task_manager dual-channel judging keeps working).
+                    return {
+                        "success": False,
+                        "error": "Cancelled",
+                        "data": {"token_usage": total_usage, "ledger": ledger.to_dict()},
+                    }
 
                 # v3.0.4 smoke-fix 1c: the 429 downgrade must leave BOTH loops
                 # (the original single ``for as_completed`` needed one break);
@@ -1900,7 +1907,13 @@ def analyze_subtitle_translation(
 
                     if error == "Cancelled":
                         executor.shutdown(wait=False, cancel_futures=True)
-                        return {"success": False, "error": "Cancelled"}
+                        # v3.0.5 R5.1: same cost report as the poll-loop
+                        # cancel above (batch-internal cancel path).
+                        return {
+                            "success": False,
+                            "error": "Cancelled",
+                            "data": {"token_usage": total_usage, "ledger": ledger.to_dict()},
+                        }
 
                     if error and "Rate limited" in error:
                         consecutive_429 += 1
@@ -1936,7 +1949,13 @@ def analyze_subtitle_translation(
     if serial_fallback:
         for batch_idx in sorted(pending):
             if cancel_event and cancel_event.is_set():
-                return {"success": False, "error": "Cancelled"}
+                # v3.0.5 R5.1: same cost report as the pool cancel paths
+                # (serial-fallback loop cancel).
+                return {
+                    "success": False,
+                    "error": "Cancelled",
+                    "data": {"token_usage": total_usage, "ledger": ledger.to_dict()},
+                }
             if progress_cb:
                 pct = (completed / total_batches) * 100 if total_batches > 0 else 0
                 progress_cb(pct, f"Translation batch {completed}/{total_batches} (serial)...")

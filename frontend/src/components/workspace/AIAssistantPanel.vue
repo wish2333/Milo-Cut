@@ -40,6 +40,10 @@ const props = defineProps<{
   llmModel: string
   isRunning: boolean
   progress: number
+  // v3.0.5 R5.1: latest task:progress message; a "(serial)" substring maps
+  // to the 429 downgrade notice (zero backend change -- the suffix rides
+  // the existing progress stream from the serial fallback loop).
+  progressMessage?: string | null
   errorMsg: string | null
   // P1 subtitle correction result count (null = not run yet)
   subtitleCorrectionCount: number | null
@@ -722,6 +726,17 @@ function handleSearchSeek(time: number) {
         @click="handleCancelSingle"
       >取消</button>
     </div>
+
+    <!-- v3.0.5 R5.1: 429 serial-downgrade notice -- the "(serial)" suffix
+         rides the existing progress message; no extra event or backend key
+         (the precise remaining-batch count is not reported this version). -->
+    <p
+      v-if="isRunning && progressMessage?.includes('(serial)')"
+      data-test="serial-downgrade-notice"
+      class="text-[10px] text-amber-600"
+    >
+      限流中，已切串行，剩余批次处理中
+    </p>
 
     <!-- Feature cards (D-14). v3.0.4 M2-4 A: in track mode the smart delete
          card is greyed out (disabled + 「仅主轨可用」) while the correction

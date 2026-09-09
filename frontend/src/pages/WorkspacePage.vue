@@ -15,6 +15,7 @@ import { useAsrEngines } from "@/composables/useAsrEngines"
 import { createWorkspaceActions, provideWorkspaceActions } from "@/composables/useWorkspaceActions"
 import { useUvAvailability } from "@/composables/useUvAvailability"
 import { useLlmTasks } from "@/composables/useLlmTasks"
+import { useLlmAnalysis } from "@/composables/useLlmAnalysis"
 import { useEditedPlayback } from "@/composables/useEditedPlayback"
 import {
   computeListCreateRange,
@@ -94,7 +95,15 @@ const {
   lastTranslationCompletion,
   hydrateHighlightsFromProject,
   coverageGap,
+  // v3.0.5 R5.1: latest task:progress message -> Timeline -> AIAssistantPanel
+  // ("(serial)" substring -> 429 downgrade notice)
+  progressMessage: llmProgressMessage,
 } = useLlmTasks()
+
+// v3.0.5 R5.1: cancel-cost toast reads the last token report. The handler
+// emits llm:token_usage BEFORE raising, so lastUsage is already up to date
+// by the time the task:cancelled listener below runs.
+const { lastUsage } = useLlmAnalysis()
 
 // v3.0.0 M3-1: surface batch coverage gaps from LLM tasks (never silent)
 watch(coverageGap, (n) => {
@@ -611,6 +620,13 @@ onEvent<{ task_id: string; task_type?: string }>(
       data.task_type === "llm_semantic_search"
     ) {
       showToast("已取消", "info", 2000)
+    } else if (data.task_type === "llm_translation") {
+      // v3.0.5 R5.1 (M5.1): neutral cancel notice with the consumed cost
+      // (no "Cancelled" red box -- the handler suppresses
+      // llm:analysis_failed on the cancel path). lastUsage was refreshed by
+      // the token_usage event that is emitted before the raise.
+      const used = lastUsage.value?.total_tokens ?? 0
+      showToast(`翻译已取消，已消耗约 ${used} tokens`, "info", 3000)
     }
   },
 )
@@ -1157,6 +1173,7 @@ onUnmounted(() => {
     :llm-configured="llmConfig.configured"
     :llm-is-running="llmIsRunning"
     :llm-progress="llmProgress"
+    :llm-progress-message="llmProgressMessage"
     :llm-error-msg="llmErrorMsg"
     :corrections="pendingCorrections"
     @update:current-time="handleSeekTo"
@@ -1556,6 +1573,7 @@ onUnmounted(() => {
             :llm-model="llmConfig.model"
             :llm-is-running="llmIsRunning"
             :llm-progress="llmProgress"
+            :llm-progress-message="llmProgressMessage"
             :llm-error-msg="llmErrorMsg"
             :subtitle-correction-count="subtitleCorrectionCount"
             :pending-correction-count="pendingCorrections.length"

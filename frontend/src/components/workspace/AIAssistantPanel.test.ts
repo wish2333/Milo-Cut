@@ -415,3 +415,44 @@ describe("AIAssistantPanel -- track-view gating (v3.0.4 M2-4)", () => {
     wrapper.unmount()
   })
 })
+
+// ---------------------------------------------------------------------------
+// v3.0.5 R5.1 (M5.1): 429 serial-downgrade notice ("(serial)" substring
+// mapping, zero backend change)
+// ---------------------------------------------------------------------------
+
+describe("AIAssistantPanel -- serial downgrade notice (v3.0.5 R5.1)", () => {
+  it("shows the notice while running when progressMessage carries (serial)", async () => {
+    const wrapper = mountTranslationPanel({
+      isRunning: true,
+      progress: 40,
+      progressMessage: "Translation batch 3/8 (serial)...",
+    })
+    await nextTickSteadle()
+
+    const notice = wrapper.find("[data-test='serial-downgrade-notice']")
+    expect(notice.exists()).toBe(true)
+    expect(notice.text()).toBe("限流中，已切串行，剩余批次处理中")
+    wrapper.unmount()
+  })
+
+  it("hides the notice for plain messages and when not running", async () => {
+    const plain = mountTranslationPanel({
+      isRunning: true,
+      progress: 40,
+      progressMessage: "Translation batch 3/8...",
+    })
+    await nextTickSteadle()
+    expect(plain.find("[data-test='serial-downgrade-notice']").exists()).toBe(false)
+    plain.unmount()
+
+    const idle = mountTranslationPanel({
+      isRunning: false,
+      progress: 0,
+      progressMessage: "Translation batch 3/8 (serial)...",
+    })
+    await nextTickSteadle()
+    expect(idle.find("[data-test='serial-downgrade-notice']").exists()).toBe(false)
+    idle.unmount()
+  })
+})

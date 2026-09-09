@@ -89,6 +89,10 @@ const jumpCuts = ref<JumpCut[]>([])
 const isRunning = ref(false)
 const progress = ref(0)
 const errorMsg = ref<string | null>(null)
+// v3.0.5 R5.1: latest task:progress message (the percent twin was already
+// consumed; the message rides the same stream). AIAssistantPanel maps the
+// "(serial)" substring to the 429-downgrade notice -- zero backend change.
+const progressMessage = ref<string | null>(null)
 // v3.0.0 M3-1: batch-ledger coverage gap from the last LLM task
 const coverageGap = ref<number>(0)
 // v3.0.4 M1-6: last translation completion (null = none pending). Set by the
@@ -121,6 +125,7 @@ function ensureListeners() {
     isRunning.value = false
     progress.value = 0
     errorMsg.value = null
+    progressMessage.value = null
     lastTranslationCompletion.value = null
   })
 
@@ -242,9 +247,17 @@ function ensureListeners() {
   // v2.1.1 M1-2: task cancelled (single-function cancel button). The backend
   // emits TASK_CANCELLED instead of TASK_FAILED; reset the running state so
   // the UI stops spinning and shows the cancel as a clean stop.
-  onEvent<{ task_id?: string }>(EVENT_TASK_CANCELLED, () => {
+  onEvent<{ task_id?: string; task_type?: string }>(EVENT_TASK_CANCELLED, (detail) => {
     isRunning.value = false
     progress.value = 0
+    // v3.0.5 R5.1 (SG2-2): clear the stale error ONLY for translation
+    // tasks -- their cancel is a clean stop with its own neutral cost
+    // toast in WorkspacePage, so a previous run's error must not linger
+    // into the next one. Other task types keep the current residual
+    // behavior (existing independent defect, recorded in record §8).
+    if (detail?.task_type === "llm_translation") {
+      errorMsg.value = null
+    }
   })
 
   // v3.0.4 smoke-fix 1b: the panel progress bar (llmProgress) was never
@@ -260,6 +273,10 @@ function ensureListeners() {
       if (typeof detail?.percent === "number") {
         progress.value = detail.percent
       }
+      // v3.0.5 R5.1: keep the latest progress message for the serial
+      // downgrade notice ("(serial)" suffix from the fallback loop).
+      progressMessage.value =
+        typeof detail?.message === "string" ? detail.message : null
     },
   )
 }
@@ -316,6 +333,7 @@ export function useLlmTasks() {
     isRunning.value = true
     progress.value = 0
     errorMsg.value = null
+    progressMessage.value = null
     resetSmartDelete()
 
     const res = await call<MiloTask>("start_smart_delete")
@@ -334,6 +352,7 @@ export function useLlmTasks() {
     isRunning.value = true
     progress.value = 0
     errorMsg.value = null
+    progressMessage.value = null
     resetSubtitleCorrection()
 
     const res = await call<MiloTask>(
@@ -357,6 +376,7 @@ export function useLlmTasks() {
     isRunning.value = true
     progress.value = 0
     errorMsg.value = null
+    progressMessage.value = null
     lastTranslationCompletion.value = null
 
     const res = await call<MiloTask>("start_translation", targetLanguage)
@@ -380,6 +400,7 @@ export function useLlmTasks() {
     isRunning.value = true
     progress.value = 0
     errorMsg.value = null
+    progressMessage.value = null
     resetHighlight()
 
     const res = await call<MiloTask>("start_highlight", targetMinutes)
@@ -555,6 +576,7 @@ export function useLlmTasks() {
     // Shared
     isRunning,
     progress,
+    progressMessage,
     errorMsg,
     // LLM configuration (Phase 2)
     llmConfig,

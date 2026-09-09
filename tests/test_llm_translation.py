@@ -562,9 +562,10 @@ class TestTranslationLayeredParsing:
 
 class TestTranslationCancellation:
     def test_cancel_midway_returns_bare_cancelled(self, monkeypatch):
-        """Cancelled mid-run -> bare {"success": False, "error": "Cancelled"}
-        with NO merged translations, so already-completed batches cannot
-        produce any persistence side effect upstream (M1-5 table)."""
+        """Cancelled mid-run -> cancel envelope {"success": False, "error":
+        "Cancelled"} carrying the R5.1 cost report (data.token_usage +
+        data.ledger) and NO merged translations, so already-completed batches
+        cannot produce any persistence side effect upstream (M1-5 table)."""
         monkeypatch.setattr(
             llm_service,
             "load_settings",
@@ -610,8 +611,95 @@ class TestTranslationCancellation:
         # the mock (blocked on the gate) or tripped the per-batch cancel
         # check in _call_batch before it -> 1 or 2 mock invocations.
         assert 1 <= len(served) <= 2
-        # bare cancel envelope: no merged output of any completed batch
-        assert result_holder == {"success": False, "error": "Cancelled"}
+        # v3.0.5 R5.1 (M0-3 :614 inversion): cancel envelope with the cost
+        # report attached -- keys are pinned, counts are not (the batch-1
+        # cancel races the ledger bookkeeping) -- and never any merged
+        # output of the completed batches.
+        assert result_holder["success"] is False
+        assert result_holder["error"] == "Cancelled"
+        assert set(result_holder["data"].keys()) >= {"token_usage", "ledger"}
+        assert "translations" not in result_holder["data"]
+
+
+# ================================================================
+# v3.0.5 R5.1: cancel cost report on every cancel return path
+# ================================================================
+
+
+class TestCancelCostReport:
+    def test_cancel_before_first_poll_carries_cost_report(self, monkeypatch):
+        """cancel_event pre-set -> the poll loop's cancel check (before any
+        future is consumed) returns the envelope WITH the cost report keys
+        (token_usage + ledger); nothing persisted, no batch consumed."""
+        monkeypatch.setattr("core.llm_service.call_llm", _perfect_translator())
+        monkeypatch.setattr(
+            llm_service,
+            "load_settings",
+            lambda: {"llm_correction_batch_size": 2, "llm_concurrency": 1},
+        )
+        cancel_event = threading.Event()
+        cancel_event.set()
+
+        result = analyze_subtitle_translation(
+            _segments(4),
+            "English",
+            config=_configured_llm(),
+            cancel_event=cancel_event,
+        )
+
+        assert result["success"] is False
+        assert result["error"] == "Cancelled"
+        assert set(result["data"].keys()) >= {"token_usage", "ledger"}
+        # nothing was consumed before the cancel -> zero ledger counts
+        assert result["data"]["ledger"]["failed"] == []
+        assert "translations" not in result["data"]
+
+    def test_cancel_during_serial_fallback_carries_cost_report(self, monkeypatch):
+        """429 downgrade -> serial loop; cancel set via the first "(serial)"
+        progress callback -> the serial loop's top cancel check returns the
+        envelope WITH the cost report (failed batches stay in the ledger)."""
+        monkeypatch.setattr(
+            llm_service,
+            "load_settings",
+            lambda: {"llm_correction_batch_size": 2, "llm_concurrency": 1},
+        )
+        calls = {"n": 0}
+
+        def rate_limited(prompt, system="", **kwargs):
+            calls["n"] += 1
+            # every call rate-limits: batches 0-2 exhaust their retry and
+            # trip the 3x-429 downgrade; the serial batch keeps failing too.
+            return {"success": False, "error": "Rate limited (attempt 1)"}
+
+        monkeypatch.setattr("core.llm_service.call_llm", rate_limited)
+
+        cancel_event = threading.Event()
+        serial_seen = threading.Event()
+
+        def progress_cb(pct, message=""):
+            # First "(serial)" progress = the serial loop is about to
+            # process its FIRST pending batch; set the cancel so the NEXT
+            # loop-top check (deterministically before batch 4) trips.
+            if "(serial)" in message and not serial_seen.is_set():
+                serial_seen.set()
+                cancel_event.set()
+
+        result = analyze_subtitle_translation(
+            _segments(10),
+            "English",
+            config=_configured_llm(),
+            cancel_event=cancel_event,
+            progress_cb=progress_cb,
+        )
+
+        assert serial_seen.is_set(), "serial fallback never entered"
+        assert result["success"] is False
+        assert result["error"] == "Cancelled"
+        assert set(result["data"].keys()) >= {"token_usage", "ledger"}
+        # batches 0-2 exhausted their retry before the downgrade; their ids
+        # ride the ledger (the serial batch outcome races the cancel, so
+        # only the deterministic prefix is pinned).
+        assert result["data"]["ledger"]["failed"][:3] == [0, 1, 2]
 
 
 # ================================================================
