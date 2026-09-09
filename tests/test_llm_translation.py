@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 
 from core import llm_service
 from core.llm_service import analyze_subtitle_translation
@@ -981,3 +982,167 @@ class TestPartialSuccessSemantics:
         assert set(result["data"]["token_usage"].keys()) == {
             "prompt_tokens", "completion_tokens", "total_tokens",
         }
+
+
+# ================================================================
+# v3.0.5 R5.8 (M5.8): quality-mode switch (serial dispatch + window)
+# ================================================================
+
+
+class TestTranslationQualityMode:
+    def _capturing_translator(self, store: list[dict]):
+        """Echo translator capturing each call's parsed prompt payload."""
+
+        def fake(prompt, system="", **kwargs):
+            payload = _parse_payload(prompt)
+            store.append(payload)
+            results = [
+                {"segment_id": t, "translated_text": f"EN[{t}]"}
+                for t in payload["target_segment_ids"]
+            ]
+            return {
+                "success": True,
+                "data": {"content": json.dumps(results), "usage": {}},
+            }
+
+        return fake
+
+    def test_off_by_default_payload_key_set_unchanged(self, monkeypatch):
+        """Default (off): every batch prompt carries EXACTLY the pre-R5.8
+        top-level key set -- byte-shape equivalence of the default path."""
+        monkeypatch.setattr(
+            llm_service,
+            "load_settings",
+            lambda: {"llm_correction_batch_size": 2, "llm_concurrency": 5},
+        )
+        payloads: list[dict] = []
+        monkeypatch.setattr(
+            "core.llm_service.call_llm", self._capturing_translator(payloads)
+        )
+
+        result = analyze_subtitle_translation(
+            _segments(6), "English", config=_configured_llm()
+        )
+
+        assert result["success"] is True
+        assert len(payloads) == 3
+        for payload in payloads:
+            assert set(payload.keys()) == {"segments", "target_segment_ids"}
+
+    def test_quality_mode_sliding_window(self, monkeypatch):
+        """Quality on: concurrency is forced to 1 regardless of the config
+        value; batch N+1's prompt carries batch N's finalized translations
+        (its own opaque id space, source order); batch 1 has no window."""
+        monkeypatch.setattr(
+            llm_service,
+            "load_settings",
+            lambda: {
+                "llm_correction_batch_size": 2,
+                "llm_concurrency": 5,  # must be overridden to 1 by the switch
+                "llm_translation_quality_mode": True,
+            },
+        )
+        payloads: list[dict] = []
+        monkeypatch.setattr(
+            "core.llm_service.call_llm", self._capturing_translator(payloads)
+        )
+
+        result = analyze_subtitle_translation(
+            _segments(6), "English", config=_configured_llm()
+        )
+
+        assert result["success"] is True
+        # serial dispatch: prompts were built in strict batch order
+        assert len(payloads) == 3
+        # window boundary: the FIRST batch has no finalized_translations
+        assert "finalized_translations" not in payloads[0]
+        # batch 2 carries batch 1's finalized translations (batch 1's
+        # opaque id space, same order as its target list)
+        b1_targets = payloads[0]["target_segment_ids"]
+        assert payloads[1]["finalized_translations"] == [
+            {"segment_id": t, "translated_text": f"EN[{t}]"} for t in b1_targets
+        ]
+        # batch 3 carries batch 2's
+        b2_targets = payloads[1]["target_segment_ids"]
+        assert payloads[2]["finalized_translations"] == [
+            {"segment_id": t, "translated_text": f"EN[{t}]"} for t in b2_targets
+        ]
+
+    def test_quality_mode_cancel_still_prompt(self, monkeypatch):
+        """Serial (quality) dispatch + every batch blocked on a barrier ->
+        cancel observed within ~2s via the 1s poll loop (ruling 2: cancel
+        semantics are unaffected by the switch)."""
+        block = threading.Event()
+
+        def blocked(prompt, system="", **kwargs):
+            block.wait(timeout=60)
+            return {"success": False, "error": "Cancelled"}
+
+        monkeypatch.setattr("core.llm_service.call_llm", blocked)
+        monkeypatch.setattr(
+            llm_service,
+            "load_settings",
+            lambda: {
+                "llm_correction_batch_size": 2,
+                "llm_concurrency": 3,
+                "llm_translation_quality_mode": True,
+            },
+        )
+
+        cancel_event = threading.Event()
+        outcome: dict = {}
+
+        def run():
+            outcome["result"] = analyze_subtitle_translation(
+                _segments(6),
+                "English",
+                config=_configured_llm(),
+                cancel_event=cancel_event,
+            )
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        time.sleep(0.3)
+        cancel_event.set()
+        worker.join(timeout=5.0)
+
+        assert not worker.is_alive(), "quality-mode cancel not observed promptly"
+        result = outcome["result"]
+        assert result["success"] is False
+        assert result["error"] == "Cancelled"
+        # in-flight HTTP calls are abandoned, not waited out
+        block.set()
+        worker.join(timeout=2.0)
+
+    def test_quality_mode_with_429_no_double_shutdown_hang(self, monkeypatch):
+        """SG2-7: quality (serial) x sustained 429 -- the downgrade branch
+        still fires under concurrency=1 and is harmless (shutdown is
+        idempotent, the serial fallback loop takes over) -- the pipeline
+        returns a proper refusal envelope, no hang, no crash."""
+        monkeypatch.setattr(
+            llm_service,
+            "load_settings",
+            lambda: {
+                "llm_correction_batch_size": 2,
+                "llm_concurrency": 5,
+                "llm_translation_quality_mode": True,
+            },
+        )
+
+        def rate_limited(prompt, system="", **kwargs):
+            return {"success": False, "error": "Rate limited (attempt 1)"}
+
+        monkeypatch.setattr("core.llm_service.call_llm", rate_limited)
+
+        with _WarningLog() as warnings:
+            result = analyze_subtitle_translation(
+                _segments(8), "English", config=_configured_llm()
+            )
+
+        # the downgrade fired and the serial fallback took over
+        assert any("switching remaining" in w for w in warnings)
+        # all batches failed after retry -> refusal with the cost report
+        assert result["success"] is False
+        assert "补译" in result["error"]
+        assert set(result["data"].keys()) >= {"token_usage", "ledger"}
+        assert result["data"]["ledger"]["failed"] == [0, 1, 2, 3]

@@ -528,7 +528,9 @@ def _build_structured_user_message(
     Args:
         segments: List of segment dicts with 'id', 'text', 'start', 'end'.
         extra_context: Additional top-level keys to merge into the payload
-            (e.g. ``{"topic": "...", "reference_text": "..."}``).
+            (e.g. ``{"topic": "...", "reference_text": "..."}``; v3.0.5 R5.8
+            forwards ``finalized_translations`` -- the previous batch's
+            finalized translations in the quality-mode sliding window).
         opaque_ids: When given (v3.0.0 M3-5), real ids are replaced by the
             mapping's opaque ids and ``start``/``end`` are omitted entirely --
             the model receives only ``{id, text}`` (plus optional edit_hint).
@@ -1758,6 +1760,15 @@ def analyze_subtitle_translation(
     effective_ctx = max(0, int(settings.get("llm_correction_context_window", 5)))
     concurrency = max(1, int(settings.get("llm_concurrency", 5)))
     max_chars = int(settings.get("llm_max_batch_chars", 4000) or 0) or None
+    # v3.0.5 R5.8 (M5.8 rulings 1-2): quality mode is a GLOBAL settings
+    # switch read here -- no new function parameter, the handler is
+    # untouched. On = serial dispatch (concurrency forced to 1), which is
+    # what makes the 1-batch finalized-translation sliding window possible;
+    # cancel latency is unaffected (the 1s poll loop and the serial-fallback
+    # cancel check stay in place).
+    quality_mode = bool(settings.get("llm_translation_quality_mode", False))
+    if quality_mode:
+        concurrency = 1
 
     # Normalize handler input ({"segment_id", ...}) to the internal
     # {"id", "text"} shape the shared correction-skeleton helpers expect.
@@ -1790,7 +1801,14 @@ def analyze_subtitle_translation(
     # Pre-compute each batch's payload (context = SOURCE text +/- ctx only:
     # batches dispatch concurrently, so finalized translations of sibling
     # batches are unavailable by construction -- SPEC M1-2 ruling).
-    batch_payloads: list[tuple[set[str], str, dict[str, str]]] = []
+    batch_payloads: list[tuple[set[str], str | None, dict[str, str]]] = []
+    # v3.0.5 R5.8 (M5.8 ruling 3, controlled point (f)): quality mode skips
+    # prompt assembly in the pre-compute pass (the payload is rebuilt per
+    # batch inside the serial dispatch so batch N can carry batch N-1's
+    # finalized translations); the context slices needed for that lazy
+    # rebuild live here. The DEFAULT (off) path below is byte-identical to
+    # the pre-R5.8 pre-compute.
+    quality_batch_contexts: dict[int, list[dict]] = {}
     for _batch_idx, (start_i, end_i) in enumerate(target_windows):
         ctx_start = max(0, start_i - effective_ctx)
         ctx_end = min(len(source_segments), end_i + effective_ctx)
@@ -1800,16 +1818,79 @@ def analyze_subtitle_translation(
         extra_ctx: dict[str, Any] = {
             "target_segment_ids": [id_map[i] for i in sorted(target_ids)],
         }
+        if quality_mode:
+            batch_payloads.append((target_ids, None, id_map))
+            quality_batch_contexts[_batch_idx] = batch_with_context
+            continue
         prompt = _build_structured_user_message(
             batch_with_context, extra_context=extra_ctx, opaque_ids=id_map
         )
         batch_payloads.append((target_ids, prompt, id_map))
+
+    def _build_quality_prompt(
+        batch_idx: int, target_ids: set[str], id_map: dict[str, str]
+    ) -> str:
+        """v3.0.5 R5.8 (M5.8 ruling 3): lazy payload build for quality mode.
+
+        Serial dispatch (concurrency 1, FIFO queue) guarantees batch N-1's
+        future is already done when batch N's worker starts, so its
+        ``result()`` returns immediately -- no cross-thread race with the
+        poll-loop consumption in the main thread. The done()/cancelled()
+        guards are pure defense (e.g. the 429 downgrade abandons futures;
+        a cancelled or exceptional previous batch simply yields no window).
+        """
+        extra: dict[str, Any] = {
+            "target_segment_ids": [id_map[i] for i in sorted(target_ids)],
+        }
+        prev = batch_idx - 1
+        prev_future = future_by_idx.get(prev) if prev >= 0 else None
+        prev_translations: list[dict] = []
+        if (
+            prev_future is not None
+            and prev_future.done()
+            and not prev_future.cancelled()
+        ):
+            try:
+                prev_result = prev_future.result()
+                prev_translations = list(prev_result[1] or [])
+            except Exception:
+                prev_translations = []
+        if prev_translations:
+            # Re-expose the previous batch's finalized translations in ITS
+            # opaque id space (the same space the model saw), ordered by
+            # source-segment sequence (window = 1 finalized batch, PRD R5.8).
+            prev_id_map = batch_payloads[prev][2]
+            source_order = {
+                str(s.get("id", "")): i for i, s in enumerate(source_segments)
+            }
+            ordered = sorted(
+                prev_translations,
+                key=lambda t: source_order.get(
+                    str(t.get("segment_id", "")), len(source_order)
+                ),
+            )
+            extra["finalized_translations"] = [
+                {
+                    "segment_id": prev_id_map.get(
+                        str(t["segment_id"]), str(t["segment_id"])
+                    ),
+                    "translated_text": str(t.get("translated_text", "")),
+                }
+                for t in ordered
+            ]
+        return _build_structured_user_message(
+            quality_batch_contexts[batch_idx], extra_context=extra, opaque_ids=id_map
+        )
 
     def _call_batch(batch_idx: int) -> tuple[int, list[dict], dict, str | None]:
         """Single translation attempt (no retry)."""
         if cancel_event and cancel_event.is_set():
             return (batch_idx, [], {}, "Cancelled")
         target_ids, prompt, id_map = batch_payloads[batch_idx]
+        if prompt is None:
+            # quality mode: build the payload now (sliding window over the
+            # previous batch's finalized translations)
+            prompt = _build_quality_prompt(batch_idx, target_ids, id_map)
         result = call_llm(
             prompt,
             system=system,
@@ -1872,10 +1953,17 @@ def analyze_subtitle_translation(
     _CANCEL_POLL_SECONDS = 1.0
     executor = ThreadPoolExecutor(max_workers=concurrency)
     try:
-        futures = {
-            executor.submit(_process_batch, batch_idx): batch_idx
-            for batch_idx in range(total_batches)
-        }
+        futures: dict = {}
+        # v3.0.5 R5.8: reverse index for the quality-mode sliding window
+        # (the lazy prompt build reads the previous batch's future result).
+        # Registered per submit: batch N can only start after submit(N)
+        # returns, and future_by_idx[N-1] is registered before submit(N) --
+        # by induction the window lookup never races the registration.
+        future_by_idx: dict = {}
+        for batch_idx in range(total_batches):
+            fut = executor.submit(_process_batch, batch_idx)
+            futures[fut] = batch_idx
+            future_by_idx[batch_idx] = fut
         try:
             outstanding = set(futures)
             while outstanding:
