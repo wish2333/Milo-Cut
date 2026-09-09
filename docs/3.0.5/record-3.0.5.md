@@ -12,7 +12,8 @@
 - **P0 完成（2026-09）**：分支/tag/基线/门禁脚本（P0-1、P0-2）——`dev-3.0.5` 自 `v3.0.4` 拉出，`v3.0.5-base` 打在拉出点；立项文档套件 7 文件入库（commit `f850ae6`，2321 行）；基线首跑全绿登记（§2）；门禁脚本 `gates-v3.0.5.sh` 三段 dry-run（P0-2）。
 - **P1-1 完成（R5.0，全版首个代码合入步——序 1）**：duplicate 幂等返回防呆——handleRangeDecision 三分支化（duplicate 不 emit + 快照回滚 + info 轻提示 / 成功逐字节不变 / 失败补回滚）+ useUndoRedo 纯新增 `popSnapshot()`（SG-6 不变量 docstring）；后端零改动；前端 +6 例（M-gate ≥3 达标）；全套门禁 exit 0（vitest 846/845，唯一失败 = perf 环境例）。
 - **P1-2 完成（R5.1，序 4 起步）**：翻译失败/取消成本可见——管线三处取消返回附 data（token_usage+ledger 键级只增）+ handler 事件优先取消判据（取消 emit llm:token_usage(status=cancelled) 且不再 emit analysis_failed；失败先上报 status=failed+failed_batches 再报错）+ 前端三处（取消中性 toast「翻译已取消，已消耗约 X tokens」/ errorMsg 清空限 llm_translation (SG2-2) / progressMessage+"(serial)"串行降级提示）；后端 +5 前端 +7 例；:614 断言反转按 M0-3 白名单落地；门禁 exit 0（pytest 838 / vitest 853·852）。
-- **P1-3 起**：未开始（步骤索引见 §1；下一序 = P1-3 R5.2 行级解析兜底 + 失败中文出路指引）。
+- **P1-3 完成（R5.2，纯后端环）**：行级解析兜底 + 失败中文出路指引——Layer 4 第三正则 translated_text 模式（relevance/action 后互斥只增，救回批照走 coverage 校验）+ 全批失败文案中文化（含「补译」锚定关键词）；后端 +4 例（前端零改动 vitest 持平）；:217 断言反转按 M0-3 白名单落地；门禁 exit 0（pytest 840 / vitest 853·852）。
+- **P1-4 起**：未开始（步骤索引见 §1；下一序 = P1-4 R5.3 增量补译 + uncovered 对账可读化——本模块最高风险步，序 7 内部序硬约束）。
 
 ## 1. 分步记录索引
 
@@ -22,7 +23,7 @@
 | P0-2 | （本文件 §2 执行环境偏差 + scripts/gates-v3.0.5.sh） | 已完成（复制改基线非重写；三段 dry-run exit 0） | 本 commit（脚本随 P0-2 入库） |
 | P1-1 | record-3.0.5-P1-1.md | 已完成（R5.0 duplicate 防呆；后端零改动；门禁 exit 0） | `94c4c91` → merge `ba5a78c`（**全版首个代码合入步，序 1**） |
 | P1-2 | record-3.0.5-P1-2.md | 已完成（R5.1 成本可见；:614 反转落白名单；门禁 exit 0） | `4ea180e` → merge `b5694ef` |
-| P1-3 | record-3.0.5-P1-3.md | 未开始 | （R5.2 行级兜底 + 中文出路指引） |
+| P1-3 | record-3.0.5-P1-3.md | 已完成（R5.2 行级兜底 + 中文指引；纯后端环；门禁 exit 0） | `3df0f4f` → merge `3b037ca` |
 | P1-4 | record-3.0.5-P1-4.md | 未开始 | （R5.3 增量补译 + 对账可读化——序 7 落点） |
 | P1-5 | record-3.0.5-P1-5.md | 未开始 | （R5.8 质量模式开关——序 2 落点，须在 R5.3 之后） |
 | P1-6 | record-3.0.5-P1-6.md | 未开始 | （R5.13 token 预估 + beta.1 节点） |
@@ -69,5 +70,7 @@
 | P1-2 | main.py | :1266-1292 _handle_translation 失败/取消分支：事件优先取消判据 + 取消 emit llm:token_usage(status=cancelled) 不 emit analysis_failed 仍 raise + 失败先 emit token_usage(status=failed, failed_batches) 再报错 | R5.1 | 受控改点 (e) |
 | P1-2 | frontend（4 文件） | WorkspacePage 取消中性 toast + llmProgressMessage 透传 / useLlmTasks errorMsg 清空(SG2-2) + progressMessage 单例 / AIAssistantPanel+Timeline "(serial)" 串行提示 / useLlmAnalysis 类型只增 status? | R5.1 | 只增（前端面） |
 | P1-2 | tests/（2 文件） | test_llm_translation.py 新 TestCancelCostReport 2 例 + :614 白名单反转；test_translation_expose.py 新 TestR51CostReporting 3 例 + import threading | R5.1 | 只增（测试）+ 白名单反转 1 行 |
+| P1-3 | core/llm_service.py | :636-652 Layer 4 第三正则 translated_text 模式（只增）；:2010-2019 全批失败文案中文化（含「补译」，(d) 文案面） | R5.2 | 白名单内只增 + 受控改点 (d) 文案面 |
+| P1-3 | tests/（2 文件） | test_llm_translation.py 新 TestTranslatedTextLineFallback 2 例 + :217 白名单改写；test_llm_phase4b.py 解析直测 2 例 | R5.2 | 只增（测试）+ 白名单反转 1 行 |
 
 （后续 phase 按 SPEC M5.0-M5.8 触点表逐 hunk 登记；每条 diff 必须对应一个 R5.x 编号，无对应者补登记或回退。）

@@ -166,11 +166,13 @@ P5: 门禁终检 → 文档回写 → 真机全量回归 → RC → 正式
 
 ### P1-3 R5.2 行级解析兜底 translated_text + 失败中文出路指引（core/llm_service.py；SPEC M5.2）
 
-- [ ] 第 4 层解析追加第三正则 translated_text 模式（:612-634 之后、Layer 5 sanitize :636 之前，只增；relevance/action 路径零回归；逐行条目归一 `{segment_id, translated_text}`，命中即同款早退）
-- [ ] 救回批不绕校验：照走 coverage 反向校验（:1814 调用点），漏译/未知 id 照旧进 ledger 不静默；解析层共享函数对纠错形态输入（无该字段）走既有路径零副作用
-- [ ] 全批失败中文拒绝文案（:1973-1977 区，**含「补译」二字**——:217 改写锚定关键词；部分成功通知不走 error 通道、改 payload 驱动随 P1-4 合流，M5.2 裁决 3 文案落点分裂）
-- [ ] 用例 ≥4：逐行模式 mock 守恒 / 不可救回中文指引 + data 带 ledger·token_usage（与 R5.1 闭环）/ relevance·action 既有例（test_llm_phase4b.py:68-130 区）零改动 / 解析直测纠错形态输入
-- [ ] **断言反转登记：test_llm_translation.py:217 改写随本步落 record 反转清单**（四姊妹例 :192/:226/:256/:518 零改动，★B-3 撤销）
+- [x] 第 4 层解析追加第三正则 translated_text 模式（:612-634 之后、Layer 5 sanitize :636 之前，只增；relevance/action 路径零回归；逐行条目归一 `{segment_id, translated_text}`，命中即同款早退）
+- [x] 救回批不绕校验：照走 coverage 反向校验（:1814 调用点），漏译/未知 id 照旧进 ledger 不静默；解析层共享函数对纠错形态输入（无该字段）走既有路径零副作用
+- [x] 全批失败中文拒绝文案（:1973-1977 区，**含「补译」二字**——:217 改写锚定关键词；部分成功通知不走 error 通道、改 payload 驱动随 P1-4 合流，M5.2 裁决 3 文案落点分裂）
+- [x] 用例 ≥4：逐行模式 mock 守恒 / 不可救回中文指引 + data 带 ledger·token_usage（与 R5.1 闭环）/ relevance·action 既有例（test_llm_phase4b.py:68-130 区）零改动 / 解析直测纠错形态输入
+- [x] **断言反转登记：test_llm_translation.py:217 改写随本步落 record 反转清单**（四姊妹例 :192/:226/:256/:518 零改动，★B-3 撤销）
+
+**实际结果（2026-09，record-3.0.5-P1-3.md）**：后端 +4（近 JSON 行救回守恒 / 不可救回中文指引+data 闭环 / 解析直测含转义引号契约 / 纠错形态零副作用直证），前端零改动（vitest 持平 853·852）；:217 改写按 M0-3 落 record-3.0.5-P1-3.md §3 反转清单（关键词 = 「补译」）；文案 = 「翻译失败：N/M 批处理失败（批 [ids]），本次未写入任何译文；可直接重试补译；反复失败建议更换模型或检查网络」；全套门禁 exit 0（pytest 840）；`3df0f4f` → merge `3b037ca`，短分支已删。
 
 **验收方式**: M-gate 后端 R5.2 ≥4；门禁全绿。
 **验收标准**: 非 json_mode 逐行近 JSON 可救回且全量守恒；红框无英文技术体；既有解析层断言零改动。
