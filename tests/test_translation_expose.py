@@ -108,29 +108,57 @@ def _install_main_segments(svc: ProjectService, segs: list[Segment]) -> None:
     )
 
 
-def _install_translation_track(svc: ProjectService, language: str) -> None:
-    """Simulate an existing same-language translation track (expose branch 5)."""
+def _install_translation_track(svc: ProjectService, language: str) -> str:
+    """Simulate an existing COMPLETE same-language translation track
+    (expose branch 5).
+
+    v3.0.5 R5.3: the start guard only refuses a COMPLETE track (every
+    main subtitle segment bound); a partially-bound track routes into the
+    patch-up resume instead. This helper binds every main subtitle id so
+    the refusal branch under test fires verbatim. Returns the track id.
+    """
+    from uuid import uuid4
+
+    from core.models import TrackBinding
+
     tl = svc.active_timeline
+    track_id = "trk_existing"
     track = SubtitleTrack(
-        id="trk_existing",
+        id=track_id,
         role="translation",
         name="English",
         language=language,
         segments=[],
     )
+    bindings = [
+        TrackBinding(
+            id=f"bind_{uuid4().hex[:8]}",
+            track_id=track_id,
+            main_segment_id=s.id,
+            extension_segment_id=f"track_{track_id}_seg_{s.start:.3f}",
+            start_offset=0.0,
+            end_offset=0.0,
+        )
+        for s in tl.transcript.segments
+        if s.type == SegmentType.SUBTITLE
+    ]
     svc._current = svc._current.model_copy(
         update={
             "timelines": [
                 tl.model_copy(
                     update={
                         "transcript": tl.transcript.model_copy(
-                            update={"tracks": [*tl.transcript.tracks, track]}
+                            update={
+                                "tracks": [*tl.transcript.tracks, track],
+                                "bindings": [*tl.transcript.bindings, *bindings],
+                            }
                         )
                     }
                 )
             ]
         }
     )
+    return track_id
 
 
 def _install_prompt_override(svc: ProjectService, prompts: dict) -> None:
@@ -725,3 +753,184 @@ class TestR51CostReporting:
         assert names.count("llm:token_usage") == 0  # envelope had no data
         assert all(n != "llm:analysis_failed" for n in names)
         assert _all_tracks(api.service) == []  # zero writes
+
+
+# ================================================================
+# v3.0.5 R5.3 (M5.3): resumable route (gap derivation + merge write)
+# ================================================================
+
+
+def _install_partial_track(api, language: str, bound_count: int) -> str:
+    """Existing same-language track bound to only the FIRST bound_count
+    main subtitle segments (the resume-target state)."""
+    from uuid import uuid4
+
+    from core.models import TrackBinding
+
+    tl = api.service.active_timeline
+    subs = [s for s in tl.transcript.segments if s.type == SegmentType.SUBTITLE]
+    track_id = "trk_partial"
+    track = SubtitleTrack(
+        id=track_id, role="translation", name="English",
+        language=language, segments=[],
+    )
+    bindings = [
+        TrackBinding(
+            id=f"bind_{uuid4().hex[:8]}",
+            track_id=track_id,
+            main_segment_id=s.id,
+            extension_segment_id=f"track_{track_id}_seg_{s.start:.3f}",
+            start_offset=0.0,
+            end_offset=0.0,
+        )
+        for s in subs[:bound_count]
+    ]
+    api.service._current = api.service._current.model_copy(
+        update={
+            "timelines": [
+                tl.model_copy(
+                    update={
+                        "transcript": tl.transcript.model_copy(
+                            update={
+                                "tracks": [*tl.transcript.tracks, track],
+                                "bindings": [
+                                    *tl.transcript.bindings, *bindings
+                                ],
+                            }
+                        )
+                    }
+                )
+            ]
+        }
+    )
+    return track_id
+
+
+class TestR53ResumableRoute:
+    def test_gap_derivation_routes_patchup_payload(self, api, llm_configured, no_worker):
+        """Same-language track bound to 1 of 3 mains -> start_translation
+        routes a PATCH-UP task: payload carries resumable_track_id and the
+        gap set (exactly the unbound ids, main order)."""
+        track_id = _install_partial_track(api, "en", bound_count=1)
+        api.instance._task_manager = TaskManager(lambda *a: None)
+
+        result = api.instance.start_translation(target_language="en")
+
+        assert result["success"]
+        task_id = result["data"]["id"]
+        payload = api.instance._task_manager._tasks[task_id].payload
+        assert payload["resumable_track_id"] == track_id
+        assert payload["gap_segment_ids"] == ["seg_3.000", "seg_5.000"]
+
+    def test_resumable_task_writes_via_merge_not_create(
+        self, api, llm_configured, monkeypatch
+    ):
+        """Resumable payload -> handler narrows the pipeline source to the
+        gap subset, writes through merge_translation_track (never create),
+        and the merged segments land on the SAME track."""
+        track_id = _install_partial_track(api, "en", bound_count=1)
+
+        calls = {"merge": [], "create": []}
+        real_merge = api.service.merge_translation_track
+        real_create = api.service.create_translation_track
+
+        def spy_merge(*args, **kwargs):
+            calls["merge"].append((args, kwargs))
+            return real_merge(*args, **kwargs)
+
+        def spy_create(*args, **kwargs):
+            calls["create"].append((args, kwargs))
+            return real_create(*args, **kwargs)
+
+        monkeypatch.setattr(api.service, "merge_translation_track", spy_merge)
+        monkeypatch.setattr(api.service, "create_translation_track", spy_create)
+
+        captured: list[dict] = []
+        monkeypatch.setattr(
+            "core.llm_service.analyze_subtitle_translation",
+            _perfect_pipeline(captured),
+        )
+        tm = TaskManager(lambda *a: None)
+        api.instance._task_manager = tm
+        api.instance._register_task_handlers()
+
+        task_id = _seed_translation_task(
+            tm,
+            {
+                "timeline_id": "default",
+                "target_language": "en",
+                "resumable_track_id": track_id,
+                "gap_segment_ids": ["seg_3.000", "seg_5.000"],
+            },
+        )
+        tm._execute_task(task_id, tm._tasks[task_id])
+
+        task = tm._tasks[task_id]
+        assert task.status.value == "completed"
+        # pipeline source narrowed to the gap subset exactly
+        assert [s["id"] for s in captured[0]["segments"]] == [
+            "seg_3.000", "seg_5.000",
+        ]
+        # write side: merge (same track), never create
+        assert len(calls["merge"]) == 1
+        assert calls["merge"][0][1]["track_id"] == track_id
+        assert calls["create"] == []
+        # merged segments landed on the existing track
+        track = next(
+            t
+            for t in api.service.active_timeline.transcript.tracks
+            if t.id == track_id
+        )
+        assert len(track.segments) == 2
+        assert len(api.service.active_timeline.transcript.bindings) == 3
+
+    def test_completion_gap_is_write_side_union_pipeline_gap(
+        self, api, llm_configured, monkeypatch
+    ):
+        """MF2-2: a partial-success pipeline (33/34 style) whose items ALL
+        hit the current main track -> write side reports an EMPTY gap, the
+        completion payload still carries the pipeline-side ledger gap
+        (event + returned dict, same merged list)."""
+        def partial_pipeline(segments, target_language, **kwargs):
+            # translates only the first two mains; the third rides the
+            # ledger gap the way a failed batch would
+            return {
+                "success": True,
+                "data": {
+                    "translations": [
+                        {"segment_id": "seg_1.000", "translated_text": "EN[1]"},
+                        {"segment_id": "seg_3.000", "translated_text": "EN[3]"},
+                    ],
+                    "token_usage": dict(_TOKEN_USAGE),
+                    "ledger": {
+                        **_LEDGER,
+                        "total": 2,
+                        "succeeded": 1,
+                        "failed": [1],
+                        "uncovered_segment_ids": ["seg_5.000"],
+                    },
+                },
+            }
+
+        monkeypatch.setattr(
+            "core.llm_service.analyze_subtitle_translation", partial_pipeline
+        )
+        tm = TaskManager(lambda *a: None)
+        api.instance._task_manager = tm
+        api.instance._register_task_handlers()
+
+        task_id = _seed_translation_task(
+            tm, {"timeline_id": "default", "target_language": "en"}
+        )
+        tm._execute_task(task_id, tm._tasks[task_id])
+
+        task = tm._tasks[task_id]
+        assert task.status.value == "completed"
+        event = _translation_event(api.events)
+        assert event is not None
+        # write side is empty (both items hit the current main track) but
+        # the union still surfaces the pipeline-side gap
+        assert event[1]["uncovered_ids"] == ["seg_5.000"]
+        assert event[1]["written_count"] == 2
+        # the returned dict carries the SAME merged list (:1340 parity)
+        assert task.result["uncovered_ids"] == ["seg_5.000"]

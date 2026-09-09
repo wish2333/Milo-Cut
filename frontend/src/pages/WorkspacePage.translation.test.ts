@@ -465,3 +465,69 @@ describe("WorkspacePage translation cancel toast (v3.0.5 R5.1)", () => {
     wrapper.unmount()
   })
 })
+
+// ---------------------------------------------------------------------------
+// v3.0.5 R5.3 (M5.3 ruling 7 / SG2-1): patch-up completion toast
+// ---------------------------------------------------------------------------
+
+describe("WorkspacePage patch-up completion toast (v3.0.5 R5.3)", () => {
+  it("start on an existing same-language track + matching completion -> 「本次补译 N 段」", async () => {
+    const wrapper = await mountWorkspacePage()
+    await flushPromises()
+    await new Promise((r) => setTimeout(r, 120))
+    await flushPromises()
+
+    // The fixture has an "en" translation track (trk_main, first match) --
+    // starting "en" sets the patch-up marker for that track id.
+    timelineStub(wrapper).vm.$emit("start-translation", { targetLanguage: "en" })
+    await flushPromises()
+
+    fire(EVENT_LLM_TRANSLATION_COMPLETED, {
+      track_id: "trk_main",
+      track_name: "Placeholder",
+      language: "en",
+      written_count: 7,
+      target_count: 7,
+      uncovered_ids: [],
+      ledger: { uncovered_segment_ids: [] },
+    })
+    await flushPromises()
+
+    expect(showToastMock).toHaveBeenCalledWith("本次补译 7 段", "success", 3000)
+    // no gap -> no error toast, and the fresh-track switch toast is skipped
+    const messages = showToastMock.mock.calls.map((c) => c[0] as string)
+    expect(messages.some((m) => m.includes("已切换到译文轨"))).toBe(false)
+    wrapper.unmount()
+  })
+
+  it("cancel clears the marker (SG2-1): a later matching completion does NOT misreport 补译", async () => {
+    const wrapper = await mountWorkspacePage()
+    await flushPromises()
+    await new Promise((r) => setTimeout(r, 120))
+    await flushPromises()
+
+    timelineStub(wrapper).vm.$emit("start-translation", { targetLanguage: "en" })
+    await flushPromises()
+
+    // the patch-up task gets cancelled before completing
+    fire(EVENT_TASK_CANCELLED, { task_id: "t1", task_type: "llm_translation" })
+    await flushPromises()
+
+    // a LATER completion carrying the same track id (fresh manual rerun of
+    // the full track) must not fire the stale 补译 toast
+    fire(EVENT_LLM_TRANSLATION_COMPLETED, {
+      track_id: "trk_main",
+      track_name: "Placeholder",
+      language: "en",
+      written_count: 5,
+      target_count: 5,
+      uncovered_ids: [],
+      ledger: { uncovered_segment_ids: [] },
+    })
+    await flushPromises()
+
+    const messages = showToastMock.mock.calls.map((c) => c[0] as string)
+    expect(messages.some((m) => m.includes("本次补译"))).toBe(false)
+    wrapper.unmount()
+  })
+})

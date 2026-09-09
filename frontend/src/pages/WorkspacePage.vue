@@ -26,6 +26,7 @@ import { PLAYBACK_CLOCK_KEY } from "@/components/waveform/injectionKeys"
 import {
   EVENT_TASK_COMPLETED,
   EVENT_TASK_CANCELLED,
+  EVENT_TASK_FAILED,
   EVENT_PROJECT_DIRTY,
   EVENT_PROJECT_SAVED,
   EVENT_WORKFLOW_ROLLED_BACK,
@@ -627,6 +628,21 @@ onEvent<{ task_id: string; task_type?: string }>(
       // the token_usage event that is emitted before the raise.
       const used = lastUsage.value?.total_tokens ?? 0
       showToast(`翻译已取消，已消耗约 ${used} tokens`, "info", 3000)
+      // v3.0.5 R5.3 (SG2-1 double insurance): a cancelled patch-up never
+      // completes -- drop the marker so a LATER unrelated completion cannot
+      // misreport 「本次补译 N 段」.
+      pendingResumable.value = null
+    }
+  },
+)
+
+// v3.0.5 R5.3 (SG2-1 double insurance, second half): a FAILED translation
+// task never completes either -- same marker cleanup as the cancel path.
+onEvent<{ task_id: string; task_type?: string }>(
+  EVENT_TASK_FAILED,
+  (data) => {
+    if (data.task_type === "llm_translation") {
+      pendingResumable.value = null
     }
   },
 )
@@ -1074,10 +1090,26 @@ async function handleSelectListTrack(trackId: string | null) {
 // can be captured. A failed/cancelled task leaves one no-op snapshot entry
 // (SPEC ruling: accepted, no extra complexity).
 // ---------------------------------------------------------------------------
+// v3.0.5 R5.3 (M5.3 ruling 7): page-level patch-up marker. A same-language
+// track already existing means start_translation routes the gap set into a
+// patch-up task; the completion watcher matches track_id before toasting
+// 「本次补译 N 段」 (SG2-1: a fresh-track completion never matches, and the
+// marker is explicitly cleared on task:failed/task:cancelled below).
+const pendingResumable = ref<{ trackId: string; language: string } | null>(null)
+
 async function handleStartTranslation(payload: { targetLanguage: string }) {
   if (!llmConfig.value.configured) {
     showToast("请先配置 LLM", "error", 3000)
     return
+  }
+  const tl = projectRef.value?.timelines.find(
+    (t) => t.id === projectRef.value?.active_timeline_id,
+  )
+  const existing = tl?.transcript.tracks?.find(
+    (t) => t.role === "translation" && t.language === payload.targetLanguage,
+  )
+  if (existing) {
+    pendingResumable.value = { trackId: existing.id, language: payload.targetLanguage }
   }
   pushSnapshot(projectRef.value, ["tracks", "bindings"], "AI翻译副轨")
   const started = await startTranslation(payload.targetLanguage)
@@ -1100,6 +1132,15 @@ const translationNotice = ref<TranslationNotice | null>(null)
 watch(lastTranslationCompletion, (completion) => {
   if (!completion) return
   void handleSelectListTrack(completion.track_id)
+  // v3.0.5 R5.3 (SG2-1): patch-up completion = same track merged, matched
+  // by track_id against the marker set at start time.
+  const resumableHit =
+    pendingResumable.value !== null &&
+    completion.track_id === pendingResumable.value.trackId
+  if (resumableHit) {
+    showToast(`本次补译 ${completion.written_count} 段`, "success", 3000)
+    pendingResumable.value = null
+  }
   if (completion.uncovered_ids.length > 0) {
     translationNotice.value = {
       trackName: completion.track_name,
@@ -1107,11 +1148,13 @@ watch(lastTranslationCompletion, (completion) => {
       uncoveredIds: completion.uncovered_ids,
     }
     showToast(
-      `翻译完成：${completion.uncovered_ids.length} 段未覆盖（主轨已变更），详见 AI 助手面板`,
+      resumableHit
+        ? `仍有 ${completion.uncovered_ids.length} 段未覆盖，可一键补译（见 AI 助手面板）`
+        : `翻译完成：${completion.uncovered_ids.length} 段未覆盖，可一键补译（见 AI 助手面板）`,
       "error",
       5000,
     )
-  } else {
+  } else if (!resumableHit) {
     showToast(`翻译完成，已切换到译文轨「${completion.track_name}」`, "success", 3000)
   }
   // Clear so a consecutive identical completion re-triggers this watch.

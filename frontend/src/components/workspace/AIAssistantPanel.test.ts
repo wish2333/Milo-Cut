@@ -313,7 +313,12 @@ describe("AIAssistantPanel -- translation card (v3.0.4 M1-6)", () => {
     const notice = wrapper.find('[data-test="translation-notice"]')
     expect(notice.exists()).toBe(true)
     expect(notice.text()).toContain("2 段未覆盖")
-    expect(notice.text()).toContain("seg-1、seg-7")
+    // v3.0.5 R5.3 (inversion registered in the P1-4 record): the raw
+    // 、-join render is abolished (M5.3 ruling 8); ids unmatched by
+    // mainSegments fall back to per-entry raw ids. The readable form is
+    // covered by the R5.3 reconciliation suite below.
+    expect(notice.text()).toContain("seg-1")
+    expect(notice.text()).toContain("seg-7")
   })
 })
 
@@ -454,5 +459,70 @@ describe("AIAssistantPanel -- serial downgrade notice (v3.0.5 R5.1)", () => {
     await nextTickSteadle()
     expect(idle.find("[data-test='serial-downgrade-notice']").exists()).toBe(false)
     idle.unmount()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// v3.0.5 R5.3 (M5.3 ruling 8): readable reconciliation + one-click resume
+// ---------------------------------------------------------------------------
+
+describe("AIAssistantPanel -- uncovered reconciliation (v3.0.5 R5.3)", () => {
+  // 18 x "甲" + "乙丙丁戊": slice(0, 20) drops the tail "丁戊"
+  const longText = "甲".repeat(18) + "乙丙丁戊"
+  const mainSegs = [
+    { id: "ms-1", version: 1, type: "subtitle" as const, start: 65.0, end: 70.0, text: longText, speaker: "" },
+    { id: "ms-2", version: 1, type: "subtitle" as const, start: 5.0, end: 9.0, text: "第二段", speaker: "" },
+  ]
+  const notice = {
+    trackName: "English",
+    language: "en",
+    uncoveredIds: ["ms-1", "ms-2", "ms-gone"],
+  }
+
+  it("renders each uncovered id as {mm:ss} + first 20 chars (raw ids only when the main segment is gone)", async () => {
+    const wrapper = mountTranslationPanel({
+      mainSegments: mainSegs,
+      translationNotice: notice,
+    })
+    await nextTickSteadle()
+
+    const entries = wrapper.findAll("[data-test='uncovered-entry']")
+    expect(entries).toHaveLength(3)
+    // 65s -> 1:05; the 20-char cut keeps 甲*18 + 乙丙 and drops 丁戊
+    expect(entries[0].text()).toBe(`1:05 ${"甲".repeat(18)}乙丙`)
+    expect(entries[1].text()).toBe("0:05 第二段")
+    // vanished main segment falls back to the raw id, disabled
+    expect(entries[2].text()).toBe("ms-gone")
+    expect(entries[2].attributes("disabled")).toBeDefined()
+    wrapper.unmount()
+  })
+
+  it("clicking an entry emits seek with the main segment start (locate)", async () => {
+    const wrapper = mountTranslationPanel({
+      mainSegments: mainSegs,
+      translationNotice: notice,
+    })
+    await nextTickSteadle()
+
+    const entries = wrapper.findAll("[data-test='uncovered-entry']")
+    await entries[1].trigger("click")
+    const seeks = wrapper.emitted("seek") ?? []
+    expect(seeks[seeks.length - 1]).toEqual([5.0])
+    wrapper.unmount()
+  })
+
+  it("the tail button re-runs the same translation route with the notice language", async () => {
+    const wrapper = mountTranslationPanel({
+      mainSegments: mainSegs,
+      translationNotice: notice,
+    })
+    await nextTickSteadle()
+
+    await wrapper.find("[data-test='resume-translation']").trigger("click")
+    const starts = wrapper.emitted("start-translation") ?? []
+    expect(starts[starts.length - 1]).toEqual([{ targetLanguage: "en" }])
+    // the notice collapses after the resume kickoff
+    expect(wrapper.find("[data-test='translation-notice']").exists()).toBe(false)
+    wrapper.unmount()
   })
 })

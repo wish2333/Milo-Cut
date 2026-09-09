@@ -61,6 +61,9 @@ export interface TranslationCompletion {
   track_name: string
   language: string
   uncovered_ids: string[]
+  // v3.0.5 R5.3: written count rides the completion payload (feeds the
+  // 「本次补译 N 段」 toast when the completion matches a patch-up marker).
+  written_count: number
 }
 
 interface HighlightResult {
@@ -183,6 +186,7 @@ function ensureListeners() {
     track_name?: string
     language?: string
     uncovered_ids?: string[]
+    written_count?: number
   }>(EVENT_LLM_TRANSLATION_COMPLETED, (detail) => {
     isRunning.value = false
     if (!detail?.track_id) return
@@ -191,6 +195,7 @@ function ensureListeners() {
       track_name: detail.track_name ?? "",
       language: detail.language ?? "",
       uncovered_ids: detail.uncovered_ids ?? [],
+      written_count: detail.written_count ?? 0,
     }
   })
 

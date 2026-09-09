@@ -264,6 +264,53 @@ watch(
   },
 )
 
+// v3.0.5 R5.3 (M5.3 ruling 8, US-10 / F-A-04): readable reconciliation.
+// Each uncovered id resolves against mainSegments into "{mm:ss} {first 20
+// chars}"; clicking seeks the main segment; the tail button re-runs the
+// SAME translation route (start_translation auto-routes the gap set into
+// a patch-up task). Raw internal ids never render again.
+interface UncoveredEntry {
+  id: string
+  readable: string
+  start: number | null
+}
+
+function formatStartMMSS(start: number): string {
+  const mm = Math.floor(start / 60)
+  const ss = Math.floor(start % 60)
+  return `${mm}:${String(ss).padStart(2, "0")}`
+}
+
+const uncoveredEntries = computed<UncoveredEntry[]>(() => {
+  const notice = props.translationNotice
+  if (!notice) return []
+  const byId = new Map((props.mainSegments ?? []).map((s) => [s.id, s]))
+  return notice.uncoveredIds.map((id) => {
+    const seg = byId.get(id)
+    return {
+      id,
+      readable: seg
+        ? `${formatStartMMSS(seg.start)} ${seg.text.slice(0, 20)}`
+        : id,
+      start: seg ? seg.start : null,
+    }
+  })
+})
+
+function handleUncoveredSeek(entry: UncoveredEntry) {
+  if (entry.start === null) return
+  emit("seek", entry.start)
+}
+
+function handleResumeTranslation() {
+  if (!props.translationNotice) return
+  // Same route as the translation card -- start_translation derives the
+  // gap set server-side and routes the patch-up; the language memory rides
+  // the notice (completion payload).
+  emit("start-translation", { targetLanguage: props.translationNotice.language })
+  translationNoticeDismissed.value = true
+}
+
 function selectFeature(key: FeatureKey) {
   if (!props.llmConfigured) return
   // v3.0.4 M2-4 A: a gated card never opens its detail (guard, not style).
@@ -448,8 +495,10 @@ function handleSearchSeek(time: number) {
       {{ errorMsg }}
     </div>
 
-    <!-- v3.0.4 M1-6: translation completion notice (uncovered ids are never
-         silently dropped) -->
+    <!-- v3.0.4 M1-6 + v3.0.5 R5.3: translation gap notice -- readable,
+         locatable, one-click resumable (uncovered ids are never silently
+         dropped; MF2-2 means the gap includes pipeline-side failures, so
+         the old "（主轨已变更）" parenthetical is gone) -->
     <div
       v-if="translationNotice && !translationNoticeDismissed"
       data-test="translation-notice"
@@ -458,16 +507,29 @@ function handleSearchSeek(time: number) {
       <div class="flex items-start justify-between gap-2">
         <span>
           译文轨「{{ translationNotice.trackName }}」有
-          {{ translationNotice.uncoveredIds.length }} 段未覆盖（主轨已变更）
+          {{ translationNotice.uncoveredIds.length }} 段未覆盖
         </span>
         <button
           class="shrink-0 text-amber-500 hover:text-amber-700"
           @click="translationNoticeDismissed = true"
         >关闭</button>
       </div>
-      <p class="mt-1 break-all text-amber-600">
-        {{ translationNotice.uncoveredIds.join("、") }}
-      </p>
+      <ul data-test="uncovered-list" class="mt-1 flex flex-col gap-0.5">
+        <li v-for="entry in uncoveredEntries" :key="entry.id">
+          <button
+            data-test="uncovered-entry"
+            class="block w-full text-left text-amber-600 hover:text-amber-800 hover:underline disabled:no-underline disabled:opacity-60"
+            :disabled="entry.start === null"
+            :title="entry.start === null ? '主轨段已不存在' : '点击定位主轨段'"
+            @click="handleUncoveredSeek(entry)"
+          >{{ entry.readable }}</button>
+        </li>
+      </ul>
+      <button
+        data-test="resume-translation"
+        class="mt-1.5 w-full rounded-md border border-amber-300 bg-amber-100 px-2 py-1 text-[11px] font-medium text-amber-800 hover:bg-amber-200"
+        @click="handleResumeTranslation"
+      >补译这些段</button>
     </div>
 
     <!-- Workflow error message -->
