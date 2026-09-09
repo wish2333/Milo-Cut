@@ -7,7 +7,7 @@
 import { ref, computed } from "vue"
 import { call, onEvent } from "@/bridge"
 import type { MiloTask } from "@/types/task"
-import type { Project } from "@/types/project"
+import type { Project, ProjectPatch } from "@/types/project"
 import {
   EVENT_LLM_ANALYSIS_FAILED,
   EVENT_LLM_SMART_DELETE_PROGRESS,
@@ -50,6 +50,10 @@ interface SubtitleCorrection {
   category: string
   start: number
   end: number
+  // v3.0.5 R5.4: scope fields the backend already sends (get_subtitle_
+  // corrections payload) -- "" = main track, non-empty = that track.
+  track_id?: string
+  track_name?: string
 }
 
 // v3.0.4 M1-6: completion payload of "translate to a new secondary track".
@@ -519,30 +523,43 @@ export function useLlmTasks() {
   async function acceptHighConfidenceCorrections(
     timelineId: string,
     threshold = 0.8,
-  ): Promise<{ accepted: number; remaining: number } | null> {
-    const res = await call<{ accepted_count: number; remaining_count: number }>(
-      "accept_high_confidence_corrections",
-      timelineId,
-      threshold,
-    )
+    trackId: string | null = null,
+  ): Promise<
+    { accepted: number; remaining: number; patch?: ProjectPatch } | null
+  > {
+    const res = await call<{
+      accepted_count: number
+      remaining_count: number
+      patch?: ProjectPatch
+    }>("accept_high_confidence_corrections", timelineId, threshold, trackId)
     if (res.success && res.data) {
       // Reload to reflect the remaining low-confidence items
       await loadCorrections(timelineId)
-      return { accepted: res.data.accepted_count, remaining: res.data.remaining_count }
+      return {
+        accepted: res.data.accepted_count,
+        remaining: res.data.remaining_count,
+        patch: res.data.patch,
+      }
     }
     return null
   }
 
-  async function clearCorrections(timelineId: string): Promise<boolean> {
-    const res = await call<{ cleared_count: number }>(
+  async function clearCorrections(
+    timelineId: string,
+    trackId: string | null = null,
+  ): Promise<{ cleared: number; patch?: ProjectPatch } | null> {
+    const res = await call<{ cleared_count: number; patch?: ProjectPatch }>(
       "clear_subtitle_corrections",
       timelineId,
+      trackId,
     )
-    if (res.success) {
-      pendingCorrections.value = []
-      return true
+    if (res.success && res.data) {
+      // v3.0.5 R5.4: reload instead of the blanket local reset -- a scoped
+      // clear must keep the OTHER scope's pending items on screen.
+      await loadCorrections(timelineId)
+      return { cleared: res.data.cleared_count, patch: res.data.patch }
     }
-    return false
+    return null
   }
 
   return {
