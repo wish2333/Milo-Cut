@@ -15,7 +15,8 @@
 - **P1-3 完成（R5.2，纯后端环）**：行级解析兜底 + 失败中文出路指引——Layer 4 第三正则 translated_text 模式（relevance/action 后互斥只增，救回批照走 coverage 校验）+ 全批失败文案中文化（含「补译」锚定关键词）；后端 +4 例（前端零改动 vitest 持平）；:217 断言反转按 M0-3 白名单落地；门禁 exit 0（pytest 840 / vitest 853·852）。
 - **P1-4 完成（R5.3，本模块最高风险步，序 7 落点）**：管线 (d) 两分支改判（全批拒/部分成功落盘）+ MF2-2 completion 缺口合流（写侧 ∪ ledger 并集，事件与返回同口径）+ start_translation 补译自动路由（缺口差集推导，payload 纯增两键）+ project_service 纯新增 merge_translation_track（零删行，单 patch revision+1）+ 前端对账可读化（mm:ss+20 字定位 + 一键补译同路由）与 SG2-1 双保险；后端 +11 前端 +5 例；追认反转 4 处登记 record §3；门禁 exit 0（pytest 851 / vitest 858·857）。
 - **P1-5 完成（R5.8，序 2 落点）**：质量模式开关——config 1 键行只增 + 管线读第 5 键（不增形参）+ quality 强制串行（concurrency=1）+ (f) 预构建跳过/派发内惰性构建 + 批 N 携批 N-1 定稿译文滑动窗（不透明 id 空间、源段序、窗口 1 批）+ future 反查逐 submit 注册消除竞态；默认关路径逐字节等价（payload 键集逐键锁定）；后端 +4 例（含 SG2-7 组合与取消 1s 栅栏）；零反转；门禁 exit 0（pytest 855 / vitest 持平）。
-- **P1-6 起**：未开始（下一序 = P1-6 R5.13 token 量级预估 + beta.1 节点——P1 收官步，含 :301 断言改写与 tag）。
+- **P1-6 完成（R5.13）+ beta.1 节点（P1 收官）**：token 量级预估——前端同式复刻管线切批算法（批窗 30 + 字符预算 4000）+ token = 总字符 × 0.75（万单位，恒标「约」，SG-5）；两显示点动态刷新；:301 断言按 M0-3 白名单改写 + 新增预算切批例；**tag `v3.0.5-beta.1`**（`34fba34`）；beta.1 期望达标（pytest 855 ≥853 / vitest 859·858 ≥851·850）；beta.1 真机冒烟后置（清单登记 record-3.0.5-P1-6.md §5）。
+- **P2 起**：未开始（下一序 = P2-1 R5.4 后端三态作用域 + 聚合 patch——序 3 同 commit 族硬约束）。
 
 ## 1. 分步记录索引
 
@@ -28,7 +29,7 @@
 | P1-3 | record-3.0.5-P1-3.md | 已完成（R5.2 行级兜底 + 中文指引；纯后端环；门禁 exit 0） | `3df0f4f` → merge `3b037ca` |
 | P1-4 | record-3.0.5-P1-4.md | 已完成（R5.3 增量补译 + 对账可读化；序 7 同 commit 兑现；门禁 exit 0） | `a6ec740` → merge `d91dbf2` |
 | P1-5 | record-3.0.5-P1-5.md | 已完成（R5.8 质量模式；序 2 兑现；零反转；门禁 exit 0） | `241ebb9` → merge `7f4b7ac` |
-| P1-6 | record-3.0.5-P1-6.md | 未开始 | （R5.13 token 预估 + beta.1 节点） |
+| P1-6 | record-3.0.5-P1-6.md | 已完成（R5.13 预估；beta.1 tag 落地；冒烟后置） | `7b2323c` → merge `34fba34`（tag `v3.0.5-beta.1`） |
 | P2-1 | record-3.0.5-P2-1.md | 未开始 | （R5.4 后端三态作用域 + 聚合 patch——序 3 落点） |
 | P2-2 | record-3.0.5-P2-2.md | 未开始 | （R5.4 前端批量 undo + patch 消费 + beta.2 节点） |
 | P3-1 | record-3.0.5-P3-1.md | 未开始 | （R5.5 纠错取消轮询化——序 5 独立成相） |
@@ -81,5 +82,7 @@
 | P1-4 | tests/（3+2 文件） | 后端 11 例（管线 3/merge 5/expose 3）+ 前端 5 例；追认反转 4 处（429 例翻转 / expose 夹具补全 / 面板裸 join 断言改写 / useLlmTasks toEqual 纯增键）见 record-3.0.5-P1-4.md §3 | R5.3 | 只增（测试）+ 追认登记 |
 | P1-5 | core/config.py | :83-86 DEFAULTS 追加 llm_translation_quality_mode: False（1 键行 + 注释） | R5.8 | 白名单内只增 |
 | P1-5 | core/llm_service.py | :1755-1768 读第 5 键 + 强制串行；:1790-1826 (f) 预构建跳过（默认路径逐字节保留）；:1828-1880 _build_quality_prompt 滑窗惰性构建；:1883-1890 _call_batch 接线；:1925-1937 future 反查逐 submit 注册（等价重构）；:524-528 docstring 受控增行 | R5.8 | 受控改点 (f) 族 |
+| P1-6 | frontend/src/components/workspace/AIAssistantPanel.vue | :229-269 估算式替换（前端同式切批 + token 经验比）；:945-950 / :1085-1087 两显示点「约 N 批 · 约 X 万 token」 | R5.13 | 只增（估算式替换） |
+| P1-6 | frontend/src/components/workspace/AIAssistantPanel.test.ts | :301 白名单改写（整串断言）+ 新增预算切批例 | R5.13 | 白名单改写 + 只增 |
 
 （后续 phase 按 SPEC M5.0-M5.8 触点表逐 hunk 登记；每条 diff 必须对应一个 R5.x 编号，无对应者补登记或回退。）
