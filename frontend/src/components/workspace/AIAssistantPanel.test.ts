@@ -296,9 +296,34 @@ describe("AIAssistantPanel -- translation card (v3.0.4 M1-6)", () => {
     expect((select.element as HTMLSelectElement).value).toBe("en")
   })
 
-  it("estimates the batch count as ceil(mainSegments / 30)", () => {
+  it("estimates batches via the backend-shaped split and tokens from total chars (R5.13)", () => {
+    // v3.0.5 R5.13 (M0-3 :301 rewrite): window 30 + char budget 4000 (same
+    // shape as the pipeline split) + tokens = totalChars x 0.75, 万-scaled.
+    // Short texts: the budget never shrinks a window -> 42 batches; the
+    // 1250 "main N" texts total 10143 chars -> 7607 tokens -> 0.8 万.
     const wrapper = mountTranslationPanel({ mainSegments: subtitleSegments(1250) })
-    expect(wrapper.find('[data-test="translation-batches"]').text()).toBe("约 42 批")
+    expect(wrapper.find('[data-test="translation-batches"]').text()).toBe(
+      "约 42 批 · 约 0.8 万 token",
+    )
+  })
+
+  it("splits long-text batches by the char budget (more batches than ceil(N/30))", () => {
+    // 60 segments x 200 chars: the 4000-char budget caps a window at 20
+    // segments -> 3 batches (the naive ceil(60/30) would say 2); tokens =
+    // 60 x 200 x 0.75 = 9000 -> 0.9 万.
+    const long = Array.from({ length: 60 }, (_, i) => ({
+      id: `ls-${i + 1}`,
+      version: 1,
+      type: "subtitle" as const,
+      start: i * 5 + 1,
+      end: i * 5 + 5,
+      text: "长".repeat(200),
+      speaker: "",
+    }))
+    const wrapper = mountTranslationPanel({ mainSegments: long })
+    expect(wrapper.find('[data-test="translation-batches"]').text()).toBe(
+      "约 3 批 · 约 0.9 万 token",
+    )
   })
 
   it("lists uncovered ids from the translation notice prop", () => {

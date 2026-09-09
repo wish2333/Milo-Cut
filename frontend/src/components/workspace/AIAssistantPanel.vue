@@ -224,10 +224,45 @@ const translationSourceSegments = computed(() => props.mainSegments ?? props.seg
 const translationDisabled = computed(
   () => !translationSourceSegments.value.some((s) => s.type === "subtitle"),
 )
-// "约 N 批": batch estimate only -- the char-budget split runs on the
-// backend, so the exact count is unknowable here (SPEC M1-6 ruling).
-const estimatedTranslationBatches = computed(() =>
-  Math.ceil(translationSourceSegments.value.length / 30),
+// v3.0.5 R5.13 (SG-5): backend-shaped estimate. Replicate the pipeline's
+// target_windows split (batch window 30 + char budget 4000, same algorithm
+// shape as llm_service.py's window builder) so the batch count tracks the
+// real dispatch under any text-length mix; tokens = totalChars x 0.75
+// (empirical ratio, always marked 约 -- no systematic-drift claims).
+const translationEstimate = computed(() => {
+  const segs = translationSourceSegments.value.filter((s) => s.type === "subtitle")
+  const BATCH_WINDOW = 30
+  const CHAR_BUDGET = 4000
+  let batches = 0
+  let totalChars = 0
+  let start = 0
+  while (start < segs.length) {
+    let end = Math.min(start + BATCH_WINDOW, segs.length)
+    let acc = 0
+    let probe = start
+    while (probe < end) {
+      const segLen = String(segs[probe].text ?? "").length
+      if (probe > start && acc + segLen > CHAR_BUDGET) break
+      acc += segLen
+      probe += 1
+    }
+    end = probe > start ? probe : start + 1
+    batches += 1
+    for (let i = start; i < end; i++) {
+      totalChars += String(segs[i].text ?? "").length
+    }
+    start = end
+  }
+  return {
+    batches,
+    tokensWan: (Math.round(totalChars * 0.75) / 10000).toFixed(1),
+  }
+})
+const estimatedTranslationBatches = computed(
+  () => translationEstimate.value.batches,
+)
+const estimatedTranslationTokensWan = computed(
+  () => translationEstimate.value.tokensWan,
 )
 const translationLanguage = ref<string>(DEFAULT_TRANSLATION_LANGUAGE)
 
@@ -906,7 +941,11 @@ function handleSearchSeek(time: number) {
         data-test="translation-batches"
         class="ml-auto self-center text-[10px] text-gray-400"
       >
-        {{ translationDisabled ? "主轨无字幕" : `约 ${estimatedTranslationBatches} 批` }}
+        {{
+          translationDisabled
+            ? "主轨无字幕"
+            : `约 ${estimatedTranslationBatches} 批 · 约 ${estimatedTranslationTokensWan} 万 token`
+        }}
       </span>
     </button>
 
@@ -1028,7 +1067,7 @@ function handleSearchSeek(time: number) {
       >
         <p class="text-xs text-gray-600">{{ features[2].description }}</p>
         <p class="text-xs text-gray-400">
-          主轨字幕约 {{ estimatedTranslationBatches }} 批，完成后自动切换到新译文轨
+          主轨字幕约 {{ estimatedTranslationBatches }} 批 · 约 {{ estimatedTranslationTokensWan }} 万 token，完成后自动切换到新译文轨
         </p>
         <select
           v-model="translationLanguage"
