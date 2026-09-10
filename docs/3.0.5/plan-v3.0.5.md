@@ -274,11 +274,11 @@ P5: 门禁终检 → 文档回写 → 真机全量回归 → RC → 正式
 
 ### P4-1 R5.6 keep 可感知收口（SuggestionPanel · useEdit · ExportPage；SPEC M5.6）
 
-- [ ] golden 锁先行确认（序 6）
-- [ ] 确认文案直显：SuggestionPanel 确认按钮旁内联小字（:492-500 按钮容器内，DOM 变更不出容器；`:title` :496 保留渐进增强；确认 toast 差异化 keep/删除两文案）
-- [ ] invalidated_count 透传：useEdit.ts :181-202 返回类型 / call 泛型 / 返回对象补键（后端 :2986 已上报、零改动）；重跑 toast「新增 N 条、按保留区间清除 M 条旧区间」（invalidated=0 只报新增）
-- [ ] 导出确认页静态说明一句（ExportPage :415-416 计数行下）；红蓝并存覆层 hover 尾注与 title 语义化 hunk **随 P4-2 与 R5.9 同 commit 合入**（M5.6 裁决 3 合并施工，防同文件 hunk 撕裂——约束③）
-- [ ] 用例 ≥3：直显不依赖 hover / toast 汇报 invalidated 与 new_edits / 导出页说明（覆层面断言随 P4-2 收口补齐）
+- [x] golden 锁先行确认（序 6）——26/26 全绿，输出登记 record-3.0.5-P4-1.md §0
+- [x] 确认文案直显：SuggestionPanel 确认按钮旁内联小字（:492-500 按钮容器内，DOM 变更不出容器；`:title` :496 保留渐进增强；确认 toast 差异化 keep/删除两文案——WorkspacePage handleConfirmEdit 包装改绑）
+- [x] invalidated_count 透传：useEdit.ts :181-202 返回类型 / call 泛型 / 返回对象补键（后端 :2986 已上报、零改动）；重跑 toast「新增 N 条、按保留区间清除 M 条旧区间」（invalidated=0 只报新增）
+- [x] 导出确认页静态说明一句（ExportPage :415-416 计数行下）；红蓝并存覆层 hover 尾注与 title 语义化 hunk **随 P4-2 与 R5.9 同 commit 合入**（M5.6 裁决 3 合并施工，防同文件 hunk 撕裂——约束③）
+- [x] 用例 ≥3：直显不依赖 hover / toast 汇报 invalidated 与 new_edits / 导出页说明（覆层面断言随 P4-2 收口补齐）——实际 +6（1+3+2）
 
 **验收方式**: M-gate 前端 R5.6 ≥3；门禁全绿。
 **验收标准**: 防误解文案不依赖 hover 可见；keep 计算与导出消费语义零改动；golden 锁 describe 全绿。
