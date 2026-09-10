@@ -182,11 +182,13 @@ export function useEdit(
     keep_ranges: number
     delete_ranges: number
     new_edits: number
+    invalidated_count: number
   } | null> {
     const res = await call<{
       keep_ranges: number
       delete_ranges: number
       new_edits: number
+      invalidated_count: number
       project: Project
     }>("generate_subtitle_keep_ranges", padding)
     if (res.success && res.data) {
@@ -196,6 +198,10 @@ export function useEdit(
         keep_ranges: res.data.keep_ranges,
         delete_ranges: res.data.delete_ranges,
         new_edits: res.data.new_edits,
+        // v3.0.5 R5.6 (M5.6 ruling 2): the backend has always reported how
+        // many prior subtitle-trim deletes this re-run invalidated
+        // (project_service :3154); the frontend used to drop it here.
+        invalidated_count: res.data.invalidated_count,
       }
     }
     return null

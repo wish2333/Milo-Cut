@@ -158,6 +158,14 @@ function confirmTitle(item: SuggestionItem): string | undefined {
     : "确认 = 参与裁剪计算（非导出动作）"
 }
 
+// v3.0.5 R5.6 (M5.6 ruling 1): inline hover-free twin of the title above
+// (same wording minus the brackets, sized to sit beside the buttons).
+function confirmHint(item: SuggestionItem): string {
+  return item.action === "keep"
+    ? "确认 = 参与裁剪计算，保留区间将从自动裁剪中扣除，非导出动作"
+    : "确认 = 参与裁剪计算，非导出动作"
+}
+
 // -- Timecode popover (v3.0.4 M4-3 / SPEC M4-2 timecode entry) -----------
 //
 // The panel lives inside Timeline's subtree, so a new emit would need a
@@ -505,6 +513,13 @@ onBeforeUnmount(() => {
             >
               忽略
             </button>
+            <!-- v3.0.5 R5.6 (M5.6 ruling 1): the anti-misreading wording is
+                 rendered inline (hover-free) for manual entries; the :title
+                 above stays as progressive enhancement. -->
+            <span
+              v-if="item.type === 'manual'"
+              class="max-w-[9rem] text-[10px] leading-tight text-ink-muted"
+            >{{ confirmHint(item) }}</span>
           </span>
         </div>
       </div>

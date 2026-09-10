@@ -126,7 +126,7 @@ export interface WorkspaceActionsDeps {
   splitSegment: (id: string, pos: number, snap?: boolean) => Promise<{ ok: boolean; snapOffsetMs: number | null }>
   deleteSegment: (id: string) => Promise<string | null>
   selectEditRange: (start: number, end: number) => void
-  generateSubtitleKeepRanges: (padding: number) => Promise<{ new_edits: number; keep_ranges: number } | null>
+  generateSubtitleKeepRanges: (padding: number) => Promise<{ new_edits: number; keep_ranges: number; invalidated_count: number } | null>
   deleteSubtitleTrimEdits: () => Promise<boolean>
   deleteSilenceSegments: () => Promise<boolean>
   confirmAllSuggestions: () => Promise<unknown>
@@ -790,7 +790,18 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
     const result = await generateSubtitleKeepRanges(subtitleTrimPadding.value)
     statusMessage.value = ""
     if (result) {
-      showToast(`Generated ${result.new_edits} delete ranges from ${result.keep_ranges} subtitle groups`, "success", 5000)
+      // v3.0.5 R5.6 (M5.6 ruling 2): the re-run toast reports what a
+      // re-run actually did -- new ranges added AND prior subtitle-trim
+      // deletes cleared by keep-range overlap (invalidated_count).
+      if (result.invalidated_count > 0) {
+        showToast(
+          `新增 ${result.new_edits} 条、按保留区间清除 ${result.invalidated_count} 条旧区间`,
+          "success",
+          5000,
+        )
+      } else {
+        showToast(`新增 ${result.new_edits} 条`, "success", 5000)
+      }
     } else {
       showToast("Failed to generate subtitle trim ranges", "error", 5000)
     }
