@@ -197,6 +197,22 @@ describe("SuggestionPanel manual-range group (M4-3, P3-7)", () => {
     wrapper.unmount()
   })
 
+  // v3.0.5 R5.6 (M5.6 ruling 1): the anti-misreading wording is rendered
+  // INLINE next to the buttons (hover-free) for manual entries -- the keep
+  // variant additionally states the auto-trim subtraction.
+  it("inline hint: manual entries render the hover-free wording beside the buttons (keep and delete variants)", async () => {
+    const wrapper = mountPanel([
+      manualEdit({ id: "edit-manual-keep1", start: 1, end: 2, action: "keep" }),
+      manualEdit({ id: "edit-manual-del1", start: 10, end: 12, action: "delete" }),
+    ])
+    const keepRow = findItemRow(wrapper, "保留 1.0s")
+    const delRow = findItemRow(wrapper, "删除 2.0s")
+    // visible row text, NOT the title attribute (hover dependency eliminated)
+    expect(keepRow.text()).toContain("确认 = 参与裁剪计算，保留区间将从自动裁剪中扣除，非导出动作")
+    expect(delRow.text()).toContain("确认 = 参与裁剪计算，非导出动作")
+    wrapper.unmount()
+  })
+
   it("group delete: delete_edit_decisions_batch is called with the manual ids and pushSnapshot(['edits']) fires BEFORE the call (order)", async () => {
     const confirmSpy = vi.fn(() => true)
     vi.stubGlobal("confirm", confirmSpy)

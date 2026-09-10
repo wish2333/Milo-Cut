@@ -416,6 +416,11 @@ function formatTimeShort(seconds: number): string {
         {{ confirmedEdits.length }} 处修改 | -{{ formatTimeShort(estimatedSaving) }}
       </span>
     </div>
+    <!-- v3.0.5 R5.6 (M5.6 ruling 3): overlap semantics stated up front on
+         the export confirmation page (hover-free, one static line). -->
+    <p v-if="confirmedEdits.length > 0" class="border-b border-hairline bg-canvas px-6 py-1 text-xs text-ink-muted">
+      保留区间与删除区间重叠时，导出按删除处理
+    </p>
 
     <!-- Progress bar -->
     <div v-if="isExporting && exportProgress" class="border-b border-hairline bg-canvas px-4 py-2">

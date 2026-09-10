@@ -1026,6 +1026,23 @@ function handleTrackCreate(trackId: string, start: number, end: number) {
 // precedent), then the expose returns the edits ProjectPatch envelope which
 // flows through the standard project-updated patch path (App.vue
 // applyProjectPatch). Cancel never reaches here (editor-side cleanup).
+// v3.0.5 R5.6 (M5.6 ruling 1): confirm-action toast differentiates keep vs
+// delete so the trim-vs-export semantics are echoed back at the moment of
+// the click (same wording family as the inline hint in SuggestionPanel).
+async function handleConfirmEdit(editId: string) {
+  const action = edits.value.find((e) => e.id === editId)?.action
+  const ok = await confirmEdit(editId)
+  if (ok) {
+    showToast(
+      action === "keep"
+        ? "已确认保留区间：该区间将从自动裁剪中扣除（非导出动作）"
+        : "已确认删除区间：将参与裁剪计算（非导出动作）",
+      "success",
+      3000,
+    )
+  }
+}
+
 async function handleRangeDecision(payload: { start: number; end: number; action: "delete" | "keep" }) {
   if (!projectRef.value) return
   pushSnapshot(projectRef.value, ["edits"], "手动范围")
@@ -1233,7 +1250,7 @@ onUnmounted(() => {
     @toggle-preview="togglePreviewMode"
     @seek="handleSeek"
     @update-text="handleUpdateText"
-    @confirm-edit="confirmEdit"
+    @confirm-edit="handleConfirmEdit"
     @reject-edit="rejectEdit"
     @start-smart-delete="handleStartSmartDelete"
     @start-subtitle-correction="handleStartSubtitleCorrection"
@@ -1638,7 +1655,7 @@ onUnmounted(() => {
             @confirm-segment="(seg) => handleToggleEditStatus(seg, 'confirmed')"
             @reject-segment="(seg) => handleToggleEditStatus(seg, 'rejected')"
             @delete-segment="(seg) => handleDeleteSegment(seg.id)"
-            @confirm-suggestion="confirmEdit"
+            @confirm-suggestion="handleConfirmEdit"
             @reject-suggestion="rejectEdit"
             @confirm-suggestion-batch="(ids: string[]) => batchUpdateEdits(ids, 'confirmed')"
             @reject-suggestion-batch="(ids: string[]) => batchUpdateEdits(ids, 'rejected')"

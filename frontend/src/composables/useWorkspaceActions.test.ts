@@ -112,13 +112,16 @@ interface DepsOverrides {
   getReviewScope?: WorkspaceActionsDeps["getReviewScope"]
   acceptHighConfidenceCorrections?: WorkspaceActionsDeps["acceptHighConfidenceCorrections"]
   clearCorrections?: WorkspaceActionsDeps["clearCorrections"]
+  // v3.0.5 R5.6: rerun-toast coverage hooks
+  showToast?: WorkspaceActionsDeps["showToast"]
+  generateSubtitleKeepRanges?: WorkspaceActionsDeps["generateSubtitleKeepRanges"]
 }
 
 function makeActions(o: DepsOverrides): WorkspaceActions {
   const noop = () => undefined
   const deps = {
     emit: o.emit,
-    showToast: vi.fn(),
+    showToast: o.showToast ?? vi.fn(),
     getProject: () => o.project.value,
     errorMessage: { value: "" },
     statusMessage: { value: "" },
@@ -151,7 +154,7 @@ function makeActions(o: DepsOverrides): WorkspaceActions {
     splitSegment: vi.fn(async () => ({ ok: true, snapOffsetMs: null })),
     deleteSegment: vi.fn(async () => null),
     selectEditRange: noop,
-    generateSubtitleKeepRanges: vi.fn(async () => null),
+    generateSubtitleKeepRanges: o.generateSubtitleKeepRanges ?? vi.fn(async () => null),
     deleteSubtitleTrimEdits: vi.fn(async () => true),
     deleteSilenceSegments: vi.fn(async () => true),
     confirmAllSuggestions: vi.fn(async () => undefined),
@@ -576,5 +579,50 @@ describe("batch accept/clear -- three-state scope (v3.0.5 R5.4)", () => {
     await actions.handleAcceptHighConfidence()
     expect(acceptHighConfidenceCorrections).not.toHaveBeenCalled()
     expect(confirmMock).not.toHaveBeenCalled()
+  })
+})
+
+// ------------------------------------------------------------------
+// v3.0.5 R5.6 (M5.6 ruling 2): rerun toast reports invalidated_count
+// ------------------------------------------------------------------
+
+describe("handleSubtitleTrim -- rerun toast reports invalidated_count (v3.0.5 R5.6)", () => {
+  function setup(result: { new_edits: number; keep_ranges: number; invalidated_count: number } | null) {
+    const showToast = vi.fn()
+    const actions = makeActions({
+      project: ref(mockProject()),
+      pendingCorrections: ref<CorrectionReviewEntry[]>([]),
+      pushSnapshot: vi.fn(),
+      emit: vi.fn(),
+      showToast,
+      generateSubtitleKeepRanges: vi.fn(async () => result),
+    })
+    return { actions, showToast }
+  }
+
+  it("invalidated > 0: reports new additions AND ranges cleared by keep overlap", async () => {
+    const { actions, showToast } = setup({ new_edits: 5, keep_ranges: 3, invalidated_count: 2 })
+    await actions.handleSubtitleTrim()
+    expect(showToast).toHaveBeenCalledWith(
+      "新增 5 条、按保留区间清除 2 条旧区间",
+      "success",
+      5000,
+    )
+  })
+
+  it("invalidated = 0: only reports the new additions", async () => {
+    const { actions, showToast } = setup({ new_edits: 4, keep_ranges: 2, invalidated_count: 0 })
+    await actions.handleSubtitleTrim()
+    expect(showToast).toHaveBeenCalledWith("新增 4 条", "success", 5000)
+  })
+
+  it("null result (bridge failure): error toast, no count wording", async () => {
+    const { actions, showToast } = setup(null)
+    await actions.handleSubtitleTrim()
+    expect(showToast).toHaveBeenCalledWith(
+      "Failed to generate subtitle trim ranges",
+      "error",
+      5000,
+    )
   })
 })
