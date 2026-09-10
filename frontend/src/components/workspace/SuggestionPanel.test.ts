@@ -31,7 +31,7 @@ import type { PropType } from "vue"
 import SuggestionPanel from "./SuggestionPanel.vue"
 import { useAnalysis } from "@/composables/useAnalysis"
 import { mockEditDecision, mockProject, mockTimeline, mockSegment } from "@/test/helpers/mockProject"
-import type { EditDecision, Project } from "@/types/project"
+import type { EditDecision, Project, Segment } from "@/types/project"
 
 // ---------------------------------------------------------------------------
 // Bridge mock: call capture (order via invocationCallOrder) + no-op events
@@ -55,6 +55,9 @@ const Harness = defineComponent({
   components: { SuggestionPanel },
   props: {
     edits: { type: Array as PropType<EditDecision[]>, default: () => [] },
+    // v3.0.5 R5.11 timecode-entry coverage hooks.
+    currentTime: { type: Number, default: undefined },
+    segments: { type: Array as PropType<Segment[]>, default: () => [] },
   },
   setup(props) {
     // Non-null project fixture: useAnalysis snapshots/assigns through it.
@@ -91,8 +94,9 @@ const Harness = defineComponent({
     return () =>
       h(SuggestionPanel, {
         analysisResults: [],
-        segments: [],
+        segments: props.segments,
         edits: props.edits,
+        currentTime: props.currentTime,
         // Same wiring as Timeline.vue:781-785 + WorkspacePage.vue:1546-1550.
         onConfirmEdit: (id: string) => void analysis.confirmEdit(id),
         onRejectEdit: (id: string) => void analysis.rejectEdit(id),
@@ -456,6 +460,52 @@ describe("SuggestionPanel manual-range delete affordances (smoke-fix 2)", () => 
     expect(menu!.textContent).toContain("确认此项")
     expect(menu!.textContent).toContain("忽略此项")
     expect(menu!.textContent).not.toContain("删除此项")
+    wrapper.unmount()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// v3.0.5 R5.11: timecode entry upgrades -- mm:ss.s parsing, 取播放头,
+// timeline-extent clamp, success toast.
+// ---------------------------------------------------------------------------
+
+describe("SuggestionPanel timecode entry upgrades (v3.0.5 R5.11)", () => {
+  function extentSegments(): Segment[] {
+    // timeline extent = 100s
+    return [mockSegment({ id: "seg-ext", start: 0, end: 100 })]
+  }
+
+  it("accepts mm:ss.s and plain seconds alike (1:12.5 -> 72.5)", async () => {
+    const wrapper = mount(Harness, { props: { segments: extentSegments() } })
+    await openTimecode(wrapper)
+    await wrapper.find('[data-test="timecode-start"]').setValue("1:12.5")
+    await wrapper.find('[data-test="timecode-end"]').setValue("75")
+    await wrapper.find('[data-test="timecode-submit"]').trigger("click")
+    await flushPromises()
+    expect(callMock).toHaveBeenCalledWith("add_range_decision", 72.5, 75, "delete")
+    const panel = wrapper.getComponent(SuggestionPanel)
+    expect(panel.emitted("toast")?.[0]).toEqual(["已添加删除范围 72.5s - 75s"])
+    wrapper.unmount()
+  })
+
+  it("取播放头 prefills the start field from currentTime", async () => {
+    const wrapper = mount(Harness, { props: { currentTime: 72.5 } })
+    await openTimecode(wrapper)
+    await wrapper.find('[data-test="timecode-take-playhead"]').trigger("click")
+    const start = wrapper.find('[data-test="timecode-start"]')
+    expect((start.element as HTMLInputElement).value).toBe("72.5")
+    wrapper.unmount()
+  })
+
+  it("clamps out-of-range input to the timeline extent before submitting", async () => {
+    const wrapper = mount(Harness, { props: { segments: extentSegments() } })
+    await openTimecode(wrapper)
+    await wrapper.find('[data-test="timecode-start"]').setValue("10")
+    await wrapper.find('[data-test="timecode-end"]').setValue("150")
+    await wrapper.find('[data-test="timecode-submit"]').trigger("click")
+    await flushPromises()
+    // end clamped to the last segment end (100), then submitted.
+    expect(callMock).toHaveBeenCalledWith("add_range_decision", 10, 100, "delete")
     wrapper.unmount()
   })
 })

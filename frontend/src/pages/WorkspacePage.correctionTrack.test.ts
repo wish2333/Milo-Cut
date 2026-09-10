@@ -355,6 +355,14 @@ describe("WorkspacePage correction review modal (M2-4 D)", () => {
     ;(pageDeps().showSubtitleFullscreen as { value: boolean }).value = true
     await flushPromises()
 
+    // v3.0.5 R5.11: the modal now defaults to the ACTIVE track scope
+    // (main-track view here), so the track-scoped entry is filtered out
+    // until the「全部」toggle opens the unfiltered list (the v3.0.4 view
+    // this test was written against).
+    expect(wrapper.findAll('[data-test="correction-track-badge"]')).toHaveLength(0)
+    await wrapper.find('[data-test="review-scope-all"]').trigger("click")
+    await flushPromises()
+
     // Exactly one badge -- the track-scoped entry; "" = main track, none.
     const badges = wrapper.findAll('[data-test="correction-track-badge"]')
     expect(badges).toHaveLength(1)
