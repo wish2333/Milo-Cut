@@ -349,6 +349,7 @@ defineExpose({ metrics })
       }"
       :update-time="(sid, f, v) => updateTrackTime?.(laneItem.track.id, sid, f, v)"
       :build-mode="buildMode"
+      :global-edit-mode="globalEditMode"
       style="z-index: 3"
       @seek="(t: number) => emit('seek', t)"
       @toggle-collapse="(id: string) => emit('toggle-collapse', id)"
@@ -356,6 +357,7 @@ defineExpose({ metrics })
       @clear-track="emit('clear-track', laneItem.track.id)"
       @delete-track="emit('delete-track', laneItem.track.id)"
       @create-at="(time: number) => createAtInTrack?.(laneItem.track.id, time)"
+      @toast="(msg: string) => emit('toast', msg)"
     />
 
     <!-- Row playhead (R5.3): rendered only while the playhead is in THIS row -->

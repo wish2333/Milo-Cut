@@ -525,9 +525,15 @@ function handleSearchSeek(time: number) {
          (mode switch, cards, progress, results, forms) scrolls together. -->
     <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
 
-    <!-- Error message -->
+    <!-- Error message. v3.0.5 R5.14 (SG2-6): render-layer conditional
+         guidance -- when the backend rejected a same-language re-translation,
+         append the lane way-out. NOT built in useLlmTasks (data layer must
+         stay task-type neutral). -->
     <div v-if="errorMsg" class="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">
-      {{ errorMsg }}
+      {{ errorMsg
+      }}<template v-if="errorMsg.includes('同语言翻译轨已存在')"
+        >（波形区右键该轨 → 清空轨道/删除轨道）</template
+      >
     </div>
 
     <!-- v3.0.4 M1-6 + v3.0.5 R5.3: translation gap notice -- readable,

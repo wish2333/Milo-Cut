@@ -621,10 +621,13 @@ watch(playheadSegmentId, (id) => {
         >
           合并选中
         </button>
+        <!-- v3.0.5 R5.9: Chinese two-state tooltip, rail-aware (the edit
+             mode freezes extension-lane trim/structure ops only; the main
+             track's 2.x baseline gestures stay free -- deliberate). -->
         <button
           class="text-xs px-2 py-1 rounded-md transition-all duration-150 active:scale-95"
           :class="globalEditMode ? 'mc-button-primary' : 'mc-button-secondary'"
-          :title="globalEditMode ? 'Exit edit mode' : 'Edit all subtitles'"
+          :title="globalEditMode ? '退出编辑模式（编辑模式为文本校对独占态：副轨 trim 与结构操作冻结；主轨不受限）' : '进入整批字幕校对'"
           @click="emit('toggle-edit-mode')"
         >
           {{ editSweepLabel }}
