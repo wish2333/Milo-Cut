@@ -99,11 +99,15 @@ interface EditRangeBlock {
   edit: EditDecision
   /** v3.0.4 M4-3 (P3-8): three-state inputs -- action drives the stripe
    * color axis (red delete / blue keep), status drives the opacity axis
-   * (pending dims). Rejected is NOT filtered here (status quo kept). */
+   * (pending dims). Rejected ranges are filtered out entirely since
+   * v3.0.5 R5.10 (they leave the field -- zero visual noise). */
   action: EditDecision["action"]
   status: EditDecision["status"]
   leftPercent: number
   widthPercent: number
+  /** v3.0.5 R5.6 ruling 3: this keep/delete range intersects an
+   * opposite-action range -- the export resolves overlaps as delete. */
+  overlapsOpposite?: boolean
 }
 
 const segmentStateMap = computed(() => buildSegmentStateMap(props.segments, props.edits))
@@ -144,8 +148,16 @@ const visibleEditRanges = computed<EditRangeBlock[]>(() => {
   const vd = metrics.viewDuration.value
   if (vd <= 0) return []
 
-  return props.edits
-    .filter(e => e.target_type === "range" && e.end > vs && e.start < ve)
+  // v3.0.5 R5.10 (E-6): rejected ranges are HIDDEN (new branch -- the
+  // confirmed/pending faces below are untouched, golden-locked).
+  const blocks: EditRangeBlock[] = props.edits
+    .filter(
+      e =>
+        e.target_type === "range" &&
+        e.status !== "rejected" &&
+        e.end > vs &&
+        e.start < ve,
+    )
     .map(e => {
       const clampStart = Math.max(e.start, vs)
       const clampEnd = Math.min(e.end, ve)
@@ -157,6 +169,22 @@ const visibleEditRanges = computed<EditRangeBlock[]>(() => {
         widthPercent: ((clampEnd - clampStart) / vd) * 100,
       }
     })
+  // v3.0.5 R5.6 ruling 3: keep x delete overlap pre-aggregation -- one
+  // pairwise pass here in the computed (the render layer stays logic-free);
+  // both members of an intersecting opposite-action pair get the tail-note
+  // flag ("export resolves the overlap as delete").
+  for (const a of blocks) {
+    if (a.overlapsOpposite) continue
+    for (const b of blocks) {
+      if (b === a || b.action === a.action) continue
+      if (a.edit.start < b.edit.end && b.edit.start < a.edit.end) {
+        a.overlapsOpposite = true
+        b.overlapsOpposite = true
+        break
+      }
+    }
+  }
+  return blocks
 })
 
 // v3.0.4 M4-3 (P3-8): overlay three-state styling. Two orthogonal axes:
@@ -165,6 +193,21 @@ const visibleEditRanges = computed<EditRangeBlock[]>(() => {
 // v3.0.3 stripe -- it must stay that way (SPEC M4-3 hard requirement).
 const EDIT_RANGE_RED_BOX = "border border-red-400/60 bg-red-300/30"
 const EDIT_RANGE_BLUE_BOX = "border border-blue-400/60 bg-blue-300/30"
+
+// v3.0.5 R5.9 (M5.6 ruling 3 same hunk): semantic Chinese tooltip per
+// action x status, with the overlap tail note when applicable.
+const EDIT_STATUS_LABELS: Record<EditDecision["status"], string> = {
+  pending: "待确认",
+  confirmed: "已确认",
+  rejected: "已拒绝",
+}
+
+function editRangeTitle(block: EditRangeBlock): string {
+  const kind = block.action === "keep" ? "保留范围" : "删除范围"
+  const status = EDIT_STATUS_LABELS[block.status] ?? block.status
+  const base = `${kind} ${block.edit.start.toFixed(1)}s - ${block.edit.end.toFixed(1)}s（${status}）`
+  return block.overlapsOpposite ? `${base}；与重叠区间导出按删除处理` : base
+}
 const EDIT_RANGE_RED_HATCH = "rgba(239,68,68,0.15)"
 const EDIT_RANGE_BLUE_HATCH = "rgba(59,130,246,0.15)"
 
@@ -378,16 +421,19 @@ onUnmounted(() => {
          v3.0.4 M4-3 (P3-8): three-state -- color axis = action (red
          delete / blue keep), opacity axis = status (pending dims to
          opacity-50). confirmed delete renders the v3.0.3 red stripe
-         byte-for-byte; rejected is NOT filtered (status quo kept). -->
+         byte-for-byte. v3.0.5 R5.10: rejected ranges are filtered out
+         (they leave the field). v3.0.5 R5.9: title is semantic Chinese
+         per action x status, with the overlap tail note. -->
     <div
       v-for="rangeBlock in visibleEditRanges"
       :key="rangeBlock.edit.id"
+      data-test="edit-range-overlay"
       :class="editRangeClasses(rangeBlock)"
       :style="{
         left: rangeBlock.leftPercent + '%',
         width: rangeBlock.widthPercent + '%',
       }"
-      :title="`Delete range: ${rangeBlock.edit.start.toFixed(1)}s - ${rangeBlock.edit.end.toFixed(1)}s`"
+      :title="editRangeTitle(rangeBlock)"
     >
       <div class="h-full w-full" :style="editRangeHatchStyle(rangeBlock)" />
     </div>

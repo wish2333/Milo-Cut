@@ -3106,10 +3106,15 @@ class MiloCutApi(Bridge):
                 and s.id not in bound_main_ids
             ]
             if not gap_ids:
+                # v3.0.5 R5.9: bare lang code -> display name + code (the
+                # map lookup is total; start_translation validates the key).
+                lang_display = _TRANSLATION_LANGUAGES.get(
+                    target_language, target_language
+                )
                 return {
                     "success": False,
                     "error": (
-                        f"同语言翻译轨已存在（{target_language}），"
+                        f"同语言翻译轨已存在（{lang_display}（{target_language}）），"
                         "可清空或删除该轨后重试"
                     ),
                 }
