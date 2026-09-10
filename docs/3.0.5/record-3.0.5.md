@@ -20,7 +20,8 @@
 - **P2-2 完成（R5.4 前端半）+ beta.2 节点（P2 收官）**：undo 三态层（correctionUndoLayers 第二形参，null 三层并集）+ D7c patch 消费（移除 switch_timeline 全量替换，无 patch 回落防御）+ SG-4 确认文案三态（前端 scope 计数/后端如实计数分工）；clear 改 reload 不吞他轨待审；「全部」入口随 R5.11（机制全通 F3 直测）；前端 +7 例；零反转；**tag `v3.0.5-beta.2`**（`77d2827`）；beta.2 期望达标（pytest 862 ≥859 / vitest 866·865 ≥854·853）；冒烟后置登记 record §5。
 - **P3-1 完成（R5.5，Phase 3 全部，序 5 兑现）**：纠错取消轮询化——外层 `with`+`as_completed` 改 executor 变量 + `wait(1.0, FIRST_COMPLETED)` 轮询 + finally 非阻塞 shutdown + done 按批序消化 + 429 降级双层 break（复刻翻译侧 smoke-fix-1c 样板）；批内 Cancelled 即退不消化余批；取消三返回保持裸 envelope（裁决 5）；**MF2-1 记账判据冻结**：串行循环逐字不动（not-corrections 判据，B5 锁面例防误复刻）；既有纠错断言零改动；后端 +5 例；零反转；门禁 exit 0（pytest **867** ≥863 / vitest 持平 866·865）；取消手感真机冒烟并入 beta.3 轮。
 - **P4-1 完成（R5.6 keep 可感知收口）**：序 6 golden 锁先行 26/26 确认；确认文案直显（SuggestionPanel 按钮容器内内联小字，keep/delete 两变体，:title 保留）+ 确认 toast 差异化（handleConfirmEdit 包装）+ invalidated_count 透传（useEdit 类型只增，重跑 toast「新增 N 条、按保留区间清除 M 条旧区间」）+ 导出页静态说明一句；红蓝覆层 hunk 随 P4-2/R5.9 同 commit（约束③）；keep 计算与导出消费零改动；前端 +6 例；零反转；门禁 exit 0（pytest 867 持平 / vitest **872·871** +6）。
-- **P4 续**：未开始（下一序 = P4-2 R5.7+R5.9+R5.10+R5.14 覆层/文案/守卫族——约束③ 同 commit 族；动手前复跑 golden 锁）。
+- **P4-2 完成（R5.7+R5.9+R5.10+R5.14 覆层/文案/守卫族，约束③ 同 commit）**：golden 锁先行 26/26；TrackLane globalEditMode 守卫（trim 门=undefined 只读语义 + 菜单三结构项/建段拦截 + toast 纯增，两父透传，SG-3 共享层零触碰 + 主轨反向断言锁）；覆层 rejected 退场（E-6）+ title 中文语义化 + keep×delete 相交预聚合尾注（R5.6③ 兑现）；建段 toggle 显示门改绑半亮 + 气泡 Esc/点外消泡；Timeline title 中文化；main.py 拒绝文案显示名 1 行；R5.14 渲染层拼接；README/toggle 冻结矩阵文档化；净增 +7 / 反转 2 处（rejected 例 + findOverlays 选择器，§3 登记）；门禁 exit 0（pytest 867 持平 / vitest **879·878**）。
+- **P4 续**：未开始（下一序 = P4-3 R5.11+R5.15+R5.16 审阅体验与清理批——序 8 落点，基线已含 P2 ✓）。
 
 ## 1. 分步记录索引
 
@@ -37,7 +38,8 @@
 | P2-1 | record-3.0.5-P2-1.md | 已完成（R5.4 后端半；序 3 兑现；追认 1 行 + R0-3 排除面扩充登记） | `bd19577` → merge `81feae8` |
 | P2-2 | record-3.0.5-P2-2.md | 已完成（R5.4 前端半；零反转；beta.2 tag 落地） | `481780a` → merge `77d2827`（tag `v3.0.5-beta.2`） |
 | P3-1 | record-3.0.5-P3-1.md | 已完成（R5.5 纠错取消轮询化；序 5 兑现；MF2-1 冻结；零反转；门禁 exit 0） | `a2751f4` → merge `ae45b0c` |
-| P4-1 | record-3.0.5-P4-1.md | 已完成（R5.6 keep 可感知收口；golden 锁先行；零反转；门禁 exit 0） | 代码 commit → merge（见 record §6） |
+| P4-1 | record-3.0.5-P4-1.md | 已完成（R5.6 keep 可感知收口；golden 锁先行；零反转；门禁 exit 0） | `0d3b6ce` → merge `ca21f67` |
+| P4-2 | record-3.0.5-P4-2.md | 已完成（R5.7+R5.9+R5.10+R5.14 守卫/覆层/文案族；约束③ 同 commit；反转 2 处登记；门禁 exit 0） | 代码 commit → merge（见 record §6） |
 | P4-1 | record-3.0.5-P4-1.md | 未开始 | （R5.6 keep 可感知收口） |
 | P4-2 | record-3.0.5-P4-2.md | 未开始 | （R5.7+R5.9+R5.10+R5.14 覆层/文案/守卫族——约束③ 同 commit 族） |
 | P4-3 | record-3.0.5-P4-3.md | 未开始 | （R5.11+R5.15+R5.16 审阅体验与清理批——序 8 落点，基线须含 P2） |
@@ -95,5 +97,9 @@
 | P2-2 | frontend（4 文件） | useWorkspaceActions：correctionUndoLayers 三态 + getReviewScope dep + 两 handler（快照/patch 消费/SG-4 文案/空集 no-op）；useLlmTasks：两包装三态透传 + patch 返回 + clear reload；WorkspacePage：getReviewScope 装配 | R5.4 | 受控改点 (b) 前端面 + 只增 |
 | P3-1 | core/llm_service.py + tests/test_correction_cancel_poll.py | analyze_subtitle_correction 外层循环轮询化（with→executor+finally / as_completed→wait(1.0, FIRST_COMPLETED) / done 批序消化 / 批内 Cancelled 即退 / 429 双层 break）；串行循环逐字冻结（MF2-1）；+5 例 | R5.5 | 受控改点 (a) + 只增（测试） |
 | P4-1 | frontend（4 改 + 1 新） | SuggestionPanel：内联小字直显（confirmHint）+ :title 保留；WorkspacePage：handleConfirmEdit toast 差异化 + 两绑定点改绑；useEdit：invalidated_count 类型只增；useWorkspaceActions：dep 补键 + 重跑 toast 中文口径；ExportPage：计数行下静态说明；ExportPage.keepNote.test.ts +2 / useWorkspaceActions.test.ts +3（含 DepsOverrides 覆写钩子）/ SuggestionPanel.test.ts +1 | R5.6 | 只增 + 文案改写（裁决 1/2/3） |
+| P4-2 | TrackLane/WaveformRow/WaveformEditor/README | TrackLane：globalEditMode prop + trim 门 + 菜单/建段 guardEditMode + toast emit；两父透传 + 转发；双 toggle title + README 冻结矩阵文档化 | R5.7 | 受控（M5.7 裁决 1/2/3） |
+| P4-2 | SegmentBlocksLayer.vue | visibleEditRanges rejected 过滤（E-6 新增分支）+ 相交预聚合 overlapsOpposite + editRangeTitle 中文语义化 + data-test=edit-range-overlay | R5.10/R5.9/R5.6③ | 只增 + E-6 |
+| P4-2 | WaveformEditor.vue + Timeline.vue + main.py + AIAssistantPanel.vue | 建段 toggle 显示门改绑（半亮「建段（已暂停）」）+ 气泡 Esc/点外消泡两 document 监听；编辑态 title 中文化；拒绝文案显示名映射（后端 1 处）；错误区渲染层条件拼接 | R5.10/R5.9/R5.14 | 显示面/文案/监听只增 + 登记改点 |
+| P4-2 | tests（3 文件） | SegmentBlocksLayer：rejected 反转 + findOverlays data-test 追认 + 相交/单例 title 2 例；TrackLane：冻结矩阵 4 例；SegmentBlock：主轨反向断言 1 例（mountBlock 增类型钩子） | R5.7/R5.10 | 追认反转 2 处 + 净增 +7 |
 
 （后续 phase 按 SPEC M5.0-M5.8 触点表逐 hunk 登记；每条 diff 必须对应一个 R5.x 编号，无对应者补登记或回退。）

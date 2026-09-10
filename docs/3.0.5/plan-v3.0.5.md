@@ -286,10 +286,10 @@ P5: 门禁终检 → 文档回写 → 真机全量回归 → RC → 正式
 
 ### P4-2 R5.7 + R5.9 + R5.10 + R5.14 覆层/文案/守卫族（TrackLane · WaveformEditor · SegmentBlocksLayer · Timeline · main.py 1 行；**约束③ 同 commit 族**）
 
-- [ ] **约束③ 同 commit 族（硬约束）**：R5.7 覆层/tooltip 文案、R5.9、R5.10（含 R5.6③ 覆层 title 相交尾注）同 commit 族合入（WaveformEditor/SegmentBlocksLayer 防冲突）；R5.14 与 R5.9 显示名半条同 commit 施工
-- [ ] R5.7（SPEC M5.7）：TrackLane 增 `globalEditMode` prop + trim 门 `:update-time="globalEditMode ? undefined : updateTime"`（WaveformRow :350 / WaveformEditor :1550 附近两父透传）；lane 三结构项（:190/:196/:202）编辑态拦截 + `toast` emit 纯增 + 文案「请退出编辑模式后重试」；**严禁**在共享 SegmentBlock/SegmentBlocksLayer 内无差别拦截（SG-3）；双 toggle title 与 README 写明冻结矩阵 + 主/副轨不对称理由（焦点 4a）
-- [ ] R5.9：覆层 title 按 action×status 中文语义化（:390，含相交尾注）+ Timeline tooltip 中文化并轨感知（:625）+ main.py 重译拒绝文案显示名（:3002-3005，1 行）；R5.10：visibleEditRanges **新增** rejected 过滤条件（E-6 只增，confirmed/pending 面 golden 锁零触碰）+ 建段 toggle 显示态改绑实际门（「建段（已暂停）」半亮）+ 气泡 Esc 关闭与点外消泡；R5.14：渲染层条件拼接指引（AIAssistantPanel :470-472 按「同语言翻译轨已存在」子串，不在 useLlmTasks 数据层拼——SG2-6；文案拼接无断言面，M-gate 豁免明示）
-- [ ] 用例：R5.7 ≥4（trim 拦截 / lane 三项拦截 / 退出恢复 / **主轨 trim 反向断言：globalEditMode ON 主轨仍可拖**）；R5.10+R5.11 合并 ≥2 的 R5.10 半边（rejected 退场）；**断言反转登记：SegmentBlocksLayer.test.ts:364/:366 反转 + findOverlays 选择器追认制登记（非 expect 行）随本步落 record 反转清单**
+- [x] **约束③ 同 commit 族（硬约束）**：R5.7 覆层/tooltip 文案、R5.9、R5.10（含 R5.6③ 覆层 title 相交尾注）同 commit 族合入（WaveformEditor/SegmentBlocksLayer 防冲突）；R5.14 与 R5.9 显示名半条同 commit 施工
+- [x] R5.7（SPEC M5.7）：TrackLane 增 `globalEditMode` prop + trim 门 `:update-time="globalEditMode ? undefined : updateTime"`（WaveformRow :350 / WaveformEditor :1550 附近两父透传）；lane 三结构项（:190/:196/:202）编辑态拦截 + `toast` emit 纯增 + 文案「请退出编辑模式后重试」（建段 create-at 同拦）；**严禁**在共享 SegmentBlock/SegmentBlocksLayer 内无差别拦截（SG-3，F-r1 反向断言锁）；双 toggle title 与 README 写明冻结矩阵 + 主/副轨不对称理由（焦点 4a）
+- [x] R5.9：覆层 title 按 action×status 中文语义化（:390，含相交尾注）+ Timeline tooltip 中文化并轨感知（:625）+ main.py 重译拒绝文案显示名（:3002-3005，1 行）；R5.10：visibleEditRanges **新增** rejected 过滤条件（E-6 只增，confirmed/pending 面 golden 锁零触碰）+ 建段 toggle 显示态改绑实际门（「建段（已暂停）」半亮）+ 气泡 Esc 关闭与点外消泡；R5.14：渲染层条件拼接指引（AIAssistantPanel :470-472 按「同语言翻译轨已存在」子串，不在 useLlmTasks 数据层拼——SG2-6；文案拼接无断言面，M-gate 豁免明示）
+- [x] 用例：R5.7 ≥4（trim 拦截 / lane 三项拦截 / 退出恢复 / **主轨 trim 反向断言：globalEditMode ON 主轨仍可拖**）；R5.10+R5.11 合并 ≥2 的 R5.10 半边（rejected 退场）；**断言反转登记：SegmentBlocksLayer.test.ts:364/:366 反转 + findOverlays 选择器追认制登记（非 expect 行）随本步落 record 反转清单**——净增 +7、反转 2 处，record-3.0.5-P4-2.md §2/§3
 
 **验收方式**: M-gate 前端 R5.7 ≥4 + R5.10 半边；门禁全绿（动手前序 6 复跑）。
 **验收标准**: 编辑态副轨 trim/lane 结构项被拦有中文 toast、退出全恢复；主轨手势矩阵既有断言零改动；golden 锁 describe 全绿。
