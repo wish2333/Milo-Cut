@@ -297,11 +297,11 @@ P5: 门禁终检 → 文档回写 → 真机全量回归 → RC → 正式
 
 ### P4-3 R5.11 + R5.15 + R5.16 审阅体验与清理批（useLlmTasks · WorkspacePage · AIAssistantPanel · useWorkspaceActions · perf 例；**序 8 落点**）
 
-- [ ] **序 8 前置（硬约束）**：R5.11 开发基线必须包含 P2 的 useWorkspaceActions.ts 改造（同文件族 + pendingCorrections 消费面）——**P4∥P1-P3 并行假设的唯一显式收窄点**，本步开工前置 = P2 已合入
-- [ ] R5.11：审阅 modal 按 activeListTrackId 过滤 + 「全部」切换（「全部」= 现状不过滤）；启动新纠错 reset 延后至新结果返回（useLlmTasks :308-313；消费 lastTranslationCompletion——结构已由 P1-4 序 7 定形）；时间码 mm:ss.s 解析兼容纯秒 + 「取播放头」+ clamp 回显 + 成功 toast
-- [ ] R5.15：删除/级联删除 toast 补「已删除 N 段，可 Ctrl+Z 撤销」（:504/:539；整轨 N = getProject() 该轨 segments 数；级联附「及其关联数据」；不加确认框——record-3.0.4 §7.1 裁决维持）
-- [ ] R5.16：useRowLayout.perf.test.ts 根修（确定性计时 / 注入 clock，移除墙钟阈值）；根修完成 → 豁免口径退役、门禁按全绿判销账；未完成 → 维持豁免并按超期决策树回池（缓冲阀）
-- [ ] 用例：R5.10+R5.11 合并 ≥2 的 R5.11 半边（按轨过滤 / 时间码）+ R5.15 级联删除计数 1 例（整轨 N 断言面，SG2-5）
+- [x] **序 8 前置（硬约束）**：R5.11 开发基线必须包含 P2 的 useWorkspaceActions.ts 改造（同文件族 + pendingCorrections 消费面）——**P4∥P1-P3 并行假设的唯一显式收窄点**，本步开工前置 = P2 已合入（基线核对 ✓，record §0）
+- [x] R5.11：审阅 modal 按 activeListTrackId 过滤 + 「全部」切换（「全部」= 现状不过滤）；启动新纠错 reset 延后至新结果返回（useLlmTasks :308-313；消费 lastTranslationCompletion——结构已由 P1-4 序 7 定形）；时间码 mm:ss.s 解析兼容纯秒 + 「取播放头」+ clamp 回显 + 成功 toast
+- [x] R5.15：删除/级联删除 toast 补「已删除 N 段，可 Ctrl+Z 撤销」（:504/:539；整轨 N = getProject() 该轨 segments 数；级联附「及其关联数据」；不加确认框——record-3.0.4 §7.1 裁决维持）
+- [x] R5.16：useRowLayout.perf.test.ts 根修（确定性计时 / 注入 clock，移除墙钟阈值）；根修完成 → 豁免口径退役、门禁按全绿判销账（vitest 883/883 首次全绿，R0-3 白名单追认 3 行）
+- [x] 用例：R5.10+R5.11 合并 ≥2 的 R5.11 半边（按轨过滤 / 时间码）+ R5.15 级联删除计数 1 例（整轨 N 断言面，SG2-5）——时间码族 +3 / 级联 +1 / badge 例按过滤行为追认改写，record §2/§3
 
 **验收方式**: M-gate 前端 R5.11 半边 + R5.15 1 例；门禁全绿。
 **验收标准**: 主/副轨审阅互不稀释；启动纠错无「暂无」假象；时间码三态反馈齐全。
