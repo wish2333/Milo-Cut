@@ -257,10 +257,10 @@ P5: 门禁终检 → 文档回写 → 真机全量回归 → RC → 正式
 
 ### P3-1 R5.5 纠错取消轮询化（core/llm_service.py；SPEC M5.5；**序 5 独立成相**）
 
-- [ ] **序 5**：独立成相，可与 P1/P2 并行开发，合入按 P1 → P3 序（(a) :1116-1187 与 (d)/(f) 区间无重叠）；**R5.1×R5.5 主从**：取消判据措辞复用 P1-2 确立的「事件优先 + 字符串兜底」，样板复刻翻译侧 smoke-fix-1c（:1848-1876 + finally :1930-1934）
-- [ ] 外层循环轮询化（受控改点 (a)）：`with` 改 executor 变量 + try/finally 非阻塞 shutdown；as_completed 改 `wait(timeout=1.0, return_when=FIRST_COMPLETED)`；done 按 batch_idx 排序消化（ledger/progress 序稳定）；429 降级改「置标志 + 双层 break」；串行循环 :1171-1187 同改、逐批 cancel 检查保留（:1173）
-- [ ] **MF2-1 记账判据冻结**：串行循环记账保持 :1182-1185 not-corrections 判据，**不复刻**翻译侧 :1947-1953 error 判据；该既有不对称登记 record §8 遗留，不顺手统一
-- [ ] 用例 ≥4：取消 1s（栅栏法复刻 :139-172）/ 聚合等价（锁 corrections_by_index + total_usage + ledger 集合，不锁 list 顺序）/ 429×取消两交织（转串行后取消 pending 零执行；轮询内降级两循环退出无悬挂）/「串行 × parse 失败」锁面例（parse-None 批仍记 failed）
+- [x] **序 5**：独立成相，可与 P1/P2 并行开发，合入按 P1 → P3 序（(a) :1116-1187 与 (d)/(f) 区间无重叠）；**R5.1×R5.5 主从**：取消判据措辞复用 P1-2 确立的「事件优先 + 字符串兜底」，样板复刻翻译侧 smoke-fix-1c（:1848-1876 + finally :1930-1934）
+- [x] 外层循环轮询化（受控改点 (a)）：`with` 改 executor 变量 + try/finally 非阻塞 shutdown；as_completed 改 `wait(timeout=1.0, return_when=FIRST_COMPLETED)`；done 按 batch_idx 排序消化（ledger/progress 序稳定）；429 降级改「置标志 + 双层 break」；串行循环 :1171-1187 同改、逐批 cancel 检查保留（:1173）
+- [x] **MF2-1 记账判据冻结**：串行循环记账保持 :1182-1185 not-corrections 判据，**不复刻**翻译侧 :1947-1953 error 判据；该既有不对称登记 record §8 遗留，不顺手统一（→ record-3.0.5-P3-1.md §5 登记）
+- [x] 用例 ≥4：取消 1s（栅栏法复刻 :139-172）/ 聚合等价（锁 corrections_by_index + total_usage + ledger 集合，不锁 list 顺序）/ 429×取消两交织（转串行后取消 pending 零执行；轮询内降级两循环退出无悬挂）/「串行 × parse 失败」锁面例（parse-None 批仍记 failed）——实际 +5（tests/test_correction_cancel_poll.py）
 
 **验收方式**: M-gate 后端 R5.5 ≥4；门禁全绿（P3 末期望 pytest ≥863 / vitest 与 beta.2 持平）。
 **验收标准**: 大批量纠错取消约 1s 返回；成功路径聚合等价；纠错既有断言零改动全绿。
