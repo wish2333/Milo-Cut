@@ -150,10 +150,10 @@ gates_redline() {
   echo "  白名单外后端断言删除行数 = ${n_a}"
   [ "$n_a" -eq 0 ] && ok "后端断言白名单外零删改" || bad "白名单外断言删改命中"
 
-  echo "--- R0-3 前端断言白名单外零删改 (期望 = 0; 反转白名单文件 = AIAssistantPanel.test.ts / SegmentBlocksLayer.test.ts, 行粒度由 diff 审查制人工核对) ---"
+  echo "--- R0-3 前端断言白名单外零删改 (期望 = 0; 反转白名单文件 = AIAssistantPanel.test.ts / SegmentBlocksLayer.test.ts / useRowLayout.perf.test.ts [P4-3 追认: R5.16 根修移除 3 行墙钟阈值断言, p50 x2 + best], 行粒度由 diff 审查制人工核对) ---"
   local n_e; n_e=$(git diff "${BASELINE}" -- frontend/src | awk '
     /^\+\+\+ b\// { f = $2 }
-    /^-[[:space:]]*expect\(/ && f !~ /AIAssistantPanel\.test\.ts$/ && f !~ /SegmentBlocksLayer\.test\.ts$/ { c++ }
+    /^-[[:space:]]*expect\(/ && f !~ /AIAssistantPanel\.test\.ts$/ && f !~ /SegmentBlocksLayer\.test\.ts$/ && f !~ /useRowLayout\.perf\.test\.ts$/ { c++ }
     END { print c + 0 }')
   echo "  白名单外 expect 删除行数 = ${n_e}"
   [ "$n_e" -eq 0 ] && ok "前端断言白名单外零删改" || bad "白名单外断言删改命中"

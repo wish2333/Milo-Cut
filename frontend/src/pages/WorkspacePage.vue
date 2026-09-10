@@ -143,15 +143,25 @@ watch(subtitleCorrectionResult, async (result) => {
     }
   }
 })
+// v3.0.5 R5.11: review-list scope filter. Default = the ACTIVE list track
+// ("" = main track) so main/extension reviews never dilute each other; the
+// 「全部」toggle shows the unfiltered list (v3.0.4 status quo) and opens the
+// R5.4 batch-scope null entry (getReviewScope below).
+const reviewScopeAll = ref(false)
+const scopedCorrections = computed(() => {
+  if (reviewScopeAll.value) return pendingCorrections.value
+  const tid = activeListTrackId.value ?? ""
+  return pendingCorrections.value.filter(c => (c.track_id ?? "") === tid)
+})
 const highConfidenceCorrections = computed(() =>
-  pendingCorrections.value.filter((c) => c.confidence >= 0.8),
+  scopedCorrections.value.filter((c) => c.confidence >= 0.8),
 )
 // v3.0.4 smoke-fix 3: persistent open state for the low-confidence
 // review section (default expanded -- sequential confirming is the
 // whole point of the section).
 const lowConfidenceOpen = ref(true)
 const lowConfidenceCorrections = computed(() =>
-  pendingCorrections.value.filter((c) => c.confidence < 0.8),
+  scopedCorrections.value.filter((c) => c.confidence < 0.8),
 )
 
 // v3.0.4 M2-4 D: source-track badge for one review entry. The backend get
@@ -975,11 +985,12 @@ const workspaceActions = createWorkspaceActions({
   highlightResults, hydrateHighlightsFromProject,
   pendingCorrections, loadCorrections, computeDiff,
   acceptCorrection, rejectCorrection, acceptHighConfidenceCorrections, clearCorrections,
-  // v3.0.5 R5.4 (P2-2): the review view's batch scope -- the active list
-  // track IS the review scope (null id = main track view -> ""); the
-  // 「全部」(null) entry arrives with R5.11's review filtering toggle.
+  // v3.0.5 R5.4 (P2-2) + R5.11: the review view's batch scope. The active
+  // list track IS the review scope (null id = main track view -> ""); the
+  // R5.11「全部」toggle opens the deferred null entry (three-state batch
+  // scope: all tracks, snapshot = segments+tracks+analysis union).
   getReviewScope: () => ({
-    trackId: activeListTrackId.value ?? "",
+    trackId: reviewScopeAll.value ? null : (activeListTrackId.value ?? ""),
     trackName: activeListTrackName.value,
   }),
   asr: { asrEngine, asrPluginId, asrSettingsPerEngine, installedEngines, checkEngineReady },
@@ -1782,14 +1793,31 @@ onUnmounted(() => {
             </div>
 
             <!-- Empty -->
-            <p v-else-if="pendingCorrections.length === 0" class="text-sm text-gray-500">
-              暂无待审阅的修正。运行 P1 字幕修正后，修正建议将在此显示供逐条审阅。
+            <p v-else-if="scopedCorrections.length === 0" class="text-sm text-gray-500">
+              当前作用域暂无待审阅的修正（可切换「全部」查看其他轨道）。
             </p>
 
             <!-- Correction list -->
             <template v-else>
               <!-- Batch action bar -->
               <div class="mb-4 flex items-center gap-3">
+                <!-- v3.0.5 R5.11: scope filter toggle (active track / all).
+                     「全部」= the unfiltered v3.0.4 list AND the null batch
+                     scope (all tracks) for the batch buttons below. -->
+                <div class="flex overflow-hidden rounded-md border border-gray-300 text-xs">
+                  <button
+                    class="px-2 py-1.5 transition-colors"
+                    :class="!reviewScopeAll ? 'bg-gray-800 text-white' : 'text-gray-600 hover:bg-gray-50'"
+                    data-test="review-scope-track"
+                    @click="reviewScopeAll = false"
+                  >按当前轨</button>
+                  <button
+                    class="px-2 py-1.5 transition-colors"
+                    :class="reviewScopeAll ? 'bg-gray-800 text-white' : 'text-gray-600 hover:bg-gray-50'"
+                    data-test="review-scope-all"
+                    @click="reviewScopeAll = true"
+                  >全部</button>
+                </div>
                 <button
                   class="rounded-md bg-green-600 px-3 py-1.5 text-xs text-white hover:bg-green-700 disabled:opacity-50"
                   :disabled="highConfidenceCorrections.length === 0"
@@ -1802,7 +1830,7 @@ onUnmounted(() => {
                   @click="handleClearCorrections"
                 >清除全部</button>
                 <span class="text-xs text-gray-400">
-                  共 {{ pendingCorrections.length }} 条
+                  {{ reviewScopeAll ? "全部轨道" : "当前轨道" }} 共 {{ scopedCorrections.length }} 条
                 </span>
               </div>
 

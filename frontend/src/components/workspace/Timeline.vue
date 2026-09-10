@@ -783,6 +783,7 @@ watch(playheadSegmentId, (id) => {
               :edits="edits"
               :segments="segments"
               :pending-correction-count="pendingCorrectionCount ?? 0"
+              :current-time="currentTime ?? 0"
               @confirm-edit="(editId) => emit('confirm-suggestion', editId)"
               @reject-edit="(editId) => emit('reject-suggestion', editId)"
               @confirm-edit-batch="(ids) => emit('confirm-suggestion-batch', ids)"
@@ -790,6 +791,7 @@ watch(playheadSegmentId, (id) => {
               @delete-edit-batch="(ids) => emit('delete-suggestion-batch', ids)"
               @seek="handleSuggestionSeek"
               @review-corrections="emit('open-subtitle-fullscreen')"
+              @toast="(msg: string) => emit('toast', msg)"
             />
 
             <AIAssistantPanel

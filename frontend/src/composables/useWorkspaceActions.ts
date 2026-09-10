@@ -528,7 +528,9 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
       const res = await call<ProjectResponse>("delete_track_segment", trackId, segmentId)
       if (res.success && res.data) {
         emit("project-updated", res.data)
-        showToast("字幕已删除", "success", 2000)
+        // v3.0.5 R5.15: undo affordance in the copy (single segment, N=1;
+        // no confirm dialog -- record-3.0.4 §7.1 ruling stands).
+        showToast("已删除 1 段，可 Ctrl+Z 撤销", "success", 2000)
       } else {
         showToast(res.error ?? "删除副轨字幕失败", "error", 6000)
       }
@@ -559,11 +561,21 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
 
   async function handleDeleteTrack(trackId: string) {
     if (projectRef.value) pushSnapshot(projectRef.value, ["tracks", "bindings"], "删除副轨")
+    // v3.0.5 R5.15: whole-track N is read BEFORE the delete lands (the
+    // cascade also removes bound main-track data -- the toast carries the
+    // undo affordance plus the cascade note).
+    const trackSegments = getProject()?.timelines
+      ?.find(t => t.id === getProject()?.active_timeline_id)
+      ?.transcript?.tracks?.find(tr => tr.id === trackId)?.segments?.length ?? 0
     try {
       const res = await call<ProjectResponse>("delete_track", trackId)
       if (res.success && res.data) {
         emit("project-updated", res.data)
-        showToast("副轨已删除", "success", 3000)
+        showToast(
+          `已删除 ${trackSegments} 段及其关联数据，可 Ctrl+Z 撤销`,
+          "success",
+          3000,
+        )
       } else {
         showToast(res.error ?? "删除副轨失败", "error", 6000)
       }

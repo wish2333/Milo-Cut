@@ -36,7 +36,7 @@ import type {
 } from "@/types/project"
 import type { UndoLayer } from "@/utils/undoRecords"
 import { lastSeenRevision } from "@/utils/revision"
-import { mockAnalysisData, mockProject, mockSegment } from "@/test/helpers/mockProject"
+import { mockAnalysisData, mockProject, mockSegment, mockTimeline } from "@/test/helpers/mockProject"
 
 vi.mock("@/bridge", () => ({
   call: vi.fn(),
@@ -623,6 +623,65 @@ describe("handleSubtitleTrim -- rerun toast reports invalidated_count (v3.0.5 R5
       "Failed to generate subtitle trim ranges",
       "error",
       5000,
+    )
+  })
+})
+
+// ------------------------------------------------------------------
+// v3.0.5 R5.15 (SG2-5): cascade-delete toast carries the real count.
+// ------------------------------------------------------------------
+
+describe("handleDeleteTrack -- cascade toast counts the track's segments (v3.0.5 R5.15)", () => {
+  it("whole-track N = getProject() segment count of that track, with the undo + cascade note", async () => {
+    const base = mockProject()
+    const trackSegments = [
+      mockSegment({ id: "tseg-1" }),
+      mockSegment({ id: "tseg-2", start: 5, end: 8 }),
+      mockSegment({ id: "tseg-3", start: 9, end: 12 }),
+    ]
+    const project = ref(
+      mockProject({
+        timelines: [
+          mockTimeline({
+            transcript: {
+              ...base.timelines[0].transcript,
+              tracks: [
+                {
+                  id: "trk_x",
+                  role: "extension",
+                  name: "en.srt",
+                  language: "en",
+                  segments: trackSegments,
+                } as (typeof base.timelines)[0]["transcript"]["tracks"] extends
+                  (infer T)[] | undefined
+                  ? NonNullable<T>
+                  : never,
+              ],
+            },
+          }),
+        ],
+      }),
+    )
+    mockCall.mockResolvedValue({
+      success: true,
+      data: project.value,
+    } as unknown as Awaited<ReturnType<typeof call>>)
+    const showToast = vi.fn()
+    const actions = makeActions({
+      project,
+      pendingCorrections: ref<CorrectionReviewEntry[]>([]),
+      pushSnapshot: vi.fn(),
+      emit: vi.fn(),
+      showToast,
+    })
+
+    await actions.handleDeleteTrack("trk_x")
+
+    expect(mockCall).toHaveBeenCalledWith("delete_track", "trk_x")
+    expect(showToast).toHaveBeenCalledWith(
+      "已删除 3 段及其关联数据，可 Ctrl+Z 撤销",
+      "success",
+      3000,
     )
   })
 })

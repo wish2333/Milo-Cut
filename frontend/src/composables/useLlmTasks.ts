@@ -172,6 +172,11 @@ function ensureListeners() {
     EVENT_LLM_SUBTITLE_CORRECTION_COMPLETED,
     async (detail) => {
       isRunning.value = false
+      // v3.0.5 R5.11: the deferred list clear lands HERE (the new run's
+      // results are authoritative). loadCorrections (stored_count > 0)
+      // replaces the list wholesale; a zero-result run keeps the clear so
+      // the previous run's entries do not linger as stale.
+      pendingCorrections.value = []
       if (detail) {
         subtitleCorrectionResult.value = detail as SubtitleCorrectionResult
         // v2.1.0 Phase 2: auto-load stored corrections for the review UI.
@@ -362,7 +367,10 @@ export function useLlmTasks() {
     progress.value = 0
     errorMsg.value = null
     progressMessage.value = null
-    resetSubtitleCorrection()
+    // v3.0.5 R5.11: the review list reset is DEFERRED to the completion
+    // event -- clearing pendingCorrections here used to blank the review
+    // modal into a false「暂无」for the whole run (start -> completed can
+    // take minutes). Only the progress/error face resets up front.
 
     const res = await call<MiloTask>(
       "start_subtitle_correction",
