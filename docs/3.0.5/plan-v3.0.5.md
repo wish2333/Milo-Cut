@@ -323,10 +323,10 @@ P5: 门禁终检 → 文档回写 → 真机全量回归 → RC → 正式
 
 ### P5-1 门禁终检与登记核对
 
-- [ ] 全量复跑：pytest（= beta.3 期望，只增不减）/ vitest / build / lint / ruff / 红线命令全量（P5 终检全量复跑口径）
-- [ ] 后端改动登记表逐条核对（SPEC 附录 A）：每 hunk 有 R 编号；受控改点 (a)-(f) 与 M0-2 一一对应；main.py 两处登记改点（R5.3 合流 hunk / R5.4 expose 透传）逐 hunk 在表；无对应者补登记或回退
-- [ ] 断言反转清单核对：后端 2 行 + 前端 2 例 3 行 + 追认制 1 行逐条在 record 落档；白名单外零命中
-- [ ] 禁改面终检：`core/models.py` / events 双侧 / `dev.py` / `build.py` / `pywebvue/**` diff 为空；两项「登记不修」现状缺陷（MF2-1 判据不对称 / SG2-2 非翻译 errorMsg 残留）勿误判漏改
+- [x] 全量复跑：pytest（= beta.3 期望，只增不减）/ vitest / build / lint / ruff / 红线命令全量（P5 终检全量复跑口径）——exit 0，pytest 875 / vitest 884·884 全绿
+- [x] 后端改动登记表逐条核对（SPEC 附录 A）：每 hunk 有 R 编号；受控改点 (a)-(f) 与 M0-2 一一对应；main.py 两处登记改点（R5.3 合流 hunk / R5.4 expose 透传）逐 hunk 在表；无对应者补登记或回退——六文件全对齐，(a)-(f) 六改点全落位（record §2）
+- [x] 断言反转清单核对：后端 2 行 + 前端 2 例 3 行 + 追认制 1 行逐条在 record 落档；白名单外零命中——实际终态 10 行（后端 4 / 前端 6，PLAN 预估为 P4 前估算值），全白名单内（record §3）
+- [x] 禁改面终检：`core/models.py` / events 双侧 / `dev.py` / `build.py` / `pywebvue/**` diff 为空；两项「登记不修」现状缺陷（MF2-1 判据不对称 / SG2-2 非翻译 errorMsg 残留）勿误判漏改——全空 ✓，两登记不修项在档（record §4）
 
 **验收方式 / 标准**: 全套门禁 exit 0；核对记录贴 record。
 **record**: `record-3.0.5-P5-1.md`
