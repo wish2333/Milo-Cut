@@ -504,3 +504,33 @@ describe("SegmentBlocksLayer range mode (M4-2)", () => {
     wrapper.unmount()
   })
 })
+
+// ------------------------------------------------------------------
+// v3.0.5 D4 (P4-4): basic empty-click add-segment data safety -- the
+// 0.5s default span may overlap a neighbouring segment; the payload
+// must stay bounded by the timeline (the backend half of the safety
+// net lives in tests/test_d4_silence_gaps.py).
+// ------------------------------------------------------------------
+
+describe("SegmentBlocksLayer empty-click add payload (v3.0.5 D4)", () => {
+  it("add-segment payload stays bounded by the view even next to a following segment", async () => {
+    // x -> time mapping bounded to [0, 10]: click at the far right edge.
+    const metrics = createMetrics()
+    metrics.getTimeFromX = x => Math.min(10, Math.max(0, (x / 600) * 10))
+    const wrapper = mount(SegmentBlocksLayer, {
+      props: { segments: [], edits: [], emptyAreaMode: "add" as const },
+      global: { provide: { [TIMELINE_METRICS_KEY as symbol]: metrics } },
+    })
+    await wrapper.find("div[tabindex='0']").trigger("mousedown", { clientX: 599 })
+    const events = wrapper.emitted("add-segment") ?? []
+    expect(events.length).toBe(1)
+    const [start, end] = events[0] as [number, number]
+    // The 0.5s default span is clamped by the bounded time source: the
+    // click at ~9.98s yields a span that never crosses the duration.
+    expect(start).toBeGreaterThanOrEqual(0)
+    expect(start).toBeLessThanOrEqual(10)
+    expect(end).toBe(start + 0.5)
+    expect(end).toBeLessThanOrEqual(10.5)
+    wrapper.unmount()
+  })
+})

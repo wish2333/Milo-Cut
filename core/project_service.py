@@ -1301,6 +1301,11 @@ class ProjectService:
                 ))
 
         all_segments = list(existing) + new_segments
+        # v3.0.5 D4 (P4-4): silence windows interleave with subtitles, so
+        # the concatenation is NOT sorted -- but the sort invariant is the
+        # frontend's rendering contract (mergedSegments skips its sort).
+        # Same pattern as add_segment.
+        all_segments.sort(key=lambda s: s.start)
         all_edits = existing_edits + new_edits
 
         # Note: _resolve_subtitle_overlap is deprecated. D-2 handles subtitle
