@@ -22,7 +22,8 @@
 - **P4-1 完成（R5.6 keep 可感知收口）**：序 6 golden 锁先行 26/26 确认；确认文案直显（SuggestionPanel 按钮容器内内联小字，keep/delete 两变体，:title 保留）+ 确认 toast 差异化（handleConfirmEdit 包装）+ invalidated_count 透传（useEdit 类型只增，重跑 toast「新增 N 条、按保留区间清除 M 条旧区间」）+ 导出页静态说明一句；红蓝覆层 hunk 随 P4-2/R5.9 同 commit（约束③）；keep 计算与导出消费零改动；前端 +6 例；零反转；门禁 exit 0（pytest 867 持平 / vitest **872·871** +6）。
 - **P4-2 完成（R5.7+R5.9+R5.10+R5.14 覆层/文案/守卫族，约束③ 同 commit）**：golden 锁先行 26/26；TrackLane globalEditMode 守卫（trim 门=undefined 只读语义 + 菜单三结构项/建段拦截 + toast 纯增，两父透传，SG-3 共享层零触碰 + 主轨反向断言锁）；覆层 rejected 退场（E-6）+ title 中文语义化 + keep×delete 相交预聚合尾注（R5.6③ 兑现）；建段 toggle 显示门改绑半亮 + 气泡 Esc/点外消泡；Timeline title 中文化；main.py 拒绝文案显示名 1 行；R5.14 渲染层拼接；README/toggle 冻结矩阵文档化；净增 +7 / 反转 2 处（rejected 例 + findOverlays 选择器，§3 登记）；门禁 exit 0（pytest 867 持平 / vitest **879·878**）。
 - **P4-3 完成（R5.11+R5.15+R5.16 审阅体验与清理批，序 8 兑现）**：审阅 modal 按轨过滤 +「全部」切换（打通 R5.4 后置 null 批量入口）；纠错 reset 延后至 completed 事件（「暂无」假象消除）；时间码 mm:ss.s 兼容 + 取播放头 + clamp 回显 + 成功 toast（Timeline toast 链复用）；删除/级联 toast 补撤销提示与计数；**R5.16 根修销账**：perf 例确定性重写（墙钟断言移除 3 行，R0-3 白名单追认）+ 豁免口径退役——vitest **883/883 首次全绿**；+4 例 + badge 例追认改写；门禁 exit 0（pytest 867 持平）。
-- **P4 续**：未开始（下一序 = P4-4 R5.12 prompt 语义说明 + D4 测试轮 + **beta.3 节点**——全套门禁 + tag `v3.0.5-beta.3`）。
+- **P4-4 完成（R5.12 + D4 测试轮）+ beta.3 节点（P4 收官）**：prompt A 增 aligned_main_text 语义 1 行（:66-67，键集零影响）；D4 移交四项 9 例（detect_silence 本体 ×4 / 端到端串测 / padding=0 交叠 ×2 / 重叠段数据安全前后端双半）；**D4-2 发现并修复 add_silence_results 未排序真缺口**（1 行，排序不变量回归）；零反转；**tag `v3.0.5-beta.3`**；beta.3 期望超额达标（pytest **875** ≥863 / vitest **884·884 全绿** ≥864·863）；真机冒烟后置登记 record §5。
+- **P5 起**：未开始（下一序 = P5-1 门禁终检与登记核对）。
 
 ## 1. 分步记录索引
 
@@ -41,11 +42,8 @@
 | P3-1 | record-3.0.5-P3-1.md | 已完成（R5.5 纠错取消轮询化；序 5 兑现；MF2-1 冻结；零反转；门禁 exit 0） | `a2751f4` → merge `ae45b0c` |
 | P4-1 | record-3.0.5-P4-1.md | 已完成（R5.6 keep 可感知收口；golden 锁先行；零反转；门禁 exit 0） | `0d3b6ce` → merge `ca21f67` |
 | P4-2 | record-3.0.5-P4-2.md | 已完成（R5.7+R5.9+R5.10+R5.14 守卫/覆层/文案族；约束③ 同 commit；反转 2 处登记；门禁 exit 0） | `0b590c6` → merge `4e0bdc6` |
-| P4-3 | record-3.0.5-P4-3.md | 已完成（R5.11+R5.15+R5.16 审阅/清理批；序 8 兑现；R5.16 豁免退役 vitest 全绿；门禁 exit 0） | 代码 commit → merge（见 record §6） |
-| P4-1 | record-3.0.5-P4-1.md | 未开始 | （R5.6 keep 可感知收口） |
-| P4-2 | record-3.0.5-P4-2.md | 未开始 | （R5.7+R5.9+R5.10+R5.14 覆层/文案/守卫族——约束③ 同 commit 族） |
-| P4-3 | record-3.0.5-P4-3.md | 未开始 | （R5.11+R5.15+R5.16 审阅体验与清理批——序 8 落点，基线须含 P2） |
-| P4-4 | record-3.0.5-P4-4.md | 未开始 | （R5.12 prompt 语义说明 + D4 测试轮 + beta.3 节点） |
+| P4-3 | record-3.0.5-P4-3.md | 已完成（R5.11+R5.15+R5.16 审阅/清理批；序 8 兑现；R5.16 豁免退役 vitest 全绿；门禁 exit 0） | `8503aa6` → merge `b78d23d` |
+| P4-4 | record-3.0.5-P4-4.md | 已完成（R5.12 + D4 测试轮；D4-2 缺口修复；零反转；beta.3 tag 落地） | 代码 commit → merge（**tag `v3.0.5-beta.3`**） |
 | P5-1 | （总记录 §3 核对 + 门禁终检留痕） | 未开始 | （门禁终检与登记核对） |
 | P5-2 | （总记录 §7 版本池回写段） | 未开始 | （README 回填与版本池回写） |
 | P5-3 | （★ 用户节点） | 未开始 | （真机冒烟 + 发布——RC 轮千段观测债必填） |
@@ -106,5 +104,8 @@
 | P4-3 | WorkspacePage.vue + useLlmTasks.ts | reviewScopeAll/scopedCorrections/modal 过滤切换 + getReviewScope null 入口（R5.4 后置兑现）；startSubtitleCorrection reset 延后 + completed 权威清场 | R5.11 | 受控 + 只增 |
 | P4-3 | SuggestionPanel.vue + Timeline.vue + useWorkspaceActions.ts + useRowLayout.perf.test.ts + scripts/gates-v3.0.5.sh | parseTimecode/takePlayhead/clamp 回显/toast emit + currentTime 透传与 toast 转发；单段/整轨删除 toast 撤销提示与级联计数；perf 确定性重写（墙钟断言移除）+ R0-3 白名单追认 + 豁免退役 | R5.11/R5.15/R5.16 | 只增 + 文案 + 根修 + 工具修订 |
 | P4-3 | tests（3 文件） | SuggestionPanel +3（时间码族）/ useWorkspaceActions +1（级联计数 SG2-5）/ correctionTrack badge 例追认改写 | R5.11/R5.15 | 只增 + 追认改写 |
+| P4-4 | core/llm_prompts.py | _SUBTITLE_CORRECTION_SYSTEM_A 增 aligned_main_text 语义说明 1 行（:66-67，edit_hint 块尾） | R5.12 | 受控增行 |
+| P4-4 | core/project_service.py | add_silence_results 段列表排序（:1303-1309；D4-2 串测发现：静音与字幕交错时拼接非升序，排序不变量为前端渲染契约） | D4-2 | 修复 1 行 + 注释 |
+| P4-4 | tests/test_d4_silence_gaps.py（新）+ SegmentBlocksLayer.test.ts | D4 移交四项 9 例（detect_silence 本体 ×4 / 端到端串测 / padding=0 交叠 ×2 / 重叠段数据安全前后端双半），不占 M-gate 额度 | D4 | 只增（测试） |
 
 （后续 phase 按 SPEC M5.0-M5.8 触点表逐 hunk 登记；每条 diff 必须对应一个 R5.x 编号，无对应者补登记或回退。）
