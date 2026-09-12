@@ -262,3 +262,74 @@ describe("TrackLane block-area top gap (smoke fix: proportional)", () => {
     wrapper.unmount()
   })
 })
+
+// ------------------------------------------------------------------
+// v3.0.5 R5.7 (M5.7): edit-mode freeze matrix on the lane. The guard
+// lives at the TrackLane (track-role) boundary; the shared
+// SegmentBlock/SegmentBlocksLayer never intercept blindly.
+// ------------------------------------------------------------------
+
+describe("TrackLane edit-mode freeze (v3.0.5 R5.7)", () => {
+  function mountGuarded(globalEditMode: boolean, extra: Record<string, unknown> = {}) {
+    const updateTime = vi.fn()
+    const wrapper = mount(TrackLane, {
+      props: { track: makeTrack(), lane: makeLane(), updateTime, globalEditMode, ...extra },
+      global: { provide: { [TIMELINE_METRICS_KEY as symbol]: createMetrics() } },
+    })
+    return { wrapper, updateTime }
+  }
+
+  it("trim gate: globalEditMode ON withholds updateTime (SegmentBlock goes read-only)", () => {
+    const { wrapper } = mountGuarded(true)
+    expect(wrapper.findComponent(SegmentBlock).props("updateTime")).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it("exit restores: globalEditMode OFF forwards updateTime again", async () => {
+    const { wrapper, updateTime } = mountGuarded(true)
+    await wrapper.setProps({ globalEditMode: false })
+    expect(wrapper.findComponent(SegmentBlock).props("updateTime")).toBe(updateTime)
+    wrapper.unmount()
+  })
+
+  it("lane menu structure ops are intercepted with the Chinese toast; exit restores them", async () => {
+    const { wrapper } = mountGuarded(true)
+    const block = wrapper.findComponent(SegmentBlock)
+    await block.trigger("contextmenu")
+    const menu = document.body.querySelector(".fixed.z-dropdown")!
+    expect(menu).not.toBeNull()
+    // 删除此条字幕 / 清空此轨 / 删除此轨 -- all three frozen.
+    for (const label of ["删除此条字幕", "清空此轨", "删除此轨"]) {
+      const btn = Array.from(menu.querySelectorAll("button")).find(b =>
+        b.textContent?.includes(label),
+      )!
+      btn.click()
+      await wrapper.vm.$nextTick()
+    }
+    expect(wrapper.emitted("delete-segment")).toBeUndefined()
+    expect(wrapper.emitted("clear-track")).toBeUndefined()
+    expect(wrapper.emitted("delete-track")).toBeUndefined()
+    const toasts = wrapper.emitted("toast") ?? []
+    expect(toasts.length).toBeGreaterThanOrEqual(3)
+    expect(toasts[0]).toEqual(["请退出编辑模式后重试"])
+    // exit edit mode -> the menu ops flow again.
+    await wrapper.setProps({ globalEditMode: false })
+    await wrapper.find('[data-test="track-lane"]').trigger("contextmenu")
+    const menu2 = document.body.querySelector(".fixed.z-dropdown")!
+    const clearBtn = Array.from(menu2.querySelectorAll("button")).find(b =>
+      b.textContent?.includes("清空此轨"),
+    )!
+    clearBtn.click()
+    await wrapper.vm.$nextTick()
+    expect(wrapper.emitted("clear-track")?.length).toBe(1)
+    wrapper.unmount()
+  })
+
+  it("lane create-at (建段) is frozen in edit mode with the same toast", async () => {
+    const { wrapper } = mountGuarded(true, { buildMode: true })
+    await wrapper.find('[data-test="lane-blocks"]').trigger("click")
+    expect(wrapper.emitted("create-at")).toBeUndefined()
+    expect(wrapper.emitted("toast")).toEqual([["请退出编辑模式后重试"]])
+    wrapper.unmount()
+  })
+})

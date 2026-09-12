@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 
 from core import llm_service
 from core.llm_service import analyze_subtitle_translation
@@ -214,7 +215,9 @@ class TestTranslationReverseCoverage:
             )
 
         assert result["success"] is False
-        assert "uncovered" in result["error"]
+        # v3.0.5 R5.2 (M0-3 :217 inversion): the refusal copy is Chinese
+        # now; 「补译」 is the M0-3 keyword anchor (M5.2 ruling 3).
+        assert "补译" in result["error"]
         # exactly one retry, still violated
         assert calls["n"] == 2
         assert any("missing ids" in w for w in warnings)
@@ -427,7 +430,8 @@ class TestTranslationRateLimitFallback:
     def test_sustained_429_switches_to_serial(self, monkeypatch):
         """Three consecutive rate-limited batch failures (after their retry)
         switch the remaining batches to serial processing (AR-2 semantics);
-        the exhausted batches stay failed -> the whole task fails."""
+        the exhausted batches stay failed while the serial survivor lands
+        (v3.0.5 R5.3 partial-success semantics)."""
         monkeypatch.setattr(
             llm_service,
             "load_settings",
@@ -461,8 +465,16 @@ class TestTranslationRateLimitFallback:
         assert calls["n"] in (7, 8)
         assert served_after_fallback
         assert served_after_fallback[-1] == ["text 6", "text 7"]
-        # task fails: batches 0-2 exhausted their single retry
-        assert result["success"] is False
+        # v3.0.5 R5.3 (M5.3 ruling 3; inversion registered in the P1-4
+        # record): batches 0-2 exhausted their single retry but batch 3
+        # survived serially -> PARTIAL success now lands batch 3 (the
+        # whole-task refusal only applies when EVERY batch failed); the
+        # failed ids ride the ledger for the completion gap merge (MF2-2)
+        # and the resume route.
+        assert result["success"] is True
+        assert [
+            t["segment_id"] for t in result["data"]["translations"]
+        ] == ["seg-006", "seg-007"]
         ledger = result["data"]["ledger"]
         assert ledger["total"] == 4
         assert ledger["failed"] == [0, 1, 2]
@@ -562,9 +574,10 @@ class TestTranslationLayeredParsing:
 
 class TestTranslationCancellation:
     def test_cancel_midway_returns_bare_cancelled(self, monkeypatch):
-        """Cancelled mid-run -> bare {"success": False, "error": "Cancelled"}
-        with NO merged translations, so already-completed batches cannot
-        produce any persistence side effect upstream (M1-5 table)."""
+        """Cancelled mid-run -> cancel envelope {"success": False, "error":
+        "Cancelled"} carrying the R5.1 cost report (data.token_usage +
+        data.ledger) and NO merged translations, so already-completed batches
+        cannot produce any persistence side effect upstream (M1-5 table)."""
         monkeypatch.setattr(
             llm_service,
             "load_settings",
@@ -610,8 +623,95 @@ class TestTranslationCancellation:
         # the mock (blocked on the gate) or tripped the per-batch cancel
         # check in _call_batch before it -> 1 or 2 mock invocations.
         assert 1 <= len(served) <= 2
-        # bare cancel envelope: no merged output of any completed batch
-        assert result_holder == {"success": False, "error": "Cancelled"}
+        # v3.0.5 R5.1 (M0-3 :614 inversion): cancel envelope with the cost
+        # report attached -- keys are pinned, counts are not (the batch-1
+        # cancel races the ledger bookkeeping) -- and never any merged
+        # output of the completed batches.
+        assert result_holder["success"] is False
+        assert result_holder["error"] == "Cancelled"
+        assert set(result_holder["data"].keys()) >= {"token_usage", "ledger"}
+        assert "translations" not in result_holder["data"]
+
+
+# ================================================================
+# v3.0.5 R5.1: cancel cost report on every cancel return path
+# ================================================================
+
+
+class TestCancelCostReport:
+    def test_cancel_before_first_poll_carries_cost_report(self, monkeypatch):
+        """cancel_event pre-set -> the poll loop's cancel check (before any
+        future is consumed) returns the envelope WITH the cost report keys
+        (token_usage + ledger); nothing persisted, no batch consumed."""
+        monkeypatch.setattr("core.llm_service.call_llm", _perfect_translator())
+        monkeypatch.setattr(
+            llm_service,
+            "load_settings",
+            lambda: {"llm_correction_batch_size": 2, "llm_concurrency": 1},
+        )
+        cancel_event = threading.Event()
+        cancel_event.set()
+
+        result = analyze_subtitle_translation(
+            _segments(4),
+            "English",
+            config=_configured_llm(),
+            cancel_event=cancel_event,
+        )
+
+        assert result["success"] is False
+        assert result["error"] == "Cancelled"
+        assert set(result["data"].keys()) >= {"token_usage", "ledger"}
+        # nothing was consumed before the cancel -> zero ledger counts
+        assert result["data"]["ledger"]["failed"] == []
+        assert "translations" not in result["data"]
+
+    def test_cancel_during_serial_fallback_carries_cost_report(self, monkeypatch):
+        """429 downgrade -> serial loop; cancel set via the first "(serial)"
+        progress callback -> the serial loop's top cancel check returns the
+        envelope WITH the cost report (failed batches stay in the ledger)."""
+        monkeypatch.setattr(
+            llm_service,
+            "load_settings",
+            lambda: {"llm_correction_batch_size": 2, "llm_concurrency": 1},
+        )
+        calls = {"n": 0}
+
+        def rate_limited(prompt, system="", **kwargs):
+            calls["n"] += 1
+            # every call rate-limits: batches 0-2 exhaust their retry and
+            # trip the 3x-429 downgrade; the serial batch keeps failing too.
+            return {"success": False, "error": "Rate limited (attempt 1)"}
+
+        monkeypatch.setattr("core.llm_service.call_llm", rate_limited)
+
+        cancel_event = threading.Event()
+        serial_seen = threading.Event()
+
+        def progress_cb(pct, message=""):
+            # First "(serial)" progress = the serial loop is about to
+            # process its FIRST pending batch; set the cancel so the NEXT
+            # loop-top check (deterministically before batch 4) trips.
+            if "(serial)" in message and not serial_seen.is_set():
+                serial_seen.set()
+                cancel_event.set()
+
+        result = analyze_subtitle_translation(
+            _segments(10),
+            "English",
+            config=_configured_llm(),
+            cancel_event=cancel_event,
+            progress_cb=progress_cb,
+        )
+
+        assert serial_seen.is_set(), "serial fallback never entered"
+        assert result["success"] is False
+        assert result["error"] == "Cancelled"
+        assert set(result["data"].keys()) >= {"token_usage", "ledger"}
+        # batches 0-2 exhausted their retry before the downgrade; their ids
+        # ride the ledger (the serial batch outcome races the cancel, so
+        # only the deterministic prefix is pinned).
+        assert result["data"]["ledger"]["failed"][:3] == [0, 1, 2]
 
 
 # ================================================================
@@ -687,3 +787,362 @@ class TestTranslationOpaqueIdsAndContext:
         assert middle_all - middle_target_texts == {
             "text 0", "text 1", "text 2", "text 3", "text 8", "text 9",
         }
+
+
+# ================================================================
+# v3.0.5 R5.2 (M5.2): Layer-4 translated_text line rescue + Chinese refusal
+# ================================================================
+
+
+class TestTranslatedTextLineFallback:
+    def test_near_json_line_output_rescued_with_full_conservation(self, monkeypatch):
+        """Non-json_mode provider emitting near-JSON lines (quoted pairs,
+        no array/object wrapper -> Layers 1-3 fail) is rescued by the
+        Layer-4 translated_text regex; the rescued batch still walks the
+        reverse coverage validation (full conservation, original order)."""
+        monkeypatch.setattr(llm_service, "load_settings", lambda: {})
+        served: list[list[str]] = []
+
+        def line_translator(prompt, system="", **kwargs):
+            payload = _parse_payload(prompt)
+            # opaque target ids as served by the pipeline (reverse-mapped
+            # back to real ids only after parsing)
+            tids = list(payload["target_segment_ids"])
+            served.append(tids)
+            lines = [
+                f'第 {i + 1} 行："segment_id": "{t}", "translated_text": "译文-{t}"'
+                for i, t in enumerate(tids)
+            ]
+            return {
+                "success": True,
+                "data": {"content": "\n".join(lines), "usage": {}},
+            }
+
+        monkeypatch.setattr("core.llm_service.call_llm", line_translator)
+
+        result = analyze_subtitle_translation(
+            _segments(3), "English", config=_configured_llm()
+        )
+
+        assert result["success"] is True
+        translations = result["data"]["translations"]
+        # reverse map restored the real ids, original order (conservation)
+        assert [t["segment_id"] for t in translations] == [
+            "seg-000",
+            "seg-001",
+            "seg-002",
+        ]
+        # translated_text rides verbatim from the provider output
+        assert translations[0]["translated_text"] == f"译文-{served[0][0]}"
+        assert result["data"]["ledger"]["failed"] == []
+
+    def test_unrescuable_output_returns_chinese_guidance_with_cost_report(
+        self, monkeypatch,
+    ):
+        """Garbage output (no layer matches) -> retry -> whole-task refusal
+        with the Chinese way-out copy (contains 「补译」) and the R5.1 cost
+        report riding data (ledger + token_usage)."""
+        monkeypatch.setattr(llm_service, "load_settings", lambda: {})
+
+        def garbage(prompt, system="", **kwargs):
+            return {
+                "success": True,
+                "data": {"content": "完全不是 JSON 的垃圾输出", "usage": {}},
+            }
+
+        monkeypatch.setattr("core.llm_service.call_llm", garbage)
+
+        result = analyze_subtitle_translation(
+            _segments(2), "English", config=_configured_llm()
+        )
+
+        assert result["success"] is False
+        assert "补译" in result["error"]
+        assert "批" in result["error"]
+        assert "更换模型" in result["error"]
+        assert set(result["data"].keys()) >= {"token_usage", "ledger"}
+        assert result["data"]["ledger"]["failed"] == [0]
+
+
+# ================================================================
+# v3.0.5 R5.3 (M5.3): partial-success landing + conservation invariants
+# ================================================================
+
+
+class TestPartialSuccessSemantics:
+    def _run(self, monkeypatch, fail_texts=frozenset({"text 2", "text 3"})):
+        """4 batches (window 2); the batch whose source texts intersect
+        fail_texts violates coverage on both attempts (content-based
+        targeting -- deterministic regardless of dispatch order), all
+        other batches echo perfectly."""
+        monkeypatch.setattr(
+            llm_service,
+            "load_settings",
+            lambda: {"llm_correction_batch_size": 2, "llm_concurrency": 1},
+        )
+
+        def flaky(prompt, system="", **kwargs):
+            payload = _parse_payload(prompt)
+            if fail_texts & set(_target_texts(payload)):
+                tids = payload["target_segment_ids"]
+                results = [
+                    {"segment_id": t, "translated_text": f"EN[{t}]"}
+                    for t in tids[:-1]
+                ]
+                return {
+                    "success": True,
+                    "data": {"content": json.dumps(results), "usage": {}},
+                }
+            return _perfect_translator()(prompt, system, **kwargs)
+
+        monkeypatch.setattr("core.llm_service.call_llm", flaky)
+        return analyze_subtitle_translation(
+            _segments(8), "English", config=_configured_llm()
+        )
+
+    def test_partial_failure_lands_completed_batches(self, monkeypatch):
+        """1/N degraded landing (M5.3 ruling 3): the failed batch's ids go
+        to the ledger gap, the completed batches land in original order."""
+        result = self._run(monkeypatch)
+
+        assert result["success"] is True
+        translations = result["data"]["translations"]
+        assert [t["segment_id"] for t in translations] == [
+            "seg-000", "seg-001",
+            "seg-004", "seg-005", "seg-006", "seg-007",
+        ]
+        ledger = result["data"]["ledger"]
+        assert ledger["failed"] == [1]
+        assert ledger["succeeded"] == 3
+        # SG-1 conservation invariant, both directions (no more, no less):
+        target_ids = {f"seg-{i:03d}" for i in range(8)}
+        covered = {t["segment_id"] for t in translations}
+        assert set(ledger["uncovered_segment_ids"]) == target_ids - covered
+        assert covered == target_ids - set(ledger["uncovered_segment_ids"])
+
+    def test_all_batches_failed_still_refuses_zero_write(self, monkeypatch):
+        """Every batch violating coverage (after retry) keeps the M1-2
+        whole-task refusal: Chinese way-out copy, cost report riding data,
+        no translations key."""
+        monkeypatch.setattr(
+            llm_service,
+            "load_settings",
+            lambda: {"llm_correction_batch_size": 2},
+        )
+
+        def dropper(prompt, system="", **kwargs):
+            payload = _parse_payload(prompt)
+            results = [
+                {"segment_id": t, "translated_text": "x"}
+                for t in payload["target_segment_ids"][:-1]
+            ]
+            return {
+                "success": True,
+                "data": {"content": json.dumps(results), "usage": {}},
+            }
+
+        monkeypatch.setattr("core.llm_service.call_llm", dropper)
+
+        result = analyze_subtitle_translation(
+            _segments(6), "English", config=_configured_llm()
+        )
+
+        assert result["success"] is False
+        assert "补译" in result["error"]
+        assert set(result["data"].keys()) == {"ledger", "token_usage"}
+        assert result["data"]["ledger"]["failed"] == [0, 1, 2]
+
+    def test_no_failure_path_returns_full_key_shape(self, monkeypatch):
+        """Equivalence guard (M5.3 ruling 3): with zero failures the
+        envelope shape, key sets and ledger contents are exactly the
+        pre-R5.3 success form."""
+        monkeypatch.setattr(
+            llm_service,
+            "load_settings",
+            lambda: {"llm_correction_batch_size": 2, "llm_concurrency": 2},
+        )
+        monkeypatch.setattr("core.llm_service.call_llm", _perfect_translator())
+
+        result = analyze_subtitle_translation(
+            _segments(4), "English", config=_configured_llm()
+        )
+
+        assert set(result.keys()) == {"success", "data"}
+        assert result["success"] is True
+        assert set(result["data"].keys()) == {
+            "translations", "token_usage", "ledger",
+        }
+        assert [t["segment_id"] for t in result["data"]["translations"]] == [
+            f"seg-{i:03d}" for i in range(4)
+        ]
+        ledger = result["data"]["ledger"]
+        assert ledger["failed"] == []
+        assert ledger["uncovered_segment_ids"] == []
+        assert ledger["succeeded"] == 2
+        assert set(result["data"]["token_usage"].keys()) == {
+            "prompt_tokens", "completion_tokens", "total_tokens",
+        }
+
+
+# ================================================================
+# v3.0.5 R5.8 (M5.8): quality-mode switch (serial dispatch + window)
+# ================================================================
+
+
+class TestTranslationQualityMode:
+    def _capturing_translator(self, store: list[dict]):
+        """Echo translator capturing each call's parsed prompt payload."""
+
+        def fake(prompt, system="", **kwargs):
+            payload = _parse_payload(prompt)
+            store.append(payload)
+            results = [
+                {"segment_id": t, "translated_text": f"EN[{t}]"}
+                for t in payload["target_segment_ids"]
+            ]
+            return {
+                "success": True,
+                "data": {"content": json.dumps(results), "usage": {}},
+            }
+
+        return fake
+
+    def test_off_by_default_payload_key_set_unchanged(self, monkeypatch):
+        """Default (off): every batch prompt carries EXACTLY the pre-R5.8
+        top-level key set -- byte-shape equivalence of the default path."""
+        monkeypatch.setattr(
+            llm_service,
+            "load_settings",
+            lambda: {"llm_correction_batch_size": 2, "llm_concurrency": 5},
+        )
+        payloads: list[dict] = []
+        monkeypatch.setattr(
+            "core.llm_service.call_llm", self._capturing_translator(payloads)
+        )
+
+        result = analyze_subtitle_translation(
+            _segments(6), "English", config=_configured_llm()
+        )
+
+        assert result["success"] is True
+        assert len(payloads) == 3
+        for payload in payloads:
+            assert set(payload.keys()) == {"segments", "target_segment_ids"}
+
+    def test_quality_mode_sliding_window(self, monkeypatch):
+        """Quality on: concurrency is forced to 1 regardless of the config
+        value; batch N+1's prompt carries batch N's finalized translations
+        (its own opaque id space, source order); batch 1 has no window."""
+        monkeypatch.setattr(
+            llm_service,
+            "load_settings",
+            lambda: {
+                "llm_correction_batch_size": 2,
+                "llm_concurrency": 5,  # must be overridden to 1 by the switch
+                "llm_translation_quality_mode": True,
+            },
+        )
+        payloads: list[dict] = []
+        monkeypatch.setattr(
+            "core.llm_service.call_llm", self._capturing_translator(payloads)
+        )
+
+        result = analyze_subtitle_translation(
+            _segments(6), "English", config=_configured_llm()
+        )
+
+        assert result["success"] is True
+        # serial dispatch: prompts were built in strict batch order
+        assert len(payloads) == 3
+        # window boundary: the FIRST batch has no finalized_translations
+        assert "finalized_translations" not in payloads[0]
+        # batch 2 carries batch 1's finalized translations (batch 1's
+        # opaque id space, same order as its target list)
+        b1_targets = payloads[0]["target_segment_ids"]
+        assert payloads[1]["finalized_translations"] == [
+            {"segment_id": t, "translated_text": f"EN[{t}]"} for t in b1_targets
+        ]
+        # batch 3 carries batch 2's
+        b2_targets = payloads[1]["target_segment_ids"]
+        assert payloads[2]["finalized_translations"] == [
+            {"segment_id": t, "translated_text": f"EN[{t}]"} for t in b2_targets
+        ]
+
+    def test_quality_mode_cancel_still_prompt(self, monkeypatch):
+        """Serial (quality) dispatch + every batch blocked on a barrier ->
+        cancel observed within ~2s via the 1s poll loop (ruling 2: cancel
+        semantics are unaffected by the switch)."""
+        block = threading.Event()
+
+        def blocked(prompt, system="", **kwargs):
+            block.wait(timeout=60)
+            return {"success": False, "error": "Cancelled"}
+
+        monkeypatch.setattr("core.llm_service.call_llm", blocked)
+        monkeypatch.setattr(
+            llm_service,
+            "load_settings",
+            lambda: {
+                "llm_correction_batch_size": 2,
+                "llm_concurrency": 3,
+                "llm_translation_quality_mode": True,
+            },
+        )
+
+        cancel_event = threading.Event()
+        outcome: dict = {}
+
+        def run():
+            outcome["result"] = analyze_subtitle_translation(
+                _segments(6),
+                "English",
+                config=_configured_llm(),
+                cancel_event=cancel_event,
+            )
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        time.sleep(0.3)
+        cancel_event.set()
+        worker.join(timeout=5.0)
+
+        assert not worker.is_alive(), "quality-mode cancel not observed promptly"
+        result = outcome["result"]
+        assert result["success"] is False
+        assert result["error"] == "Cancelled"
+        # in-flight HTTP calls are abandoned, not waited out
+        block.set()
+        worker.join(timeout=2.0)
+
+    def test_quality_mode_with_429_no_double_shutdown_hang(self, monkeypatch):
+        """SG2-7: quality (serial) x sustained 429 -- the downgrade branch
+        still fires under concurrency=1 and is harmless (shutdown is
+        idempotent, the serial fallback loop takes over) -- the pipeline
+        returns a proper refusal envelope, no hang, no crash."""
+        monkeypatch.setattr(
+            llm_service,
+            "load_settings",
+            lambda: {
+                "llm_correction_batch_size": 2,
+                "llm_concurrency": 5,
+                "llm_translation_quality_mode": True,
+            },
+        )
+
+        def rate_limited(prompt, system="", **kwargs):
+            return {"success": False, "error": "Rate limited (attempt 1)"}
+
+        monkeypatch.setattr("core.llm_service.call_llm", rate_limited)
+
+        with _WarningLog() as warnings:
+            result = analyze_subtitle_translation(
+                _segments(8), "English", config=_configured_llm()
+            )
+
+        # the downgrade fired and the serial fallback took over
+        assert any("switching remaining" in w for w in warnings)
+        # all batches failed after retry -> refusal with the cost report
+        assert result["success"] is False
+        assert "补译" in result["error"]
+        assert set(result["data"].keys()) >= {"token_usage", "ledger"}
+        assert result["data"]["ledger"]["failed"] == [0, 1, 2, 3]

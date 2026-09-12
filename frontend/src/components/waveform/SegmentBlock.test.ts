@@ -61,6 +61,8 @@ function mountBlock(overrides: {
   getTimeFromPointer?: (x: number) => number
   rowStart?: number
   rowEnd?: number
+  /** v3.0.5 R5.7 reverse-lock hook: declared-but-unconsumed in the block. */
+  globalEditMode?: boolean
 } = {}) {
   const metrics = createMetrics(overrides.getTimeFromX)
   return mount(SegmentBlock, {
@@ -72,6 +74,7 @@ function mountBlock(overrides: {
       trackKind: overrides.trackKind,
       selected: overrides.selected,
       updateTime: overrides.updateTime,
+      globalEditMode: overrides.globalEditMode,
       ...(overrides.currentTime !== undefined ? { currentTime: overrides.currentTime } : {}),
       ...(overrides.getTimeFromPointer ? { getTimeFromPointer: overrides.getTimeFromPointer } : {}),
       ...(overrides.rowStart !== undefined ? { rowStart: overrides.rowStart } : {}),
@@ -267,5 +270,25 @@ describe("SegmentBlock trim drag (M2-1 clamp + M4-5 Alt)", () => {
     document.dispatchEvent(new MouseEvent("mousemove", { clientX: 20 }))
     expect(updateTime).toHaveBeenCalled()
     document.dispatchEvent(new MouseEvent("mouseup", { clientX: 20 }))
+  })
+})
+
+// ------------------------------------------------------------------
+// v3.0.5 R5.7 (M5.7 ruling 4, REVERSE lock): the shared block must stay
+// trim-enabled when globalEditMode is ON -- the freeze guard belongs to
+// TrackLane only. If someone later adds a guard here, this fails.
+// ------------------------------------------------------------------
+describe("SegmentBlock main-track trim stays enabled under globalEditMode (v3.0.5 R5.7)", () => {
+  it("globalEditMode ON: trim drag still calls updateTime (main-track 2.x baseline)", async () => {
+    const updateTime = vi.fn()
+    const wrapper = mountBlock({ updateTime, globalEditMode: true })
+    const block = wrapper.find(".rounded.border")
+    mockRect(block)
+    await block.trigger("mousedown", { clientX: 10 })
+    document.dispatchEvent(new MouseEvent("mousemove", { clientX: 20 }))
+    expect(updateTime).toHaveBeenLastCalledWith("seg-1", "start", 2.0)
+    document.dispatchEvent(new MouseEvent("mouseup", { clientX: 23 }))
+    expect(updateTime).toHaveBeenLastCalledWith("seg-1", "start", 2.3)
+    wrapper.unmount()
   })
 })

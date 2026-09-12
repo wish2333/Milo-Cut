@@ -40,6 +40,10 @@ const props = defineProps<{
   llmModel: string
   isRunning: boolean
   progress: number
+  // v3.0.5 R5.1: latest task:progress message; a "(serial)" substring maps
+  // to the 429 downgrade notice (zero backend change -- the suffix rides
+  // the existing progress stream from the serial fallback loop).
+  progressMessage?: string | null
   errorMsg: string | null
   // P1 subtitle correction result count (null = not run yet)
   subtitleCorrectionCount: number | null
@@ -220,10 +224,45 @@ const translationSourceSegments = computed(() => props.mainSegments ?? props.seg
 const translationDisabled = computed(
   () => !translationSourceSegments.value.some((s) => s.type === "subtitle"),
 )
-// "约 N 批": batch estimate only -- the char-budget split runs on the
-// backend, so the exact count is unknowable here (SPEC M1-6 ruling).
-const estimatedTranslationBatches = computed(() =>
-  Math.ceil(translationSourceSegments.value.length / 30),
+// v3.0.5 R5.13 (SG-5): backend-shaped estimate. Replicate the pipeline's
+// target_windows split (batch window 30 + char budget 4000, same algorithm
+// shape as llm_service.py's window builder) so the batch count tracks the
+// real dispatch under any text-length mix; tokens = totalChars x 0.75
+// (empirical ratio, always marked 约 -- no systematic-drift claims).
+const translationEstimate = computed(() => {
+  const segs = translationSourceSegments.value.filter((s) => s.type === "subtitle")
+  const BATCH_WINDOW = 30
+  const CHAR_BUDGET = 4000
+  let batches = 0
+  let totalChars = 0
+  let start = 0
+  while (start < segs.length) {
+    let end = Math.min(start + BATCH_WINDOW, segs.length)
+    let acc = 0
+    let probe = start
+    while (probe < end) {
+      const segLen = String(segs[probe].text ?? "").length
+      if (probe > start && acc + segLen > CHAR_BUDGET) break
+      acc += segLen
+      probe += 1
+    }
+    end = probe > start ? probe : start + 1
+    batches += 1
+    for (let i = start; i < end; i++) {
+      totalChars += String(segs[i].text ?? "").length
+    }
+    start = end
+  }
+  return {
+    batches,
+    tokensWan: (Math.round(totalChars * 0.75) / 10000).toFixed(1),
+  }
+})
+const estimatedTranslationBatches = computed(
+  () => translationEstimate.value.batches,
+)
+const estimatedTranslationTokensWan = computed(
+  () => translationEstimate.value.tokensWan,
 )
 const translationLanguage = ref<string>(DEFAULT_TRANSLATION_LANGUAGE)
 
@@ -259,6 +298,53 @@ watch(
     translationNoticeDismissed.value = false
   },
 )
+
+// v3.0.5 R5.3 (M5.3 ruling 8, US-10 / F-A-04): readable reconciliation.
+// Each uncovered id resolves against mainSegments into "{mm:ss} {first 20
+// chars}"; clicking seeks the main segment; the tail button re-runs the
+// SAME translation route (start_translation auto-routes the gap set into
+// a patch-up task). Raw internal ids never render again.
+interface UncoveredEntry {
+  id: string
+  readable: string
+  start: number | null
+}
+
+function formatStartMMSS(start: number): string {
+  const mm = Math.floor(start / 60)
+  const ss = Math.floor(start % 60)
+  return `${mm}:${String(ss).padStart(2, "0")}`
+}
+
+const uncoveredEntries = computed<UncoveredEntry[]>(() => {
+  const notice = props.translationNotice
+  if (!notice) return []
+  const byId = new Map((props.mainSegments ?? []).map((s) => [s.id, s]))
+  return notice.uncoveredIds.map((id) => {
+    const seg = byId.get(id)
+    return {
+      id,
+      readable: seg
+        ? `${formatStartMMSS(seg.start)} ${seg.text.slice(0, 20)}`
+        : id,
+      start: seg ? seg.start : null,
+    }
+  })
+})
+
+function handleUncoveredSeek(entry: UncoveredEntry) {
+  if (entry.start === null) return
+  emit("seek", entry.start)
+}
+
+function handleResumeTranslation() {
+  if (!props.translationNotice) return
+  // Same route as the translation card -- start_translation derives the
+  // gap set server-side and routes the patch-up; the language memory rides
+  // the notice (completion payload).
+  emit("start-translation", { targetLanguage: props.translationNotice.language })
+  translationNoticeDismissed.value = true
+}
 
 function selectFeature(key: FeatureKey) {
   if (!props.llmConfigured) return
@@ -439,13 +525,21 @@ function handleSearchSeek(time: number) {
          (mode switch, cards, progress, results, forms) scrolls together. -->
     <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
 
-    <!-- Error message -->
+    <!-- Error message. v3.0.5 R5.14 (SG2-6): render-layer conditional
+         guidance -- when the backend rejected a same-language re-translation,
+         append the lane way-out. NOT built in useLlmTasks (data layer must
+         stay task-type neutral). -->
     <div v-if="errorMsg" class="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">
-      {{ errorMsg }}
+      {{ errorMsg
+      }}<template v-if="errorMsg.includes('同语言翻译轨已存在')"
+        >（波形区右键该轨 → 清空轨道/删除轨道）</template
+      >
     </div>
 
-    <!-- v3.0.4 M1-6: translation completion notice (uncovered ids are never
-         silently dropped) -->
+    <!-- v3.0.4 M1-6 + v3.0.5 R5.3: translation gap notice -- readable,
+         locatable, one-click resumable (uncovered ids are never silently
+         dropped; MF2-2 means the gap includes pipeline-side failures, so
+         the old "（主轨已变更）" parenthetical is gone) -->
     <div
       v-if="translationNotice && !translationNoticeDismissed"
       data-test="translation-notice"
@@ -454,16 +548,29 @@ function handleSearchSeek(time: number) {
       <div class="flex items-start justify-between gap-2">
         <span>
           译文轨「{{ translationNotice.trackName }}」有
-          {{ translationNotice.uncoveredIds.length }} 段未覆盖（主轨已变更）
+          {{ translationNotice.uncoveredIds.length }} 段未覆盖
         </span>
         <button
           class="shrink-0 text-amber-500 hover:text-amber-700"
           @click="translationNoticeDismissed = true"
         >关闭</button>
       </div>
-      <p class="mt-1 break-all text-amber-600">
-        {{ translationNotice.uncoveredIds.join("、") }}
-      </p>
+      <ul data-test="uncovered-list" class="mt-1 flex flex-col gap-0.5">
+        <li v-for="entry in uncoveredEntries" :key="entry.id">
+          <button
+            data-test="uncovered-entry"
+            class="block w-full text-left text-amber-600 hover:text-amber-800 hover:underline disabled:no-underline disabled:opacity-60"
+            :disabled="entry.start === null"
+            :title="entry.start === null ? '主轨段已不存在' : '点击定位主轨段'"
+            @click="handleUncoveredSeek(entry)"
+          >{{ entry.readable }}</button>
+        </li>
+      </ul>
+      <button
+        data-test="resume-translation"
+        class="mt-1.5 w-full rounded-md border border-amber-300 bg-amber-100 px-2 py-1 text-[11px] font-medium text-amber-800 hover:bg-amber-200"
+        @click="handleResumeTranslation"
+      >补译这些段</button>
     </div>
 
     <!-- Workflow error message -->
@@ -723,6 +830,17 @@ function handleSearchSeek(time: number) {
       >取消</button>
     </div>
 
+    <!-- v3.0.5 R5.1: 429 serial-downgrade notice -- the "(serial)" suffix
+         rides the existing progress message; no extra event or backend key
+         (the precise remaining-batch count is not reported this version). -->
+    <p
+      v-if="isRunning && progressMessage?.includes('(serial)')"
+      data-test="serial-downgrade-notice"
+      class="text-[10px] text-amber-600"
+    >
+      限流中，已切串行，剩余批次处理中
+    </p>
+
     <!-- Feature cards (D-14). v3.0.4 M2-4 A: in track mode the smart delete
          card is greyed out (disabled + 「仅主轨可用」) while the correction
          card stays usable and shows the locked-track badge. -->
@@ -829,7 +947,11 @@ function handleSearchSeek(time: number) {
         data-test="translation-batches"
         class="ml-auto self-center text-[10px] text-gray-400"
       >
-        {{ translationDisabled ? "主轨无字幕" : `约 ${estimatedTranslationBatches} 批` }}
+        {{
+          translationDisabled
+            ? "主轨无字幕"
+            : `约 ${estimatedTranslationBatches} 批 · 约 ${estimatedTranslationTokensWan} 万 token`
+        }}
       </span>
     </button>
 
@@ -951,7 +1073,7 @@ function handleSearchSeek(time: number) {
       >
         <p class="text-xs text-gray-600">{{ features[2].description }}</p>
         <p class="text-xs text-gray-400">
-          主轨字幕约 {{ estimatedTranslationBatches }} 批，完成后自动切换到新译文轨
+          主轨字幕约 {{ estimatedTranslationBatches }} 批 · 约 {{ estimatedTranslationTokensWan }} 万 token，完成后自动切换到新译文轨
         </p>
         <select
           v-model="translationLanguage"

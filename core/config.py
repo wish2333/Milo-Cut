@@ -80,6 +80,10 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     # secondary track" -- the frontend writes back the last successfully
     # started language here (M1-6 consumes it as the dialog default).
     "llm_translation_target_language": "en",
+    # v3.0.5 R5.8 (M5.8): global quality-mode switch for translation --
+    # True = serial dispatch with a 1-batch finalized-translation sliding
+    # window (about 5x slower, better cross-batch consistency).
+    "llm_translation_quality_mode": False,
     # Per-provider config cache (v2.1.0): preserves base_url/api_key/model
     # across provider switches so the user never loses what they typed.
     # Structure: {provider_id: {base_url, api_key, model}}

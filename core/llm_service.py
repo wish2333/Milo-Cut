@@ -528,7 +528,9 @@ def _build_structured_user_message(
     Args:
         segments: List of segment dicts with 'id', 'text', 'start', 'end'.
         extra_context: Additional top-level keys to merge into the payload
-            (e.g. ``{"topic": "...", "reference_text": "..."}``).
+            (e.g. ``{"topic": "...", "reference_text": "..."}``; v3.0.5 R5.8
+            forwards ``finalized_translations`` -- the previous batch's
+            finalized translations in the quality-mode sliding window).
         opaque_ids: When given (v3.0.0 M3-5), real ids are replaced by the
             mapping's opaque ids and ``start``/``end`` are omitted entirely --
             the model receives only ``{id, text}`` (plus optional edit_hint).
@@ -629,6 +631,22 @@ def _parse_json_response_layers(content: str) -> list[dict] | None:
     for match in pattern_action.finditer(content):
         items.append(
             {"segment_id": match.group(1), "action": match.group(2)}
+        )
+    if items:
+        return items
+
+    # v3.0.5 R5.2: Try segment_id + translated_text (translation pattern).
+    # Third regex AFTER relevance/action -- their outputs never carry a
+    # translated_text key, so the patterns are mutually exclusive and the
+    # two existing Layer-4 paths keep returning first (zero regression).
+    # Catches non-json_mode providers emitting near-JSON line output
+    # ("..."-quoted pairs that fail Layers 1-3 but regex cleanly per line).
+    pattern_translated = re.compile(
+        r'"segment_id"\s*:\s*"([^"]+)".*?"translated_text"\s*:\s*"((?:[^"\\]|\\.)*)"'
+    )
+    for match in pattern_translated.finditer(content):
+        items.append(
+            {"segment_id": match.group(1), "translated_text": match.group(2)}
         )
     if items:
         return items
@@ -1113,60 +1131,96 @@ def analyze_subtitle_correction(
     pending: set[int] = set(range(total_batches))
     completed = 0
 
-    with ThreadPoolExecutor(max_workers=concurrency) as executor:
-        futures = {
+    # v3.0.5 R5.5 (M5.5, controlled point (a)): poll with a bounded timeout
+    # instead of as_completed (which stays blocked until the next in-flight
+    # batch finishes -- tens of seconds on big correction batches), and never
+    # block on running HTTP calls when a cancel arrives: the explicit
+    # finally-shutdown(wait=False) replaces the ``with``-block exit, whose
+    # shutdown(wait=True) used to wait out the in-flight batches even after
+    # the cancel had been observed. Cancel latency drops from
+    # "next batch completion" to the poll interval. Pattern replication of
+    # the translation-side v3.0.4 smoke-fix 1c.
+    _CANCEL_POLL_SECONDS = 1.0
+    executor = ThreadPoolExecutor(max_workers=concurrency)
+    try:
+        futures: dict = {
             executor.submit(_process_batch, batch_idx): batch_idx
             for batch_idx in range(total_batches)
         }
         try:
-            for future in as_completed(futures):
+            outstanding = set(futures)
+            while outstanding:
+                done, outstanding = wait(
+                    outstanding, timeout=_CANCEL_POLL_SECONDS, return_when=FIRST_COMPLETED
+                )
                 if cancel_event and cancel_event.is_set():
                     executor.shutdown(wait=False, cancel_futures=True)
                     return {"success": False, "error": "Cancelled"}
 
-                batch_idx, corrections, usage, error, retried = future.result()
-                completed += 1
-                pending.discard(batch_idx)
+                # v3.0.5 R5.5: the 429 downgrade must leave BOTH loops (the
+                # original single ``for as_completed`` needed one break);
+                # cancelled queued futures would otherwise surface as
+                # CancelledError in the next poll's ``future.result()``.
+                stop_polling = False
+                # Deterministic processing order (by batch index): wait()
+                # returns an unordered set, while as_completed yielded
+                # completions in finish order -- sorting keeps ledger
+                # appends and progress callbacks order-stable for the
+                # common all-done-in-one-poll case.
+                for future in sorted(done, key=lambda f: futures[f]):
+                    batch_idx, corrections, usage, error, retried = future.result()
+                    completed += 1
+                    pending.discard(batch_idx)
 
-                for key in total_usage:
-                    total_usage[key] += usage.get(key, 0)
+                    for key in total_usage:
+                        total_usage[key] += usage.get(key, 0)
 
-                # M3-1: ledger bookkeeping
-                if error is None:
-                    if retried:
-                        ledger.retried_ok += 1
-                    else:
-                        ledger.succeeded += 1
-                elif error != "Cancelled":
-                    if batch_idx not in ledger.failed:
-                        ledger.failed.append(batch_idx)
+                    # M3-1: ledger bookkeeping
+                    if error is None:
+                        if retried:
+                            ledger.retried_ok += 1
+                        else:
+                            ledger.succeeded += 1
+                    elif error != "Cancelled":
+                        if batch_idx not in ledger.failed:
+                            ledger.failed.append(batch_idx)
 
-                if error == "Cancelled":
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    return {"success": False, "error": "Cancelled"}
-
-                if error and "Rate limited" in error:
-                    consecutive_429 += 1
-                    if consecutive_429 >= _MAX_CONSECUTIVE_429 and not serial_fallback and pending:
-                        logger.warning(
-                            f"Rate limited {consecutive_429}x, switching remaining "
-                            f"{len(pending)} batches to serial"
-                        )
-                        serial_fallback = True
+                    if error == "Cancelled":
                         executor.shutdown(wait=False, cancel_futures=True)
-                        break
-                else:
-                    consecutive_429 = 0
+                        # Do NOT digest the rest of this poll's done set after
+                        # a cancel (both loops must be able to exit).
+                        return {"success": False, "error": "Cancelled"}
 
-                if corrections:
-                    corrections_by_index[batch_idx] = corrections
+                    if error and "Rate limited" in error:
+                        consecutive_429 += 1
+                        if consecutive_429 >= _MAX_CONSECUTIVE_429 and not serial_fallback and pending:
+                            logger.warning(
+                                f"Rate limited {consecutive_429}x, switching remaining "
+                                f"{len(pending)} batches to serial"
+                            )
+                            serial_fallback = True
+                            executor.shutdown(wait=False, cancel_futures=True)
+                            stop_polling = True
+                            break
+                    else:
+                        consecutive_429 = 0
 
-                if progress_cb:
-                    pct = (completed / total_batches) * 100 if total_batches > 0 else 0
-                    progress_cb(pct, f"Subtitle correction batch {completed}/{total_batches}...")
+                    if corrections:
+                        corrections_by_index[batch_idx] = corrections
+
+                    if progress_cb:
+                        pct = (completed / total_batches) * 100 if total_batches > 0 else 0
+                        progress_cb(pct, f"Subtitle correction batch {completed}/{total_batches}...")
+                if stop_polling:
+                    break
         except Exception:
             executor.shutdown(wait=False, cancel_futures=True)
             raise
+    finally:
+        # Non-blocking in every path: on normal completion all workers are
+        # done (immediate return); on cancel/429 the in-flight HTTP calls are
+        # abandoned instead of being waited out.
+        executor.shutdown(wait=False, cancel_futures=True)
 
     if serial_fallback:
         for batch_idx in sorted(pending):
@@ -1742,6 +1796,15 @@ def analyze_subtitle_translation(
     effective_ctx = max(0, int(settings.get("llm_correction_context_window", 5)))
     concurrency = max(1, int(settings.get("llm_concurrency", 5)))
     max_chars = int(settings.get("llm_max_batch_chars", 4000) or 0) or None
+    # v3.0.5 R5.8 (M5.8 rulings 1-2): quality mode is a GLOBAL settings
+    # switch read here -- no new function parameter, the handler is
+    # untouched. On = serial dispatch (concurrency forced to 1), which is
+    # what makes the 1-batch finalized-translation sliding window possible;
+    # cancel latency is unaffected (the 1s poll loop and the serial-fallback
+    # cancel check stay in place).
+    quality_mode = bool(settings.get("llm_translation_quality_mode", False))
+    if quality_mode:
+        concurrency = 1
 
     # Normalize handler input ({"segment_id", ...}) to the internal
     # {"id", "text"} shape the shared correction-skeleton helpers expect.
@@ -1774,7 +1837,14 @@ def analyze_subtitle_translation(
     # Pre-compute each batch's payload (context = SOURCE text +/- ctx only:
     # batches dispatch concurrently, so finalized translations of sibling
     # batches are unavailable by construction -- SPEC M1-2 ruling).
-    batch_payloads: list[tuple[set[str], str, dict[str, str]]] = []
+    batch_payloads: list[tuple[set[str], str | None, dict[str, str]]] = []
+    # v3.0.5 R5.8 (M5.8 ruling 3, controlled point (f)): quality mode skips
+    # prompt assembly in the pre-compute pass (the payload is rebuilt per
+    # batch inside the serial dispatch so batch N can carry batch N-1's
+    # finalized translations); the context slices needed for that lazy
+    # rebuild live here. The DEFAULT (off) path below is byte-identical to
+    # the pre-R5.8 pre-compute.
+    quality_batch_contexts: dict[int, list[dict]] = {}
     for _batch_idx, (start_i, end_i) in enumerate(target_windows):
         ctx_start = max(0, start_i - effective_ctx)
         ctx_end = min(len(source_segments), end_i + effective_ctx)
@@ -1784,16 +1854,79 @@ def analyze_subtitle_translation(
         extra_ctx: dict[str, Any] = {
             "target_segment_ids": [id_map[i] for i in sorted(target_ids)],
         }
+        if quality_mode:
+            batch_payloads.append((target_ids, None, id_map))
+            quality_batch_contexts[_batch_idx] = batch_with_context
+            continue
         prompt = _build_structured_user_message(
             batch_with_context, extra_context=extra_ctx, opaque_ids=id_map
         )
         batch_payloads.append((target_ids, prompt, id_map))
+
+    def _build_quality_prompt(
+        batch_idx: int, target_ids: set[str], id_map: dict[str, str]
+    ) -> str:
+        """v3.0.5 R5.8 (M5.8 ruling 3): lazy payload build for quality mode.
+
+        Serial dispatch (concurrency 1, FIFO queue) guarantees batch N-1's
+        future is already done when batch N's worker starts, so its
+        ``result()`` returns immediately -- no cross-thread race with the
+        poll-loop consumption in the main thread. The done()/cancelled()
+        guards are pure defense (e.g. the 429 downgrade abandons futures;
+        a cancelled or exceptional previous batch simply yields no window).
+        """
+        extra: dict[str, Any] = {
+            "target_segment_ids": [id_map[i] for i in sorted(target_ids)],
+        }
+        prev = batch_idx - 1
+        prev_future = future_by_idx.get(prev) if prev >= 0 else None
+        prev_translations: list[dict] = []
+        if (
+            prev_future is not None
+            and prev_future.done()
+            and not prev_future.cancelled()
+        ):
+            try:
+                prev_result = prev_future.result()
+                prev_translations = list(prev_result[1] or [])
+            except Exception:
+                prev_translations = []
+        if prev_translations:
+            # Re-expose the previous batch's finalized translations in ITS
+            # opaque id space (the same space the model saw), ordered by
+            # source-segment sequence (window = 1 finalized batch, PRD R5.8).
+            prev_id_map = batch_payloads[prev][2]
+            source_order = {
+                str(s.get("id", "")): i for i, s in enumerate(source_segments)
+            }
+            ordered = sorted(
+                prev_translations,
+                key=lambda t: source_order.get(
+                    str(t.get("segment_id", "")), len(source_order)
+                ),
+            )
+            extra["finalized_translations"] = [
+                {
+                    "segment_id": prev_id_map.get(
+                        str(t["segment_id"]), str(t["segment_id"])
+                    ),
+                    "translated_text": str(t.get("translated_text", "")),
+                }
+                for t in ordered
+            ]
+        return _build_structured_user_message(
+            quality_batch_contexts[batch_idx], extra_context=extra, opaque_ids=id_map
+        )
 
     def _call_batch(batch_idx: int) -> tuple[int, list[dict], dict, str | None]:
         """Single translation attempt (no retry)."""
         if cancel_event and cancel_event.is_set():
             return (batch_idx, [], {}, "Cancelled")
         target_ids, prompt, id_map = batch_payloads[batch_idx]
+        if prompt is None:
+            # quality mode: build the payload now (sliding window over the
+            # previous batch's finalized translations)
+            prompt = _build_quality_prompt(batch_idx, target_ids, id_map)
         result = call_llm(
             prompt,
             system=system,
@@ -1856,10 +1989,17 @@ def analyze_subtitle_translation(
     _CANCEL_POLL_SECONDS = 1.0
     executor = ThreadPoolExecutor(max_workers=concurrency)
     try:
-        futures = {
-            executor.submit(_process_batch, batch_idx): batch_idx
-            for batch_idx in range(total_batches)
-        }
+        futures: dict = {}
+        # v3.0.5 R5.8: reverse index for the quality-mode sliding window
+        # (the lazy prompt build reads the previous batch's future result).
+        # Registered per submit: batch N can only start after submit(N)
+        # returns, and future_by_idx[N-1] is registered before submit(N) --
+        # by induction the window lookup never races the registration.
+        future_by_idx: dict = {}
+        for batch_idx in range(total_batches):
+            fut = executor.submit(_process_batch, batch_idx)
+            futures[fut] = batch_idx
+            future_by_idx[batch_idx] = fut
         try:
             outstanding = set(futures)
             while outstanding:
@@ -1868,7 +2008,14 @@ def analyze_subtitle_translation(
                 )
                 if cancel_event and cancel_event.is_set():
                     executor.shutdown(wait=False, cancel_futures=True)
-                    return {"success": False, "error": "Cancelled"}
+                    # v3.0.5 R5.1: cancel carries the cost report (keys-only
+                    # addition; the "Cancelled" string is unchanged so the
+                    # task_manager dual-channel judging keeps working).
+                    return {
+                        "success": False,
+                        "error": "Cancelled",
+                        "data": {"token_usage": total_usage, "ledger": ledger.to_dict()},
+                    }
 
                 # v3.0.4 smoke-fix 1c: the 429 downgrade must leave BOTH loops
                 # (the original single ``for as_completed`` needed one break);
@@ -1900,7 +2047,13 @@ def analyze_subtitle_translation(
 
                     if error == "Cancelled":
                         executor.shutdown(wait=False, cancel_futures=True)
-                        return {"success": False, "error": "Cancelled"}
+                        # v3.0.5 R5.1: same cost report as the poll-loop
+                        # cancel above (batch-internal cancel path).
+                        return {
+                            "success": False,
+                            "error": "Cancelled",
+                            "data": {"token_usage": total_usage, "ledger": ledger.to_dict()},
+                        }
 
                     if error and "Rate limited" in error:
                         consecutive_429 += 1
@@ -1936,7 +2089,13 @@ def analyze_subtitle_translation(
     if serial_fallback:
         for batch_idx in sorted(pending):
             if cancel_event and cancel_event.is_set():
-                return {"success": False, "error": "Cancelled"}
+                # v3.0.5 R5.1: same cost report as the pool cancel paths
+                # (serial-fallback loop cancel).
+                return {
+                    "success": False,
+                    "error": "Cancelled",
+                    "data": {"token_usage": total_usage, "ledger": ledger.to_dict()},
+                }
             if progress_cb:
                 pct = (completed / total_batches) * 100 if total_batches > 0 else 0
                 progress_cb(pct, f"Translation batch {completed}/{total_batches} (serial)...")
@@ -1961,25 +2120,45 @@ def analyze_subtitle_translation(
             uncovered.extend(sorted(batch_payloads[batch_idx][0]))
     ledger.uncovered_segment_ids = sorted(set(uncovered))
 
-    # M1-2 key difference vs correction: full-output conservation -- a batch
-    # that still fails after its retry fails the WHOLE task (zero persistence
-    # upstream), instead of returning partial results.
-    if ledger.failed:
+    # v3.0.5 R5.3 (M5.3 ruling 3, controlled point (d)): the old
+    # whole-task conservation ("a batch that still fails after its retry
+    # fails the WHOLE task, zero persistence upstream") survives ONLY in
+    # the all-batches-failed branch. A partial failure now lands the
+    # completed batches (1/N degraded landing: 33/34 batches persist) with
+    # the failed ids recorded in the ledger.
+    if ledger.failed and len(ledger.failed) >= total_batches:
+        # ALL batches failed -> refuse with zero writes. Chinese way-out
+        # copy (M5.2 ruling 3 text (i); MUST contain 「补译」 -- the M0-3
+        # :217 assertion keyword anchor).
         if ledger.uncovered_segment_ids:
             logger.warning(
                 f"Translation coverage gap: {len(ledger.uncovered_segment_ids)} segment(s) "
                 f"in failed batches {sorted(ledger.failed)}"
             )
         error = (
-            f"Translation incomplete: {len(ledger.failed)}/{total_batches} batch(es) "
-            f"failed after retry (batches {sorted(ledger.failed)}), "
-            f"{len(ledger.uncovered_segment_ids)} segment(s) uncovered"
+            f"翻译失败：{len(ledger.failed)}/{total_batches} 批处理失败"
+            f"（批 {sorted(ledger.failed)}），本次未写入任何译文；"
+            f"可直接重试补译；反复失败建议更换模型或检查网络"
         )
         return {
             "success": False,
             "error": error,
             "data": {"ledger": ledger.to_dict(), "token_usage": total_usage},
         }
+
+    if ledger.failed:
+        # PARTIAL success (some batches survived their retry): completed
+        # batches flow through the merge below; the failed batch ids and
+        # their uncovered targets stay in the ledger for the completion
+        # gap merge (MF2-2) and the resumable route (start_translation
+        # derives the gap set from bindings, which naturally includes
+        # these).
+        logger.warning(
+            f"Translation partial success: {len(ledger.failed)}/{total_batches} "
+            f"batch(es) failed (batches {sorted(ledger.failed)}), "
+            f"{len(ledger.uncovered_segment_ids)} segment(s) uncovered -- "
+            f"completed batches will be returned"
+        )
 
     # Merge in original segment order (conservation guarantees each target
     # id appears exactly once, so the index sort is total and stable).

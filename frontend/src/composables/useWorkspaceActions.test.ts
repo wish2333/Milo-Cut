@@ -36,7 +36,7 @@ import type {
 } from "@/types/project"
 import type { UndoLayer } from "@/utils/undoRecords"
 import { lastSeenRevision } from "@/utils/revision"
-import { mockAnalysisData, mockProject, mockSegment } from "@/test/helpers/mockProject"
+import { mockAnalysisData, mockProject, mockSegment, mockTimeline } from "@/test/helpers/mockProject"
 
 vi.mock("@/bridge", () => ({
   call: vi.fn(),
@@ -108,13 +108,20 @@ interface DepsOverrides {
   pushSnapshot: WorkspaceActionsDeps["pushSnapshot"]
   emit: WorkspaceActionsDeps["emit"]
   loadCorrections?: WorkspaceActionsDeps["loadCorrections"]
+  // v3.0.5 R5.4: review-scope override (default = main-track view)
+  getReviewScope?: WorkspaceActionsDeps["getReviewScope"]
+  acceptHighConfidenceCorrections?: WorkspaceActionsDeps["acceptHighConfidenceCorrections"]
+  clearCorrections?: WorkspaceActionsDeps["clearCorrections"]
+  // v3.0.5 R5.6: rerun-toast coverage hooks
+  showToast?: WorkspaceActionsDeps["showToast"]
+  generateSubtitleKeepRanges?: WorkspaceActionsDeps["generateSubtitleKeepRanges"]
 }
 
 function makeActions(o: DepsOverrides): WorkspaceActions {
   const noop = () => undefined
   const deps = {
     emit: o.emit,
-    showToast: vi.fn(),
+    showToast: o.showToast ?? vi.fn(),
     getProject: () => o.project.value,
     errorMessage: { value: "" },
     statusMessage: { value: "" },
@@ -147,7 +154,7 @@ function makeActions(o: DepsOverrides): WorkspaceActions {
     splitSegment: vi.fn(async () => ({ ok: true, snapOffsetMs: null })),
     deleteSegment: vi.fn(async () => null),
     selectEditRange: noop,
-    generateSubtitleKeepRanges: vi.fn(async () => null),
+    generateSubtitleKeepRanges: o.generateSubtitleKeepRanges ?? vi.fn(async () => null),
     deleteSubtitleTrimEdits: vi.fn(async () => true),
     deleteSilenceSegments: vi.fn(async () => true),
     confirmAllSuggestions: vi.fn(async () => undefined),
@@ -172,8 +179,11 @@ function makeActions(o: DepsOverrides): WorkspaceActions {
     computeDiff: vi.fn(async () => null),
     acceptCorrection: vi.fn(async () => true),
     rejectCorrection: vi.fn(async () => true),
-    acceptHighConfidenceCorrections: vi.fn(async () => null),
-    clearCorrections: vi.fn(async () => true),
+    acceptHighConfidenceCorrections:
+      o.acceptHighConfidenceCorrections ?? vi.fn(async () => null),
+    clearCorrections: o.clearCorrections ?? vi.fn(async () => null),
+    getReviewScope:
+      o.getReviewScope ?? (() => ({ trackId: "", trackName: null })),
     asr: {
       asrEngine: { value: "" },
       asrPluginId: { value: "" },
@@ -441,5 +451,237 @@ describe("handleSwitchTimeline -- pending review re-fetch (R3 pairing)", () => {
     mockCall.mockResolvedValue({ success: false, error: "boom" })
     await actions.handleSwitchTimeline("other")
     expect(loadCorrections).not.toHaveBeenCalled()
+  })
+})
+
+
+// ------------------------------------------------------------------
+// v3.0.5 R5.4 (M5.4 rulings 3-6): batch three-state scope + aggregated
+// patch consumption + scoped confirm copy
+// ------------------------------------------------------------------
+
+describe("batch accept/clear -- three-state scope (v3.0.5 R5.4)", () => {
+  const PATCH = { revision: 9, timeline_id: "default", analysis: null }
+
+  function entries(): CorrectionReviewEntry[] {
+    return [
+      { id: "r-main-hi", original_text: "a", corrected_text: "b", track_id: "", confidence: 0.9 },
+      { id: "r-main-lo", original_text: "a2", corrected_text: "b2", track_id: "", confidence: 0.5 },
+      { id: "r-trk-hi", original_text: "c", corrected_text: "d", track_id: "trk_x", confidence: 0.95 },
+    ]
+  }
+
+  function setup(o: Partial<DepsOverrides> = {}) {
+    const project = ref(mockProject())
+    const pending = ref<CorrectionReviewEntry[]>(entries())
+    const pushSnapshot = vi.fn()
+    const emit = vi.fn()
+    const acceptHighConfidenceCorrections = vi.fn(
+      async () => ({ accepted: 1, remaining: 0, patch: PATCH }),
+    )
+    const clearCorrections = vi.fn(async () => ({ cleared: 2, patch: PATCH }))
+    const actions = makeActions({
+      project,
+      pendingCorrections: pending,
+      pushSnapshot,
+      emit,
+      acceptHighConfidenceCorrections,
+      clearCorrections,
+      ...o,
+    })
+    return { actions, pushSnapshot, emit, acceptHighConfidenceCorrections, clearCorrections, pending }
+  }
+
+  const confirmMock = vi.fn(() => true)
+
+  beforeEach(() => {
+    confirmMock.mockClear()
+    vi.stubGlobal("confirm", confirmMock)
+  })
+
+  it("main scope: confirm names 主轨 with the scope-filtered high-confidence count; snapshot = two main layers", async () => {
+    const { actions, pushSnapshot, acceptHighConfidenceCorrections } = setup()
+    await actions.handleAcceptHighConfidence()
+
+    expect(confirmMock).toHaveBeenCalledWith("将接受当前轨〈主轨〉的 1 条高置信度建议")
+    // snapshot BEFORE the bridge call, main two layers (MF-1)
+    expect(pushSnapshot).toHaveBeenCalledWith(
+      expect.anything(), ["segments", "analysis"], "批量接受",
+    )
+    expect(acceptHighConfidenceCorrections).toHaveBeenCalledWith(expect.any(String), 0.8, "")
+  })
+
+  it("track scope: confirm names the track; snapshot = track two layers", async () => {
+    const { actions, pushSnapshot, acceptHighConfidenceCorrections } = setup({
+      getReviewScope: () => ({ trackId: "trk_x", trackName: "English" }),
+    })
+    await actions.handleAcceptHighConfidence()
+
+    expect(confirmMock).toHaveBeenCalledWith("将接受当前轨〈English〉的 1 条高置信度建议")
+    expect(pushSnapshot).toHaveBeenCalledWith(
+      expect.anything(), ["tracks", "analysis"], "批量接受",
+    )
+    expect(acceptHighConfidenceCorrections).toHaveBeenCalledWith(expect.any(String), 0.8, "trk_x")
+  })
+
+  it("全部 scope (null): three-layer union snapshot + 「全部轨道」 copy counting every scope", async () => {
+    const { actions, pushSnapshot, acceptHighConfidenceCorrections } = setup({
+      getReviewScope: () => ({ trackId: null, trackName: null }),
+    })
+    await actions.handleAcceptHighConfidence()
+
+    expect(confirmMock).toHaveBeenCalledWith("将接受当前轨〈全部轨道〉的 2 条高置信度建议")
+    expect(pushSnapshot).toHaveBeenCalledWith(
+      expect.anything(), ["segments", "tracks", "analysis"], "批量接受",
+    )
+    expect(acceptHighConfidenceCorrections).toHaveBeenCalledWith(expect.any(String), 0.8, null)
+  })
+
+  it("accept consumes the aggregated patch through project-updated -- no switch_timeline full refresh", async () => {
+    const { actions, emit } = setup()
+    await actions.handleAcceptHighConfidence()
+
+    expect(emit).toHaveBeenCalledWith("project-updated", PATCH)
+    expect(mockCall).not.toHaveBeenCalledWith("switch_timeline", expect.anything())
+  })
+
+  it("accept without a patch falls back to the legacy full refresh (zero-accepted / older backend)", async () => {
+    const { actions, emit } = setup({
+      acceptHighConfidenceCorrections: vi.fn(async () => ({ accepted: 0, remaining: 2 })),
+    })
+    mockCall.mockResolvedValue({ success: true, data: mockProject() })
+    await actions.handleAcceptHighConfidence()
+
+    expect(emit).toHaveBeenCalledWith("project-updated", expect.anything())
+    expect(mockCall).toHaveBeenCalledWith("switch_timeline", expect.anything())
+  })
+
+  it("clear: scoped confirm counts ALL pending of the scope, consumes patch, toast shows cleared_count", async () => {
+    const { actions, emit, clearCorrections, pushSnapshot } = setup({
+      getReviewScope: () => ({ trackId: "trk_x", trackName: "English" }),
+    })
+    await actions.handleClearCorrections()
+
+    expect(confirmMock).toHaveBeenCalledWith("将清除当前轨〈English〉的 1 条待审建议")
+    expect(clearCorrections).toHaveBeenCalledWith(expect.any(String), "trk_x")
+    // snapshot before the write, track two layers
+    expect(pushSnapshot).toHaveBeenCalledWith(
+      expect.anything(), ["tracks", "analysis"], "批量清除",
+    )
+    expect(emit).toHaveBeenCalledWith("project-updated", PATCH)
+  })
+
+  it("empty scoped set is a no-op with an informational toast (no confirm, no bridge call)", async () => {
+    const { actions, acceptHighConfidenceCorrections } = setup({
+      getReviewScope: () => ({ trackId: "trk_none", trackName: null }),
+    })
+    // no-op guard: assert via the bridge absence (no confirm either)
+    await actions.handleAcceptHighConfidence()
+    expect(acceptHighConfidenceCorrections).not.toHaveBeenCalled()
+    expect(confirmMock).not.toHaveBeenCalled()
+  })
+})
+
+// ------------------------------------------------------------------
+// v3.0.5 R5.6 (M5.6 ruling 2): rerun toast reports invalidated_count
+// ------------------------------------------------------------------
+
+describe("handleSubtitleTrim -- rerun toast reports invalidated_count (v3.0.5 R5.6)", () => {
+  function setup(result: { new_edits: number; keep_ranges: number; invalidated_count: number } | null) {
+    const showToast = vi.fn()
+    const actions = makeActions({
+      project: ref(mockProject()),
+      pendingCorrections: ref<CorrectionReviewEntry[]>([]),
+      pushSnapshot: vi.fn(),
+      emit: vi.fn(),
+      showToast,
+      generateSubtitleKeepRanges: vi.fn(async () => result),
+    })
+    return { actions, showToast }
+  }
+
+  it("invalidated > 0: reports new additions AND ranges cleared by keep overlap", async () => {
+    const { actions, showToast } = setup({ new_edits: 5, keep_ranges: 3, invalidated_count: 2 })
+    await actions.handleSubtitleTrim()
+    expect(showToast).toHaveBeenCalledWith(
+      "新增 5 条、按保留区间清除 2 条旧区间",
+      "success",
+      5000,
+    )
+  })
+
+  it("invalidated = 0: only reports the new additions", async () => {
+    const { actions, showToast } = setup({ new_edits: 4, keep_ranges: 2, invalidated_count: 0 })
+    await actions.handleSubtitleTrim()
+    expect(showToast).toHaveBeenCalledWith("新增 4 条", "success", 5000)
+  })
+
+  it("null result (bridge failure): error toast, no count wording", async () => {
+    const { actions, showToast } = setup(null)
+    await actions.handleSubtitleTrim()
+    expect(showToast).toHaveBeenCalledWith(
+      "Failed to generate subtitle trim ranges",
+      "error",
+      5000,
+    )
+  })
+})
+
+// ------------------------------------------------------------------
+// v3.0.5 R5.15 (SG2-5): cascade-delete toast carries the real count.
+// ------------------------------------------------------------------
+
+describe("handleDeleteTrack -- cascade toast counts the track's segments (v3.0.5 R5.15)", () => {
+  it("whole-track N = getProject() segment count of that track, with the undo + cascade note", async () => {
+    const base = mockProject()
+    const trackSegments = [
+      mockSegment({ id: "tseg-1" }),
+      mockSegment({ id: "tseg-2", start: 5, end: 8 }),
+      mockSegment({ id: "tseg-3", start: 9, end: 12 }),
+    ]
+    const project = ref(
+      mockProject({
+        timelines: [
+          mockTimeline({
+            transcript: {
+              ...base.timelines[0].transcript,
+              tracks: [
+                {
+                  id: "trk_x",
+                  role: "extension",
+                  name: "en.srt",
+                  language: "en",
+                  segments: trackSegments,
+                } as (typeof base.timelines)[0]["transcript"]["tracks"] extends
+                  (infer T)[] | undefined
+                  ? NonNullable<T>
+                  : never,
+              ],
+            },
+          }),
+        ],
+      }),
+    )
+    mockCall.mockResolvedValue({
+      success: true,
+      data: project.value,
+    } as unknown as Awaited<ReturnType<typeof call>>)
+    const showToast = vi.fn()
+    const actions = makeActions({
+      project,
+      pendingCorrections: ref<CorrectionReviewEntry[]>([]),
+      pushSnapshot: vi.fn(),
+      emit: vi.fn(),
+      showToast,
+    })
+
+    await actions.handleDeleteTrack("trk_x")
+
+    expect(mockCall).toHaveBeenCalledWith("delete_track", "trk_x")
+    expect(showToast).toHaveBeenCalledWith(
+      "已删除 3 段及其关联数据，可 Ctrl+Z 撤销",
+      "success",
+      3000,
+    )
   })
 })

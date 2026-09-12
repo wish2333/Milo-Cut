@@ -7,7 +7,7 @@
 import { ref, computed } from "vue"
 import { call, onEvent } from "@/bridge"
 import type { MiloTask } from "@/types/task"
-import type { Project } from "@/types/project"
+import type { Project, ProjectPatch } from "@/types/project"
 import {
   EVENT_LLM_ANALYSIS_FAILED,
   EVENT_LLM_SMART_DELETE_PROGRESS,
@@ -50,6 +50,10 @@ interface SubtitleCorrection {
   category: string
   start: number
   end: number
+  // v3.0.5 R5.4: scope fields the backend already sends (get_subtitle_
+  // corrections payload) -- "" = main track, non-empty = that track.
+  track_id?: string
+  track_name?: string
 }
 
 // v3.0.4 M1-6: completion payload of "translate to a new secondary track".
@@ -61,6 +65,9 @@ export interface TranslationCompletion {
   track_name: string
   language: string
   uncovered_ids: string[]
+  // v3.0.5 R5.3: written count rides the completion payload (feeds the
+  // 「本次补译 N 段」 toast when the completion matches a patch-up marker).
+  written_count: number
 }
 
 interface HighlightResult {
@@ -89,6 +96,10 @@ const jumpCuts = ref<JumpCut[]>([])
 const isRunning = ref(false)
 const progress = ref(0)
 const errorMsg = ref<string | null>(null)
+// v3.0.5 R5.1: latest task:progress message (the percent twin was already
+// consumed; the message rides the same stream). AIAssistantPanel maps the
+// "(serial)" substring to the 429-downgrade notice -- zero backend change.
+const progressMessage = ref<string | null>(null)
 // v3.0.0 M3-1: batch-ledger coverage gap from the last LLM task
 const coverageGap = ref<number>(0)
 // v3.0.4 M1-6: last translation completion (null = none pending). Set by the
@@ -121,6 +132,7 @@ function ensureListeners() {
     isRunning.value = false
     progress.value = 0
     errorMsg.value = null
+    progressMessage.value = null
     lastTranslationCompletion.value = null
   })
 
@@ -160,6 +172,11 @@ function ensureListeners() {
     EVENT_LLM_SUBTITLE_CORRECTION_COMPLETED,
     async (detail) => {
       isRunning.value = false
+      // v3.0.5 R5.11: the deferred list clear lands HERE (the new run's
+      // results are authoritative). loadCorrections (stored_count > 0)
+      // replaces the list wholesale; a zero-result run keeps the clear so
+      // the previous run's entries do not linger as stale.
+      pendingCorrections.value = []
       if (detail) {
         subtitleCorrectionResult.value = detail as SubtitleCorrectionResult
         // v2.1.0 Phase 2: auto-load stored corrections for the review UI.
@@ -178,6 +195,7 @@ function ensureListeners() {
     track_name?: string
     language?: string
     uncovered_ids?: string[]
+    written_count?: number
   }>(EVENT_LLM_TRANSLATION_COMPLETED, (detail) => {
     isRunning.value = false
     if (!detail?.track_id) return
@@ -186,6 +204,7 @@ function ensureListeners() {
       track_name: detail.track_name ?? "",
       language: detail.language ?? "",
       uncovered_ids: detail.uncovered_ids ?? [],
+      written_count: detail.written_count ?? 0,
     }
   })
 
@@ -242,9 +261,17 @@ function ensureListeners() {
   // v2.1.1 M1-2: task cancelled (single-function cancel button). The backend
   // emits TASK_CANCELLED instead of TASK_FAILED; reset the running state so
   // the UI stops spinning and shows the cancel as a clean stop.
-  onEvent<{ task_id?: string }>(EVENT_TASK_CANCELLED, () => {
+  onEvent<{ task_id?: string; task_type?: string }>(EVENT_TASK_CANCELLED, (detail) => {
     isRunning.value = false
     progress.value = 0
+    // v3.0.5 R5.1 (SG2-2): clear the stale error ONLY for translation
+    // tasks -- their cancel is a clean stop with its own neutral cost
+    // toast in WorkspacePage, so a previous run's error must not linger
+    // into the next one. Other task types keep the current residual
+    // behavior (existing independent defect, recorded in record §8).
+    if (detail?.task_type === "llm_translation") {
+      errorMsg.value = null
+    }
   })
 
   // v3.0.4 smoke-fix 1b: the panel progress bar (llmProgress) was never
@@ -260,6 +287,10 @@ function ensureListeners() {
       if (typeof detail?.percent === "number") {
         progress.value = detail.percent
       }
+      // v3.0.5 R5.1: keep the latest progress message for the serial
+      // downgrade notice ("(serial)" suffix from the fallback loop).
+      progressMessage.value =
+        typeof detail?.message === "string" ? detail.message : null
     },
   )
 }
@@ -316,6 +347,7 @@ export function useLlmTasks() {
     isRunning.value = true
     progress.value = 0
     errorMsg.value = null
+    progressMessage.value = null
     resetSmartDelete()
 
     const res = await call<MiloTask>("start_smart_delete")
@@ -334,7 +366,11 @@ export function useLlmTasks() {
     isRunning.value = true
     progress.value = 0
     errorMsg.value = null
-    resetSubtitleCorrection()
+    progressMessage.value = null
+    // v3.0.5 R5.11: the review list reset is DEFERRED to the completion
+    // event -- clearing pendingCorrections here used to blank the review
+    // modal into a false「暂无」for the whole run (start -> completed can
+    // take minutes). Only the progress/error face resets up front.
 
     const res = await call<MiloTask>(
       "start_subtitle_correction",
@@ -357,6 +393,7 @@ export function useLlmTasks() {
     isRunning.value = true
     progress.value = 0
     errorMsg.value = null
+    progressMessage.value = null
     lastTranslationCompletion.value = null
 
     const res = await call<MiloTask>("start_translation", targetLanguage)
@@ -380,6 +417,7 @@ export function useLlmTasks() {
     isRunning.value = true
     progress.value = 0
     errorMsg.value = null
+    progressMessage.value = null
     resetHighlight()
 
     const res = await call<MiloTask>("start_highlight", targetMinutes)
@@ -493,30 +531,43 @@ export function useLlmTasks() {
   async function acceptHighConfidenceCorrections(
     timelineId: string,
     threshold = 0.8,
-  ): Promise<{ accepted: number; remaining: number } | null> {
-    const res = await call<{ accepted_count: number; remaining_count: number }>(
-      "accept_high_confidence_corrections",
-      timelineId,
-      threshold,
-    )
+    trackId: string | null = null,
+  ): Promise<
+    { accepted: number; remaining: number; patch?: ProjectPatch } | null
+  > {
+    const res = await call<{
+      accepted_count: number
+      remaining_count: number
+      patch?: ProjectPatch
+    }>("accept_high_confidence_corrections", timelineId, threshold, trackId)
     if (res.success && res.data) {
       // Reload to reflect the remaining low-confidence items
       await loadCorrections(timelineId)
-      return { accepted: res.data.accepted_count, remaining: res.data.remaining_count }
+      return {
+        accepted: res.data.accepted_count,
+        remaining: res.data.remaining_count,
+        patch: res.data.patch,
+      }
     }
     return null
   }
 
-  async function clearCorrections(timelineId: string): Promise<boolean> {
-    const res = await call<{ cleared_count: number }>(
+  async function clearCorrections(
+    timelineId: string,
+    trackId: string | null = null,
+  ): Promise<{ cleared: number; patch?: ProjectPatch } | null> {
+    const res = await call<{ cleared_count: number; patch?: ProjectPatch }>(
       "clear_subtitle_corrections",
       timelineId,
+      trackId,
     )
-    if (res.success) {
-      pendingCorrections.value = []
-      return true
+    if (res.success && res.data) {
+      // v3.0.5 R5.4: reload instead of the blanket local reset -- a scoped
+      // clear must keep the OTHER scope's pending items on screen.
+      await loadCorrections(timelineId)
+      return { cleared: res.data.cleared_count, patch: res.data.patch }
     }
-    return false
+    return null
   }
 
   return {
@@ -555,6 +606,7 @@ export function useLlmTasks() {
     // Shared
     isRunning,
     progress,
+    progressMessage,
     errorMsg,
     // LLM configuration (Phase 2)
     llmConfig,

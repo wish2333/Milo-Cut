@@ -145,29 +145,39 @@ class TestAcceptMainTrackSuperset:
         assert patched_seg["text"] == corrs[0]["corrected_text"]
 
     def test_batch_accept_reuses_single_accept_superset(self, tmp_dir, monkeypatch):
-        """accept_high_confidence_corrections delegates to the single
-        accept, so every accepted item's data carries the patch key."""
+        """v3.0.5 R5.4 (M5.4 ruling 2; inversion registered in the P2-1
+        record): the batch drives the SAME apply core as the single accept
+        (_apply_one -- pinning/confidence/reattach/timestamp logic
+        unified) but emits ONE aggregated patch for the whole loop:
+        revision advances exactly +1 and the envelope carries the
+        dirty-layer union (per-item patch keys are gone by design)."""
         segs = make_segments(2)
         svc = _service(monkeypatch, tmp_dir, segs)
         corrs = _corrs_for(segs, " [fix]", confidence=0.95)
         svc.correction.store_subtitle_corrections(corrs, "default")
 
         captured: list[dict] = []
-        orig_accept = svc.correction.accept_subtitle_correction
+        orig_apply = svc.correction._apply_one
 
-        def _spy(rid: str) -> dict:
-            res = orig_accept(rid)
-            if res.get("success"):
-                captured.append(res["data"])
+        def _spy(rid: str) -> tuple:
+            res = orig_apply(rid)
+            if res[0]:
+                captured.append(res[2])
             return res
 
-        svc.correction.accept_subtitle_correction = _spy  # type: ignore[method-assign]
+        svc.correction._apply_one = _spy  # type: ignore[method-assign]
 
+        rev_before = svc._revision
         res = svc.correction.accept_high_confidence_corrections("default", threshold=0.8)
         assert res["success"]
         assert res["data"]["accepted_count"] == 2
         assert captured, "batch must reuse the single-accept path"
-        assert all("patch" in d for d in captured)
+        # ONE aggregated patch: revision exactly +1, layers = union
+        patch = res["data"]["patch"]
+        assert patch["revision"] == rev_before + 1
+        assert svc._revision == rev_before + 1
+        assert patch["segments"] is not None
+        assert patch["analysis"] is not None
 
 
 # ================================================================
@@ -412,3 +422,174 @@ class TestTimelinePinning:
         assert "patch" in res["data"]
         seg = next(s for s in _tl(svc).transcript.segments if s.id == segs[0].id)
         assert seg.text.endswith("[legacy]")
+
+
+# ================================================================
+# v3.0.5 R5.4 (M5.4): three-state scoped batch accept/clear + the
+# aggregated single patch (revision exactly +1 per batch)
+# ================================================================
+
+
+class TestR54ScopedBatch:
+    def _mixed(self, monkeypatch, tmp_dir):
+        """Main track (2 segs) + extension track trk_x (2 segs), pending
+        high-confidence corrections on BOTH scopes."""
+        main = make_segments(2)
+        track = _track("trk_x", "Track X", ["alpha", "beta"])
+        svc = _service(monkeypatch, tmp_dir, main, [track])
+        svc.correction.store_subtitle_corrections(
+            _corrs_for(main, " [m]", confidence=0.95), "default"
+        )
+        svc.correction.store_subtitle_corrections(
+            _corrs_for(track.segments, " [t]", confidence=0.95),
+            "default",
+            track_id="trk_x",
+        )
+        return svc, main, track
+
+    def _pending_tracks(self, svc) -> dict[str, int]:
+        """Pending correction count per scope ("" = main), zero entries
+        dropped."""
+        counts: dict[str, int] = {}
+        for r in svc.active_timeline.analysis.results:
+            if r.type != "llm_subtitle_correction":
+                continue
+            scope = svc.correction._correction_track_scope(r)
+            counts[scope] = counts.get(scope, 0) + 1
+        return counts
+
+    def test_main_scope_accept_leaves_track_pending(self, tmp_dir, monkeypatch):
+        """Three-state "" (B-1 regression lock): a main-track view batch
+        accepts ONLY main-scope corrections; the extension track's pending
+        set is untouched."""
+        svc, main, track = self._mixed(monkeypatch, tmp_dir)
+
+        res = svc.correction.accept_high_confidence_corrections(
+            "default", threshold=0.8, track_id=""
+        )
+
+        assert res["success"]
+        assert res["data"]["accepted_count"] == 2
+        # remaining is scope-consistent: the main scope is clean, the
+        # track's 2 items are NOT reported as this scope's leftovers
+        assert res["data"]["remaining_count"] == 0
+        assert self._pending_tracks(svc) == {"trk_x": 2}
+        # the main texts were corrected, the track texts were not
+        tl = svc.active_timeline
+        assert tl.transcript.segments[0].text.endswith(" [m]")
+        assert next(t for t in tl.transcript.tracks if t.id == "trk_x").segments[0].text == "alpha"
+
+    def test_track_scope_accept_leaves_main_pending(self, tmp_dir, monkeypatch):
+        """Three-state non-empty: an extension-track view batch accepts
+        only that track's corrections; the main scope stays pending."""
+        svc, main, track = self._mixed(monkeypatch, tmp_dir)
+
+        res = svc.correction.accept_high_confidence_corrections(
+            "default", threshold=0.8, track_id="trk_x"
+        )
+
+        assert res["data"]["accepted_count"] == 2
+        assert res["data"]["remaining_count"] == 0
+        assert self._pending_tracks(svc) == {"": 2}
+        tl = svc.active_timeline
+        assert not tl.transcript.segments[0].text.endswith(" [m]")
+        assert next(t for t in tl.transcript.tracks if t.id == "trk_x").segments[0].text.endswith(" [t]")
+
+    def test_none_scope_aggregates_three_layers_one_patch(self, tmp_dir, monkeypatch):
+        """None (timeline level, v3.0.4 semantics) with BOTH scopes
+        qualifying: ONE aggregated patch carries the three-layer union
+        (segments + tracks + analysis) and revision advances exactly +1
+        for the whole batch (one undo step reverts it)."""
+        svc, main, track = self._mixed(monkeypatch, tmp_dir)
+        rev_before = svc._revision
+
+        res = svc.correction.accept_high_confidence_corrections(
+            "default", threshold=0.8
+        )
+
+        assert res["data"]["accepted_count"] == 4
+        assert res["data"]["remaining_count"] == 0
+        patch = res["data"]["patch"]
+        assert patch["revision"] == rev_before + 1
+        assert svc._revision == rev_before + 1  # ONE bump for 4 accepts
+        assert patch["segments"] is not None
+        assert patch["tracks"] is not None
+        assert patch["analysis"] is not None
+        # both scopes landed
+        tl = svc.active_timeline
+        assert tl.transcript.segments[0].text.endswith(" [m]")
+        assert next(t for t in tl.transcript.tracks if t.id == "trk_x").segments[0].text.endswith(" [t]")
+        assert self._pending_tracks(svc) == {}
+
+    def test_zero_accepted_keeps_old_shape_no_revision(self, tmp_dir, monkeypatch):
+        """Nothing qualifying -> byte-equal pre-R5.4 return (old keys
+        only) and no revision bump."""
+        main = make_segments(2)
+        svc = _service(monkeypatch, tmp_dir, main)
+        svc.correction.store_subtitle_corrections(
+            _corrs_for(main, " [low]", confidence=0.5), "default"
+        )
+        rev_before = svc._revision
+
+        res = svc.correction.accept_high_confidence_corrections(
+            "default", threshold=0.8, track_id=""
+        )
+
+        assert res["data"] == {"accepted_count": 0, "remaining_count": 2}
+        assert svc._revision == rev_before
+
+
+class TestR54ScopedClear:
+    def _mixed(self, monkeypatch, tmp_dir):
+        main = make_segments(2)
+        track = _track("trk_x", "Track X", ["alpha"])
+        svc = _service(monkeypatch, tmp_dir, main, [track])
+        svc.correction.store_subtitle_corrections(
+            _corrs_for(main, " [m]", confidence=0.9), "default"
+        )
+        svc.correction.store_subtitle_corrections(
+            _corrs_for(track.segments, " [t]", confidence=0.9),
+            "default",
+            track_id="trk_x",
+        )
+        return svc
+
+    def test_main_scope_clear_leaves_track_pending(self, tmp_dir, monkeypatch):
+        svc = self._mixed(monkeypatch, tmp_dir)
+
+        res = svc.correction.clear_subtitle_corrections("default", track_id="")
+
+        assert res["success"]
+        assert res["data"]["cleared_count"] == 2
+        survivors = [
+            svc.correction._correction_track_scope(r)
+            for r in svc.active_timeline.analysis.results
+            if r.type == "llm_subtitle_correction"
+        ]
+        assert survivors == ["trk_x"]  # only the track item survives
+
+    def test_clear_returns_analysis_patch_superset(self, tmp_dir, monkeypatch):
+        """MF-3 superset: cleared_count stays, patch (analysis layer)
+        joins; revision +1 exactly."""
+        svc = self._mixed(monkeypatch, tmp_dir)
+        rev_before = svc._revision
+
+        res = svc.correction.clear_subtitle_corrections("default")
+
+        assert res["data"]["cleared_count"] == 3
+        patch = res["data"]["patch"]
+        assert patch["revision"] == rev_before + 1
+        assert patch["analysis"] is not None
+        assert patch["segments"] is None
+        assert all(
+            r.type != "llm_subtitle_correction"
+            for r in svc.active_timeline.analysis.results
+        )
+
+    def test_clear_empty_fast_path_old_shape(self, tmp_dir, monkeypatch):
+        main = make_segments(1)
+        svc = _service(monkeypatch, tmp_dir, main)
+        rev_before = svc._revision
+        res = svc.correction.clear_subtitle_corrections("default", track_id="trk_z")
+        assert res["data"] == {"cleared_count": 0}
+        assert svc._revision == rev_before

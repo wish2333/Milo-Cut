@@ -100,6 +100,8 @@ describe("useLlmTasks EVENT_LLM_TRANSLATION_COMPLETED consumption (M1-6)", () =>
       track_name: "English",
       language: "en",
       uncovered_ids: ["seg-1", "seg-7"],
+      // v3.0.5 R5.3: written_count now passes through (补译 toast source)
+      written_count: 30,
     })
   })
 
@@ -118,6 +120,8 @@ describe("useLlmTasks EVENT_LLM_TRANSLATION_COMPLETED consumption (M1-6)", () =>
       uncovered_ids: [],
     })
     expect(tasks.lastTranslationCompletion.value).toEqual({
+      // v3.0.5 R5.3: written_count now passes through (补译 toast source)
+      written_count: 30,
       track_id: "trk_y",
       track_name: "English",
       language: "en",

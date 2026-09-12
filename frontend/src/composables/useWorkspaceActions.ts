@@ -51,6 +51,9 @@ export interface CorrectionReviewEntry {
   corrected_text: string
   /** "" / absent = main track; non-empty = extension-track scope. */
   track_id?: string
+  /** v3.0.5 R5.4: rides the review payload already; feeds the scoped
+   * confirm copy's confidence filter (SG-4). */
+  confidence?: number
 }
 
 /** v3.0.4 M2-3: superset accept/reject response data (core M2-3). */
@@ -68,8 +71,18 @@ export interface CorrectionReviewResult {
  */
 export function correctionUndoLayers(
   entry: Pick<CorrectionReviewEntry, "track_id"> | undefined,
+  scopeTrackId: string | null = null,
 ): UndoLayer[] {
-  return entry && entry.track_id ? ["tracks", "analysis"] : ["segments", "analysis"]
+  // v3.0.5 R5.4 (M5.4 ruling 3, MF-1): the batch three-state second
+  // parameter -- null (「全部」view) mixes main + extension results, so
+  // BOTH text layers must ride the undo (three-layer union); "" / a track
+  // id narrow to that scope's two layers. Per-item callers keep the
+  // single-argument form (an entry always carries a concrete scope).
+  if (entry) {
+    return entry.track_id ? ["tracks", "analysis"] : ["segments", "analysis"]
+  }
+  if (scopeTrackId === null) return ["segments", "tracks", "analysis"]
+  return scopeTrackId ? ["tracks", "analysis"] : ["segments", "analysis"]
 }
 
 export interface WorkspaceActionsDeps {
@@ -113,7 +126,7 @@ export interface WorkspaceActionsDeps {
   splitSegment: (id: string, pos: number, snap?: boolean) => Promise<{ ok: boolean; snapOffsetMs: number | null }>
   deleteSegment: (id: string) => Promise<string | null>
   selectEditRange: (start: number, end: number) => void
-  generateSubtitleKeepRanges: (padding: number) => Promise<{ new_edits: number; keep_ranges: number } | null>
+  generateSubtitleKeepRanges: (padding: number) => Promise<{ new_edits: number; keep_ranges: number; invalidated_count: number } | null>
   deleteSubtitleTrimEdits: () => Promise<boolean>
   deleteSilenceSegments: () => Promise<boolean>
   confirmAllSuggestions: () => Promise<unknown>
@@ -127,6 +140,11 @@ export interface WorkspaceActionsDeps {
   // undo (M5)
   pushSnapshot: (project: Project, layers: UndoLayer[], label: string) => void
   projectRef: { value: Project | null }
+  // v3.0.5 R5.4 (P2-2): the review view's scope for the batch actions --
+  // three-state trackId (null = 「全部」 view [entry arrives with R5.11],
+  // "" = main track view, non-empty = that track) + display name for the
+  // scoped confirm copy.
+  getReviewScope: () => { trackId: string | null; trackName: string | null }
   // v2.3.2 optimistic-update flush (required before timeline-level bridge ops)
   flushPendingUpdates: () => Promise<void>
   // LLM composables (useLlmTasks / highlights)
@@ -148,8 +166,17 @@ export interface WorkspaceActionsDeps {
   // deps literal stays unchanged).
   acceptCorrection: (resultId: string) => Promise<boolean>
   rejectCorrection: (resultId: string) => Promise<boolean>
-  acceptHighConfidenceCorrections: (timelineId: string, threshold: number) => Promise<{ accepted: number } | null>
-  clearCorrections: (timelineId: string) => Promise<boolean>
+  // v3.0.5 R5.4: three-state scope passthrough + the aggregated patch
+  // riding the response (MF-3 superset).
+  acceptHighConfidenceCorrections: (
+    timelineId: string,
+    threshold: number,
+    trackId: string | null,
+  ) => Promise<{ accepted: number; remaining?: number; patch?: ProjectPatch } | null>
+  clearCorrections: (
+    timelineId: string,
+    trackId: string | null,
+  ) => Promise<{ cleared: number; patch?: ProjectPatch } | null>
   // ASR domain (useAsrEngines) + page wrapper
   asr: Pick<AsrEngines, "asrEngine" | "asrPluginId" | "asrSettingsPerEngine" | "installedEngines" | "checkEngineReady">
   handleSaveAsrSettings: () => Promise<boolean>
@@ -245,7 +272,7 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
     startSmartDelete, startSubtitleCorrection, startHighlight,
     highlightResults, hydrateHighlightsFromProject,
     pendingCorrections, loadCorrections, computeDiff,
-    acceptHighConfidenceCorrections, clearCorrections,
+    acceptHighConfidenceCorrections, clearCorrections, getReviewScope,
     asr, handleSaveAsrSettings, confirmAction,
   } = deps
 
@@ -501,7 +528,9 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
       const res = await call<ProjectResponse>("delete_track_segment", trackId, segmentId)
       if (res.success && res.data) {
         emit("project-updated", res.data)
-        showToast("字幕已删除", "success", 2000)
+        // v3.0.5 R5.15: undo affordance in the copy (single segment, N=1;
+        // no confirm dialog -- record-3.0.4 §7.1 ruling stands).
+        showToast("已删除 1 段，可 Ctrl+Z 撤销", "success", 2000)
       } else {
         showToast(res.error ?? "删除副轨字幕失败", "error", 6000)
       }
@@ -532,11 +561,21 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
 
   async function handleDeleteTrack(trackId: string) {
     if (projectRef.value) pushSnapshot(projectRef.value, ["tracks", "bindings"], "删除副轨")
+    // v3.0.5 R5.15: whole-track N is read BEFORE the delete lands (the
+    // cascade also removes bound main-track data -- the toast carries the
+    // undo affordance plus the cascade note).
+    const trackSegments = getProject()?.timelines
+      ?.find(t => t.id === getProject()?.active_timeline_id)
+      ?.transcript?.tracks?.find(tr => tr.id === trackId)?.segments?.length ?? 0
     try {
       const res = await call<ProjectResponse>("delete_track", trackId)
       if (res.success && res.data) {
         emit("project-updated", res.data)
-        showToast("副轨已删除", "success", 3000)
+        showToast(
+          `已删除 ${trackSegments} 段及其关联数据，可 Ctrl+Z 撤销`,
+          "success",
+          3000,
+        )
       } else {
         showToast(res.error ?? "删除副轨失败", "error", 6000)
       }
@@ -763,7 +802,18 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
     const result = await generateSubtitleKeepRanges(subtitleTrimPadding.value)
     statusMessage.value = ""
     if (result) {
-      showToast(`Generated ${result.new_edits} delete ranges from ${result.keep_ranges} subtitle groups`, "success", 5000)
+      // v3.0.5 R5.6 (M5.6 ruling 2): the re-run toast reports what a
+      // re-run actually did -- new ranges added AND prior subtitle-trim
+      // deletes cleared by keep-range overlap (invalidated_count).
+      if (result.invalidated_count > 0) {
+        showToast(
+          `新增 ${result.new_edits} 条、按保留区间清除 ${result.invalidated_count} 条旧区间`,
+          "success",
+          5000,
+        )
+      } else {
+        showToast(`新增 ${result.new_edits} 条`, "success", 5000)
+      }
     } else {
       showToast("Failed to generate subtitle trim ranges", "error", 5000)
     }
@@ -990,26 +1040,97 @@ export function createWorkspaceActions(deps: WorkspaceActionsDeps): WorkspaceAct
     }
   }
 
+  // v3.0.5 R5.4: scoped confirm copy (M5.4 ruling 6, SG-4) -- the N is
+  // the FRONT-end scope-filtered pending count (the authoritative scoping
+  // lives here), while the completion toast shows the BACK-end
+  // accepted_count/cleared_count verbatim (per-item silent skips are
+  // absorbed by that division of labor).
+  function scopedPendingCount(scopeTrackId: string | null, minConfidence?: number): number {
+    return pendingCorrections.value.filter((c) => {
+      const entryScope = c.track_id ?? ""
+      const inScope = scopeTrackId === null || entryScope === scopeTrackId
+      if (!inScope) return false
+      return minConfidence === undefined || (c.confidence ?? 0) >= minConfidence
+    }).length
+  }
+
+  function scopeLabel(scopeTrackId: string | null, trackName: string | null): string {
+    if (scopeTrackId === null) return "全部轨道"
+    return scopeTrackId ? (trackName || "副轨") : "主轨"
+  }
+
   async function handleAcceptHighConfidence() {
     const tlId = getProject().active_timeline_id
     if (!tlId) return
-    const res = await acceptHighConfidenceCorrections(tlId, 0.8)
+    const scope = getReviewScope()
+    const n = scopedPendingCount(scope.trackId, 0.8)
+    if (n === 0) {
+      showToast(`当前视图（${scopeLabel(scope.trackId, scope.trackName)}）没有高置信度建议`, "info", 2000)
+      return
+    }
+    if (
+      !window.confirm(
+        `将接受当前轨〈${scopeLabel(scope.trackId, scope.trackName)}〉的 ${n} 条高置信度建议`,
+      )
+    ) {
+      return
+    }
+    // MF-1 three-state snapshot BEFORE the batch write; the backend emits
+    // ONE aggregated patch, so one undo step reverts the whole batch.
+    if (projectRef.value) {
+      pushSnapshot(
+        projectRef.value,
+        correctionUndoLayers(undefined, scope.trackId),
+        "批量接受",
+      )
+    }
+    const res = await acceptHighConfidenceCorrections(tlId, 0.8, scope.trackId)
     if (res) {
       diffCache.value = {}
-      const projRes = await call<Project>("switch_timeline", tlId)
-      if (projRes.success && projRes.data) emit("project-updated", projRes.data)
+      // D7c: the aggregated patch drives the refresh through the standard
+      // project-updated channel (single applyProjectPatch); the O(project)
+      // switch_timeline full replace is gone. No-patch fallback (zero
+      // accepted / older backend) keeps the legacy refresh.
+      if (res.patch) {
+        emit("project-updated", res.patch)
+      } else {
+        const projRes = await call<Project>("switch_timeline", tlId)
+        if (projRes.success && projRes.data) emit("project-updated", projRes.data)
+      }
       showToast(`已接受 ${res.accepted} 条高置信度修正`, "success", 2000)
     }
   }
 
   async function handleClearCorrections() {
-    if (!window.confirm("确认清除所有待审阅的修正？")) return
     const tlId = getProject().active_timeline_id
     if (!tlId) return
-    const ok = await clearCorrections(tlId)
-    if (ok) {
+    const scope = getReviewScope()
+    const n = scopedPendingCount(scope.trackId)
+    if (n === 0) {
+      showToast(`当前视图（${scopeLabel(scope.trackId, scope.trackName)}）没有待审建议`, "info", 2000)
+      return
+    }
+    if (
+      !window.confirm(
+        `将清除当前轨〈${scopeLabel(scope.trackId, scope.trackName)}〉的 ${n} 条待审建议`,
+      )
+    ) {
+      return
+    }
+    if (projectRef.value) {
+      pushSnapshot(
+        projectRef.value,
+        correctionUndoLayers(undefined, scope.trackId),
+        "批量清除",
+      )
+    }
+    const res = await clearCorrections(tlId, scope.trackId)
+    if (res) {
       diffCache.value = {}
-      showToast("已清除全部修正", "info", 2000)
+      if (res.patch) {
+        emit("project-updated", res.patch)
+      }
+      showToast(`已清除 ${res.cleared} 条修正`, "info", 2000)
     }
   }
 

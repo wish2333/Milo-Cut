@@ -15,6 +15,7 @@ import { useAsrEngines } from "@/composables/useAsrEngines"
 import { createWorkspaceActions, provideWorkspaceActions } from "@/composables/useWorkspaceActions"
 import { useUvAvailability } from "@/composables/useUvAvailability"
 import { useLlmTasks } from "@/composables/useLlmTasks"
+import { useLlmAnalysis } from "@/composables/useLlmAnalysis"
 import { useEditedPlayback } from "@/composables/useEditedPlayback"
 import {
   computeListCreateRange,
@@ -25,6 +26,7 @@ import { PLAYBACK_CLOCK_KEY } from "@/components/waveform/injectionKeys"
 import {
   EVENT_TASK_COMPLETED,
   EVENT_TASK_CANCELLED,
+  EVENT_TASK_FAILED,
   EVENT_PROJECT_DIRTY,
   EVENT_PROJECT_SAVED,
   EVENT_WORKFLOW_ROLLED_BACK,
@@ -94,7 +96,15 @@ const {
   lastTranslationCompletion,
   hydrateHighlightsFromProject,
   coverageGap,
+  // v3.0.5 R5.1: latest task:progress message -> Timeline -> AIAssistantPanel
+  // ("(serial)" substring -> 429 downgrade notice)
+  progressMessage: llmProgressMessage,
 } = useLlmTasks()
+
+// v3.0.5 R5.1: cancel-cost toast reads the last token report. The handler
+// emits llm:token_usage BEFORE raising, so lastUsage is already up to date
+// by the time the task:cancelled listener below runs.
+const { lastUsage } = useLlmAnalysis()
 
 // v3.0.0 M3-1: surface batch coverage gaps from LLM tasks (never silent)
 watch(coverageGap, (n) => {
@@ -133,15 +143,25 @@ watch(subtitleCorrectionResult, async (result) => {
     }
   }
 })
+// v3.0.5 R5.11: review-list scope filter. Default = the ACTIVE list track
+// ("" = main track) so main/extension reviews never dilute each other; the
+// 「全部」toggle shows the unfiltered list (v3.0.4 status quo) and opens the
+// R5.4 batch-scope null entry (getReviewScope below).
+const reviewScopeAll = ref(false)
+const scopedCorrections = computed(() => {
+  if (reviewScopeAll.value) return pendingCorrections.value
+  const tid = activeListTrackId.value ?? ""
+  return pendingCorrections.value.filter(c => (c.track_id ?? "") === tid)
+})
 const highConfidenceCorrections = computed(() =>
-  pendingCorrections.value.filter((c) => c.confidence >= 0.8),
+  scopedCorrections.value.filter((c) => c.confidence >= 0.8),
 )
 // v3.0.4 smoke-fix 3: persistent open state for the low-confidence
 // review section (default expanded -- sequential confirming is the
 // whole point of the section).
 const lowConfidenceOpen = ref(true)
 const lowConfidenceCorrections = computed(() =>
-  pendingCorrections.value.filter((c) => c.confidence < 0.8),
+  scopedCorrections.value.filter((c) => c.confidence < 0.8),
 )
 
 // v3.0.4 M2-4 D: source-track badge for one review entry. The backend get
@@ -170,7 +190,7 @@ const projectRef = computed({
 // v3.0.0 M5: layered undo via the backend apply_undo channel. The legacy
 // full-JSON snapshot path was removed after the beta.2 smoke (rollback
 // anchor: tag pre-undo-cleanup).
-const { pushSnapshot, undo, redo, canUndo, canRedo, clearHistory } = useUndoRedo()
+const { pushSnapshot, popSnapshot, undo, redo, canUndo, canRedo, clearHistory } = useUndoRedo()
 
 const {
   isDetecting,
@@ -611,6 +631,28 @@ onEvent<{ task_id: string; task_type?: string }>(
       data.task_type === "llm_semantic_search"
     ) {
       showToast("已取消", "info", 2000)
+    } else if (data.task_type === "llm_translation") {
+      // v3.0.5 R5.1 (M5.1): neutral cancel notice with the consumed cost
+      // (no "Cancelled" red box -- the handler suppresses
+      // llm:analysis_failed on the cancel path). lastUsage was refreshed by
+      // the token_usage event that is emitted before the raise.
+      const used = lastUsage.value?.total_tokens ?? 0
+      showToast(`翻译已取消，已消耗约 ${used} tokens`, "info", 3000)
+      // v3.0.5 R5.3 (SG2-1 double insurance): a cancelled patch-up never
+      // completes -- drop the marker so a LATER unrelated completion cannot
+      // misreport 「本次补译 N 段」.
+      pendingResumable.value = null
+    }
+  },
+)
+
+// v3.0.5 R5.3 (SG2-1 double insurance, second half): a FAILED translation
+// task never completes either -- same marker cleanup as the cancel path.
+onEvent<{ task_id: string; task_type?: string }>(
+  EVENT_TASK_FAILED,
+  (data) => {
+    if (data.task_type === "llm_translation") {
+      pendingResumable.value = null
     }
   },
 )
@@ -943,6 +985,14 @@ const workspaceActions = createWorkspaceActions({
   highlightResults, hydrateHighlightsFromProject,
   pendingCorrections, loadCorrections, computeDiff,
   acceptCorrection, rejectCorrection, acceptHighConfidenceCorrections, clearCorrections,
+  // v3.0.5 R5.4 (P2-2) + R5.11: the review view's batch scope. The active
+  // list track IS the review scope (null id = main track view -> ""); the
+  // R5.11「全部」toggle opens the deferred null entry (three-state batch
+  // scope: all tracks, snapshot = segments+tracks+analysis union).
+  getReviewScope: () => ({
+    trackId: reviewScopeAll.value ? null : (activeListTrackId.value ?? ""),
+    trackName: activeListTrackName.value,
+  }),
   asr: { asrEngine, asrPluginId, asrSettingsPerEngine, installedEngines, checkEngineReady },
   handleSaveAsrSettings,
   confirmAction,
@@ -987,13 +1037,45 @@ function handleTrackCreate(trackId: string, start: number, end: number) {
 // precedent), then the expose returns the edits ProjectPatch envelope which
 // flows through the standard project-updated patch path (App.vue
 // applyProjectPatch). Cancel never reaches here (editor-side cleanup).
+// v3.0.5 R5.6 (M5.6 ruling 1): confirm-action toast differentiates keep vs
+// delete so the trim-vs-export semantics are echoed back at the moment of
+// the click (same wording family as the inline hint in SuggestionPanel).
+async function handleConfirmEdit(editId: string) {
+  const action = edits.value.find((e) => e.id === editId)?.action
+  const ok = await confirmEdit(editId)
+  if (ok) {
+    showToast(
+      action === "keep"
+        ? "已确认保留区间：该区间将从自动裁剪中扣除（非导出动作）"
+        : "已确认删除区间：将参与裁剪计算（非导出动作）",
+      "success",
+      3000,
+    )
+  }
+}
+
 async function handleRangeDecision(payload: { start: number; end: number; action: "delete" | "keep" }) {
   if (!projectRef.value) return
   pushSnapshot(projectRef.value, ["edits"], "手动范围")
   const res = await call<ProjectPatch>("add_range_decision", payload.start, payload.end, payload.action)
+  // v3.0.5 R5.0 (M5.0): idempotent duplicate return -- the backend reused
+  // the existing entry (zero write, no revision, no patch). The envelope
+  // is NOT a ProjectPatch (no revision key), so it must never enter the
+  // project-updated channel (App.vue would fall back to the legacy
+  // whole-project replacement and corrupt in-memory state); roll the
+  // just-pushed snapshot back so undo has no phantom step (F1).
+  const duplicate = (res.data as { duplicate?: boolean } | undefined)?.duplicate === true
+  if (res.success && duplicate) {
+    popSnapshot()
+    showToast("该范围已存在，已复用原条目", "info", 2500)
+    return
+  }
   if (res.success && res.data) {
     emit("project-updated", res.data)
   } else {
+    // v3.0.5 R5.0 (F-B-10): failed write -- roll the snapshot back too so
+    // Ctrl+Z does not replay a step that changed nothing.
+    popSnapshot()
     showToast(`手动范围创建失败: ${res.error ?? "未知错误"}`, "error", 3000)
   }
 }
@@ -1043,10 +1125,26 @@ async function handleSelectListTrack(trackId: string | null) {
 // can be captured. A failed/cancelled task leaves one no-op snapshot entry
 // (SPEC ruling: accepted, no extra complexity).
 // ---------------------------------------------------------------------------
+// v3.0.5 R5.3 (M5.3 ruling 7): page-level patch-up marker. A same-language
+// track already existing means start_translation routes the gap set into a
+// patch-up task; the completion watcher matches track_id before toasting
+// 「本次补译 N 段」 (SG2-1: a fresh-track completion never matches, and the
+// marker is explicitly cleared on task:failed/task:cancelled below).
+const pendingResumable = ref<{ trackId: string; language: string } | null>(null)
+
 async function handleStartTranslation(payload: { targetLanguage: string }) {
   if (!llmConfig.value.configured) {
     showToast("请先配置 LLM", "error", 3000)
     return
+  }
+  const tl = projectRef.value?.timelines.find(
+    (t) => t.id === projectRef.value?.active_timeline_id,
+  )
+  const existing = tl?.transcript.tracks?.find(
+    (t) => t.role === "translation" && t.language === payload.targetLanguage,
+  )
+  if (existing) {
+    pendingResumable.value = { trackId: existing.id, language: payload.targetLanguage }
   }
   pushSnapshot(projectRef.value, ["tracks", "bindings"], "AI翻译副轨")
   const started = await startTranslation(payload.targetLanguage)
@@ -1069,6 +1167,15 @@ const translationNotice = ref<TranslationNotice | null>(null)
 watch(lastTranslationCompletion, (completion) => {
   if (!completion) return
   void handleSelectListTrack(completion.track_id)
+  // v3.0.5 R5.3 (SG2-1): patch-up completion = same track merged, matched
+  // by track_id against the marker set at start time.
+  const resumableHit =
+    pendingResumable.value !== null &&
+    completion.track_id === pendingResumable.value.trackId
+  if (resumableHit) {
+    showToast(`本次补译 ${completion.written_count} 段`, "success", 3000)
+    pendingResumable.value = null
+  }
   if (completion.uncovered_ids.length > 0) {
     translationNotice.value = {
       trackName: completion.track_name,
@@ -1076,11 +1183,13 @@ watch(lastTranslationCompletion, (completion) => {
       uncoveredIds: completion.uncovered_ids,
     }
     showToast(
-      `翻译完成：${completion.uncovered_ids.length} 段未覆盖（主轨已变更），详见 AI 助手面板`,
+      resumableHit
+        ? `仍有 ${completion.uncovered_ids.length} 段未覆盖，可一键补译（见 AI 助手面板）`
+        : `翻译完成：${completion.uncovered_ids.length} 段未覆盖，可一键补译（见 AI 助手面板）`,
       "error",
       5000,
     )
-  } else {
+  } else if (!resumableHit) {
     showToast(`翻译完成，已切换到译文轨「${completion.track_name}」`, "success", 3000)
   }
   // Clear so a consecutive identical completion re-triggers this watch.
@@ -1142,6 +1251,7 @@ onUnmounted(() => {
     :llm-configured="llmConfig.configured"
     :llm-is-running="llmIsRunning"
     :llm-progress="llmProgress"
+    :llm-progress-message="llmProgressMessage"
     :llm-error-msg="llmErrorMsg"
     :corrections="pendingCorrections"
     @update:current-time="handleSeekTo"
@@ -1151,7 +1261,7 @@ onUnmounted(() => {
     @toggle-preview="togglePreviewMode"
     @seek="handleSeek"
     @update-text="handleUpdateText"
-    @confirm-edit="confirmEdit"
+    @confirm-edit="handleConfirmEdit"
     @reject-edit="rejectEdit"
     @start-smart-delete="handleStartSmartDelete"
     @start-subtitle-correction="handleStartSubtitleCorrection"
@@ -1541,6 +1651,7 @@ onUnmounted(() => {
             :llm-model="llmConfig.model"
             :llm-is-running="llmIsRunning"
             :llm-progress="llmProgress"
+            :llm-progress-message="llmProgressMessage"
             :llm-error-msg="llmErrorMsg"
             :subtitle-correction-count="subtitleCorrectionCount"
             :pending-correction-count="pendingCorrections.length"
@@ -1555,7 +1666,7 @@ onUnmounted(() => {
             @confirm-segment="(seg) => handleToggleEditStatus(seg, 'confirmed')"
             @reject-segment="(seg) => handleToggleEditStatus(seg, 'rejected')"
             @delete-segment="(seg) => handleDeleteSegment(seg.id)"
-            @confirm-suggestion="confirmEdit"
+            @confirm-suggestion="handleConfirmEdit"
             @reject-suggestion="rejectEdit"
             @confirm-suggestion-batch="(ids: string[]) => batchUpdateEdits(ids, 'confirmed')"
             @reject-suggestion-batch="(ids: string[]) => batchUpdateEdits(ids, 'rejected')"
@@ -1682,14 +1793,31 @@ onUnmounted(() => {
             </div>
 
             <!-- Empty -->
-            <p v-else-if="pendingCorrections.length === 0" class="text-sm text-gray-500">
-              暂无待审阅的修正。运行 P1 字幕修正后，修正建议将在此显示供逐条审阅。
+            <p v-else-if="scopedCorrections.length === 0" class="text-sm text-gray-500">
+              当前作用域暂无待审阅的修正（可切换「全部」查看其他轨道）。
             </p>
 
             <!-- Correction list -->
             <template v-else>
               <!-- Batch action bar -->
               <div class="mb-4 flex items-center gap-3">
+                <!-- v3.0.5 R5.11: scope filter toggle (active track / all).
+                     「全部」= the unfiltered v3.0.4 list AND the null batch
+                     scope (all tracks) for the batch buttons below. -->
+                <div class="flex overflow-hidden rounded-md border border-gray-300 text-xs">
+                  <button
+                    class="px-2 py-1.5 transition-colors"
+                    :class="!reviewScopeAll ? 'bg-gray-800 text-white' : 'text-gray-600 hover:bg-gray-50'"
+                    data-test="review-scope-track"
+                    @click="reviewScopeAll = false"
+                  >按当前轨</button>
+                  <button
+                    class="px-2 py-1.5 transition-colors"
+                    :class="reviewScopeAll ? 'bg-gray-800 text-white' : 'text-gray-600 hover:bg-gray-50'"
+                    data-test="review-scope-all"
+                    @click="reviewScopeAll = true"
+                  >全部</button>
+                </div>
                 <button
                   class="rounded-md bg-green-600 px-3 py-1.5 text-xs text-white hover:bg-green-700 disabled:opacity-50"
                   :disabled="highConfidenceCorrections.length === 0"
@@ -1702,7 +1830,7 @@ onUnmounted(() => {
                   @click="handleClearCorrections"
                 >清除全部</button>
                 <span class="text-xs text-gray-400">
-                  共 {{ pendingCorrections.length }} 条
+                  {{ reviewScopeAll ? "全部轨道" : "当前轨道" }} 共 {{ scopedCorrections.length }} 条
                 </span>
               </div>
 

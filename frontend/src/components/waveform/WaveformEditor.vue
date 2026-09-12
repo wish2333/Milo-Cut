@@ -219,6 +219,12 @@ onMounted(() => {
       hoverResizeObserver.observe(layerEl)
     }
   }
+  // v3.0.5 R5.10: Esc dismisses a pending range bubble (capture so the
+  // shortcut works no matter which inner element holds focus).
+  document.addEventListener("keydown", onGlobalKeyDown, true)
+  // v3.0.5 R5.10: clicking outside the waveform container dismisses the
+  // bubble too (two dismissal paths).
+  document.addEventListener("pointerdown", onGlobalPointerDown, true)
 })
 
 // Basic-mode wheel listener lifecycle: the stack unmounts in multi mode,
@@ -236,11 +242,31 @@ function detachBasicWheel() {
 
 onUnmounted(() => {
   detachBasicWheel()
+  document.removeEventListener("keydown", onGlobalKeyDown, true)
+  document.removeEventListener("pointerdown", onGlobalPointerDown, true)
   hoverScheduler.cancel()
   hoverResizeObserver?.disconnect()
   hoverResizeObserver = null
   laneCtl.cleanup()
 })
+
+// v3.0.5 R5.10: bubble dismissal paths -- Esc anywhere, pointerdown outside
+// the waveform containers (multi content / basic stack). Both only act
+// while a bubble is pending; inner clicks are skipped via contains().
+function onGlobalKeyDown(e: KeyboardEvent): void {
+  if (e.key === "Escape" && rangeBubble.value) {
+    e.stopPropagation()
+    closeRangeBubble()
+  }
+}
+
+function onGlobalPointerDown(e: PointerEvent): void {
+  if (!rangeBubble.value) return
+  const target = e.target
+  if (!(target instanceof Node)) return
+  if (contentEl?.contains(target) || stackEl?.contains(target)) return
+  closeRangeBubble()
+}
 
 function handleSeek(time: number) {
   // v2.1.1 A-03: globalEditMode blocks time-axis clicks entirely
@@ -1242,19 +1268,25 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation, rangeMode })
       <!-- M7-1 smoke feedback: 建段 toggle applies to BOTH modes (default off) -->
       <button
         class="shrink-0 rounded px-1.5 py-0.5 text-[11px] leading-none transition-colors"
-        :class="buildMode ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
+        :class="
+          buildMode && !rangeMode
+            ? 'bg-blue-600 text-white'
+            : buildMode
+              ? 'bg-blue-600/50 text-white/80'
+              : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+        "
         data-test="build-mode-toggle"
-        title="建段模式：开启后点击时间轴空白区域直接新建字幕（关闭时点击为定位；与范围标记模式同开时以范围标记优先，建段暂停）"
+        title="建段模式：开启后点击时间轴空白区域直接新建字幕（关闭时点击为定位；与范围标记模式同开时以范围标记优先，建段暂停）。编辑模式 = 文本校对独占态：副轨块 trim 与副轨结构操作（建段/清空轨/删除轨）冻结并提示退出；主轨块 trim/菜单/手势维持 2.x 基线不受限——主/副轨不对称是刻意结果（主轨为不可动基线，副轨为新增面按新规则）"
         @click="toggleBuildMode"
       >
-        {{ buildMode ? "建段中" : "建段" }}
+        {{ buildMode && !rangeMode ? "建段中" : buildMode ? "建段（已暂停）" : "建段" }}
       </button>
       <!-- v3.0.4 M4-2 (P3-6): 范围标记 toggle (default off; wins over 建段 when both on) -->
       <button
         class="shrink-0 rounded px-1.5 py-0.5 text-[11px] leading-none transition-colors"
         :class="rangeMode ? 'bg-amber-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
         data-test="range-mode-toggle"
-        title="范围标记模式：开启后在主轨空白区拖拽框选时间范围，松手选择删除或保留（Ctrl 建段与 Shift 多选手势不受影响；与建段模式同开时以范围标记优先，仅主轨生效）"
+        title="范围标记模式：开启后在主轨空白区拖拽框选时间范围，松手选择删除或保留（Ctrl 建段与 Shift 多选手势不受影响；与建段模式同开时以范围标记优先，仅主轨生效）。编辑模式 = 文本校对独占态：副轨块 trim 与副轨结构操作（建段/清空轨/删除轨）冻结并提示退出；主轨块 trim/菜单/手势维持 2.x 基线不受限——主/副轨不对称是刻意结果（主轨为不可动基线，副轨为新增面按新规则）"
         @click="toggleRangeMode"
       >
         {{ rangeMode ? "标记中" : "范围标记" }}
@@ -1553,12 +1585,14 @@ defineExpose({ waveformScrubbing, revealTime: revealFromNavigation, rangeMode })
               : undefined
           "
           :build-mode="buildMode && !rangeMode"
+          :global-edit-mode="globalEditMode"
           @seek="(t) => handleSeek(t)"
           @toggle-collapse="laneCtl.toggleCollapse"
           @delete-segment="(sid: string) => emit('delete-track-segment', lane.trackId, sid)"
           @clear-track="emit('clear-track', lane.trackId)"
           @delete-track="emit('delete-track', lane.trackId)"
           @create-at="(t: number) => emit('track-create', lane.trackId, t, Math.round((t + 0.5) * 100) / 100)"
+          @toast="emit('toast', $event)"
         />
       </template>
 

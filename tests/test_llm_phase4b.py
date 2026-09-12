@@ -388,3 +388,27 @@ def _make_configured_config():
         api_key="test-key",
         model="test-model",
     )
+
+    # ---------------------------------------------------------------
+    # v3.0.5 R5.2 (M5.2): Layer-4 translated_text pattern (translation)
+    # ---------------------------------------------------------------
+
+    def test_layer4_translated_text_fallback(self):
+        """v3.0.5 R5.2: segment_id + translated_text near-JSON line output
+        (non-json_mode providers) is extracted verbatim, escaped quotes
+        included (no unescaping -- same contract as relevance/action)."""
+        content = '"segment_id": "s6" ... "translated_text": "hello \\"world\\""'
+        result = _parse_json_response_layers(content)
+        assert result is not None
+        assert result[0] == {
+            "segment_id": "s6",
+            "translated_text": 'hello \\"world\\"',
+        }
+
+    def test_correction_shaped_line_input_still_returns_none(self):
+        """v3.0.5 R5.2: correction-form near-JSON lines (segment_id +
+        corrected_text; none of the three Layer-4 keys) keep walking the
+        pre-existing path -- Layer 5 sanitize -> None. The new pattern has
+        zero side effect on correction-shaped input."""
+        content = '"segment_id": "s7" "corrected_text": "你好"'
+        assert _parse_json_response_layers(content) is None

@@ -24,6 +24,14 @@ const props = defineProps<{
   updateTime?: (segmentId: string, field: "start" | "end", value: number) => void
   /** v3.0.2 smoke fix 3rd round: 建段模式 ON -> click in the lane adds. */
   buildMode?: boolean
+  /**
+   * v3.0.5 R5.7 (M5.7 ruling 1): text-proofing edit mode freezes the lane's
+   * trim handles and structure operations (create/clear/delete) with a
+   * Chinese toast. The guard lives HERE at the track-role boundary -- the
+   * shared SegmentBlock/SegmentBlocksLayer must never intercept blindly
+   * (the MAIN track's 2.x baseline gestures stay untouched on purpose).
+   */
+  globalEditMode?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -34,7 +42,38 @@ const emit = defineEmits<{
   "clear-track": []
   "delete-track": []
   "create-at": [time: number]
+  /** v3.0.5 R5.7 (M5.7 ruling 2): freeze-matrix toast channel (pure add). */
+  toast: [msg: string]
 }>()
+
+/** Guard copy aligned with the SegmentBlocksLayer edit-mode precedent. */
+const EDIT_MODE_HINT = "请退出编辑模式后重试"
+
+/** v3.0.5 R5.7: returns true (and toasts) when the op is frozen. */
+function guardEditMode(): boolean {
+  if (!props.globalEditMode) return false
+  emit("toast", EDIT_MODE_HINT)
+  closeMenu()
+  return true
+}
+
+function onDeleteSegment(segmentId: string) {
+  if (guardEditMode()) return
+  emit("delete-segment", segmentId)
+  closeMenu()
+}
+
+function onClearTrack() {
+  if (guardEditMode()) return
+  emit("clear-track")
+  closeMenu()
+}
+
+function onDeleteTrack() {
+  if (guardEditMode()) return
+  emit("delete-track")
+  closeMenu()
+}
 
 // R9.4 parity: lane blocks get a context menu (delete segment / clear
 // track). Single-instance mutex via the shared manager, same as the main
@@ -61,6 +100,11 @@ function closeMenu() {
 /** 建段模式: click (or drag-start) in the lane adds a segment to THIS track. */
 function onLaneClick(e: MouseEvent) {
   if (!props.buildMode) return
+  // v3.0.5 R5.7: lane create is a structure op -- frozen in edit mode.
+  if (props.globalEditMode) {
+    emit("toast", EDIT_MODE_HINT)
+    return
+  }
   const ratio = clamp01At(e)
   const time = metrics.viewStart.value + ratio * metrics.viewDuration.value
   emit("create-at", Math.round(time * 100) / 100)
@@ -154,6 +198,9 @@ const visibleSegments = computed(() => {
       data-test="lane-blocks"
       @click.stop="onLaneClick"
     >
+      <!-- v3.0.5 R5.7: undefined = the pre-existing read-only semantics
+           (M5-2 reserved) -- zero new mechanism, the trim gate is the
+           prop hand-off itself. -->
       <SegmentBlock
         v-for="item in visibleSegments"
         :key="item.seg.id"
@@ -163,7 +210,7 @@ const visibleSegments = computed(() => {
         :segments="track.segments"
         track-kind="extension"
         :title="item.seg.text"
-        :update-time="updateTime"
+        :update-time="globalEditMode ? undefined : updateTime"
         @seek-segment="emit('seek', item.seg.start)"
         @contextmenu="(id: string, e: MouseEvent) => openBlockMenu(id, e)"
       />
@@ -187,19 +234,19 @@ const visibleSegments = computed(() => {
         <button
           v-if="contextMenu.segmentId"
           class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-          @click.stop="emit('delete-segment', contextMenu.segmentId); closeMenu()"
+          @click.stop="onDeleteSegment(contextMenu.segmentId)"
         >
           删除此条字幕
         </button>
         <button
           class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-          @click.stop="emit('clear-track'); closeMenu()"
+          @click.stop="onClearTrack()"
         >
           清空此轨
         </button>
         <button
           class="w-full text-left px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
-          @click.stop="emit('delete-track'); closeMenu()"
+          @click.stop="onDeleteTrack()"
         >
           删除此轨
         </button>

@@ -8,6 +8,8 @@ const props = defineProps<{
   edits: EditDecision[]
   segments: Segment[]
   pendingCorrectionCount?: number
+  /** v3.0.5 R5.11: playhead position for the 取播放头 timecode shortcut. */
+  currentTime?: number
 }>()
 
 const emit = defineEmits<{
@@ -18,6 +20,8 @@ const emit = defineEmits<{
   "delete-edit-batch": [editIds: string[]]
   "seek": [time: number]
   "review-corrections": []
+  /** v3.0.5 R5.11: success toast for the timecode entry (relayed by Timeline). */
+  "toast": [msg: string]
 }>()
 
 // v3.0.4 M4-3 (P3-7): the manual group stays expanded by default -- unlike
@@ -158,6 +162,14 @@ function confirmTitle(item: SuggestionItem): string | undefined {
     : "确认 = 参与裁剪计算（非导出动作）"
 }
 
+// v3.0.5 R5.6 (M5.6 ruling 1): inline hover-free twin of the title above
+// (same wording minus the brackets, sized to sit beside the buttons).
+function confirmHint(item: SuggestionItem): string {
+  return item.action === "keep"
+    ? "确认 = 参与裁剪计算，保留区间将从自动裁剪中扣除，非导出动作"
+    : "确认 = 参与裁剪计算，非导出动作"
+}
+
 // -- Timecode popover (v3.0.4 M4-3 / SPEC M4-2 timecode entry) -----------
 //
 // The panel lives inside Timeline's subtree, so a new emit would need a
@@ -187,15 +199,33 @@ function closeTimecode() {
   timecodeError.value = ""
 }
 
+// v3.0.5 R5.11: accept BOTH "12.5" (plain seconds) and "1:12.5" /
+// "01:12.5" (mm:ss.s). The v3.0.4 entry only understood plain seconds --
+// oral-delivery users naturally read times off the ruler as mm:ss.
+const TIMECODE_RE = /^(?:(\d+):)?(\d+(?:\.\d+)?)$/
+function parseTimecode(text: string): number | null {
+  const m = TIMECODE_RE.exec(text.trim())
+  if (!m) return null
+  const t = (m[1] ? Number(m[1]) : 0) * 60 + Number(m[2])
+  return Number.isFinite(t) ? t : null
+}
+
+/** v3.0.5 R5.11: 取播放头 -- prefill the start field from the playhead. */
+function takePlayhead() {
+  const t = props.currentTime
+  if (typeof t !== "number" || !Number.isFinite(t)) return
+  timecodeStart.value = Math.round(t * 10) / 10
+}
+
 function submitTimecode() {
   const startText = String(timecodeStart.value ?? "").trim()
   const endText = String(timecodeEnd.value ?? "").trim()
-  const start = Number(startText)
-  const end = Number(endText)
+  const start = parseTimecode(startText)
+  const end = parseTimecode(endText)
   // Empty / non-numeric input and end<=start are rejected in place -- the
   // bridge is never called for invalid input.
-  if (startText === "" || endText === "" || !Number.isFinite(start) || !Number.isFinite(end)) {
-    timecodeError.value = "请输入有效的起止时间（秒，支持小数）"
+  if (start === null || end === null) {
+    timecodeError.value = "请输入有效的起止时间（秒 12.5 或 分:秒 1:12.5）"
     return
   }
   if (end <= start) {
@@ -203,8 +233,28 @@ function submitTimecode() {
     return
   }
   timecodeError.value = ""
+  // v3.0.5 R5.11: clamp to the timeline extent ([0, last segment end])
+  // and ECHO the clamped values back into the fields so the accepted
+  // numbers are what the user sees last.
+  let s = start
+  let e = end
+  const extent = props.segments.reduce(
+    (max, seg) => Math.max(max, seg.end),
+    0,
+  )
+  if (extent > 0) {
+    s = Math.min(Math.max(0, s), extent)
+    e = Math.min(Math.max(0, e), extent)
+    if (e <= s) e = Math.min(extent, s + 0.1)
+  }
+  timecodeStart.value = Math.round(s * 10) / 10
+  timecodeEnd.value = Math.round(e * 10) / 10
   if (!addRangeDecision) return // unwired host (never in production)
-  void addRangeDecision({ start, end, action: timecodeAction.value })
+  void addRangeDecision({ start: s, end: e, action: timecodeAction.value })
+  emit(
+    "toast",
+    `已添加${timecodeAction.value === "keep" ? "保留" : "删除"}范围 ${Math.round(s * 10) / 10}s - ${Math.round(e * 10) / 10}s`,
+  )
   closeTimecode()
 }
 
@@ -332,17 +382,16 @@ onBeforeUnmount(() => {
         class="absolute top-full right-0 z-dropdown mt-1 w-64 rounded-md border border-gray-200 bg-white p-3 text-left shadow-lg"
         @click.stop
       >
-        <div class="mb-2 text-xs font-semibold text-ink">添加手动范围（秒，支持小数）</div>
+        <div class="mb-2 text-xs font-semibold text-ink">添加手动范围（秒 12.5 或 分:秒 1:12.5）</div>
         <div class="flex items-center gap-1.5">
           <label class="shrink-0 text-xs text-gray-500" for="suggestion-timecode-start">起</label>
           <input
             id="suggestion-timecode-start"
             v-model="timecodeStart"
             data-test="timecode-start"
-            type="number"
-            step="0.1"
-            min="0"
-            placeholder="如 12.5"
+            type="text"
+            inputmode="decimal"
+            placeholder="如 12.5 或 1:12.5"
             class="w-full rounded border border-gray-300 px-2 py-1 text-sm outline-none focus:border-blue-400"
           />
           <label class="shrink-0 text-xs text-gray-500" for="suggestion-timecode-end">止</label>
@@ -350,10 +399,9 @@ onBeforeUnmount(() => {
             id="suggestion-timecode-end"
             v-model="timecodeEnd"
             data-test="timecode-end"
-            type="number"
-            step="0.1"
-            min="0"
-            placeholder="如 15.0"
+            type="text"
+            inputmode="decimal"
+            placeholder="如 15.0 或 1:15"
             class="w-full rounded border border-gray-300 px-2 py-1 text-sm outline-none focus:border-blue-400"
           />
         </div>
@@ -376,6 +424,15 @@ onBeforeUnmount(() => {
             @click="timecodeAction = 'keep'"
           >
             保留
+          </button>
+          <!-- v3.0.5 R5.11: prefill the start field from the playhead. -->
+          <button
+            type="button"
+            data-test="timecode-take-playhead"
+            class="mc-button mc-button-secondary min-h-7 px-2 py-0.5 text-xs"
+            @click="takePlayhead"
+          >
+            取播放头
           </button>
         </div>
         <div v-if="timecodeError" data-test="timecode-error" class="mt-2 text-xs text-red-600">
@@ -505,6 +562,13 @@ onBeforeUnmount(() => {
             >
               忽略
             </button>
+            <!-- v3.0.5 R5.6 (M5.6 ruling 1): the anti-misreading wording is
+                 rendered inline (hover-free) for manual entries; the :title
+                 above stays as progressive enhancement. -->
+            <span
+              v-if="item.type === 'manual'"
+              class="max-w-[9rem] text-[10px] leading-tight text-ink-muted"
+            >{{ confirmHint(item) }}</span>
           </span>
         </div>
       </div>

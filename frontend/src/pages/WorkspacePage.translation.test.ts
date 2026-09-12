@@ -20,7 +20,11 @@ import { mount, flushPromises, type VueWrapper } from "@vue/test-utils"
 import { defineComponent, ref } from "vue"
 import type { Project } from "@/types/project"
 import { mockProject, mockTimeline, mockSegment } from "@/test/helpers/mockProject"
-import { EVENT_LLM_TRANSLATION_COMPLETED } from "@/utils/events"
+import {
+  EVENT_LLM_TRANSLATION_COMPLETED,
+  EVENT_LLM_TOKEN_USAGE,
+  EVENT_TASK_CANCELLED,
+} from "@/utils/events"
 
 // ---------------------------------------------------------------------------
 // Bridge mock: configurable call + captured event registrations
@@ -412,6 +416,118 @@ describe("WorkspacePage translation closed loop (M1-6)", () => {
     expect(pushSnapshotMock).not.toHaveBeenCalled()
     expect(callMock).not.toHaveBeenCalledWith("start_translation", "en")
     expect(showToastMock).toHaveBeenCalledWith("请先配置 LLM", "error", 3000)
+    wrapper.unmount()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// v3.0.5 R5.1 (M5.1): translation cancel = neutral cost toast
+// ---------------------------------------------------------------------------
+
+describe("WorkspacePage translation cancel toast (v3.0.5 R5.1)", () => {
+  it("task:cancelled for llm_translation shows the neutral cost toast fed by the preceding token_usage event", async () => {
+    const wrapper = await mountWorkspacePage()
+    await flushPromises()
+
+    // Production order: the handler emits llm:token_usage (status
+    // "cancelled") BEFORE raising, so the shared lastUsage is already
+    // refreshed when task:cancelled lands.
+    fire(EVENT_LLM_TOKEN_USAGE, {
+      prompt_tokens: 800,
+      completion_tokens: 400,
+      total_tokens: 1200,
+      status: "cancelled",
+    })
+    fire(EVENT_TASK_CANCELLED, { task_id: "t1", task_type: "llm_translation" })
+    await flushPromises()
+
+    expect(showToastMock).toHaveBeenCalledTimes(1)
+    expect(showToastMock).toHaveBeenCalledWith(
+      "翻译已取消，已消耗约 1200 tokens",
+      "info",
+      3000,
+    )
+    wrapper.unmount()
+  })
+
+  it("cancel without any token report shows the zero-cost variant (defensive)", async () => {
+    const wrapper = await mountWorkspacePage()
+    await flushPromises()
+
+    fire(EVENT_TASK_CANCELLED, { task_id: "t2", task_type: "llm_translation" })
+    await flushPromises()
+
+    expect(showToastMock).toHaveBeenCalledWith(
+      "翻译已取消，已消耗约 0 tokens",
+      "info",
+      3000,
+    )
+    wrapper.unmount()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// v3.0.5 R5.3 (M5.3 ruling 7 / SG2-1): patch-up completion toast
+// ---------------------------------------------------------------------------
+
+describe("WorkspacePage patch-up completion toast (v3.0.5 R5.3)", () => {
+  it("start on an existing same-language track + matching completion -> 「本次补译 N 段」", async () => {
+    const wrapper = await mountWorkspacePage()
+    await flushPromises()
+    await new Promise((r) => setTimeout(r, 120))
+    await flushPromises()
+
+    // The fixture has an "en" translation track (trk_main, first match) --
+    // starting "en" sets the patch-up marker for that track id.
+    timelineStub(wrapper).vm.$emit("start-translation", { targetLanguage: "en" })
+    await flushPromises()
+
+    fire(EVENT_LLM_TRANSLATION_COMPLETED, {
+      track_id: "trk_main",
+      track_name: "Placeholder",
+      language: "en",
+      written_count: 7,
+      target_count: 7,
+      uncovered_ids: [],
+      ledger: { uncovered_segment_ids: [] },
+    })
+    await flushPromises()
+
+    expect(showToastMock).toHaveBeenCalledWith("本次补译 7 段", "success", 3000)
+    // no gap -> no error toast, and the fresh-track switch toast is skipped
+    const messages = showToastMock.mock.calls.map((c) => c[0] as string)
+    expect(messages.some((m) => m.includes("已切换到译文轨"))).toBe(false)
+    wrapper.unmount()
+  })
+
+  it("cancel clears the marker (SG2-1): a later matching completion does NOT misreport 补译", async () => {
+    const wrapper = await mountWorkspacePage()
+    await flushPromises()
+    await new Promise((r) => setTimeout(r, 120))
+    await flushPromises()
+
+    timelineStub(wrapper).vm.$emit("start-translation", { targetLanguage: "en" })
+    await flushPromises()
+
+    // the patch-up task gets cancelled before completing
+    fire(EVENT_TASK_CANCELLED, { task_id: "t1", task_type: "llm_translation" })
+    await flushPromises()
+
+    // a LATER completion carrying the same track id (fresh manual rerun of
+    // the full track) must not fire the stale 补译 toast
+    fire(EVENT_LLM_TRANSLATION_COMPLETED, {
+      track_id: "trk_main",
+      track_name: "Placeholder",
+      language: "en",
+      written_count: 5,
+      target_count: 5,
+      uncovered_ids: [],
+      ledger: { uncovered_segment_ids: [] },
+    })
+    await flushPromises()
+
+    const messages = showToastMock.mock.calls.map((c) => c[0] as string)
+    expect(messages.some((m) => m.includes("本次补译"))).toBe(false)
     wrapper.unmount()
   })
 })

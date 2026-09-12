@@ -868,6 +868,174 @@ class ProjectService:
             },
         )
 
+    def merge_translation_track(
+        self,
+        timeline_id: str,
+        track_id: str,
+        items: list[dict],
+        bind: bool = True,
+    ) -> dict:
+        """Merge translated items into an EXISTING translation track in ONE
+        patch (v3.0.5 R5.3 / SPEC M5.3 ruling 5 -- resumable route write
+        side).
+
+        Called by the translation handler when start_translation routed the
+        task as a patch-up (``resumable_track_id`` payload): ``items``
+        reference main-track subtitle segments the track's bindings do not
+        cover yet. Self-contained BY CONTRACT (SG2-3): no shared helper
+        with :meth:`create_translation_track` -- extracting one would
+        rewrite that existing function body into a delegation call and
+        break the single-hunk zero-modification promise on this file; the
+        ~30% differing logic (binding-collision refusal, in-track id
+        namespace check) is merge-specific anyway.
+
+        Contract:
+
+        1. Timeline pinning (entry check, zero writes).
+        2. Track double-check: the track exists on the ACTIVE timeline and
+           has ``role="translation"`` (write-side twin of the start guard).
+        3. Binding-collision refusal: an item whose main id is ALREADY
+           bound 1:1 in this track refuses the whole call with zero
+           writes (gap derivation makes this a "should not happen" --
+           defensive refusal beats silent overwrite).
+        4. Reconciliation against the CURRENT main track (vanished ids ->
+           ``uncovered_ids`` report, never silent); nothing surviving ->
+           reject.
+        5. Segment ids reuse the ``track_{track_id}_seg_{start:.3f}``
+           namespace with an in-track uniqueness check -- a collision
+           fails explicitly (two mains starting at the same float).
+        6. ONE ``_success_patch(tracks=..., bindings=...)`` (revision +1;
+           one undo reverts the whole merge batch). NEVER per-segment
+           patches. meta carries ``merged_count`` alongside the create-
+           shaped report keys so the handler stays route-agnostic.
+        """
+        if self._current is None:
+            return {"success": False, "error": "No project is open"}
+
+        from uuid import uuid4
+
+        # Contract 1: timeline pinning, entry check, zero writes.
+        if timeline_id != self._current.active_timeline_id:
+            return {
+                "success": False,
+                "error": "Timeline no longer active: 翻译期间已切换时间轴",
+            }
+
+        tl = self.active_timeline
+        # Contract 2: track double-check (exists + translation role).
+        track = next(
+            (t for t in tl.transcript.tracks if t.id == track_id), None
+        )
+        if track is None or track.role != "translation":
+            return {
+                "success": False,
+                "error": f"翻译轨不存在或不是翻译轨：{track_id}",
+            }
+
+        # Contract 3: binding-collision refusal (gap ids must be unbound).
+        bound_main_ids = {
+            b.main_segment_id
+            for b in tl.transcript.bindings
+            if b.track_id == track_id
+        }
+        colliding = [i["segment_id"] for i in items if i["segment_id"] in bound_main_ids]
+        if colliding:
+            return {
+                "success": False,
+                "error": (
+                    f"补译目标段已绑定（{colliding[:5]}...），"
+                    "缺口推导异常，已拒绝写入"
+                ),
+            }
+
+        # Contract 4: reconcile against the CURRENT main-track subtitle
+        # segments (the task ran for minutes; segments may be gone).
+        main_subs = {
+            s.id: s for s in tl.transcript.segments if s.type == SegmentType.SUBTITLE
+        }
+        existing_seg_ids = {s.id for s in track.segments}
+        track_segments: list[Segment] = []
+        main_ids: list[str] = []
+        uncovered_ids: list[str] = []
+        for item in items:
+            seg_id = item["segment_id"]
+            main = main_subs.get(seg_id)
+            if main is None:
+                uncovered_ids.append(seg_id)
+                continue
+            new_seg_id = f"track_{track_id}_seg_{main.start:.3f}"
+            # Contract 5: in-track namespace uniqueness -- explicit failure
+            # over silent overwrite.
+            if new_seg_id in existing_seg_ids:
+                return {
+                    "success": False,
+                    "error": f"补译段号撞轨内既有段：{new_seg_id}，已拒绝写入",
+                }
+            existing_seg_ids.add(new_seg_id)
+            track_segments.append(
+                Segment(
+                    id=new_seg_id,
+                    type=SegmentType.SUBTITLE,
+                    start=main.start,
+                    end=main.end,
+                    text=item["text"],
+                )
+            )
+            main_ids.append(seg_id)
+
+        if not track_segments:
+            return {"success": False, "error": "所有目标段已被删除"}
+
+        merged_track = track.model_copy(
+            update={"segments": [*track.segments, *track_segments]}
+        )
+        # Contract 3 of create (same法): exact 1:1 bindings, zero offsets
+        # because the track segment times are verbatim main copies.
+        new_bindings: list[TrackBinding] = []
+        if bind:
+            new_bindings = [
+                TrackBinding(
+                    id=f"bind_{uuid4().hex[:8]}",
+                    track_id=track_id,
+                    main_segment_id=main_id,
+                    extension_segment_id=seg.id,
+                    start_offset=0.0,
+                    end_offset=0.0,
+                )
+                for main_id, seg in zip(main_ids, track_segments, strict=True)
+            ]
+
+        # Contract 6: single whole-replace write -- one revision bump, one
+        # undo step reverts the whole merge batch.
+        transcript = tl.transcript.model_copy(
+            update={
+                "tracks": [
+                    merged_track if t.id == track_id else t
+                    for t in tl.transcript.tracks
+                ],
+                "bindings": [*tl.transcript.bindings, *new_bindings],
+            }
+        )
+        self._update_active_timeline(transcript=transcript)
+        logger.info(
+            "Merged translation track {} (+{} segments, +{} bindings, "
+            "uncovered={})",
+            track_id, len(track_segments), len(new_bindings), len(uncovered_ids),
+        )
+        return self._success_patch(
+            tracks=transcript.tracks,
+            bindings=transcript.bindings,
+            meta={
+                "translation": {
+                    "track_id": track_id,
+                    "written_count": len(track_segments),
+                    "merged_count": len(track_segments),
+                    "target_count": len(items),
+                    "uncovered_ids": uncovered_ids,
+                }
+            },
+        )
+
     def update_media_info(self, media_info: dict) -> dict:
         """Update media info in the current project."""
         if self._current is None:
@@ -1133,6 +1301,11 @@ class ProjectService:
                 ))
 
         all_segments = list(existing) + new_segments
+        # v3.0.5 D4 (P4-4): silence windows interleave with subtitles, so
+        # the concatenation is NOT sorted -- but the sort invariant is the
+        # frontend's rendering contract (mergedSegments skips its sort).
+        # Same pattern as add_segment.
+        all_segments.sort(key=lambda s: s.start)
         all_edits = existing_edits + new_edits
 
         # Note: _resolve_subtitle_overlap is deprecated. D-2 handles subtitle

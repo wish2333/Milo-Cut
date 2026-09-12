@@ -6,6 +6,10 @@ interface TokenUsagePayload {
   prompt_tokens?: number
   completion_tokens?: number
   total_tokens?: number
+  // v3.0.5 R5.1: cost-report status riding the same event ("cancelled" /
+  // "failed"); the accumulation logic below is status-agnostic, unknown
+  // values are naturally ignored.
+  status?: string
 }
 
 // Singleton token usage state shared across all useLlmAnalysis() callers

@@ -289,8 +289,11 @@ describe("SegmentBlocksLayer edit range overlay three-state (M4-3 / P3-8)", () =
   const V303_CONFIRMED_DELETE_CLASS =
     "absolute top-0 bottom-0 border border-red-400/60 bg-red-300/30 pointer-events-none"
 
+  // v3.0.5 R5.9 (M0-3 追认制): the overlay title turned semantic Chinese
+  // per action x status, so the locator is now the stable data-test
+  // attribute instead of the English title prefix.
   function findOverlays(wrapper: ReturnType<typeof mountLayer>["wrapper"]) {
-    return wrapper.findAll('[title^="Delete range"]')
+    return wrapper.findAll('[data-test="edit-range-overlay"]')
   }
 
   // NOTE: the inner hatch gradient (repeating-linear-gradient with rgba
@@ -356,14 +359,42 @@ describe("SegmentBlocksLayer edit range overlay three-state (M4-3 / P3-8)", () =
     wrapper.unmount()
   })
 
-  it("rejected ranges are still rendered, unfiltered (status quo kept)", () => {
+  // v3.0.5 R5.10 (E-6, :364/:366 断言反转登记): rejected ranges now LEAVE
+  // the field (hidden) -- zero visual noise; the pre-3.0.5 test asserted
+  // the opposite ("still rendered, unfiltered").
+  it("rejected ranges are hidden (R5.10: rejected leaves the field)", () => {
     const { wrapper } = mountLayer([], [
       edit({ id: "ed-rd", start: 1, end: 4, action: "delete", status: "rejected", source: "manual" }),
     ])
     const overlays = findOverlays(wrapper)
+    expect(overlays).toHaveLength(0)
+    wrapper.unmount()
+  })
+
+  // v3.0.5 R5.6 ruling 3: keep x delete overlap tail note -- the intersecting
+  // pair both carry the "export resolves as delete" note; a lone range does not.
+  it("overlapping keep x delete pair: both titles carry the overlap tail note", () => {
+    const { wrapper } = mountLayer([], [
+      edit({ id: "ed-ov-k", start: 1, end: 4, action: "keep", status: "confirmed", source: "manual" }),
+      edit({ id: "ed-ov-d", start: 3, end: 6, action: "delete", status: "confirmed", source: "manual" }),
+    ])
+    const overlays = findOverlays(wrapper)
+    expect(overlays).toHaveLength(2)
+    for (const o of overlays) {
+      expect(o.attributes("title")).toContain("；与重叠区间导出按删除处理")
+    }
+    wrapper.unmount()
+  })
+
+  it("lone ranges carry the semantic title without the overlap note (R5.9)", () => {
+    const { wrapper } = mountLayer([], [
+      edit({ id: "ed-lone", start: 1, end: 4, action: "keep", status: "pending", source: "manual" }),
+    ])
+    const overlays = findOverlays(wrapper)
     expect(overlays).toHaveLength(1)
-    // Rejected delete keeps the full-opacity red visual (no new state).
-    expect(overlays[0].classes().join(" ")).toBe(V303_CONFIRMED_DELETE_CLASS)
+    const title = overlays[0].attributes("title") ?? ""
+    expect(title).toContain("保留范围 1.0s - 4.0s（待确认）")
+    expect(title).not.toContain("重叠")
     wrapper.unmount()
   })
 
@@ -470,6 +501,36 @@ describe("SegmentBlocksLayer range mode (M4-2)", () => {
     // Double click stays a play/pause SEEK-mode affordance only.
     await empty.trigger("dblclick")
     expect(wrapper.emitted("empty-double-click")).toBeFalsy()
+    wrapper.unmount()
+  })
+})
+
+// ------------------------------------------------------------------
+// v3.0.5 D4 (P4-4): basic empty-click add-segment data safety -- the
+// 0.5s default span may overlap a neighbouring segment; the payload
+// must stay bounded by the timeline (the backend half of the safety
+// net lives in tests/test_d4_silence_gaps.py).
+// ------------------------------------------------------------------
+
+describe("SegmentBlocksLayer empty-click add payload (v3.0.5 D4)", () => {
+  it("add-segment payload stays bounded by the view even next to a following segment", async () => {
+    // x -> time mapping bounded to [0, 10]: click at the far right edge.
+    const metrics = createMetrics()
+    metrics.getTimeFromX = x => Math.min(10, Math.max(0, (x / 600) * 10))
+    const wrapper = mount(SegmentBlocksLayer, {
+      props: { segments: [], edits: [], emptyAreaMode: "add" as const },
+      global: { provide: { [TIMELINE_METRICS_KEY as symbol]: metrics } },
+    })
+    await wrapper.find("div[tabindex='0']").trigger("mousedown", { clientX: 599 })
+    const events = wrapper.emitted("add-segment") ?? []
+    expect(events.length).toBe(1)
+    const [start, end] = events[0] as [number, number]
+    // The 0.5s default span is clamped by the bounded time source: the
+    // click at ~9.98s yields a span that never crosses the duration.
+    expect(start).toBeGreaterThanOrEqual(0)
+    expect(start).toBeLessThanOrEqual(10)
+    expect(end).toBe(start + 0.5)
+    expect(end).toBeLessThanOrEqual(10.5)
     wrapper.unmount()
   })
 })
