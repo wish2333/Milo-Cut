@@ -18,7 +18,7 @@
 4. 合并：`gh pr merge --merge`（保留原子提交，照 #9/#10 先例）。
 5. 合并结果核验：`gh pr view` 回读 state/mergeCommit。
 
-（实际 PR 编号与 merge commit 哈希以 GitHub 返回为准，见本文件末尾补记。）
+**补记（gh 实际返回）**：PR **#13**（https://github.com/wish2333/Milo-Cut/pull/13 ）；Netlify deploy-preview 检查 pass 后合并；merge commit `e1fd9ba`（2026-09-12T06:50:46Z，state=MERGED）；tag `v3.0.5` = `434c2b7` 已在 origin。
 
 ## 3. 遗留债
 
