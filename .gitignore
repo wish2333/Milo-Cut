@@ -242,4 +242,4 @@ project.json
 .reasonix/
 
 # Reference
-/_competitor/
+/_competitor/.claude/
