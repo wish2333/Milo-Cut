@@ -1,5 +1,7 @@
 # Milo-Cut Frontend Implementation Guide
 
+> **历史文档（v0.x 规划期）**：本文写作于项目早期，部分组件规划与最终实现有出入。当前实际架构以根目录 `AGENTS.md` 为准。阅读时请将其当作设计思路参考，而非现状描述。
+
 基于 Vue 3 + TypeScript + TailwindCSS v4 + DaisyUI v5 的前端落地指导，将 design-spec.md 和 component-spec.md 中的设计规范转化为可执行的代码结构。
 
 本指南基于对 **PyWebVue 框架源码** 和 **ff-intelligent-neo 参考项目前端** 的深度分析编写，所有模式均有实际代码依据。

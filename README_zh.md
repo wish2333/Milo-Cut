@@ -127,10 +127,10 @@ uv run build.py --clean      # 先清理构建产物再打包
 ### 运行测试
 
 ```bash
-# 后端测试（pytest，478 条）
+# 后端测试（pytest，875 条）
 uv run pytest tests/ -v
 
-# 前端测试（vitest，241 条）
+# 前端测试（vitest，884 条）
 cd frontend && bun run test
 
 # 类型检查 + 生产构建（vue-tsc + vite build）
@@ -155,15 +155,18 @@ uv run python -m tests.perf.backend_benchmark \
 
 ```
 milo-cut/
-  main.py              # 入口 + @expose API 桥接（约 80 个方法）
+  main.py              # 入口 + @expose API 桥接（约 130 个方法）
   core/                # Python 后端服务
-    project_service.py # 项目 CRUD、segment/edit/analysis 操作、_revision 计数器
+    project_service.py # 项目 CRUD、segment/edit/analysis/track 操作、_revision 计数器
     project_patch.py   # v2.3.2 ProjectPatch schema + apply_project_patch
+    persistence.py     # 崩溃安全原子落盘（fsync + .bak.1/.bak.2 轮换备份）
+    migrations.py      # 旧版项目文件 schema 迁移
+    correction_service.py # 字幕纠错管线（分批、取消轮询、按轨作用域）
     export_service.py  # FFmpeg 分段拼接导出 + 精华虚拟 edits
     export_timeline.py # OTIO/EDL/FCPXML/Premiere XML 时间轴导出
     ffmpeg_service.py  # ffprobe/ffmpeg 封装：探测、静音检测、波形、代理
     ffmpeg_presets.py  # 编码器注册表（CRF/CQ/QP、像素格式、硬件加速）
-    llm_service.py     # LLM provider 抽象（OpenAI/Ollama/custom）
+    llm_service.py     # LLM provider 抽象 + 翻译/纠错/智能删除管线
     llm_prompts.py     # 系统提示词，支持模板变量注入
     llm_presets.py     # 提示词风格预设
     workflow_engine.py # 多步工作流编排（静音 + 智能删除 + 纠错）
@@ -172,6 +175,7 @@ milo-cut/
     timeline_utils.py  # 时间轴工具，partial_delete 提示收集
     diff_service.py    # 字幕纠错 diff 生成
     task_manager.py    # 后台任务执行，支持进度与取消
+    track_constraints.py # 叠轨时间线约束内核（overlap/linkage/reconcile）
     bridge_service.py  # HTTP bridge API（health、analyze）
     media_server.py    # 本地 HTTP 服务器，为 <video> 提供媒体流
     asr_service.py     # ASR 插件抽象（faster-whisper、qwen3-asr）
@@ -180,7 +184,7 @@ milo-cut/
     config.py          # 设置存储（data/settings.json）
     paths.py           # 跨平台路径解析
     events.py          # 事件名常量（与 frontend/src/utils/events.ts 镜像）
-    models.py          # Pydantic v2 frozen 模型（Project、Segment、EditDecision 等）
+    models.py          # Pydantic v2 frozen 模型（Project、Timeline、Segment 等）
     logging.py         # Loguru 配置
   pywebvue/            # 自定义 pywebview 桥接框架
     bridge.py          # Bridge 基类 + @expose 装饰器
@@ -199,7 +203,7 @@ milo-cut/
   tests/
     fixtures/          # 合成项目生成器（确定性）
     perf/              # 后端 benchmark 工具 + results/
-    test_*.py          # 478 条 pytest 测试
+    test_*.py          # 875 条 pytest 测试（56 个文件）
 ```
 
 **通信机制**：Python 通过 `@expose` 装饰器暴露方法，前端通过 `bridge.call()` 调用。Python 通过 `_emit()` 向前端推送事件，前端通过 `onEvent()` 监听。由于 PyWebView 仅允许主线程 `evaluate_js`，桥接层使用 50ms tick 循环串行化跨线程任务。
@@ -233,6 +237,13 @@ milo-cut/
 
 | 版本 | 类型 | 要点 |
 |------|------|------|
+| **v3.0.5** | 可靠性 | 增量补译 + 缺口对账 + 一键补译；质量模式（滑窗上下文，约 5 倍时延）；手动范围覆层三态语义；取消中性 toast 带 token 成本可见；纠错取消轮询化（约 1s 返回）。 |
+| **v3.0.4** | 新功能 | AI 翻译侧轨（9 种语言、1:1 绑定、双语播放/导出）；按轨字幕纠错（per-track 作用域、patch 化接受/拒绝）；手动编辑范围（delete/keep 框选，keep 范围免疫自动裁剪）；零散批清扫 + 编辑模式冻结矩阵（v3.0.5）。 |
+| **v3.0.3** | 体验 | 按轨字幕列表（轨选择器、列表内扩展轨编辑、undo 谓词）；可选的跟随平滑；菜单快捷键角标。 |
+| **v3.0.2** | 新功能 | 多行时间线（"一行一窗"，5/10/20/30 秒预设）；行手势（滚轮 / Ctrl+滚轮缩放 / 拖拽刮擦 / 跨行框选）；每行内嵌轨道；视图状态持久化。 |
+| **v3.0.1** | 体验 | 叠轨时间线完整 UX（折叠/调高/隐藏轨、单一播放头）；扩展轨导入 300ms 容差绑定；按轨 SRT/VTT + 双语合并导出。 |
+| **v3.0.0** | 大版本 | 多轨数据层；词级时间戳端到端；崩溃安全持久化（原子落盘 + 备份 + 迁移）；LLM 可靠性协议（批账本、SSRF 防护）；分层 undo（1167 段约 1.2ms）；虚拟化字幕列表（1200 段 60fps）；桥接事件批量化；波形峰值缓存。 |
+| **v2.4.0** | Demo | 浏览器 Demo 构建 + Netlify 部署 + 响应式工作区。 |
 | **v2.3.2** | 性能优化 | ProjectPatch 按层更新协议（迁移 5 个写方法）；后端 start 升序 invariant；`mergedSegments` 简化；SubtitleOverlay seeked 修复。写操作 p50 -38..-45%，p95 最高 -81%。 |
 | **v2.3.1** | 紧急修复 + 审计 | audio-only 项目 OTIO/EDL/XML 导出空文件（P0）；`get_edit_summary` 把 PENDING 当 CONFIRMED 算；`subtitle_trim` edits 创建为 PENDING；edited 跳剪播放性能审计。 |
 | **v2.3.0** | 紧急修复 | 静音检测不再清空 `AnalysisData`（P0）；尊重既有 user / LLM 决定；LLM 重跑尊重用户 edits；overlapping silence edits 迁移。 |
@@ -240,16 +251,17 @@ milo-cut/
 | **v2.2.0** | 新功能 | 字幕纠错集成 `partial_delete` 提示；精华导出管线（MP4 / 音频 / SRT / VTT）通过虚拟 edits 实现；LLM 未配置时 UX 引导。 |
 | **v2.1.1** | 新功能 + 修复 | 多选模式、时间微调、提示词预设、编码器注册表。（本次 README 更新的基线。） |
 
-完整 release notes 在 `docs/<version>/`（如 [`docs/2.3.0/2.3.2-record.md`](docs/2.3.0/2.3.2-record.md)）。
+完整 release notes 在 `docs/<version>/`（最新：[`docs/3.0.5/record-3.0.5.md`](docs/3.0.5/record-3.0.5.md)）。
 
 ## 文档
 
 - [`docs/design-spec.md`](docs/design-spec.md) -- Apple Edition 设计语言
-- [`docs/backend-guide.md`](docs/backend-guide.md) / [`docs/frontend-guide.md`](docs/frontend-guide.md) -- 开发者指南
-- [`docs/<version>/`](docs/) -- 每版本实施记录（v0.1.0 到 v2.3.2）
+- [`docs/DESIGN.md`](docs/DESIGN.md) / [`docs/PROJECT_SCHEMA.md`](docs/PROJECT_SCHEMA.md) -- 设计沿革与项目 schema 笔记
+- [`docs/backend-guide.md`](docs/backend-guide.md) / [`docs/frontend-guide.md`](docs/frontend-guide.md) -- 早期开发者指南（当前架构以 AGENTS.md 为准）
+- [`docs/<version>/`](docs/) -- 每版本实施记录（v0.1.0 到 v3.0.5）
 - [`tests/TEST_GUIDE.md`](tests/TEST_GUIDE.md) -- 自动化 + 手动测试流程
 - [`tests/perf/README.md`](tests/perf/README.md) -- 性能基线工具说明
-- [`AGENTS.md`](AGENTS.md) -- Agent 指南（Codex / Claude Code / OpenCode）
+- [`AGENTS.md`](AGENTS.md) -- 编码 Agent 指南
 
 ## 开源协议
 

@@ -127,10 +127,10 @@ uv run build.py --clean      # Clean artifacts first
 ### Test
 
 ```bash
-# Backend (pytest, 478 tests)
+# Backend (pytest, 875 tests)
 uv run pytest tests/ -v
 
-# Frontend (vitest, 241 tests)
+# Frontend (vitest, 884 tests)
 cd frontend && bun run test
 
 # Type-check + production build (vue-tsc + vite build)
@@ -155,15 +155,18 @@ See [`tests/perf/README.md`](tests/perf/README.md) for the v2.3.2 baseline numbe
 
 ```
 milo-cut/
-  main.py              # Entry point + @expose API bridge (~80 methods)
+  main.py              # Entry point + @expose API bridge (~130 methods)
   core/                # Python backend services
-    project_service.py # Project CRUD, segment/edit/analysis ops, _revision counter
+    project_service.py # Project CRUD, segment/edit/analysis/track ops, _revision counter
     project_patch.py   # v2.3.2 ProjectPatch schema + apply_project_patch
+    persistence.py     # Crash-safe atomic saves (fsync + .bak.1/.bak.2 rotation)
+    migrations.py      # Schema migrations for legacy project files
+    correction_service.py # Subtitle correction pipeline (batch, cancel-polling, track-scoped)
     export_service.py  # FFmpeg segment-concat export + highlight virtual edits
     export_timeline.py # OTIO/EDL/FCPXML/Premiere XML timeline export
     ffmpeg_service.py  # ffprobe/ffmpeg wrappers: probing, silence, waveform, proxy
     ffmpeg_presets.py  # Encoder registry (CRF/CQ/QP, pixel format, hardware accel)
-    llm_service.py     # LLM provider abstraction (OpenAI/Ollama/custom)
+    llm_service.py     # LLM provider abstraction + translation/correction/smart-delete pipelines
     llm_prompts.py     # System prompts with template variable injection
     llm_presets.py     # Style presets for LLM prompts
     workflow_engine.py # Multi-step workflow orchestration (silence + smart delete + correction)
@@ -172,6 +175,7 @@ milo-cut/
     timeline_utils.py  # Timeline helpers, partial_delete hint collection
     diff_service.py    # Subtitle correction diff generation
     task_manager.py    # Background tasks with progress + cancellation
+    track_constraints.py # Stacked-timeline constraint kernel (overlap/linkage/reconcile)
     bridge_service.py  # HTTP bridge API (health, analyze endpoints)
     media_server.py    # Local HTTP server for video streaming to <video>
     asr_service.py     # ASR plugin abstraction (faster-whisper, qwen3-asr)
@@ -180,7 +184,7 @@ milo-cut/
     config.py          # Settings storage (data/settings.json)
     paths.py           # Cross-platform path resolution
     events.py          # Event name constants (mirror frontend/src/utils/events.ts)
-    models.py          # Pydantic v2 frozen models (Project, Segment, EditDecision, ...)
+    models.py          # Pydantic v2 frozen models (Project, Timeline, Segment, ...)
     logging.py         # Loguru setup
   pywebvue/            # Custom pywebview bridge framework
     bridge.py          # Bridge base class + @expose decorator
@@ -199,7 +203,7 @@ milo-cut/
   tests/
     fixtures/          # Synthetic project generator (deterministic)
     perf/              # Backend benchmark harness + results/
-    test_*.py          # 478 pytest tests
+    test_*.py          # 875 pytest tests across 56 files
 ```
 
 **Communication**: Python `@expose` methods are callable from JS via `bridge.call()`. Python pushes events to frontend via `_emit()`, received with `onEvent()`. The bridge uses a 50ms tick loop because PyWebView restricts `evaluate_js` to the main thread.
@@ -233,6 +237,13 @@ milo-cut/
 
 | Version | Type | Highlights |
 |---------|------|-----------|
+| **v3.0.5** | Reliability | Incremental re-translation with gap accounting + one-click resume; quality mode (sliding-window context, ~5x latency); manual-range overlay three-state semantics; neutral cancel with token cost visibility; correction cancel polling (~1s). |
+| **v3.0.4** | Features | AI translation sidecar track (9 languages, bound 1:1, bilingual playback/export); track-aware subtitle correction (per-track scoping, patch-based accept/reject); manual edit ranges (delete/keep marquee, keep ranges immune to auto-trim); incidental batch sweep + edit-mode freeze matrix (v3.0.5). |
+| **v3.0.3** | UX | Track-aware subtitle list (track selector, in-list extension editing, undo predicates); opt-in follow smoothing; menu keyboard badges. |
+| **v3.0.2** | Features | Multi-row timeline ("one row = one window", 5/10/20/30 s presets); row gestures (wheel / Ctrl+wheel zoom / drag scrub / cross-row marquee); tracks inside every row; persistence of view state. |
+| **v3.0.1** | UX | Stacked timeline full UX (collapse/resize/hide lanes, single playhead); extension-track import with 300 ms-tolerance binding; per-track SRT/VTT + bilingual merged export. |
+| **v3.0.0** | Major | Multi-track data layer; word-level timestamps end-to-end; crash-safe persistence (atomic save + backups + migrations); LLM reliability protocol (batch ledger, SSRF guard); layered undo (~1.2 ms on 1167 segments); virtualized transcript list (60 fps @ 1200 segments); batched bridge events; waveform peak cache. |
+| **v2.4.0** | Demo | Browser demo build + Netlify deployment + responsive workspace. |
 | **v2.3.2** | Performance Fix | ProjectPatch layer-update protocol (5 write methods migrated); backend sort invariant; `mergedSegments` simplification; SubtitleOverlay seeked fix. write p50 -38..-45%, p95 up to -81%. |
 | **v2.3.1** | Hotfix + audit | audio-only OTIO/EDL/XML empty file (P0); `get_edit_summary` PENDING vs CONFIRMED mismatch; `subtitle_trim` edits created as PENDING; edited jump-cut playback performance audit. |
 | **v2.3.0** | Hotfix | Silence detection no longer wipes `AnalysisData` (P0); respects prior user / LLM decisions; LLM re-run respects user edits; overlapping silence edit migration. |
@@ -240,16 +251,17 @@ milo-cut/
 | **v2.2.0** | Features | Subtitle correction ingests `partial_delete` hints from smart delete; highlight export pipeline (MP4 / audio / SRT / VTT) via virtual edits; LLM-unconfigured UX guidance. |
 | **v2.1.1** | Features + fixes | Multi-select mode, time micro-adjust, prompt presets, encoder registry. (Baseline for this README update.) |
 
-Full release notes live under `docs/<version>/` (e.g. [`docs/2.3.0/2.3.2-record.md`](docs/2.3.0/2.3.2-record.md)).
+Full release notes live under `docs/<version>/` (latest: [`docs/3.0.5/record-3.0.5.md`](docs/3.0.5/record-3.0.5.md)).
 
 ## Documentation
 
 - [`docs/design-spec.md`](docs/design-spec.md) -- Apple Edition design language
-- [`docs/backend-guide.md`](docs/backend-guide.md) / [`docs/frontend-guide.md`](docs/frontend-guide.md) -- Developer guides
-- [`docs/<version>/`](docs/) -- Per-version implementation records (v0.1.0 through v2.3.2)
+- [`docs/DESIGN.md`](docs/DESIGN.md) / [`docs/PROJECT_SCHEMA.md`](docs/PROJECT_SCHEMA.md) -- design history & project schema notes
+- [`docs/backend-guide.md`](docs/backend-guide.md) / [`docs/frontend-guide.md`](docs/frontend-guide.md) -- early-stage developer guides (see AGENTS.md for current architecture)
+- [`docs/<version>/`](docs/) -- Per-version implementation records (v0.1.0 through v3.0.5)
 - [`tests/TEST_GUIDE.md`](tests/TEST_GUIDE.md) -- Automated + manual test procedures
 - [`tests/perf/README.md`](tests/perf/README.md) -- Performance baseline harness
-- [`AGENTS.md`](AGENTS.md) -- Agent guidance (Codex / Claude Code / OpenCode)
+- [`AGENTS.md`](AGENTS.md) -- Agent guidance for coding agents
 
 ## License
 

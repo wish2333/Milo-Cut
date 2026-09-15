@@ -1,5 +1,7 @@
 # Milo-Cut Backend Implementation Guide
 
+> **历史文档（v0.x 规划期）**：本文写作于项目早期，其中的 `core/api.py`、`core/services/` 目录布局与最终实现不同。当前实际架构以根目录 `AGENTS.md` 为准（入口为 `main.py:MiloCutApi`，服务平铺在 `core/*.py`）。阅读时请将其当作设计思路参考，而非现状描述。
+
 基于 Python 3.11+ / PyWebVue / FFmpeg 的后端架构指南。本指南基于对 **PyWebVue 框架源码** 和 **ff-intelligent-neo 参考项目后端** 的深度分析编写，所有模式和约定均有实际代码依据。
 
 ---

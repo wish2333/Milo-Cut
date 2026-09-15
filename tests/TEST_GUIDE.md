@@ -3,8 +3,8 @@
 ## Overview
 
 Milo-Cut uses two test frameworks:
-- **Backend (Python)**: pytest with 97 tests across 6 modules
-- **Frontend (TypeScript/Vue)**: Vitest with happy-dom, 105 tests across 7 test files
+- **Backend (Python)**: pytest with 875 tests across 56 files (v3.0.5 gate)
+- **Frontend (TypeScript/Vue)**: Vitest with happy-dom, 884 tests (v3.0.5 gate, all green)
 
 ## Prerequisites
 
@@ -34,16 +34,16 @@ uv run pytest tests/test_models.py -v
 uv run pytest tests/ -k "filler" -v
 ```
 
-Backend test modules:
+Backend test files (`tests/test_*.py`, grown from 6 modules at v0.x to 56 files at v3.0.5). Key areas:
 
-| File | Tests | Coverage |
-|------|-------|----------|
-| `test_models.py` | 15 | Segment, EditDecision, AnalysisResult, Project models |
-| `test_analysis_service.py` | 11 | Filler detection, error detection, full analysis |
-| `test_subtitle_service.py` | 14 | SRT parsing, validation, multi-encoding |
-| `test_project_service.py` | 18 | CRUD, merge/split, search-replace, batch edits, settings |
-| `test_config.py` | 5 | Load/save, atomic write, corruption recovery |
-| `test_export_service.py` | 21 | SRT/VTT export, format helpers, deletion handling |
+| Area | Representative files |
+|------|----------------------|
+| Models & patch protocol | `test_models.py`, `test_project_patch.py`, `test_segment_sort_invariant.py` |
+| Project & persistence | `test_project_service.py`, `test_persistence.py`, `test_migration.py`, `test_apply_undo.py` |
+| LLM pipelines | `test_llm_translation.py`, `test_translation_expose.py`, `test_correction_*.py`, `test_llm_protocol.py` |
+| Tracks & timeline | `test_track_constraints.py`, `test_track_linkage.py`, `test_tracks_contract.py`, `test_track_export.py` |
+| Export & media | `test_export_service.py`, `test_export_timeline.py`, `test_waveform_cache.py` |
+| Edit decisions & ranges | `test_add_range_decision.py`, `test_keep_ranges_golden.py`, `test_keep_ranges_user_keep.py` |
 
 ### Frontend Tests
 
