@@ -18,7 +18,7 @@ Milo-Cut is a local-first, AI-powered desktop video preprocessing tool for oral 
 
 - **Silence Detection** -- FFmpeg-powered with configurable threshold and duration; respects existing user / LLM decisions and never overwrites prior analysis results (v2.3.0 regression fix).
 - **Filler Word Detection** -- Customizable word lists with regex matching for high-frequency filler words (Chinese-aware).
-- **Error-Trigger Detection** -- Recognizes self-correction triggers like "不对重来" / "说错了" / "重新说".
+- **Error-Trigger Detection** -- Recognizes self-correction triggers like Chinese phrases "不对重来" (no, start over) / "说错了" (misspoke) / "重新说" (say it again).
 - **Multi-Timeline Editing** -- Fork independent timelines from the current state; each timeline owns its own transcript, edits, and analysis. Switch between alternative cuts without losing prior work.
 - **Workflow Engine** -- Orchestrate silence detection, smart delete, and subtitle correction in a configurable pipeline.
 - **Subtitle Interaction** -- Multi-select mode, time micro-adjustment (±0.1s), merge/split segments, global search & replace.
@@ -58,7 +58,7 @@ Milo-Cut is a local-first, AI-powered desktop video preprocessing tool for oral 
 
 - **List track selector** -- the subtitle list gains a segmented switch (main track / each extension track); the selection is session view state only (never patched, never persisted, always back to the main track on reload).
 - **In-list extension editing** -- extension rows show text/timestamps/duration with the binding mark; double-click or the row menu edits text, stamps are click-editable with ±0.1s nudges, and edits share the debounced optimistic kernel with waveform trims (failures roll back and surface the backend error verbatim).
-- **Row actions & undo predicates** -- click seeks, the playhead highlights the active row, and the context menu offers 定位 / 编辑 / 删除此条字幕 (no confirm -- undo covers it); capture layers follow the predicate table (text -> tracks only; time -> tracks + bindings when bound; delete always both) with atomic offsets restore on undo.
+- **Row actions & undo predicates** -- click seeks, the playhead highlights the active row, and the context menu offers locate / edit / delete-this-subtitle (no confirm -- undo covers it); capture layers follow the predicate table (text -> tracks only; time -> tracks + bindings when bound; delete always both) with atomic offsets restore on undo.
 - **Follow smoothing (opt-in)** -- navigation jumps can animate with a 140 ms ease-out (`milocut:timeline-follow-smooth:v1`, default off); the playback-clock path always writes instantly, so continuous playback behavior is unchanged.
 - **Menu kbd badges** -- row context menus annotate registered shortcuts (mono badges, R9.4 style); items without a registered shortcut render text-only.
 
@@ -69,14 +69,14 @@ Milo-Cut is a local-first, AI-powered desktop video preprocessing tool for oral 
 - **Track-aware subtitle correction** -- correction is no longer main-track-only: in a track view the correction card stays available and locks to the current track (explicit track badge), pending suggestions are scoped per track, and review entries carry their source track. Accept/reject now return a ProjectPatch (layer-scoped, no more full-project refresh) with one-shot undo of both text and the review entry; bound segments of confirmed-deleted main-track segments are skipped, while unbound segments are corrected as usual.
 - **Manual edit ranges** -- a "range mark" toolbar toggle (default off) enables press-drag marquee selection over empty main-track space, with a delete/keep choice in the release bubble; the suggestion panel gains a "manual ranges" group plus a "+ timecode" precise entry point (confirmed ranges join the trim computation). Confirmed keep ranges are excluded from automatic trim computation -- kept content is never eaten by auto-trim (the 2.x "hold the gap" behavior is back); when a keep overlaps a manual delete, export obeys the delete; pending ranges never affect jump playback, the progress-bar red mask, or the export preview.
 - **Incidental batch** -- the list edit sweep now covers extension rows (one click in/out of whole-column text editing, pending edits flush before track switches); build-mode clicks on extension lanes create segments again (a long-dead chain rewired, both multi and basic paths); semantic search shows correct result text and timestamps in track views and locates the main-track hit.
-- **Edit-mode freeze matrix (v3.0.5)** -- edit mode is the text-proofing exclusive state: extension-lane block trims and lane structure operations (create / clear track / delete track) are frozen with a "请退出编辑模式后重试" toast, while main-track block trims, menus, and gestures keep the 2.x baseline unrestricted. The main/extension asymmetry is deliberate: the main track is the untouchable baseline, extension lanes are the newer surface playing by the new rules.
+- **Edit-mode freeze matrix (v3.0.5)** -- edit mode is the text-proofing exclusive state: extension-lane block trims and lane structure operations (create / clear track / delete track) are frozen with an "exit edit mode first" toast, while main-track block trims, menus, and gestures keep the 2.x baseline unrestricted. The main/extension asymmetry is deliberate: the main track is the untouchable baseline, extension lanes are the newer surface playing by the new rules.
 
 ### Translation Reliability, Review Closure & Edit-State Consistency (v3.0.5)
 
-- **Incremental re-translation & gap accounting** -- a partial batch failure no longer wastes the whole task: completed batches land (1/N degraded persistence) and the failed segments' gap is surfaced in the panel (mm:ss + 20-char locator + one-click resume that re-runs only the gap difference, merged as a single patch with revision +1). Re-translating into an existing same-language track auto-routes to resume with an explicit "补译 N 段" toast instead of a hard refusal.
+- **Incremental re-translation & gap accounting** -- a partial batch failure no longer wastes the whole task: completed batches land (1/N degraded persistence) and the failed segments' gap is surfaced in the panel (mm:ss + 20-char locator + one-click resume that re-runs only the gap difference, merged as a single patch with revision +1). Re-translating into an existing same-language track auto-routes to resume with an explicit "resume translation: N segments" toast instead of a hard refusal.
 - **Quality mode (finalized-translation sliding window)** -- the `llm_translation_quality_mode` settings switch (default off) switches translation to serial dispatch where batch N carries batch N-1's finalized translations as context (window = 1 batch) for better cross-batch consistency; **expect roughly 5x the latency** of the concurrent mode. Resumed batches honor the same switch.
-- **Overlay three-state semantics** -- manual-range overlays read action x status: color = action (red delete / blue keep), opacity = status (pending dims); the hover tooltip is semantic Chinese (e.g. 「保留范围 12.0s - 15.0s（待确认）」) and a keep x delete overlap appends「与重叠区间导出按删除处理」. **Rejected ranges no longer render** (they leave the field entirely).
-- **Neutral cancel & cost visibility** -- cancelling a big translation/correction run returns in about 1s (1s polling + non-blocking shutdown); the cancel/failure toast is neutral and carries the tokens already spent (「翻译已取消，已消耗约 X tokens」) -- failures report the cost first, then the error.
+- **Overlay three-state semantics** -- manual-range overlays read action x status: color = action (red delete / blue keep), opacity = status (pending dims); the hover tooltip is semantic prose (e.g. "keep range 12.0s - 15.0s (pending confirmation)") and a keep x delete overlap appends "overlapping ranges are exported as deleted". **Rejected ranges no longer render** (they leave the field entirely).
+- **Neutral cancel & cost visibility** -- cancelling a big translation/correction run returns in about 1s (1s polling + non-blocking shutdown); the cancel/failure toast is neutral and carries the tokens already spent ("translation cancelled, ~X tokens consumed") -- failures report the cost first, then the error.
 
 ### Multi-Track Subtitles & Stacked Timeline (v3.0.0 data layer / v3.0.1 full UX)
 
@@ -92,7 +92,7 @@ Milo-Cut is a local-first, AI-powered desktop video preprocessing tool for oral 
 - **macOS cold-start fix** -- `__BRIDGE_READY__` signal eliminates the pywebview race that caused blank pages on first launch (v2.2.1).
 - **ProjectPatch protocol** -- Layer-scoped partial updates (segments / edits / analysis) replace the legacy full-Project dump, cutting wire payload by ~70% and reducing p95 write latency by up to 81% on long projects (v2.3.2).
 
-> **已知限制**: 工作流模式有待充分验证。详见 [docs/2.1.1/release-2.1.1.md](docs/2.1.1/release-2.1.1.md).
+> **Known limitation**: workflow mode needs further validation. See [docs/2.1.1/release-2.1.1.md](docs/2.1.1/release-2.1.1.md).
 
 ## Quick Start
 
