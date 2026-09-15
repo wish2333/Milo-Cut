@@ -226,3 +226,22 @@ Design specs, audit reports, and per-version implementation records live in `doc
 - `tests/TEST_GUIDE.md` - Automated + manual test procedures
 - `tests/perf/README.md` - Backend performance baseline harness
 - `README.md` / `README_zh.md` - User-facing project overview (English / Chinese)
+- `docs/agents/` - Agent-skill configuration (issue tracker, triage labels, domain docs)
+
+## Agent skills
+
+Matt Pocock's skills (installed under `.agents/skills/`) are configured as follows:
+
+### Issue tracker
+
+Local markdown: issues and specs live as files under `.scratch/<feature-slug>/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five canonical roles (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` at the repo root plus `docs/adr/` for short ADRs, both created lazily by `/domain-modeling`. See `docs/agents/domain.md`.
+
+Workflow entry points: daily router is `/ask-matt`; the working loop is `/grill-with-docs` (align before code) -> `/implement` (build to the agreed contract, driving `/tdd`). `/to-spec` and `/to-tickets` only for work that spans sessions or won't fit in one slice.
